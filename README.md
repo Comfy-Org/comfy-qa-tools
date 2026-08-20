@@ -1,20 +1,44 @@
 # comfy-qa-cli
 
-QA tooling for testing Comfy. **Know what you are testing, and record it.**
+**QA tooling for testing Comfy — take the deterministic half of the job, so testers
+spend their time on judgement.**
+
+A tester here covers eight surfaces across six environments, records results in four
+different vocabularies, and attaches an evidence block written in three mutually
+incompatible formats. Almost none of that is judgement — it is setup and
+record-keeping, it is deterministic, and it is eating the time that should go to
+finding bugs.
+
+**See [ROADMAP.md](ROADMAP.md) for the full scope.** In short:
+
+| | | |
+|---|---|---|
+| **v0** | `qa env` | which build each environment serves, and its flag state · **shipped** |
+| **v1** | `qa labels` | verify cloud-blocked nodes are actually blocked |
+| **v2** | `qa report` | fill in the mechanical half of a bug report |
+| **v3** | `qa nodes` | run node test workflows, pre-fill tracker rows |
+| **v4** | `qa pr` | is this PR's ephemeral ready, or was it never labelled |
+| **v5** | `qa local` | test a PR locally and prove which build you got |
+| **v6** | `qa flags --set` | set flags · *blocked on self-service access* |
+| **v7** | cross-platform | run the same case across macOS, Windows, Linux |
+
+Ordered by (time wasted × frequency) against the QA onboarding guide and its eight
+playbooks — not by what is neatest to build. Each ships independently.
 
 Not to be confused with [`Comfy-Org/comfy-qa`](https://github.com/Comfy-Org/comfy-qa),
-which runs Playwright E2E tests. This is the setup-and-evidence layer: it tells you
-which build an environment is serving and what is switched on in it. The two are
-complementary — this one's `--json` output gives a test run its build provenance.
+which runs Playwright E2E tests. That is a testing *method*; this is the setup and
+evidence layer around the whole role. They are complementary — this one's `--json`
+output gives a Playwright run the build provenance it currently lacks.
 
-## Why
+## v0 — why it is first
 
 From the QA onboarding guide, on checking which build an environment actually serves:
 
 > A failed deploy leaves the old version running and looks completely normal.
 > This catches more wasted days than anything else in this document.
 
-That check appears in four separate QA documents. This makes it one command.
+That check appears in **four independent QA documents**, and release 1.50 carried 11
+backports — so it re-fires eleven times in one release. This makes it one command.
 
 ## Install
 
@@ -72,6 +96,9 @@ added upstream cannot leak into a pasted evidence block.
 
 ## Status
 
-**v0 only.** Roadmap: node label audit, bug-report generation, node test workflows +
-tracker rows, ephemeral readiness, local PR builds with verification, cross-platform
-testing. Feature-flag *setting* is blocked pending self-service access.
+**v0 shipped, verified against live environments.** Not yet wired into comfy-cli as a
+true `comfy qa` subcommand — comfy-cli has no plugin system, so that needs either a
+startup hook or ~10 lines upstream. The command code is identical either way.
+
+No automated tests yet. See [ROADMAP.md](ROADMAP.md) for what is next and what is
+deliberately out of scope.
