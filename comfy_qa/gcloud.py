@@ -26,6 +26,10 @@ DEFAULT_TIMEOUT = 60
 # after the fetch.
 QUOTA_TIMEOUT = 240
 
+# Starting or stopping an instance is not instant, and Windows is slower than
+# Linux. gcloud blocks until the operation completes.
+INSTANCE_TIMEOUT = 300
+
 
 class GcloudError(Exception):
     """A gcloud call that failed. `fix` is a command the user can run."""
@@ -144,6 +148,26 @@ class Gcloud:
         return self.run([
             "compute", "instances", "list", f"--project={project}",
         ]) or []
+
+    def instance_status(self, name: str, zone: str, project: str) -> str:
+        """RUNNING, TERMINATED, STAGING... TERMINATED is Google's word for stopped."""
+        info = self.run([
+            "compute", "instances", "describe", name,
+            f"--zone={zone}", f"--project={project}",
+        ]) or {}
+        return info.get("status") or "UNKNOWN"
+
+    def start_instance(self, name: str, zone: str, project: str) -> None:
+        self.run([
+            "compute", "instances", "start", name,
+            f"--zone={zone}", f"--project={project}",
+        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
+
+    def stop_instance(self, name: str, zone: str, project: str) -> None:
+        self.run([
+            "compute", "instances", "stop", name,
+            f"--zone={zone}", f"--project={project}",
+        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
 
     def quota_preferences(self, project: str) -> list[dict]:
         return self.run([

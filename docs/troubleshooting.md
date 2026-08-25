@@ -73,6 +73,23 @@ Name it: `comfy-qat setup --project <id>`.
 Only you can attach billing. The error prints the direct link; do that, then run
 setup again.
 
+## Starting and stopping
+
+**`ComfyUI is not answering on http://127.0.0.1:8190`** after `host up`
+The machine is running and tunnelled, but ComfyUI itself is not serving — it is
+either not installed or not started. **The box is billing while this is true.**
+The error prints how to get onto it, which differs by OS: Windows needs a password
+reset and Remote Desktop over the tunnel, anything else takes SSH through IAP.
+
+**`comfy-win did not reach RUNNING within 300s`**
+The instance was asked to start and did not. Check it in the Google Cloud console;
+this usually means capacity or a quota problem in that zone rather than a fault
+with the box.
+
+**`could not start comfy-win: ...`**
+gcloud refused. The most common cause is GPU quota — `comfy-qat auth quota` shows
+what you actually have.
+
 ## Stamping a machine
 
 **`nothing answered at http://127.0.0.1:8190`**
