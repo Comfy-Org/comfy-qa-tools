@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import typer
 
-from . import commands, host
+from . import auth, commands, host
 
 app = typer.Typer(
     help="QA tooling for testing Comfy: know which machine you are testing, "
@@ -18,6 +18,7 @@ app = typer.Typer(
 )
 
 app.add_typer(host.app, name="host")
+app.add_typer(auth.app, name="auth")
 
 # v0's environment check, carried forward so it stays reachable under the new
 # binary. It is not part of release 1 and gets rewritten when its own release
