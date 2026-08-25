@@ -95,6 +95,26 @@ release comes round — it stays reachable meanwhile rather than disappearing.
 
 ---
 
+## First run
+
+Four steps. `comfy-qat guide` prints these in the terminal at any time.
+
+```sh
+gcloud auth login          # sign in to Google Cloud
+comfy-qat auth status      # check you are ready — fix what it names, then repeat
+comfy-qat host init        # write a starter host list
+comfy-qat host list        # see your machines
+```
+
+`auth status` checks gcloud, your account, your project, billing and GPU quota **in
+order, stopping at the first problem**, and prints the command that fixes it. Fix
+that one thing and run it again. It is the setup guide, so it cannot go stale the
+way a README can.
+
+Full docs in [`docs/`](docs/): [getting started](docs/getting-started.md) ·
+[the host list](docs/hosts.md) · [troubleshooting](docs/troubleshooting.md) ·
+[cost](docs/cost.md).
+
 ## Install
 
 ```sh

@@ -60,7 +60,7 @@ class EnvReport:
 
 # The CDN in front of the cloud environments rejects urllib's default
 # ``Python-urllib/3.x`` agent with a 403, so send a real one.
-USER_AGENT = "comfy-qa/0.1 (+https://github.com/Comfy-Org/comfy-qa)"
+USER_AGENT = "comfy-qa-tools/0.1 (+https://github.com/Comfy-Org/comfy-qa-tools)"
 
 
 def _get(url: str, *, head: bool = False):
