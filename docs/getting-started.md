@@ -6,13 +6,26 @@ From nothing to a working setup. You do not need to know what a tunnel is.
 
 ```sh
 git clone https://github.com/Comfy-Org/comfy-qa-tools.git
-uv tool install ./comfy-qa-tools
+cd comfy-qa-tools
+/path/to/venv/bin/pip install -e .
 ```
 
-`uv tool install` keeps it out of every ComfyUI virtualenv on purpose. This tool's
-job is inspecting machines, so it must not depend on any one machine's install.
+Any virtualenv with Python 3.11 or newer will do. `-e` means it runs from the
+checkout, so `git pull` updates it.
 
-Needs Python 3.11 or newer.
+The binary lands at `/path/to/venv/bin/comfy-qat`. Virtualenv `bin` directories are
+usually not on your `PATH`, so either call it by full path or add an alias:
+
+```sh
+alias comfy-qat='/path/to/venv/bin/comfy-qat'
+```
+
+`uv tool install .` works too and keeps it out of every virtualenv — but `uv` has to
+be on your `PATH`, and it installs binaries to `~/.local/bin`, which is not on
+`PATH` by default on macOS. Run `uv tool update-shell` if `comfy-qat` is not found.
+
+If you installed an earlier version as `comfy-qa-cli` or `comfy-qa`, remove it
+first: `pip uninstall -y comfy-qa-cli comfy-qa`.
 
 ## 2. Run setup
 

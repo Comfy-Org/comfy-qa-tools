@@ -124,14 +124,51 @@ Full docs in [`docs/`](docs/): [getting started](docs/getting-started.md) ·
 
 ## Install
 
+Needs Python 3.11 or newer.
+
 ```sh
 git clone https://github.com/Comfy-Org/comfy-qa-tools.git
-uv tool install ./comfy-qa-tools
+cd comfy-qa-tools
 ```
 
-`uv tool install` keeps it outside every ComfyUI virtualenv, which matters: this tool
-interrogates machines, so it must not depend on any one machine's install. Requires
-Python 3.11+.
+**Into an existing virtualenv** — the fewest moving parts, and it works with what
+you already have:
+
+```sh
+/path/to/venv/bin/pip install -e .
+```
+
+`-e` runs it from the checkout, so `git pull` updates it with no reinstall. The
+binary lands next to that venv's other scripts, at `/path/to/venv/bin/comfy-qat`.
+If that directory is not on your `PATH` — venv `bin` directories usually are not —
+either call it by full path or add an alias:
+
+```sh
+alias comfy-qat='/path/to/venv/bin/comfy-qat'
+```
+
+**Or standalone with uv**, which keeps it out of every virtualenv:
+
+```sh
+uv tool install .
+```
+
+Two things to check if `comfy-qat` is then "not found": `uv` itself has to be on
+your `PATH` (it is often installed inside a virtualenv rather than system-wide), and
+`uv` puts binaries in `~/.local/bin`, which is not on `PATH` by default on macOS.
+`uv tool update-shell` fixes the second.
+
+### Upgrading from an earlier install
+
+Earlier versions installed as `comfy-qa-cli` or `comfy-qa`. Remove them — the
+second in particular installs a `comfy-qa` binary, which is
+[a different project's command](https://github.com/Comfy-Org/Comfy-QA):
+
+```sh
+pip uninstall -y comfy-qa-cli comfy-qa
+```
+
+Then update any shell alias to point at `comfy-qat`.
 
 ## Design
 

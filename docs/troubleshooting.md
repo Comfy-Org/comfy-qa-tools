@@ -3,6 +3,20 @@
 Every error this tool prints, what causes it, and the fix. If you hit something
 that is not listed here, that is a bug in this page as much as in the code.
 
+## Installing
+
+**`comfy-qat: command not found`**
+The binary is installed but its directory is not on your `PATH`. Virtualenv `bin`
+directories usually are not, and `uv` installs to `~/.local/bin`, which macOS does
+not include by default. Call it by full path, add an alias, or run
+`uv tool update-shell`.
+
+**`comfy-qa` runs but `comfy-qat` does not**
+You have an older install. `pip uninstall -y comfy-qa-cli comfy-qa`, then install
+again. Note that `comfy-qa` is also
+[a different project's binary](https://github.com/Comfy-Org/Comfy-QA), so leaving it
+installed is confusing for more than one reason.
+
 ## Host list
 
 **`no host list at ~/.config/comfy-qa-tools/hosts.toml`**

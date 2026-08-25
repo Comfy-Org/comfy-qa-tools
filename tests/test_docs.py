@@ -43,6 +43,8 @@ ERROR_PHRASES = [
     # stamping
     "nothing answered at",
     "not with ComfyUI",
+    # installing
+    "command not found",
 ]
 
 
