@@ -87,18 +87,45 @@ def install_command(host: Host) -> str:
     )
 
 
+# An install can be a venv, the Windows portable bundle, or a system interpreter.
+# Assuming one of them is how a working box reported "python.exe is not recognized".
+WINDOWS_PYTHONS = (
+    r"venv\Scripts\python.exe",
+    r"python_embeded\python.exe",
+    r".venv\Scripts\python.exe",
+    r"ComfyUI_windows_portable\python_embeded\python.exe",
+)
+LINUX_PYTHONS = ("venv/bin/python", ".venv/bin/python")
+
+
 def launch_command(host: Host) -> str:
     """Start ComfyUI in the foreground so its log streams back over SSH.
 
-    It binds to 127.0.0.1 on the box: the only way in is the tunnel, which is not
-    optional — ComfyUI has no authentication.
+    The interpreter is discovered on the box rather than assumed: a ComfyUI
+    install may carry a venv, the Windows portable bundle's embedded Python, or
+    neither. It binds to 127.0.0.1 — the tunnel is the only way in, because
+    ComfyUI has no authentication.
     """
     if is_windows(host):
+        candidates = "; ".join(
+            f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS
+        )
         return (
             "powershell -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
-            ".\\venv\\Scripts\\python.exe main.py --listen 127.0.0.1 --port 8188\""
+            f"$candidates = @({candidates.replace('; ', ', ')}); "
+            "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
+            "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
+            "if (-not $py) { Write-Output 'NO_PYTHON'; exit 3 }; "
+            "Write-Output ('using ' + $py); "
+            "& $py main.py --listen 127.0.0.1 --port 8188\""
         )
+    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
     return (
-        f"cd {LINUX_ROOT} && ./venv/bin/python main.py --listen 127.0.0.1 --port 8188"
+        f"cd {LINUX_ROOT}; "
+        f"for p in {candidates} $(command -v python3); do "
+        "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
+        "if [ -z \"$py\" ]; then echo NO_PYTHON; exit 3; fi; "
+        "echo \"using $py\"; "
+        "\"$py\" main.py --listen 127.0.0.1 --port 8188"
     )

@@ -29,6 +29,10 @@ RUNNING = "RUNNING"
 # all alike once hid a failed start and then tried SSH against a stopped machine.
 COMFYUI_ABSENT = "comfyui-absent"
 
+# Google's word when a zone has no capacity for the machine type you asked for.
+# It is not a fault on your side and no amount of retrying in that zone helps.
+STOCKOUT = "stockout"
+
 
 class LifecycleError(Exception):
     """Something a person has to act on. `fix` says what."""
@@ -55,6 +59,16 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=time.sleep, now=time
         if now() >= deadline:
             return False
         sleep(POLL_SECONDS)
+
+
+def is_capacity_failure(message: str) -> bool:
+    """Did the zone simply run out of the machine you asked for?
+
+    GPU stockouts are routine and the raw message is long and alarming. Saying so
+    plainly saves someone debugging their own account for an hour.
+    """
+    lowered = message.lower()
+    return "stockout" in lowered or "does not have enough resources" in lowered
 
 
 def is_windows(host: Host) -> bool:
@@ -122,6 +136,17 @@ def bring_up(
         try:
             gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
         except GcloudError as exc:
+            if is_capacity_failure(str(exc)):
+                raise LifecycleError(
+                    f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
+                    f"right now, so {host.name} cannot start. This is not a fault on "
+                    f"your side and retrying in the same zone will not help.",
+                    kind=STOCKOUT,
+                    fix=(
+                        "wait and try later, or move the box to another zone. "
+                        "Capacity varies by zone and by hour."
+                    ),
+                ) from exc
             raise LifecycleError(f"could not start {host.name}: {exc}", fix=exc.fix) from exc
         started = True
 

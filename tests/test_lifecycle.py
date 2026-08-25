@@ -218,3 +218,41 @@ def test_waiting_for_ssh_gives_up_with_the_manual_way_in():
         wait_for_ssh(Gcloud(runner=runner), WIN, say, timeout=0, sleep=lambda _: None)
     assert "not accepting commands" in str(caught.value)
     assert "reset-windows-password" in caught.value.fix
+
+
+def test_a_zone_with_no_capacity_is_named_as_such(tmp_path):
+    """Google returns a long STOCKOUT message that reads like an account problem.
+
+    It is not: the zone simply has none of that card free, and retrying there
+    will not help. Saying so saves an hour of debugging the wrong thing.
+    """
+    from comfy_qa.lifecycle import STOCKOUT, is_capacity_failure
+
+    assert is_capacity_failure("... does not have enough resources available ...")
+    assert is_capacity_failure("'NULL:0/NULL:0 (state:STOCKOUT, sub-state:STOCKOUT ...)'")
+    assert not is_capacity_failure("permission denied")
+
+    _, say = said()
+    gc = gcloud(["TERMINATED"], fail=GcloudError(
+        "The zone does not have enough resources available to fulfill the request. "
+        "'NULL:0/NULL:0/NULL:0 (state:STOCKOUT, sub-state:STOCKOUT, resource type:compute)'."
+    ))
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert caught.value.kind == STOCKOUT
+    assert "no L4 capacity in us-central1-a" in str(caught.value)
+    assert "not a fault on your side" in str(caught.value)
+    assert "another zone" in caught.value.fix
+
+
+def test_a_capacity_failure_stops_go_rather_than_becoming_an_ssh_error(tmp_path):
+    """This is what actually happened: a stockout surfaced as "failed to connect
+    to port 22", which sent us looking at firewalls and SSH keys for an hour."""
+    from comfy_qa.lifecycle import COMFYUI_ABSENT
+
+    _, say = said()
+    gc = gcloud(["TERMINATED"], fail=GcloudError("state:STOCKOUT"))
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+    assert caught.value.kind != COMFYUI_ABSENT
