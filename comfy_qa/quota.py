@@ -17,6 +17,11 @@ from typing import Iterable, Literal
 
 Status = Literal["ready", "pending", "none"]
 
+# A project-wide ceiling across every card, not a card you can pick. Worth showing
+# in the full table — it can be the thing actually holding you back — but listing
+# it among "cards you can run" reads as a GPU model that does not exist.
+GLOBAL_ALLOWANCE = "any (global)"
+
 # Real ids are hyphen-separated: `NVIDIA-L4-GPUS-per-project-region`. They were
 # written here with underscores first, against invented fixtures, and every
 # exclusion below silently failed as a result. The fixtures in the tests are now
@@ -65,7 +70,7 @@ def friendly_name(quota_id: str) -> str | None:
     if name.startswith(_NOT_A_CARD):
         return None
     if name in ("GPUS-ALL-REGIONS", "GPUS-ALL-REGIONS-GPUS"):
-        return "any (global)"
+        return GLOBAL_ALLOWANCE
     name = name.removeprefix("NVIDIA-").removesuffix("-GPUS").removesuffix("-GPU")
     return name.strip("-").strip() or None
 

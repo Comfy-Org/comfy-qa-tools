@@ -251,3 +251,32 @@ def test_a_failure_listing_boxes_does_not_stop_setup(tmp_path):
     path = run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
     assert path.exists()
     assert any("could not list cloud boxes" in line for line in p.said)
+
+
+def test_the_project_wide_allowance_is_not_listed_as_a_card(tmp_path):
+    """`any (global)` is a ceiling across every card, not a GPU you can pick.
+
+    Listing it beside L4 and T4 reads as a model nobody has heard of.
+    """
+    responses = dict(READY, **{"quotas info list": [
+        {"quotaId": "GPUS-ALL-REGIONS-per-project",
+         "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["global"]}]},
+        {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
+         "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["us-central1"]}]},
+    ]})
+    p = prompts()
+    run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
+
+    line = next(l for l in p.said if l.startswith("GPU quota ready"))
+    assert "L4" in line
+    assert "global" not in line
+
+
+def test_a_global_only_allowance_is_still_reported(tmp_path):
+    responses = dict(READY, **{"quotas info list": [
+        {"quotaId": "GPUS-ALL-REGIONS-per-project",
+         "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["global"]}]},
+    ]})
+    p = prompts()
+    run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
+    assert any("project-wide allowance" in line for line in p.said)
