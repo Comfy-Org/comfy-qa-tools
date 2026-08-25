@@ -1,6 +1,6 @@
 """Root command surface.
 
-`comfy-qa <feature> <action>`. Each feature is a Typer sub-app registered here
+`comfy-qat <feature> <action>`. Each feature is a Typer sub-app registered here
 with one line, which is how a later feature is added without touching an
 existing one.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import typer
 
-from . import host
+from . import commands, host
 
 app = typer.Typer(
     help="QA tooling for testing Comfy: know which machine you are testing, "
@@ -18,6 +18,11 @@ app = typer.Typer(
 )
 
 app.add_typer(host.app, name="host")
+
+# v0's environment check, carried forward so it stays reachable under the new
+# binary. It is not part of release 1 and gets rewritten when its own release
+# comes round; until then, losing it would be a regression nobody asked for.
+app.command("env")(commands.env_cmd)
 
 
 def register(parent: typer.Typer, name: str = "qa") -> None:

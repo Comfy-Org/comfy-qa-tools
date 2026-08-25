@@ -102,6 +102,12 @@ reimaged.
 sign-in state, billing, and GPU quota requests. `host create` gates on quota, so
 `auth` lands first.
 
+### Carried over from v0
+
+`comfy-qat env` still reports which build each deployed environment serves and its
+feature-flag state. It is not part of release 1 and will be rewritten when its own
+release comes round — it stays reachable meanwhile rather than disappearing.
+
 ---
 
 ## Install
