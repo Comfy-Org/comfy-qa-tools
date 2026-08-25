@@ -17,6 +17,7 @@ from typing import Annotated, Callable, Optional
 
 import typer
 
+from .quota import available_gpus, readiness, resolve
 from .gcloud import (
     Gcloud,
     GcloudError,
@@ -165,96 +166,153 @@ def login_cmd() -> None:
     typer.echo("  gcloud config set project <your-project-id>")
 
 
+@quota_app.callback(invoke_without_command=True)
+def quota_default(ctx: typer.Context) -> None:
+    """Showing what you can run is the safe default."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(quota_list_cmd, as_json=False, region=None)
+
+
 @quota_app.command("list")
 def quota_list_cmd(
+    region: Annotated[Optional[str], typer.Option("--region", help="Only this region.")] = None,
     as_json: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
-    """Show the GPU quota this project actually has."""
+    """What can I run today, what is waiting on Google, what did I never ask for."""
     gc = Gcloud()
     try:
-        project = gc.current_project()
-        if not project:
-            typer.echo("no project set. Run: gcloud config set project <id>", err=True)
-            raise typer.Exit(code=2)
+        project = _require_project(gc)
         quotas = gc.gpu_quotas(project)
-        pending = [
-            p for p in gc.quota_preferences(project)
-            if "GPU" in (p.get("quotaId") or "").upper()
-        ]
+        prefs = gc.quota_preferences(project)
     except GcloudError as exc:
         typer.echo(str(exc), err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
         raise typer.Exit(code=2)
 
+    rows = readiness(quotas, prefs, region=region)
+
     if as_json:
-        typer.echo(json.dumps({"project": project, "quotas": quotas, "pending": pending}, indent=2))
+        typer.echo(json.dumps(
+            {"project": project, "gpus": [asdict(r) for r in rows]}, indent=2,
+        ))
         return
 
-    if not quotas:
+    if not rows:
         typer.echo(f"{project}: no GPU quotas reported.")
-    for quota in quotas:
-        typer.echo(f"{quota.get('quotaId'):<45} {_value_of(quota)}")
-    if pending:
-        typer.echo(f"\n{len(pending)} pending request(s). Watch: {console_quota_url(project)}")
+        return
+
+    typer.echo(f"{'GPU':<14} {'REGION':<16} {'LIMIT':>5}  STATUS")
+    for row in rows:
+        note = {
+            "ready": "ready",
+            "pending": "pending — waiting on Google",
+            "none": "none — request it",
+        }[row.status]
+        typer.echo(f"{row.gpu:<14} {row.region:<16} {row.limit:>5}  {note}")
+
+    if not any(r.usable for r in rows):
+        typer.echo("\nNothing is usable yet. Ask for one or more cards:")
+        typer.echo("  comfy-qat auth quota request --gpu l4,a100 --region us-central1")
 
 
 @quota_app.command("request")
 def quota_request_cmd(
-    quota_id: Annotated[str, typer.Option("--quota-id", help="e.g. NVIDIA_L4_GPUS-per-project-region. Run `auth quota list` to see the ids.")],
-    value: Annotated[int, typer.Option("--value", help="How many GPUs you need.")] = 1,
-    region: Annotated[Optional[str], typer.Option("--region", help="Region the quota applies to.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Card(s) to ask for, comma separated, e.g. l4,a100.")] = None,
+    quota_id: Annotated[Optional[str], typer.Option(
+        "--quota-id", help="Raw quota id, if you would rather name it exactly.")] = None,
+    value: Annotated[int, typer.Option("--value", help="How many of each card.")] = 1,
+    region: Annotated[Optional[str], typer.Option("--region")] = None,
     justification: Annotated[Optional[str], typer.Option("--justification")] = None,
     wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait for approval. On by default.")] = True,
-    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the gcloud command instead of running it.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the gcloud calls instead of running them.")] = False,
 ) -> None:
-    """Ask Google for more GPU quota, then wait for the answer.
+    """Ask Google for GPU quota — several cards at once — then wait for the answer.
 
-    Submitting is instant; approval is not, and may go to a human. A brand-new
-    account with no billing history often cannot be granted GPU quota at all
-    until it has been billed once — if this is denied immediately, that is the
-    usual reason.
+    Requesting costs nothing, so asking for every card you might want up front is
+    the right move when approval is the slow part. Submitting is instant; approval
+    is not, and may go to a human. A brand-new account with no billing history is
+    often refused until it has been billed once.
     """
+    if not gpu and not quota_id:
+        typer.echo("name what you want: --gpu l4,a100 (or --quota-id for a raw id)", err=True)
+        raise typer.Exit(code=2)
+
     gc = Gcloud()
     try:
-        project = gc.current_project()
+        project = _require_project(gc)
+        quotas = gc.gpu_quotas(project)
     except GcloudError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
-    if not project:
-        typer.echo("no project set. Run: gcloud config set project <id>", err=True)
-        raise typer.Exit(code=2)
 
-    args = quota_request_command(
-        project=project, quota_id=quota_id, value=value,
-        region=region, justification=justification,
-    )
+    wanted: list[tuple[str, str]] = []
+    if quota_id:
+        wanted.append((quota_id, quota_id))
+    for name in (gpu or "").split(","):
+        name = name.strip()
+        if not name:
+            continue
+        resolved = resolve(name, quotas, region=region)
+        if resolved is None:
+            offer = ", ".join(available_gpus(quotas)) or "none"
+            typer.echo(
+                f"this project reports no quota for {name!r}"
+                + (f" in {region}" if region else "")
+                + f". Available: {offer}", err=True,
+            )
+            raise typer.Exit(code=2)
+        wanted.append((name, resolved))
 
-    if dry_run:
-        typer.echo("gcloud " + " ".join(args))
+    submitted: list[tuple[str, str]] = []
+    for name, resolved in wanted:
+        args = quota_request_command(
+            project=project, quota_id=resolved, value=value,
+            region=region, justification=justification,
+        )
+        if dry_run:
+            typer.echo("gcloud " + " ".join(args))
+            continue
+        try:
+            gc.run(args)
+        except GcloudError as exc:
+            typer.echo(f"request for {name} failed: {exc}", err=True)
+            continue
+        typer.echo(f"requested {name} = {value}" + (f" in {region}" if region else ""))
+        submitted.append((name, resolved))
+
+    if dry_run or not submitted:
         return
 
-    try:
-        gc.run(args)
-    except GcloudError as exc:
-        typer.echo(f"request failed: {exc}", err=True)
-        raise typer.Exit(code=1)
-
-    typer.echo(f"requested {quota_id} = {value}" + (f" in {region}" if region else ""))
-    typer.echo(f"track it: {console_quota_url(project)}")
-
+    typer.echo(f"track them: {console_quota_url(project)}")
     if not wait:
         return
 
-    granted = wait_for_quota(
-        lambda: _current_value(gc, project, quota_id), wanted=value,
-    )
-    if granted:
-        typer.echo(f"granted: {quota_id} is now at least {value}")
-    else:
+    outstanding = list(submitted)
+    still_waiting = []
+    for name, resolved in outstanding:
+        granted = wait_for_quota(
+            lambda rid=resolved: _current_value(gc, project, rid), wanted=value,
+        )
+        if granted:
+            typer.echo(f"granted: {name}")
+        else:
+            still_waiting.append(name)
+
+    if still_waiting:
         typer.echo(
-            "still pending. Approval can take days — run this same command again "
-            "to keep waiting, or `comfy-qat auth quota list` to check."
+            f"still pending: {', '.join(still_waiting)}. Approval can take days — "
+            "run `comfy-qat auth quota` to check, or this command again to keep waiting."
         )
         raise typer.Exit(code=75)  # EX_TEMPFAIL: not an error, not done either
+
+
+def _require_project(gc: Gcloud) -> str:
+    project = gc.current_project()
+    if not project:
+        raise GcloudError("no project set", fix="comfy-qat setup")
+    return project
 
 
 def _current_value(gc: Gcloud, project: str, quota_id: str) -> int:

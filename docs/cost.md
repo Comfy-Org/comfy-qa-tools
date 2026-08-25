@@ -43,5 +43,21 @@ running the machine is what costs. A brand-new project starts with **zero** GPU
 quota and often cannot be granted any until it has been billed at least once.
 
 ```sh
-comfy-qat auth quota list
+comfy-qat auth quota
 ```
+
+```
+GPU            REGION            LIMIT  STATUS
+L4             us-central1           1  ready
+A100           us-central1           0  pending — waiting on Google
+T4             us-central1           0  none — request it
+```
+
+Ask for several cards at once — it costs nothing, and approval is the slow part:
+
+```sh
+comfy-qat auth quota request --gpu l4,a100 --region us-central1
+```
+
+Quota gates the **card**, never the operating system. Once a card is approved you
+can build either Windows or Linux on it.

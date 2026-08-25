@@ -1,27 +1,23 @@
 # comfy-qa-tools
 
-**QA tooling for setting up and running testing across Comfy.**
+**QA tooling for setting up and running testing.**
 
-QA here covers everything Comfy — core, the frontend, Desktop, the MCP server,
-templates, custom nodes, partner nodes — on a local Mac, cloud GPU boxes on more
-than one OS, and several deployed environments. Most of the effort is not the test
-itself. It is getting a machine into a state where a test means something, pointing
-at the right one, and keeping a record of what was tested where. This tool is that
-layer: the setup, the environments and the record-keeping around the QA role.
+Most testing time is not spent testing. It goes on standing a machine up, getting it
+into a state where a result means something, and working out which box or which build
+you were actually looking at. This tool is that layer. Less setup, less environment
+wrangling, less doubt about what you are pointed at, more time testing.
 
-Features land one at a time, and each is documented here when it ships, not before.
-Release 1 happens to be `host` — naming the machines you test on and reaching the
-one you meant.
+Features land one at a time, documented here when they ship. Release 1 is `host` —
+naming the machines you test on and reaching the one you meant.
 
 ---
 
 ## Not the same tool as `comfy-qa`
 
-There is a separate tool at
-[`Comfy-Org/Comfy-QA`](https://github.com/Comfy-Org/Comfy-QA), maintained by
-snomiao, which does AI-driven E2E test runs. The similar names are a coincidence —
-they are two different projects, and neither replaces the other. This one's binary
-is **`comfy-qat`**, so the two never collide on `PATH`.
+[`Comfy-Org/Comfy-QA`](https://github.com/Comfy-Org/Comfy-QA), maintained by snomiao,
+does AI-driven E2E test runs. The similar names are a coincidence — two different
+projects, neither replacing the other. This one's binary is **`comfy-qat`**, so they
+never collide on `PATH`.
 
 ---
 
@@ -30,8 +26,8 @@ is **`comfy-qat`**, so the two never collide on `PATH`.
 Reach the machine you mean, on the OS you need, and know exactly what it is.
 
 Every target is a **declared host**, local or cloud. Naming them all is the point:
-local stops being an invisible default, so picking the wrong one becomes something
-you have to do on purpose rather than something that happens to you.
+local stops being an invisible default, so picking the wrong one becomes something you
+do on purpose.
 
 ### Available now
 
@@ -66,32 +62,29 @@ gce_project  = "your-project-id"
 port         = 8190
 ```
 
-Two rules are enforced before anything else runs, both offline:
+Two rules are enforced offline, before anything else runs:
 
-- **No cloud host may use 8188.** That is the local ComfyUI's port. A tunnel on it
-  would silently point you at the wrong machine — the exact failure this tool
-  exists to prevent — so it is refused, not warned about.
-- **No two hosts may share a port.** If two do, you cannot tell which one you
-  reached.
+- **No cloud host may use 8188.** That is the local ComfyUI's port; a tunnel on it
+  would silently point you at the wrong machine, so it is refused, not warned about.
+- **No two hosts may share a port.** If two do, you cannot tell which one you reached.
 
-Unknown fields are rejected rather than ignored, so a typo'd `gce_zoen` fails loudly
-instead of being quietly dropped.
+Unknown fields are rejected rather than ignored, so a typo'd `gce_zoen` fails loudly.
 
 Switching OS means switching host: one box per OS, selected by name. Nothing is
 reimaged.
 
 ### Still to come in release 1
 
-The `auth` drawer is being added now: `auth status`, `auth login`, `auth quota list`
-and `auth quota request` — sign-in state, billing, and GPU quota. It lands first
-because `host create` gates on quota. Then `up`, `down`, `open`, `stamp` and
-`create` for cloud hosts.
+The `auth` drawer is next: `auth status`, `auth login`, `auth quota list` and
+`auth quota request` — sign-in state, billing, and GPU quota. It lands first because
+`host create` gates on quota. Then `up`, `down`, `open`, `stamp` and `create` for
+cloud hosts.
 
 ### Carried over from v0
 
 `comfy-qat env` still reports which build each deployed environment serves and its
-feature-flag state. It is not part of release 1 and will be rewritten when its own
-release comes round — it stays reachable meanwhile rather than disappearing.
+feature-flag state. It is not part of release 1 and stays reachable until its own
+release comes round.
 
 ---
 
@@ -104,10 +97,9 @@ comfy-qat setup
 ```
 
 It signs you in to Google Cloud, picks your project, checks billing, sorts out GPU
-quota and writes your host list — saying what it is doing at each step, and asking
-only where the decision is genuinely yours. If something needs you (no billing
-account, no project), it stops and prints the link. Run it again afterwards; it
-skips what is already done.
+quota and writes your host list — saying what it is doing, and asking only where the
+decision is genuinely yours. If something needs you (no billing account, no project),
+it stops and prints the link. Run it again afterwards; it skips what is already done.
 
 ```sh
 comfy-qat host list       # see your machines
@@ -115,8 +107,7 @@ comfy-qat auth status     # re-check readiness at any time
 comfy-qat guide           # the short version, in the terminal
 ```
 
-Setup works without prompts too — `--project`, `--region`, `--non-interactive` —
-because a prompt-only feature is an incomplete one.
+Setup works without prompts too — `--project`, `--region`, `--non-interactive`.
 
 Full docs in [`docs/`](docs/): [getting started](docs/getting-started.md) ·
 [the host list](docs/hosts.md) · [troubleshooting](docs/troubleshooting.md) ·
@@ -129,20 +120,20 @@ git clone https://github.com/Comfy-Org/comfy-qa-tools.git
 uv tool install ./comfy-qa-tools
 ```
 
-`uv tool install` keeps it outside every ComfyUI virtualenv, which matters: this
-tool's job is interrogating machines, so it must not depend on any one machine's
-install. Requires Python 3.11+.
+`uv tool install` keeps it outside every ComfyUI virtualenv, which matters: this tool
+interrogates machines, so it must not depend on any one machine's install. Requires
+Python 3.11+.
 
 ## Design
 
 Each feature is a sibling sub-app, added in one line. `comfy-qat <feature> <action>`;
 a new feature never touches an existing one.
 
-comfy-cli has **no plugin mechanism** — no entry-points table, all sub-apps
-registered by static `add_typer` calls — so this ships as its own binary.
-`register()` in `comfy_qa/cli.py` is the object a plugin entry point would take if
-comfy-cli ever grows one; the reservation is already in `pyproject.toml`. Nothing
-here depends on that happening.
+comfy-cli has **no plugin mechanism** — no entry-points table, all sub-apps registered
+by static `add_typer` calls — so this ships as its own binary. `register()` in
+`comfy_qa/cli.py` is the object a plugin entry point would take if comfy-cli ever
+grows one; the reservation is already in `pyproject.toml`. Nothing here depends on
+that happening.
 
 ## Tests
 
