@@ -1,43 +1,27 @@
 # comfy-qa-tools
 
-**QA tooling for testing Comfy: know which machine you are testing, and stamp every
-result with it.**
+**QA tooling for setting up and running testing across Comfy.**
 
-A tester here works across a local Mac, cloud GPU boxes on more than one OS, and
-several deployed environments. Nothing in that picture says out loud which machine
-answered a request — and both this Mac and the GCE box serve ComfyUI on the same
-port. Reaching the wrong one has already happened. This tool makes the machine
-explicit, and puts it in the record.
+QA here covers everything Comfy — core, the frontend, Desktop, the MCP server,
+templates, custom nodes, partner nodes — on a local Mac, cloud GPU boxes on more
+than one OS, and several deployed environments. Most of the effort is not the test
+itself. It is getting a machine into a state where a test means something, pointing
+at the right one, and keeping a record of what was tested where. This tool is that
+layer: the setup, the environments and the record-keeping around the QA role.
 
-Features land one at a time. Each is described here when it ships, not before.
+Features land one at a time, and each is documented here when it ships, not before.
+Release 1 happens to be `host` — naming the machines you test on and reaching the
+one you meant.
 
 ---
 
-## This is not `comfy-qa`
+## Not the same tool as `comfy-qa`
 
-There is a separate first-party tool at
+There is a separate tool at
 [`Comfy-Org/Comfy-QA`](https://github.com/Comfy-Org/Comfy-QA), maintained by
-snomiao, which publishes the npm binary **`comfy-qa`**. It is E2E QA automation:
-you give it a PR or issue URL and it drives Playwright, records video and writes a
-structured report.
-
-**They are different tools and the names are easy to confuse, so:**
-
-| | `comfy-qa` (snomiao) | `comfy-qa-tools` (this) |
-|---|---|---|
-| Question it answers | does this PR behave correctly? | which machine and build produced this result? |
-| How | AI-driven Playwright runs, video, reports | reads and operates hosts; emits a provenance stamp |
-| Runs | `npx comfy-qa <pr-url>` | `comfy-qat host ...` |
-| Repo | `Comfy-Org/Comfy-QA` | `Comfy-Org/comfy-qa-tools` |
-
-This tool's binary is **`comfy-qat`**, deliberately distinct so the two never
-collide on `PATH`.
-
-They are complementary, not competing. Neither `comfy-qa` nor
-[`comfy-test`](https://github.com/Comfy-Org/ComfyUI_frontend) records which build a
-test ran against — `comfy-test` reads `cloud_version`, `comfyui_version` and
-`deploy_environment` and then discards all three. That record is what this tool
-produces.
+snomiao, which does AI-driven E2E test runs. The similar names are a coincidence —
+they are two different projects, and neither replaces the other. This one's binary
+is **`comfy-qat`**, so the two never collide on `PATH`.
 
 ---
 
@@ -98,9 +82,10 @@ reimaged.
 
 ### Still to come in release 1
 
-`up`, `down`, `open`, `stamp` and `create` for cloud hosts, and the `auth` drawer —
-sign-in state, billing, and GPU quota requests. `host create` gates on quota, so
-`auth` lands first.
+The `auth` drawer is being added now: `auth status`, `auth login`, `auth quota list`
+and `auth quota request` — sign-in state, billing, and GPU quota. It lands first
+because `host create` gates on quota. Then `up`, `down`, `open`, `stamp` and
+`create` for cloud hosts.
 
 ### Carried over from v0
 
