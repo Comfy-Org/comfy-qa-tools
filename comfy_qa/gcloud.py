@@ -169,6 +169,45 @@ class Gcloud:
             f"--zone={zone}", f"--project={project}",
         ], parse_json=False, timeout=INSTANCE_TIMEOUT)
 
+    def ssh(self, instance: str, zone: str, project: str, remote: str, *, stream: bool = True) -> int:
+        """Run a command on the instance over IAP. Returns its exit code.
+
+        Streaming inherits this terminal, so a remote ComfyUI's startup log
+        appears exactly as it would if it were running locally. That is the whole
+        point: a remote launch you cannot watch is a launch you cannot debug.
+        """
+        args = [
+            "compute", "ssh", instance,
+            f"--zone={zone}", f"--project={project}",
+            "--tunnel-through-iap", f"--command={remote}",
+        ]
+        if self.runner is not None:
+            return self.runner(args, "stream" if stream else True)
+
+        exe = self.available()
+        if exe is None:
+            raise GcloudError("gcloud is not installed or not on PATH.")
+        return subprocess.run([exe, *args]).returncode
+
+    def ssh_output(self, instance: str, zone: str, project: str, remote: str) -> str:
+        """Run a command on the instance and return what it printed."""
+        args = [
+            "compute", "ssh", instance,
+            f"--zone={zone}", f"--project={project}",
+            "--tunnel-through-iap", f"--command={remote}",
+        ]
+        if self.runner is not None:
+            return self.runner(args, "output")
+
+        exe = self.available()
+        if exe is None:
+            raise GcloudError("gcloud is not installed or not on PATH.")
+        proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=INSTANCE_TIMEOUT)
+        if proc.returncode != 0:
+            message, fix = explain_failure(proc.stderr, proc.stdout, proc.returncode)
+            raise GcloudError(message, fix=fix)
+        return proc.stdout.strip()
+
     def quota_preferences(self, project: str) -> list[dict]:
         return self.run([
             "quotas", "preferences", "list", f"--project={project}",

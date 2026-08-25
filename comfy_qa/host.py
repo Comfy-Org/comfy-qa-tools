@@ -239,18 +239,70 @@ def down_cmd(
 def go_cmd(
     name: Annotated[str, typer.Argument(help="Which machine.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    no_browser: Annotated[bool, typer.Option(
+        "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
+    no_install: Annotated[bool, typer.Option(
+        "--no-install", help="Fail rather than installing ComfyUI if it is absent.")] = False,
 ) -> None:
-    """Start it, tunnel to it, and print what it is. The everyday command."""
-    from .gcloud import Gcloud
-    from .lifecycle import bring_up
+    """Start the machine, make sure ComfyUI is on it, and run it where you can watch.
+
+    The everyday command. If ComfyUI is already serving you get the URL straight
+    away; otherwise it is installed if needed and launched in the foreground, with
+    its startup log on this terminal exactly as a local `main.py` would print it.
+    """
+    import webbrowser
+
+    from .gcloud import Gcloud, GcloudError
+    from .lifecycle import LifecycleError, bring_up, ensure_installed, serve
 
     host = _host(name, config)
-    ready = _act(bring_up, Gcloud(), host, lambda line: typer.echo(f"  {line}"))
+    gc = Gcloud()
+    say = lambda line: typer.echo(f"  {line}")
+    browser = None if no_browser else (lambda url: webbrowser.open(url))
 
-    typer.echo(f"\n{host.url}")
-    if ready.stamp:
+    # Already serving? Then there is nothing to install or launch.
+    try:
+        ready = bring_up(gc, host, say, comfy_timeout=15)
+    except LifecycleError:
+        ready = None
+
+    if ready is not None and ready.stamp is not None:
+        typer.echo(f"\n{host.url}")
         typer.echo(ready.stamp.line())
-    typer.echo(f"\nWhen you are done:  comfy-qat host down {host.name}")
+        if browser:
+            browser(host.url)
+        typer.echo(f"\nWhen you are done:  comfy-qat host down {host.name}")
+        return
+
+    if not host.is_remote:
+        typer.echo("ComfyUI is not running locally. Start it with:", err=True)
+        typer.echo("  ~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 "
+                   "--listen 127.0.0.1", err=True)
+        raise typer.Exit(code=1)
+
+    if no_install:
+        typer.echo("ComfyUI is not answering and --no-install was given.", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        ensure_installed(gc, host, say)
+        typer.echo("")
+        code = serve(gc, host, say, open_browser=browser)
+    except LifecycleError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=1)
+    except GcloudError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        typer.echo(f"\nstopped. The machine is still running — "
+                   f"`comfy-qat host down {host.name}` to stop paying.")
+        return
+
+    typer.echo(f"\nComfyUI exited ({code}). "
+               f"`comfy-qat host down {host.name}` to stop the machine.")
 
 
 @app.command("stamp")
