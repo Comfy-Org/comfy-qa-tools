@@ -12,6 +12,7 @@ import pytest
 
 from comfy_qa.quota import (
     available_gpus,
+    summarise,
     friendly_name,
     matches,
     readiness,
@@ -171,3 +172,63 @@ def test_collapsing_keeps_the_larger_grant():
         quota("NVIDIA-T4-GPUS-per-project-zone", 4),
     ])
     assert [(r.limit, r.status) for r in rows] == [(4, "ready")]
+
+
+def test_a_card_metered_in_25_regions_is_still_one_line():
+    """K80 comes back as 25 separate per-region entries on a live project.
+
+    A row per region ran the table to 130 lines and told you nothing that one
+    line per card does not.
+    """
+    per_region = {
+        "quotaId": "NVIDIA-K80-GPUS-per-project-region",
+        "dimensionsInfos": [
+            {"dimensions": {"region": name}, "details": {"value": "1"},
+             "applicableLocations": [name]}
+            for name in REGIONS
+        ],
+    }
+    cards = summarise(readiness([per_region]))
+    assert len(cards) == 1
+    assert cards[0].gpu == "K80"
+    assert cards[0].where == f"{len(REGIONS)} regions"
+
+
+def test_a_grant_covering_everywhere_says_so():
+    cards = summarise(readiness([L4]))
+    assert [(c.gpu, c.where, c.status) for c in cards] == [("L4", "all regions", "ready")]
+
+
+def test_one_region_is_named_rather_than_counted():
+    single = quota("NVIDIA-T4-GPUS-per-project-region", 2, ["us-central1"])
+    assert summarise(readiness([single]))[0].where == "us-central1"
+
+
+def test_a_card_ready_somewhere_is_ready():
+    """Granted in one region and absent elsewhere still means you can run it."""
+    mixed = {
+        "quotaId": "NVIDIA-T4-GPUS-per-project-region",
+        "dimensionsInfos": [
+            {"dimensions": {"region": "us-central1"}, "details": {"value": "4"},
+             "applicableLocations": ["us-central1"]},
+            {"dimensions": {"region": "europe-west4"}, "details": {},
+             "applicableLocations": ["europe-west4"]},
+        ],
+    }
+    card = summarise(readiness([mixed]))[0]
+    assert card.status == "ready"
+    assert card.limit == 4
+    assert card.where == "us-central1", "the place it is ready, not the place it is not"
+
+
+def test_summary_orders_ready_then_pending_then_none():
+    cards = summarise(readiness([T4, L4, A100], preferences=[
+        {"quotaId": "NVIDIA-A100-GPUS-per-project-region",
+         "quotaConfig": {"preferredValue": 1}},
+    ]))
+    assert [c.status for c in cards] == ["ready", "pending", "none"]
+
+
+def test_the_global_allowance_says_global_not_all_regions():
+    """It is one project-wide ceiling, not a grant in every region."""
+    assert summarise(readiness([GLOBAL]))[0].where == "global"

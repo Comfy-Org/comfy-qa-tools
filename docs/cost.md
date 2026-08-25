@@ -47,11 +47,15 @@ comfy-qat auth quota
 ```
 
 ```
-GPU            REGION            LIMIT  STATUS
-L4             us-central1           1  ready
-A100           us-central1           0  pending — waiting on Google
-T4             us-central1           0  none — request it
+GPU            LIMIT  WHERE        STATUS
+L4                 1  all regions  ready
+A100               0  all regions  pending — waiting on Google
+T4                 0  all regions  none — request it
 ```
+
+One line per card. Some cards are metered region by region — a live project
+returns 25 separate entries for K80 — so `--by-region` shows that detail when you
+need it, and `--region us-central1` narrows to one place.
 
 Ask for several cards at once — it costs nothing, and approval is the slow part:
 

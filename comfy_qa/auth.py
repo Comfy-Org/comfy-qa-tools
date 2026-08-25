@@ -17,7 +17,7 @@ from typing import Annotated, Callable, Optional
 
 import typer
 
-from .quota import available_gpus, readiness, resolve
+from .quota import available_gpus, readiness, resolve, summarise
 from .gcloud import (
     Gcloud,
     GcloudError,
@@ -170,12 +170,14 @@ def login_cmd() -> None:
 def quota_default(ctx: typer.Context) -> None:
     """Showing what you can run is the safe default."""
     if ctx.invoked_subcommand is None:
-        ctx.invoke(quota_list_cmd, as_json=False, region=None)
+        ctx.invoke(quota_list_cmd, as_json=False, region=None, by_region=False)
 
 
 @quota_app.command("list")
 def quota_list_cmd(
     region: Annotated[Optional[str], typer.Option("--region", help="Only this region.")] = None,
+    by_region: Annotated[bool, typer.Option(
+        "--by-region", help="One row per region instead of one per card.")] = False,
     as_json: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """What can I run today, what is waiting on Google, what did I never ask for."""
@@ -192,27 +194,39 @@ def quota_list_cmd(
         raise typer.Exit(code=2)
 
     rows = readiness(quotas, prefs, region=region)
+    cards = summarise(rows)
 
     if as_json:
-        typer.echo(json.dumps(
-            {"project": project, "gpus": [asdict(r) for r in rows]}, indent=2,
-        ))
+        typer.echo(json.dumps({
+            "project": project,
+            "gpus": [asdict(c) for c in cards],
+            "by_region": [asdict(r) for r in rows],
+        }, indent=2))
         return
 
     if not rows:
         typer.echo(f"{project}: no GPU quotas reported.")
         return
 
-    typer.echo(f"{'GPU':<14} {'REGION':<16} {'LIMIT':>5}  STATUS")
-    for row in rows:
-        note = {
-            "ready": "ready",
-            "pending": "pending — waiting on Google",
-            "none": "none — request it",
-        }[row.status]
-        typer.echo(f"{row.gpu:<14} {row.region:<16} {row.limit:>5}  {note}")
+    notes = {
+        "ready": "ready",
+        "pending": "pending — waiting on Google",
+        "none": "none — request it",
+    }
 
-    if not any(r.usable for r in rows):
+    if by_region:
+        width = max([len(r.region) for r in rows] + [6])
+        typer.echo(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>5}  STATUS")
+        for row in rows:
+            typer.echo(f"{row.gpu:<14} {row.region:<{width}} {row.limit:>5}  {notes[row.status]}")
+        return
+
+    width = max([len(c.where) for c in cards] + [6])
+    typer.echo(f"{'GPU':<14} {'LIMIT':>5}  {'WHERE':<{width}}  STATUS")
+    for card in cards:
+        typer.echo(f"{card.gpu:<14} {card.limit:>5}  {card.where:<{width}}  {notes[card.status]}")
+
+    if not any(c.usable for c in cards):
         typer.echo("\nNothing is usable yet. Ask for one or more cards:")
         typer.echo("  comfy-qat auth quota request --gpu l4,a100 --region us-central1")
 
