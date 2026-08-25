@@ -85,13 +85,18 @@ comfy-qat auth quota list
 comfy-qat auth quota request --quota-id <id> --region <region>
 ```
 
-**`request failed: ...`**
+**`this project reports no quota for 'h100'. Available: A100, L4, T4`**
+You asked for a card Google does not offer this project, or not in that region.
+The message lists what is available. `comfy-qat auth quota` shows the same thing
+with current limits.
+
+**`request for l4 failed: ...`**
 The quota request was rejected on submission. The most common cause is an account
 with no billing history — Google frequently will not grant GPU quota until a project
 has been billed at least once. Retrying will not change that.
 
-**`still pending`** (exit code 75)
-Not an error. The request went in but has not been approved within the wait window.
+**`still pending: l4, a100`** (exit code 75)
+Not an error. The requests went in but have not been approved within the wait window.
 Approval can take days. Run the same command again to keep waiting, or
 `comfy-qat auth quota list` to check. The console link printed with the request
 shows the same thing.

@@ -37,6 +37,9 @@ ERROR_PHRASES = [
     "this account has no Google Cloud projects",
     "no project set and",
     "no billing account is linked",
+    # gpu quota
+    "reports no quota for",
+    "still pending",
 ]
 
 
