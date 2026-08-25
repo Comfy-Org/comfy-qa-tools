@@ -1,104 +1,133 @@
-# comfy-qa-cli
+# comfy-qa-tools
 
-**QA tooling for testing Comfy — take the deterministic half of the job, so testers
-spend their time on judgement.**
+**QA tooling for testing Comfy: know which machine you are testing, and stamp every
+result with it.**
 
-A tester here covers eight surfaces across six environments, records results in four
-different vocabularies, and attaches an evidence block written in three mutually
-incompatible formats. Almost none of that is judgement — it is setup and
-record-keeping, it is deterministic, and it is eating the time that should go to
-finding bugs.
+A tester here works across a local Mac, cloud GPU boxes on more than one OS, and
+several deployed environments. Nothing in that picture says out loud which machine
+answered a request — and both this Mac and the GCE box serve ComfyUI on the same
+port. Reaching the wrong one has already happened. This tool makes the machine
+explicit, and puts it in the record.
 
-**See [ROADMAP.md](ROADMAP.md) for the full scope.** In short:
+Features land one at a time. Each is described here when it ships, not before.
 
-| | | |
+---
+
+## This is not `comfy-qa`
+
+There is a separate first-party tool at
+[`Comfy-Org/Comfy-QA`](https://github.com/Comfy-Org/Comfy-QA), maintained by
+snomiao, which publishes the npm binary **`comfy-qa`**. It is E2E QA automation:
+you give it a PR or issue URL and it drives Playwright, records video and writes a
+structured report.
+
+**They are different tools and the names are easy to confuse, so:**
+
+| | `comfy-qa` (snomiao) | `comfy-qa-tools` (this) |
 |---|---|---|
-| **v0** | `qa env` | which build each environment serves, and its flag state · **shipped** |
-| **v1** | `qa labels` | verify cloud-blocked nodes are actually blocked |
-| **v2** | `qa report` | fill in the mechanical half of a bug report |
-| **v3** | `qa nodes` | run node test workflows, pre-fill tracker rows |
-| **v4** | `qa pr` | is this PR's ephemeral ready, or was it never labelled |
-| **v5** | `qa local` | test a PR locally and prove which build you got |
-| **v6** | `qa flags --set` | set flags · *blocked on self-service access* |
-| **v7** | cross-platform | run the same case across macOS, Windows, Linux |
+| Question it answers | does this PR behave correctly? | which machine and build produced this result? |
+| How | AI-driven Playwright runs, video, reports | reads and operates hosts; emits a provenance stamp |
+| Runs | `npx comfy-qa <pr-url>` | `comfy-qat host ...` |
+| Repo | `Comfy-Org/Comfy-QA` | `Comfy-Org/comfy-qa-tools` |
 
-Ordered by (time wasted × frequency) against the QA onboarding guide and its eight
-playbooks — not by what is neatest to build. Each ships independently.
+This tool's binary is **`comfy-qat`**, deliberately distinct so the two never
+collide on `PATH`.
 
-Not to be confused with [`Comfy-Org/comfy-qa`](https://github.com/Comfy-Org/comfy-qa),
-which runs Playwright E2E tests. That is a testing *method*; this is the setup and
-evidence layer around the whole role. They are complementary — this one's `--json`
-output gives a Playwright run the build provenance it currently lacks.
+They are complementary, not competing. Neither `comfy-qa` nor
+[`comfy-test`](https://github.com/Comfy-Org/ComfyUI_frontend) records which build a
+test ran against — `comfy-test` reads `cloud_version`, `comfyui_version` and
+`deploy_environment` and then discards all three. That record is what this tool
+produces.
 
-## v0 — why it is first
+---
 
-From the QA onboarding guide, on checking which build an environment actually serves:
+## Release 1 — `host` *(in progress)*
 
-> A failed deploy leaves the old version running and looks completely normal.
-> This catches more wasted days than anything else in this document.
+Reach the machine you mean, on the OS you need, and know exactly what it is.
 
-That check appears in **four independent QA documents**, and release 1.50 carried 11
-backports — so it re-fires eleven times in one release. This makes it one command.
+Every target is a **declared host**, local or cloud. Naming them all is the point:
+local stops being an invisible default, so picking the wrong one becomes something
+you have to do on purpose rather than something that happens to you.
+
+### Available now
+
+```sh
+comfy-qat host init      # write a starter host list
+comfy-qat host list      # show every declared machine
+comfy-qat host           # same as list — read-only is the safe default
+```
+
+```
+NAME         KIND   OS            GPU  URL
+local        local  -             -    http://127.0.0.1:8188
+comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190
+```
+
+### The host list
+
+`~/.config/comfy-qa/hosts.toml`:
+
+```toml
+[hosts.local]
+kind = "local"
+port = 8188
+
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-a"
+gce_project  = "your-project-id"
+port         = 8190
+```
+
+Two rules are enforced before anything else runs, both offline:
+
+- **No cloud host may use 8188.** That is the local ComfyUI's port. A tunnel on it
+  would silently point you at the wrong machine — the exact failure this tool
+  exists to prevent — so it is refused, not warned about.
+- **No two hosts may share a port.** If two do, you cannot tell which one you
+  reached.
+
+Unknown fields are rejected rather than ignored, so a typo'd `gce_zoen` fails loudly
+instead of being quietly dropped.
+
+Switching OS means switching host: one box per OS, selected by name. Nothing is
+reimaged.
+
+### Still to come in release 1
+
+`up`, `down`, `open`, `stamp` and `create` for cloud hosts, and the `auth` drawer —
+sign-in state, billing, and GPU quota requests. `host create` gates on quota, so
+`auth` lands first.
+
+---
 
 ## Install
 
-Install into the **same virtualenv your comfy-cli lives in**:
+```sh
+git clone https://github.com/Comfy-Org/comfy-qa-tools.git
+uv tool install ./comfy-qa-tools
+```
+
+`uv tool install` keeps it outside every ComfyUI virtualenv, which matters: this
+tool's job is interrogating machines, so it must not depend on any one machine's
+install. Requires Python 3.11+.
+
+## Design
+
+Each feature is a sibling sub-app, added in one line. `comfy-qat <feature> <action>`;
+a new feature never touches an existing one.
+
+comfy-cli has **no plugin mechanism** — no entry-points table, all sub-apps
+registered by static `add_typer` calls — so this ships as its own binary.
+`register()` in `comfy_qa/cli.py` is the object a plugin entry point would take if
+comfy-cli ever grows one; the reservation is already in `pyproject.toml`. Nothing
+here depends on that happening.
+
+## Tests
 
 ```sh
-git clone https://github.com/Comfy-Org/comfy-qa-cli.git
-~/ComfyUI/venv/bin/pip install ./comfy-qa-cli
+pytest tests/
 ```
-
-`~/ComfyUI/venv/bin` is usually not on `PATH`, so either use the full path or add an
-alias:
-
-```sh
-alias comfy-qa-cli='~/ComfyUI/venv/bin/comfy-qa-cli'
-```
-
-Requires Python 3.10+ and `gh` authenticated (to resolve a build SHA to a commit;
-without it you still get the SHA — pass `--no-resolve` to skip).
-
-## Use
-
-```sh
-comfy-qa-cli qa env                                  # all environments + local
-comfy-qa-cli qa env testcloud                        # one
-comfy-qa-cli qa env testcloud --expect 06f10afe5     # exit 1 if serving something else
-comfy-qa-cli qa env --evidence testcloud --platform "macOS 15 · Desktop"
-comfy-qa-cli qa env --json                           # for scripts
-```
-
-```
-testcloud       9a54e1f0  2026-08-17  refactor: resolve node display name at read time...
-stagingcloud    a274cd6c  2026-08-17  [backport cloud/1.50] fix(billing): open billing portal...
-cloud           3c2f9f1c  2026-08-14  1.50.7 (#15186)
-local           ComfyUI 0.33.0  frontend 1.49.6
-
-32 flags checked, 1 differ across environments:
-  new_free_tier_subscriptions   testcloud=ON  stagingcloud=ON  cloud=OFF
-
-WARNING  local frontend is 1.49.6 but cloud is on the 1.50 line — the local half
-         of a 1.50 plan would test the wrong build
-```
-
-Evidence block, paste-ready in three formats (`--evidence`):
-
-```
-stagingcloud · build a274cd6c · team_workspaces_enabled ON + consolidated_billing_enabled ON · Windows 11 · Portable
-```
-
-## Safety
-
-`/api/features` also carries Firebase, PostHog, Mixpanel, Sentry and Churnkey
-config. **Only boolean values are ever printed** — a whitelist by type, so a secret
-added upstream cannot leak into a pasted evidence block.
-
-## Status
-
-**v0 shipped, verified against live environments.** Not yet wired into comfy-cli as a
-true `comfy qa` subcommand — comfy-cli has no plugin system, so that needs either a
-startup hook or ~10 lines upstream. The command code is identical either way.
-
-No automated tests yet. See [ROADMAP.md](ROADMAP.md) for what is next and what is
-deliberately out of scope.
