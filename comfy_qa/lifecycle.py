@@ -160,6 +160,77 @@ def bring_up(
     return Ready(host=host, stamp=stamp, started=started, tunnelled=True)
 
 
+def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
+    """Make sure ComfyUI exists on the box, installing it if it does not."""
+    from .provision import check_command, install_command, root_for
+
+    say(f"looking for ComfyUI in {root_for(host)}")
+    try:
+        answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                               check_command(host))
+    except GcloudError as exc:
+        raise LifecycleError(
+            f"could not run a command on {host.name}: {exc}",
+            fix=how_to_get_in(host),
+        ) from exc
+
+    if "INSTALLED" in answer:
+        say("ComfyUI is already installed")
+        return
+
+    say("ComfyUI is not there — installing it. This takes a while; torch is the "
+        "slow part.")
+    installed = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                       install_command(host), stream=True)
+    if installed != 0:
+        raise LifecycleError(
+            f"the ComfyUI install on {host.name} did not finish",
+            fix=how_to_get_in(host),
+        )
+
+
+def serve(
+    gc: Gcloud,
+    host: Host,
+    say: Callable[[str], None],
+    *,
+    open_browser: Callable[[str], None] | None = None,
+    probe_fn=None,
+    sleep=time.sleep,
+    now=time.monotonic,
+    timeout: int = COMFY_TIMEOUT,
+) -> int:
+    """Launch ComfyUI on the box with its log on this terminal.
+
+    The browser is opened by a watcher rather than after the launch returns,
+    because the launch does not return: ComfyUI runs in the foreground so you can
+    read its startup log exactly as you would locally.
+    """
+    import threading
+
+    from .provision import launch_command
+
+    probe_fn = probe_fn or probe
+
+    def watch() -> None:
+        deadline = now() + timeout
+        while now() < deadline:
+            stamp = probe_fn(host)
+            if stamp is not None:
+                say(f"ComfyUI answering: {stamp.line()}")
+                if open_browser is not None:
+                    open_browser(host.url)
+                return
+            sleep(POLL_SECONDS)
+
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
+
+    say(f"starting ComfyUI on {host.name} — its log follows. Ctrl-C to stop it.")
+    return gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                  launch_command(host), stream=True)
+
+
 def put_away(
     gc: Gcloud,
     host: Host,

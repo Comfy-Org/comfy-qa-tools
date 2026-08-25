@@ -51,6 +51,8 @@ ERROR_PHRASES = [
     "ComfyUI is not answering",
     "did not reach RUNNING",
     "could not start",
+    "could not run a command on",
+    "did not finish",
 ]
 
 

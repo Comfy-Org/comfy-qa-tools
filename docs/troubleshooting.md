@@ -75,6 +75,15 @@ setup again.
 
 ## Starting and stopping
 
+**`could not run a command on comfy-win: ...`**
+`host go` reaches the box over SSH through IAP to check for ComfyUI. If that fails,
+the instance is missing the `enable-windows-ssh` metadata (Windows) or your account
+lacks the IAP tunnel role. The error prints the manual way in.
+
+**`the ComfyUI install on comfy-win did not finish`**
+The install script exited non-zero. Its output is on your terminal above the error —
+read that first. Get onto the box with the printed command to finish by hand.
+
 **`ComfyUI is not answering on http://127.0.0.1:8190`** after `host up`
 The machine is running and tunnelled, but ComfyUI itself is not serving — it is
 either not installed or not started. **The box is billing while this is true.**

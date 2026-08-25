@@ -1,0 +1,90 @@
+"""The commands that run on the box.
+
+Windows Server has cost this project real time three separate ways, and every one
+of them looks like a different problem when it bites. These tests hold the shape
+that avoids them.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from comfy_qa.config import Host
+from comfy_qa.provision import (
+    LINUX_ROOT,
+    PYTHON_SERIES,
+    WINDOWS_ROOT,
+    check_command,
+    install_command,
+    is_windows,
+    launch_command,
+    root_for,
+)
+
+WIN = Host(name="w", kind="gce", port=8190, os="Windows Server 2022", gpu="L4",
+           gce_instance="w", gce_zone="z", gce_project="p")
+LINUX = Host(name="l", kind="gce", port=8191, os="Ubuntu 22.04", gpu="L4",
+             gce_instance="l", gce_zone="z", gce_project="p")
+
+ALL = [WIN, LINUX]
+
+
+def test_the_os_decides_the_script():
+    assert is_windows(WIN) and not is_windows(LINUX)
+    assert root_for(WIN) == WINDOWS_ROOT
+    assert root_for(LINUX) == LINUX_ROOT
+
+
+@pytest.mark.parametrize("host", ALL)
+@pytest.mark.parametrize("build", [check_command, install_command, launch_command])
+def test_every_remote_command_is_ascii_only(host, build):
+    """A BOM-less .ps1 is read as CP1252, so a UTF-8 dash becomes a stray quote
+    and breaks the parse tens of lines later. ASCII removes the whole class."""
+    build(host).encode("ascii")
+
+
+@pytest.mark.parametrize("host", ALL)
+@pytest.mark.parametrize("build", [check_command, install_command, launch_command])
+def test_no_remote_command_turns_stderr_into_a_fatal_error(host, build):
+    """`$ErrorActionPreference='Stop'` makes any native stderr terminating, so a
+    successful install aborts and hides the real message."""
+    assert "ErrorActionPreference" not in build(host)
+
+
+@pytest.mark.parametrize("build", [check_command, install_command, launch_command])
+def test_windows_commands_never_prompt(build):
+    """A prompt hangs a non-interactive SSH command forever."""
+    assert "-NonInteractive" in build(WIN)
+
+
+def test_the_check_answers_in_one_word():
+    for host in ALL:
+        command = check_command(host)
+        assert "INSTALLED" in command and "MISSING" in command
+
+
+def test_the_interpreter_is_pinned_below_3_13():
+    """Custom nodes still lack wheels for 3.13+."""
+    assert PYTHON_SERIES == "3.12"
+    assert PYTHON_SERIES in install_command(WIN)
+    assert PYTHON_SERIES in install_command(LINUX)
+
+
+@pytest.mark.parametrize("host", ALL)
+def test_launch_binds_to_loopback_only(host):
+    """ComfyUI has no authentication. The tunnel is the only way in, by design."""
+    command = launch_command(host)
+    assert "--listen 127.0.0.1" in command
+    assert "0.0.0.0" not in command
+    assert "--port 8188" in command
+
+
+@pytest.mark.parametrize("host", ALL)
+def test_install_says_what_it_is_doing(host):
+    """A silent ten-minute torch install is indistinguishable from a hang."""
+    assert "slow part" in install_command(host)
+
+
+def test_windows_installs_into_the_conventional_place():
+    assert WINDOWS_ROOT in install_command(WIN)
+    assert WINDOWS_ROOT == r"C:\ComfyUI"
