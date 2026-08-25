@@ -127,5 +127,12 @@ Approval can take days. Run the same command again to keep waiting, or
 `comfy-qat auth quota list` to check. The console link printed with the request
 shows the same thing.
 
-**`gcloud timed out after 60s`**
-A gcloud call hung — usually a network problem. Try again.
+**`could not read GPU quota (...)`** during setup
+Setup carries on regardless — quota can take days to change and is never a reason
+to strand you mid-setup. Check it afterwards with `comfy-qat auth quota`.
+
+**`gcloud timed out after 240s`**
+Listing quotas returns every compute quota on the project — around 400 records, over
+a megabyte — and takes about a minute on a healthy connection. A timeout at 240
+seconds means something is genuinely wrong with the network, not that the call is
+slow. Try again.

@@ -122,7 +122,17 @@ def ensure_gpu_quota(
     """Returns True if quota exists or was requested. Never blocks setup on it."""
     from .auth import _value_of
 
-    quotas = gc.gpu_quotas(project)
+    p.say("checking GPU quota — this takes about a minute")
+    try:
+        quotas = gc.gpu_quotas(project)
+    except GcloudError as exc:
+        # Quota is explicitly allowed to fail: it can take days to change and is
+        # never a reason to strand someone mid-setup. The first live run crashed
+        # here with a traceback, which is the opposite of that intent.
+        p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat auth quota")
+        return False
+
+    quotas = quotas
     granted = [q for q in quotas if _value_of(q) > 0]
     if granted:
         p.say(f"GPU quota: {', '.join(q.get('quotaId') for q in granted[:3])}")

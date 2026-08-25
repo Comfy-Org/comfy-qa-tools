@@ -17,11 +17,20 @@ from typing import Iterable, Literal
 
 Status = Literal["ready", "pending", "none"]
 
-# Ids carry a prefix for the billing model. Plain on-demand quota is the one you
-# want; the others are separate allowances that will not help you start a box.
-_MODEL_PREFIXES = ("PREEMPTIBLE_", "COMMITTED_", "RESERVED_")
+# Real ids are hyphen-separated: `NVIDIA-L4-GPUS-per-project-region`. They were
+# written here with underscores first, against invented fixtures, and every
+# exclusion below silently failed as a result. The fixtures in the tests are now
+# taken from a live project.
+_MODEL_PREFIXES = ("PREEMPTIBLE", "COMMITTED", "RESERVED")
 
-_SCOPE_SUFFIX = re.compile(r"-per-project(-region|-zone)?$")
+# A virtual-workstation allowance does not let you start an ordinary GPU instance
+# either, so it belongs with the excluded models rather than in the offered list.
+_EXCLUDED_PARTS = ("VWS",)
+
+# Family-level quota, not a card. Real, but not something you pick by name.
+_NOT_A_CARD = ("GPUS-PER-GPU-FAMILY",)
+
+_SCOPE_SUFFIX = re.compile(r"-per-project(-region|-zone)?$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -48,13 +57,17 @@ def friendly_name(quota_id: str) -> str | None:
     """
     if "GPU" not in quota_id.upper():
         return None
-    name = _SCOPE_SUFFIX.sub("", quota_id).upper()
+    name = _SCOPE_SUFFIX.sub("", quota_id).upper().replace("_", "-")
     if name.startswith(_MODEL_PREFIXES):
         return None
-    if name in ("GPUS_ALL_REGIONS", "GPUS_ALL_REGIONS_GPUS"):
+    if any(part in name.split("-") for part in _EXCLUDED_PARTS):
+        return None
+    if name.startswith(_NOT_A_CARD):
+        return None
+    if name in ("GPUS-ALL-REGIONS", "GPUS-ALL-REGIONS-GPUS"):
         return "any (global)"
-    name = name.removeprefix("NVIDIA_").removesuffix("_GPUS").removesuffix("_GPU")
-    return name.replace("_", " ").strip() or None
+    name = name.removeprefix("NVIDIA-").removesuffix("-GPUS").removesuffix("-GPU")
+    return name.strip("-").strip() or None
 
 
 def matches(gpu: str, quota_id: str) -> bool:
@@ -62,21 +75,46 @@ def matches(gpu: str, quota_id: str) -> bool:
     friendly = friendly_name(quota_id)
     if friendly is None:
         return False
-    wanted = gpu.strip().lower().replace("-", "").replace("_", "").replace(" ", "")
-    return friendly.lower().replace("-", "").replace("_", "").replace(" ", "") == wanted
+    def flatten(value: str) -> str:
+        return value.lower().replace("-", "").replace("_", "").replace(" ", "")
+
+    return flatten(friendly) == flatten(gpu)
 
 
-def _rows(quota: dict) -> Iterable[tuple[str, int]]:
-    """(region, limit) for each place a quota applies. Shapes vary; be forgiving."""
+# Beyond this many applicable regions, listing them individually is noise: the
+# same allowance applies everywhere and one row says so better than forty-three.
+_MANY_REGIONS = 3
+
+
+def _rows(quota: dict) -> Iterable[tuple[str, int, list[str]]]:
+    """(where, limit, regions) for each place a quota applies.
+
+    The live API puts the places in `applicableLocations` and leaves the per-entry
+    `dimensions` null, so reading a region out of `dimensions` finds nothing. A
+    single allowance covering forty-three regions is one row, not forty-three.
+    """
     for info in quota.get("dimensionsInfos") or []:
         dimensions = info.get("dimensions") or {}
-        region = dimensions.get("region") or dimensions.get("zone") or "global"
+        locations = info.get("applicableLocations") or []
+
+        explicit = dimensions.get("region") or dimensions.get("zone")
+        if explicit:
+            where = explicit
+        elif len(locations) == 1:
+            where = locations[0]
+        elif locations:
+            where = "all regions"
+        else:
+            where = "global"
+
         raw = (info.get("details") or {}).get("value")
         try:
             limit = int(raw)
         except (TypeError, ValueError):
+            # An absent value means the project has no explicit grant, which is
+            # zero for our purposes — not a parse failure worth crashing over.
             limit = 0
-        yield region, limit
+        yield where, limit, locations
 
 
 def _pending_ids(preferences: list[dict]) -> set[str]:
@@ -107,9 +145,11 @@ def readiness(
         gpu = friendly_name(quota_id)
         if gpu is None:
             continue
-        for where, limit in _rows(quota):
-            if region and where not in (region, "global"):
+        for where, limit, locations in _rows(quota):
+            if region and where not in (region, "global", "all regions") and region not in locations:
                 continue
+            if region and where == "all regions":
+                where = region
             if limit > 0:
                 status: Status = "ready"
             elif quota_id in pending:
@@ -118,9 +158,19 @@ def readiness(
                 status = "none"
             rows.append(Readiness(gpu, where, limit, status, quota_id))
 
+    # Most cards are metered twice — once per region and once per zone — and both
+    # ids carry the same friendly name. Showing "L4  us-central1  1  ready" twice
+    # reads as a bug, so collapse to one row per card and place, keeping the
+    # larger grant.
+    best: dict[tuple[str, str], Readiness] = {}
+    for row in rows:
+        key = (row.gpu, row.region)
+        existing = best.get(key)
+        if existing is None or row.limit > existing.limit:
+            best[key] = row
+
     order = {"ready": 0, "pending": 1, "none": 2}
-    rows.sort(key=lambda r: (order[r.status], r.gpu, r.region))
-    return rows
+    return sorted(best.values(), key=lambda r: (order[r.status], r.gpu, r.region))
 
 
 def resolve(gpu: str, quotas: list[dict], *, region: str | None = None) -> str | None:
@@ -129,7 +179,10 @@ def resolve(gpu: str, quotas: list[dict], *, region: str | None = None) -> str |
         quota_id = quota.get("quotaId") or ""
         if not matches(gpu, quota_id):
             continue
-        if region and not any(where == region for where, _ in _rows(quota)):
+        if region and not any(
+            where in (region, "all regions", "global") or region in locations
+            for where, _, locations in _rows(quota)
+        ):
             continue
         return quota_id
     return None
