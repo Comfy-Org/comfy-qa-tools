@@ -135,10 +135,17 @@ def ensure_gpu_quota(
     # Read through the same filter the rest of the tool uses. Reporting raw ids
     # here meant setup announced COMMITTED-NVIDIA-L4 as available quota — an
     # allowance that cannot start an ordinary box.
+    from .quota import GLOBAL_ALLOWANCE
+
     rows = [row for row in readiness(quotas, region=region) if row.usable]
+    # The project-wide allowance is not a card. Naming it alongside L4 and T4
+    # reads as a GPU model nobody has heard of.
+    cards = [row.gpu for row in rows if row.gpu != GLOBAL_ALLOWANCE]
+    if cards:
+        p.say(f"GPU quota ready: {', '.join(dict.fromkeys(cards))}")
+        return True
     if rows:
-        cards = ", ".join(dict.fromkeys(row.gpu for row in rows))
-        p.say(f"GPU quota ready: {cards}")
+        p.say("GPU quota: a project-wide allowance only, no specific card granted")
         return True
 
     p.say(

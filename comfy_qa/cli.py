@@ -89,8 +89,22 @@ def setup_cmd(
             typer.echo(f"to fix: {exc.fix}", err=True)
         raise typer.Exit(code=1)
 
-    typer.echo(f"\nReady. Edit {path} to add cloud boxes, then:")
-    typer.echo("  comfy-qat host list")
+    # The old sign-off told people to add cloud boxes by hand, which discovery
+    # had just done for them.
+    from .config import ConfigError, load
+
+    try:
+        hosts = load(path)
+    except ConfigError:
+        hosts = []
+
+    remote = [host for host in hosts if host.is_remote]
+    typer.echo(f"\nReady — {len(hosts)} machine(s), {len(remote)} in the cloud.")
+    typer.echo("  comfy-qat host list        see them")
+    typer.echo("  comfy-qat host stamp local what a machine is, exactly")
+    if not remote:
+        typer.echo(f"\nNo cloud boxes found. Add one by hand in {path}, or create one in")
+        typer.echo("Google Cloud and run `comfy-qat host discover`.")
 
 
 def _choose(question: str, options: list[str]) -> str:
