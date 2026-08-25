@@ -14,48 +14,40 @@ job is inspecting machines, so it must not depend on any one machine's install.
 
 Needs Python 3.11 or newer.
 
-## 2. Sign in to Google Cloud
+## 2. Run setup
 
 ```sh
-comfy-qat auth login
+comfy-qat setup
 ```
 
-That prints the two commands to run. It does not run them for you: `gcloud auth
-login` opens a browser and needs your input, and running it yourself leaves you the
-record of what happened.
+That is the whole thing. It signs you in to Google Cloud, picks your project,
+checks billing is linked, sorts out GPU quota, and writes your host list — telling
+you what it is doing at each step and asking only where the decision is genuinely
+yours.
 
-This tool never stores a credential. gcloud keeps its own, and refreshes them.
+A browser opens for the Google sign-in. That part has to be you: this tool never
+stores a credential, and never sees one. gcloud keeps its own and refreshes them.
 
-## 3. Check you are ready
+If something is not fixable from here — no billing account, no project on the
+account — setup stops and prints the link that fixes it. Fix it and run `setup`
+again; it picks up where it left off and skips what is already done.
+
+### If you would rather not be prompted
+
+Every part of setup works without questions:
 
 ```sh
-comfy-qat auth status
+comfy-qat setup --project my-project --region us-central1 --non-interactive
 ```
 
-It checks five things in order — gcloud, your account, your project, billing, and
-GPU quota — and **stops at the first problem**, printing the command that fixes it.
-Fix that one thing, run it again, repeat until every line says `ok`.
+In that mode it never opens a browser: if you are not signed in, it stops and tells
+you the command to run. A prompt-only feature is an incomplete one.
 
-Stopping at the first failure is deliberate. Each check depends on the ones before
-it, so showing five failures caused by one problem would just be noise.
+## 3. Check what you have
 
-If it says your GPU quota is zero, see [cost.md](cost.md) and run:
-
-```sh
-comfy-qat auth quota list
-```
-
-## 4. Declare your machines
-
-```sh
-comfy-qat host init
-```
-
-That writes a starter list to `~/.config/comfy-qa-tools/hosts.toml` with your local
-ComfyUI already in it. Open it and add any cloud boxes you use — see
-[hosts.md](hosts.md) for what each field means.
-
-## 5. See what you have
+`setup` has already written a starter host list to
+`~/.config/comfy-qa-tools/hosts.toml`, with your local ComfyUI in it. Open it and
+add any cloud boxes you use — [hosts.md](hosts.md) explains every field.
 
 ```sh
 comfy-qat host list

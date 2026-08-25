@@ -7,9 +7,14 @@ existing one.
 
 from __future__ import annotations
 
+from typing import Annotated, Optional
+
 import typer
 
+from .gcloud import Gcloud
+
 from . import auth, commands, host
+from . import setup as setup_mod
 
 app = typer.Typer(
     help="QA tooling for testing Comfy: know which machine you are testing, "
@@ -27,15 +32,18 @@ app.command("env")(commands.env_cmd)
 
 
 FIRST_RUN = """\
-First run — four steps.
+First run — one command.
 
-  1. gcloud auth login              sign in to Google Cloud
-  2. comfy-qat auth status          check you are ready; fix what it names, repeat
-  3. comfy-qat host init            write a starter host list
-  4. comfy-qat host list            see your machines
+  comfy-qat setup
 
-Step 2 stops at the first problem and prints the command that fixes it. Run it
-again after each fix until every line says ok.
+It signs you in to Google Cloud, picks your project, checks billing, sorts out GPU
+quota and writes your host list. It asks only where the decision is genuinely
+yours, and says what it is doing at each step.
+
+Afterwards:
+
+  comfy-qat host list      see your machines
+  comfy-qat auth status    re-check readiness at any time
 
 Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
   getting-started.md   this, with the reasoning
@@ -43,6 +51,55 @@ Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
   troubleshooting.md   every error and its fix
   cost.md              what a running box costs, and the one rule
 """
+
+
+@app.command("setup")
+def setup_cmd(
+    project: Annotated[Optional[str], typer.Option(
+        "--project", help="Use this Google Cloud project instead of asking.")] = None,
+    region: Annotated[Optional[str], typer.Option(
+        "--region", help="Region for a GPU quota request, e.g. us-central1.")] = None,
+    non_interactive: Annotated[bool, typer.Option(
+        "--non-interactive", help="Never prompt. Fails with the command to run "
+                                  "instead of opening a browser.")] = False,
+) -> None:
+    """Get this machine ready, in one command."""
+    prompts = setup_mod.Prompts(
+        confirm=typer.confirm,
+        ask=typer.prompt,
+        choose=_choose,
+        say=lambda line: typer.echo(f"  {line}"),
+    )
+    try:
+        path = setup_mod.run_setup(
+            Gcloud(), prompts,
+            interactive=not non_interactive,
+            project=project, region=region,
+        )
+    except setup_mod.SetupStopped as stop:
+        typer.echo(f"\nsetup stopped: {stop}", err=True)
+        if stop.fix:
+            typer.echo(f"to fix: {stop.fix}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\nReady. Edit {path} to add cloud boxes, then:")
+    typer.echo("  comfy-qat host list")
+
+
+def _choose(question: str, options: list[str]) -> str:
+    """Numbered pick. Typer has no list prompt, and a free-text guess is worse."""
+    typer.echo(question)
+    for index, option in enumerate(options, start=1):
+        typer.echo(f"  {index}. {option}")
+    while True:
+        raw = typer.prompt("Number")
+        try:
+            picked = int(raw)
+        except ValueError:
+            picked = 0
+        if 1 <= picked <= len(options):
+            return options[picked - 1]
+        typer.echo(f"Pick a number between 1 and {len(options)}.")
 
 
 @app.command("guide")
