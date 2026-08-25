@@ -178,6 +178,60 @@ def readiness(
     return sorted(best.values(), key=lambda r: (order[r.status], r.gpu, r.region))
 
 
+@dataclass(frozen=True)
+class CardSummary:
+    """One card, one line. What you can run, and roughly where."""
+
+    gpu: str
+    limit: int
+    status: Status
+    where: str
+
+    @property
+    def usable(self) -> bool:
+        return self.status == "ready"
+
+
+def summarise(rows: list[Readiness]) -> list[CardSummary]:
+    """Collapse per-region rows into one line per card.
+
+    Google meters some cards per region individually — K80 comes back as 25
+    separate entries — so a row-per-region table ran to 130 lines and told you
+    nothing a single line could not. Region detail is available by asking for a
+    region; the default answers "what can I run".
+    """
+    grouped: dict[str, list[Readiness]] = {}
+    for row in rows:
+        grouped.setdefault(row.gpu, []).append(row)
+
+    summaries: list[CardSummary] = []
+    for gpu, entries in grouped.items():
+        best = max(entry.limit for entry in entries)
+        if any(entry.status == "ready" for entry in entries):
+            status: Status = "ready"
+        elif any(entry.status == "pending" for entry in entries):
+            status = "pending"
+        else:
+            status = "none"
+
+        relevant = [e for e in entries if e.status == status]
+        places = {e.region for e in relevant}
+        if places == {"global"}:
+            # The project-wide allowance is genuinely global, not "every region".
+            where = "global"
+        elif {"all regions", "global"} & places:
+            where = "all regions"
+        elif len(places) == 1:
+            where = next(iter(places))
+        else:
+            where = f"{len(places)} regions"
+
+        summaries.append(CardSummary(gpu=gpu, limit=best, status=status, where=where))
+
+    order = {"ready": 0, "pending": 1, "none": 2}
+    return sorted(summaries, key=lambda s: (order[s.status], s.gpu))
+
+
 def resolve(gpu: str, quotas: list[dict], *, region: str | None = None) -> str | None:
     """Turn `l4` into the quota id to request. None if this project reports none."""
     for quota in quotas:
