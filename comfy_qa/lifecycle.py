@@ -168,13 +168,16 @@ def bring_up(
             # compute error is `---`, which matches nothing.
             if is_capacity_failure(exc.raw):
                 elsewhere = suggested_zones(exc.raw)
-                advice = (
-                    f"Google says {', '.join(elsewhere)} has capacity right now — "
-                    f"a box there would start today."
-                    if elsewhere else
-                    "wait and try later, or use another zone. Capacity varies by "
-                    "zone and by hour."
-                )
+                if elsewhere:
+                    advice = (
+                        f"Google says {', '.join(elsewhere)} has capacity right now.\n"
+                        f"        comfy-qat host move {host.name} --to {elsewhere[0]}"
+                    )
+                else:
+                    advice = (
+                        "wait and try later, or move the box to another zone:\n"
+                        f"        comfy-qat host move {host.name}"
+                    )
                 raise LifecycleError(
                     f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
                     f"right now, so {host.name} cannot start. This is not a fault on "

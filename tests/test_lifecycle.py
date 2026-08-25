@@ -296,3 +296,13 @@ def test_a_stockout_with_no_suggestion_still_advises_something_useful(tmp_path):
     with pytest.raises(LifecycleError) as caught:
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
     assert "another zone" in caught.value.fix
+
+
+def test_a_stockout_points_at_the_command_that_fixes_it(tmp_path):
+    """Handing someone four raw gcloud commands is the failure this tool exists
+    to prevent."""
+    _, say = said()
+    gc = gcloud(["TERMINATED"], fail=GcloudError("---", raw=STOCKOUT_OUTPUT))
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+    assert "comfy-qat host move comfy-win --to us-central1-b" in caught.value.fix

@@ -321,6 +321,109 @@ def go_cmd(
                f"`comfy-qat host down {host.name}` to stop the machine.")
 
 
+@app.command("move")
+def move_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine to move.")],
+    to: Annotated[Optional[str], typer.Option(
+        "--to", help="Zone to move it to. Default: whichever one Google says has capacity.")] = None,
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Do not ask before making changes.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
+) -> None:
+    """Move a box to a zone that has capacity, keeping its ComfyUI install.
+
+    A GPU stockout cannot be fixed where you are: the zone has none of that card
+    and retrying will not change it. Done by hand this is a snapshot, a disk, an
+    instance and a config edit — four chances to get it wrong.
+    """
+    from .discover import Discovered, next_ports, to_toml
+    from .gcloud import Gcloud, GcloudError
+    from .lifecycle import is_capacity_failure, suggested_zones
+
+    host = _host(name, config)
+    if not host.is_remote:
+        typer.echo(f"{host.name} is local — there is nowhere to move it to.", err=True)
+        raise typer.Exit(code=2)
+
+    gc = Gcloud()
+    target = to
+
+    if target is None:
+        typer.echo("asking Google where there is capacity…")
+        try:
+            gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
+        except GcloudError as exc:
+            if not is_capacity_failure(exc.raw):
+                typer.echo(str(exc), err=True)
+                raise typer.Exit(code=1)
+            zones = suggested_zones(exc.raw)
+            if not zones:
+                typer.echo("Google did not name a zone with capacity. Pick one with "
+                           "--to, e.g. --to us-central1-b", err=True)
+                raise typer.Exit(code=1)
+            target = zones[0]
+            typer.echo(f"  {host.gce_zone} has none free; {target} does")
+        else:
+            typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
+            typer.echo(f"  comfy-qat host go {host.name}")
+            return
+
+    try:
+        instance = gc.describe_instance(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+
+    from .relocate import metadata_pairs, plan_move
+
+    plan = plan_move(host, instance, target)
+    typer.echo("")
+    for step in plan.steps():
+        typer.echo(f"  - {step}")
+
+    if dry_run:
+        typer.echo("\n--dry-run: nothing changed")
+        return
+    if not yes and not typer.confirm(f"\nMove {host.name} to {target}?"):
+        typer.echo("nothing changed")
+        return
+
+    disk = plan.new_disk.rsplit("-", 1)[0]
+    try:
+        typer.echo("  snapshotting the boot disk — this is the slow part")
+        gc.snapshot_disk(disk, host.gce_zone, host.gce_project, plan.snapshot)
+        typer.echo(f"  creating {plan.new_disk} in {target}")
+        gc.create_disk_from_snapshot(plan.new_disk, target, host.gce_project, plan.snapshot)
+        typer.echo(f"  creating {plan.new_instance}")
+        gc.create_instance_from_disk(
+            plan.new_instance, target, host.gce_project, plan.new_disk,
+            plan.machine_type, metadata_pairs(instance),
+        )
+    except GcloudError as exc:
+        typer.echo(f"\nthe move failed: {exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        typer.echo(f"nothing was removed — {host.gce_instance} is untouched in "
+                   f"{host.gce_zone}.", err=True)
+        raise typer.Exit(code=1)
+
+    path = config or DEFAULT_CONFIG_PATH
+    hosts = load(path)
+    port = next_ports(hosts, 1)[0]
+    moved = Discovered(
+        name=plan.new_instance, os=host.os or "unknown", gpu=host.gpu or "",
+        gce_instance=plan.new_instance, gce_zone=target,
+        gce_project=host.gce_project, running=True,
+    )
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(to_toml(moved, port))
+
+    typer.echo(f"\n{plan.new_instance} is in {target}, on port {port}.")
+    typer.echo(f"  comfy-qat host go {plan.new_instance}")
+    typer.echo(f"\n{host.gce_instance} is still in {host.gce_zone}, stopped. Delete it "
+               f"when you are happy with the new one.")
+
+
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],

@@ -214,6 +214,49 @@ class Gcloud:
             raise GcloudError(message, fix=fix, raw=raw)
         return proc.stdout.strip()
 
+    def describe_instance(self, name: str, zone: str, project: str) -> dict:
+        return self.run([
+            "compute", "instances", "describe", name,
+            f"--zone={zone}", f"--project={project}",
+        ]) or {}
+
+    def snapshot_disk(self, disk: str, zone: str, project: str, snapshot: str) -> None:
+        self.run([
+            "compute", "disks", "snapshot", disk,
+            f"--zone={zone}", f"--project={project}",
+            f"--snapshot-names={snapshot}",
+        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
+
+    def create_disk_from_snapshot(self, disk: str, zone: str, project: str, snapshot: str) -> None:
+        self.run([
+            "compute", "disks", "create", disk,
+            f"--zone={zone}", f"--project={project}",
+            f"--source-snapshot={snapshot}",
+        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
+
+    def create_instance_from_disk(
+        self, name: str, zone: str, project: str, disk: str, machine_type: str,
+        metadata: str | None = None,
+    ) -> None:
+        args = [
+            "compute", "instances", "create", name,
+            f"--zone={zone}", f"--project={project}",
+            f"--machine-type={machine_type}",
+            f"--disk=name={disk},boot=yes,auto-delete=no",
+            # No public IP: IAP does not need one, and it is one less way to
+            # expose a ComfyUI that has no authentication.
+            "--no-address",
+        ]
+        if metadata:
+            args.append(f"--metadata={metadata}")
+        self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
+
+    def delete_snapshot(self, snapshot: str, project: str) -> None:
+        self.run([
+            "compute", "snapshots", "delete", snapshot,
+            f"--project={project}", "--quiet",
+        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
+
     def quota_preferences(self, project: str) -> list[dict]:
         return self.run([
             "quotas", "preferences", "list", f"--project={project}",
