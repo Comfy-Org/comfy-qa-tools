@@ -84,3 +84,39 @@ def test_getting_started_leads_with_setup_not_a_command_list():
     text = (DOCS / "getting-started.md").read_text()
     assert "comfy-qat setup" in text
     assert text.index("comfy-qat setup") < text.index("comfy-qat host list")
+
+
+def test_the_module_entry_point_exposes_the_current_surface():
+    """`python -m comfy_qa` ran v0's surface long after v0 stopped being the tool.
+
+    An entry point that quietly points at old code is the kind of thing nobody
+    notices until they use it.
+    """
+    from comfy_qa import cli
+
+    # Importing __main__ would run the CLI, so read it instead.
+    entry = (DOCS.parent / "comfy_qa" / "__main__.py").read_text()
+    assert "from .cli import main" in entry, "the module entry point still points at v0"
+
+    names = {command.name for command in cli.app.registered_commands}
+    groups = {group.name for group in cli.app.registered_groups}
+    assert {"setup", "guide", "env"} <= names
+    assert {"host", "auth"} <= groups
+
+
+def test_the_package_register_is_the_current_surface_not_v0():
+    import comfy_qa
+    from comfy_qa.cli import register
+
+    assert comfy_qa.register is register
+
+
+def test_no_superseded_planning_documents_remain():
+    """ROADMAP.md and DEVELOPMENT.md described a scope that no longer exists.
+
+    Features are documented when they ship; a stale plan in the repo root reads as
+    current to anyone who has not been in the conversation.
+    """
+    root = DOCS.parent
+    for name in ("ROADMAP.md", "DEVELOPMENT.md"):
+        assert not (root / name).exists(), f"{name} is superseded and should be gone"

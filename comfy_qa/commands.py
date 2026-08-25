@@ -1,5 +1,8 @@
-"""Typer surface. `register(parent)` is how this attaches to comfy-cli — the same
-convention comfy-cli itself uses for `generate` (`generate_command.register_with`).
+"""v0's environment check, kept reachable while it waits for its own release.
+
+This was the whole tool once, and its `main()` and `register()` were the entry
+points. Both now live in `cli.py`; only `env_cmd` is still wired up, from there.
+Nothing new should be added here — it gets rewritten when `env` ships properly.
 """
 
 from __future__ import annotations
