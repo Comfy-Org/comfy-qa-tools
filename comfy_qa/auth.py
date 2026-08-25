@@ -182,6 +182,7 @@ def quota_list_cmd(
     gc = Gcloud()
     try:
         project = _require_project(gc)
+        typer.echo("reading quota — this takes about a minute…", err=True)
         quotas = gc.gpu_quotas(project)
         prefs = gc.quota_preferences(project)
     except GcloudError as exc:

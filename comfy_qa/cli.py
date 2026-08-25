@@ -11,7 +11,7 @@ from typing import Annotated, Optional
 
 import typer
 
-from .gcloud import Gcloud
+from .gcloud import Gcloud, GcloudError
 
 from . import auth, commands, host
 from . import setup as setup_mod
@@ -80,6 +80,13 @@ def setup_cmd(
         typer.echo(f"\nsetup stopped: {stop}", err=True)
         if stop.fix:
             typer.echo(f"to fix: {stop.fix}", err=True)
+        raise typer.Exit(code=1)
+    except GcloudError as exc:
+        # A gcloud failure is a message, never a traceback. Tracebacks tell a
+        # tester nothing they can act on.
+        typer.echo(f"\nsetup stopped: {exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
         raise typer.Exit(code=1)
 
     typer.echo(f"\nReady. Edit {path} to add cloud boxes, then:")

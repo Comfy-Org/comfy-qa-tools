@@ -19,6 +19,13 @@ from dataclasses import dataclass, field
 COMPUTE_SERVICE = "compute.googleapis.com"
 DEFAULT_TIMEOUT = 60
 
+# Listing quotas returns every compute quota on the project — ~400 records and
+# well over a megabyte — and measured at almost exactly 60 seconds on a live
+# project. The default timeout sat right on that boundary, so the first real run
+# timed out. There is no server-side filter for it; gcloud's --filter is applied
+# after the fetch.
+QUOTA_TIMEOUT = 240
+
 
 class GcloudError(Exception):
     """A gcloud call that failed. `fix` is a command the user can run."""
@@ -42,7 +49,7 @@ class Gcloud:
             return "<injected>"
         return shutil.which("gcloud")
 
-    def run(self, args: list[str], *, parse_json: bool = True):
+    def run(self, args: list[str], *, parse_json: bool = True, timeout: int | None = None):
         """Run `gcloud <args>`. Returns parsed JSON, or raw text if parse_json is off."""
         if self.runner is not None:
             return self.runner(args, parse_json)
@@ -57,12 +64,14 @@ class Gcloud:
         cmd = [exe, *args]
         if parse_json:
             cmd += ["--format=json"]
+        limit = timeout or self.timeout
         try:
-            proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=self.timeout
-            )
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=limit)
         except subprocess.TimeoutExpired as exc:
-            raise GcloudError(f"gcloud timed out after {self.timeout}s: {' '.join(args)}") from exc
+            raise GcloudError(
+                f"gcloud timed out after {limit}s: {' '.join(args)}",
+                fix="check your network, then try again",
+            ) from exc
 
         if proc.returncode != 0:
             message, fix = explain_failure(proc.stderr, proc.stdout, proc.returncode)
@@ -127,7 +136,7 @@ class Gcloud:
             "quotas", "info", "list",
             f"--service={COMPUTE_SERVICE}",
             f"--project={project}",
-        ]) or []
+        ], timeout=QUOTA_TIMEOUT) or []
         return [q for q in infos if "GPU" in (q.get("quotaId") or "").upper()]
 
     def quota_preferences(self, project: str) -> list[dict]:

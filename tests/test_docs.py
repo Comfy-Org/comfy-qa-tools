@@ -45,6 +45,7 @@ ERROR_PHRASES = [
     "not with ComfyUI",
     # installing
     "command not found",
+    "could not read GPU quota",
 ]
 
 

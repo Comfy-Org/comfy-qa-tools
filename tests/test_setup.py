@@ -163,3 +163,20 @@ def test_missing_gcloud_stops_before_anything_else(tmp_path):
     with pytest.raises(SetupStopped) as caught:
         run_setup(gc, prompts(), config_path=tmp_path / "hosts.toml")
     assert "sdk/docs/install" in caught.value.fix
+
+
+def test_a_quota_read_that_fails_does_not_take_setup_down(tmp_path):
+    """The first live run crashed here with a traceback.
+
+    Quota is explicitly allowed to fail — it can take days to change and is never
+    a reason to strand someone mid-setup. It must be reported and stepped over.
+    """
+    responses = dict(READY, **{
+        "quotas info list": GcloudError("gcloud timed out after 240s: quotas info list"),
+    })
+    p = prompts()
+    path = run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
+
+    assert path.exists(), "setup must still finish"
+    assert any("could not read GPU quota" in line for line in p.said)
+    assert any("comfy-qat auth quota" in line for line in p.said)
