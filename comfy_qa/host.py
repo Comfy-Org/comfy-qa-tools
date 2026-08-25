@@ -88,6 +88,66 @@ def init_cmd(
     typer.echo("Edit it to add your cloud boxes, then run `comfy-qat host list`.")
 
 
+@app.command("discover")
+def discover_cmd(
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    dry_run: Annotated[bool, typer.Option(
+        "--dry-run", help="Show what would be added without writing anything.")] = False,
+) -> None:
+    """Find cloud boxes on your project and add the ones you do not have yet.
+
+    Google already knows each box's zone, card and operating system, so nothing
+    here needs typing by hand. Existing entries are never touched.
+    """
+    from .gcloud import Gcloud, GcloudError
+    from .discover import new_hosts, parse as parse_instance, to_toml
+
+    path = config or DEFAULT_CONFIG_PATH
+    gc = Gcloud()
+    try:
+        project = gc.current_project()
+        if not project:
+            typer.echo("no project set. Run: comfy-qat setup", err=True)
+            raise typer.Exit(code=2)
+        instances = gc.list_instances(project)
+    except GcloudError as exc:
+        typer.echo(str(exc), err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=2)
+
+    found = [parse_instance(instance, project) for instance in instances]
+    if not found:
+        typer.echo(f"no cloud boxes on {project}")
+        return
+
+    try:
+        existing = load(path)
+    except ConfigError:
+        existing = []
+
+    additions = new_hosts(found, existing)
+    if not additions:
+        typer.echo(f"{len(found)} cloud box(es), all already in {path}")
+        return
+
+    for box, port in additions:
+        state = "running" if box.running else "stopped"
+        typer.echo(f"{box.name}  {box.os}  {box.gpu or 'no GPU'}  {state}  port {port}")
+
+    if dry_run:
+        typer.echo("\n--dry-run: nothing written")
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        path.write_text(STARTER, encoding="utf-8")
+    with path.open("a", encoding="utf-8") as handle:
+        for box, port in additions:
+            handle.write(to_toml(box, port))
+    typer.echo(f"\nadded {len(additions)} to {path}")
+
+
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],

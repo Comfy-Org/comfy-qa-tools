@@ -120,7 +120,7 @@ def ensure_gpu_quota(
     gc: Gcloud, p: Prompts, project: str, *, interactive: bool, region: str | None,
 ) -> bool:
     """Returns True if quota exists or was requested. Never blocks setup on it."""
-    from .auth import _value_of
+    from .quota import readiness
 
     p.say("checking GPU quota — this takes about a minute")
     try:
@@ -132,10 +132,13 @@ def ensure_gpu_quota(
         p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat auth quota")
         return False
 
-    quotas = quotas
-    granted = [q for q in quotas if _value_of(q) > 0]
-    if granted:
-        p.say(f"GPU quota: {', '.join(q.get('quotaId') for q in granted[:3])}")
+    # Read through the same filter the rest of the tool uses. Reporting raw ids
+    # here meant setup announced COMMITTED-NVIDIA-L4 as available quota — an
+    # allowance that cannot start an ordinary box.
+    rows = [row for row in readiness(quotas, region=region) if row.usable]
+    if rows:
+        cards = ", ".join(dict.fromkeys(row.gpu for row in rows))
+        p.say(f"GPU quota ready: {cards}")
         return True
 
     p.say(
@@ -149,11 +152,17 @@ def ensure_gpu_quota(
     if not p.confirm("Request GPU quota now?"):
         return False
 
-    ids = [q.get("quotaId") for q in quotas if q.get("quotaId")]
-    if not ids:
+    from .quota import available_gpus, resolve
+
+    cards = available_gpus(quotas)
+    if not cards:
         p.say("no GPU quota ids reported for this project; nothing to request.")
         return False
-    quota_id = ids[0] if len(ids) == 1 else p.choose("Which quota?", ids)
+    card = cards[0] if len(cards) == 1 else p.choose("Which card?", cards)
+    quota_id = resolve(card, quotas)
+    if quota_id is None:
+        p.say(f"could not resolve a quota id for {card}.")
+        return False
     where = region or p.ask("Which region? (e.g. us-central1)")
 
     try:
@@ -168,6 +177,49 @@ def ensure_gpu_quota(
     p.say(f"requested {quota_id} = {DEFAULT_GPU_REQUEST}")
     p.say(f"track it: {console_quota_url(project)}")
     return True
+
+
+def add_discovered_hosts(
+    gc: Gcloud, p: Prompts, project: str, path: Path,
+) -> int:
+    """Add any cloud box that is not in the host list yet. Returns how many.
+
+    Google already knows the zone, machine type, card and operating system of
+    every instance. Making someone copy that across by hand is how a host list
+    ends up quietly wrong.
+    """
+    from .config import ConfigError, load
+    from .discover import new_hosts, parse as parse_instance, to_toml
+
+    try:
+        instances = gc.list_instances(project)
+    except GcloudError as exc:
+        p.say(f"could not list cloud boxes ({exc}). Add them by hand if needed.")
+        return 0
+
+    found = [parse_instance(instance, project) for instance in instances]
+    if not found:
+        p.say("no cloud boxes on this project yet")
+        return 0
+
+    try:
+        existing = load(path)
+    except ConfigError:
+        existing = []
+
+    additions = new_hosts(found, existing)
+    if not additions:
+        p.say(f"{len(found)} cloud box(es), all already in your host list")
+        return 0
+
+    with path.open("a", encoding="utf-8") as handle:
+        for box, port in additions:
+            handle.write(to_toml(box, port))
+
+    for box, port in additions:
+        state = "running" if box.running else "stopped"
+        p.say(f"added {box.name} — {box.os}, {box.gpu or 'no GPU'}, {state}, port {port}")
+    return len(additions)
 
 
 def ensure_host_list(p: Prompts, path: Path | None = None) -> Path:
@@ -203,4 +255,6 @@ def run_setup(
     chosen = ensure_project(gc, p, interactive=interactive, wanted=project)
     ensure_billing(gc, p, chosen)
     ensure_gpu_quota(gc, p, chosen, interactive=interactive, region=region)
-    return ensure_host_list(p, config_path)
+    path = ensure_host_list(p, config_path)
+    add_discovered_hosts(gc, p, chosen, path)
+    return path

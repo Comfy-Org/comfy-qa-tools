@@ -58,9 +58,13 @@ you the command to run. A prompt-only feature is an incomplete one.
 
 ## 3. Check what you have
 
-`setup` has already written a starter host list to
-`~/.config/comfy-qa-tools/hosts.toml`, with your local ComfyUI in it. Open it and
-add any cloud boxes you use — [hosts.md](hosts.md) explains every field.
+`setup` has already written your host list to
+`~/.config/comfy-qa-tools/hosts.toml` — your local ComfyUI, plus every cloud box on
+your project. Nothing needed typing: Google knows each box's zone, card and
+operating system already.
+
+Run `comfy-qat host discover` any time you add a box. It only adds what is missing
+and never touches what you have edited. [hosts.md](hosts.md) explains every field.
 
 ```sh
 comfy-qat host list

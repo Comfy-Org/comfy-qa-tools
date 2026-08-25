@@ -46,6 +46,7 @@ ERROR_PHRASES = [
     # installing
     "command not found",
     "could not read GPU quota",
+    "could not list cloud boxes",
 ]
 
 
