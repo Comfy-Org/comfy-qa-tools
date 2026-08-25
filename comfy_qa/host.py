@@ -148,6 +148,111 @@ def discover_cmd(
     typer.echo(f"\nadded {len(additions)} to {path}")
 
 
+def _host(name: str, config: Optional[Path]):
+    try:
+        return find(load(config), name)
+    except ConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+
+
+def _act(action, *args, **kwargs):
+    """Run a lifecycle step, turning its failures into messages, never tracebacks."""
+    from .lifecycle import LifecycleError
+
+    try:
+        return action(*args, **kwargs)
+    except LifecycleError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=1)
+
+
+@app.command("up")
+def up_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+) -> None:
+    """Start a machine and wait until ComfyUI actually answers.
+
+    "Up" means ComfyUI is serving, not that the VM booted. A machine that has
+    booted and serves nothing looks like success and bills like success.
+    """
+    from .gcloud import Gcloud
+    from .lifecycle import bring_up
+
+    host = _host(name, config)
+    _act(bring_up, Gcloud(), host, lambda line: typer.echo(f"  {line}"))
+    typer.echo(f"\nOpen {host.url} in your browser.")
+
+
+@app.command("open")
+def open_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    dry_run: Annotated[bool, typer.Option(
+        "--dry-run", help="Print the tunnel command instead of running it.")] = False,
+) -> None:
+    """Open a tunnel to a machine that is already running.
+
+    Traffic goes over Identity-Aware Proxy, so no port is ever opened and no SSH
+    key is needed — which matters, because ComfyUI has no authentication.
+    """
+    from .tunnel import command as tunnel_command, open_tunnel, status as tunnel_status
+
+    host = _host(name, config)
+    if not host.is_remote:
+        typer.echo(f"{host.name} is local — nothing to tunnel. It is at {host.url}.")
+        return
+
+    if dry_run:
+        typer.echo(" ".join(tunnel_command(host)))
+        return
+
+    existing = tunnel_status(host.name)
+    if existing.running:
+        typer.echo(f"tunnel already open (pid {existing.pid}): {host.url}")
+        return
+
+    state = open_tunnel(host)
+    typer.echo(f"tunnel open (pid {state.pid}): {host.url}")
+
+
+@app.command("down")
+def down_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    keep_running: Annotated[bool, typer.Option(
+        "--keep-running", help="Close the tunnel but leave the machine on.")] = False,
+) -> None:
+    """Close the tunnel and stop the machine, so it stops costing money."""
+    from .gcloud import Gcloud
+    from .lifecycle import put_away
+
+    host = _host(name, config)
+    _act(put_away, Gcloud(), host, lambda line: typer.echo(f"  {line}"),
+         keep_running=keep_running)
+
+
+@app.command("go")
+def go_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+) -> None:
+    """Start it, tunnel to it, and print what it is. The everyday command."""
+    from .gcloud import Gcloud
+    from .lifecycle import bring_up
+
+    host = _host(name, config)
+    ready = _act(bring_up, Gcloud(), host, lambda line: typer.echo(f"  {line}"))
+
+    typer.echo(f"\n{host.url}")
+    if ready.stamp:
+        typer.echo(ready.stamp.line())
+    typer.echo(f"\nWhen you are done:  comfy-qat host down {host.name}")
+
+
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],

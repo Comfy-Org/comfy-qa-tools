@@ -34,6 +34,8 @@ do on purpose.
 ```sh
 comfy-qat host init        # write a starter host list
 comfy-qat host list        # show every declared machine
+comfy-qat host go comfy-win  # start it, tunnel in, tell you what it is
+comfy-qat host down comfy-win # close the tunnel and stop paying
 comfy-qat host discover    # find cloud boxes and add them
 comfy-qat host stamp local # what is this machine, exactly?
 comfy-qat host            # same as list — read-only is the safe default

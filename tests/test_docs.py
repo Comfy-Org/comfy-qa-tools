@@ -47,6 +47,10 @@ ERROR_PHRASES = [
     "command not found",
     "could not read GPU quota",
     "could not list cloud boxes",
+    # starting and stopping
+    "ComfyUI is not answering",
+    "did not reach RUNNING",
+    "could not start",
 ]
 
 
