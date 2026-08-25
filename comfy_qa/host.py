@@ -253,7 +253,14 @@ def go_cmd(
     import webbrowser
 
     from .gcloud import Gcloud, GcloudError
-    from .lifecycle import LifecycleError, bring_up, ensure_installed, serve
+    from .lifecycle import (
+        COMFYUI_ABSENT,
+        LifecycleError,
+        bring_up,
+        ensure_installed,
+        serve,
+        wait_for_ssh,
+    )
 
     host = _host(name, config)
     gc = Gcloud()
@@ -263,7 +270,15 @@ def go_cmd(
     # Already serving? Then there is nothing to install or launch.
     try:
         ready = bring_up(gc, host, say, comfy_timeout=15)
-    except LifecycleError:
+    except LifecycleError as exc:
+        # Only "ComfyUI is not there yet" is worth continuing past — that is what
+        # the next steps fix. Anything else (the box would not start, the tunnel
+        # failed) must be shown, not swallowed.
+        if exc.kind != COMFYUI_ABSENT:
+            typer.echo(f"\n{exc}", err=True)
+            if exc.fix:
+                typer.echo(f"to fix: {exc.fix}", err=True)
+            raise typer.Exit(code=1)
         ready = None
 
     if ready is not None and ready.stamp is not None:
@@ -285,6 +300,7 @@ def go_cmd(
         raise typer.Exit(code=1)
 
     try:
+        wait_for_ssh(gc, host, say)
         ensure_installed(gc, host, say)
         typer.echo("")
         code = serve(gc, host, say, open_browser=browser)

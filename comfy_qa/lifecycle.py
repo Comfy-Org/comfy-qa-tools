@@ -24,12 +24,19 @@ POLL_SECONDS = 5
 RUNNING = "RUNNING"
 
 
+# `go` continues past exactly one failure — ComfyUI not being there yet, which is
+# what it is about to fix. Everything else must stop and be shown. Catching them
+# all alike once hid a failed start and then tried SSH against a stopped machine.
+COMFYUI_ABSENT = "comfyui-absent"
+
+
 class LifecycleError(Exception):
     """Something a person has to act on. `fix` says what."""
 
-    def __init__(self, message: str, fix: str | None = None) -> None:
+    def __init__(self, message: str, fix: str | None = None, kind: str = "error") -> None:
         super().__init__(message)
         self.fix = fix
+        self.kind = kind
 
 
 @dataclass
@@ -97,6 +104,7 @@ def bring_up(
         if stamp is None:
             raise LifecycleError(
                 f"ComfyUI is not answering on {host.url}",
+                kind=COMFYUI_ABSENT,
                 fix="~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 --listen 127.0.0.1",
             )
         say(f"{host.name} is already up")
@@ -150,6 +158,7 @@ def bring_up(
             f"{host.name} is running and tunnelled, but ComfyUI is not answering on "
             f"{host.url}. The machine is up and billing; ComfyUI is not installed or "
             f"not started.",
+            kind=COMFYUI_ABSENT,
             fix=(
                 "get onto the machine and install or start ComfyUI:\n        "
                 + how_to_get_in(host)
@@ -158,6 +167,40 @@ def bring_up(
 
     say(f"ComfyUI answering: {stamp.line()}")
     return Ready(host=host, stamp=stamp, started=started, tunnelled=True)
+
+
+def wait_for_ssh(
+    gc: Gcloud,
+    host: Host,
+    say: Callable[[str], None],
+    *,
+    timeout: int = 300,
+    sleep=time.sleep,
+    now=time.monotonic,
+) -> None:
+    """Wait until the box will actually run a command.
+
+    RUNNING means the VM is powered on, not that its SSH server is listening.
+    Windows takes minutes to get there, and connecting too early fails with
+    "failed to connect to backend", which reads like a permissions problem and
+    is not.
+    """
+    said_waiting = False
+    deadline = now() + timeout
+    while True:
+        try:
+            gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project, "echo ok")
+            return
+        except GcloudError as exc:
+            if now() >= deadline:
+                raise LifecycleError(
+                    f"{host.name} is running but not accepting commands after {timeout}s: {exc}",
+                    fix=how_to_get_in(host),
+                ) from exc
+            if not said_waiting:
+                say("waiting for the machine to accept commands — Windows takes a few minutes")
+                said_waiting = True
+            sleep(POLL_SECONDS)
 
 
 def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:

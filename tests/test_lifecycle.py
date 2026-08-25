@@ -159,3 +159,62 @@ def test_put_away_never_stops_a_local_comfyui(tmp_path):
     put_away(gc, LOCAL, say, tunnel_dir=tmp_path)
     assert gc.calls == []
     assert any("did not start it" in line for line in lines)
+
+
+def test_only_a_missing_comfyui_is_worth_continuing_past(tmp_path):
+    """`go` swallowed every failure alike, so a box that would not start became
+    an SSH attempt against a stopped machine and a confusing error."""
+    from comfy_qa.lifecycle import COMFYUI_ABSENT
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as absent:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: None, comfy_timeout=0)
+    assert absent.value.kind == COMFYUI_ABSENT
+
+    with pytest.raises(LifecycleError) as failed:
+        bring_up(gcloud(["TERMINATED"], fail=GcloudError("no capacity")), WIN, say,
+                 tunnel_dir=tmp_path, sleep=lambda _: None)
+    assert failed.value.kind != COMFYUI_ABSENT, "a failed start must stop `go`"
+
+
+def test_a_local_comfyui_that_is_down_is_also_absent_not_broken(tmp_path):
+    from comfy_qa.lifecycle import COMFYUI_ABSENT
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud([]), LOCAL, say, tunnel_dir=tmp_path, probe_fn=lambda host: None)
+    assert caught.value.kind == COMFYUI_ABSENT
+
+
+def test_ssh_is_waited_for_because_running_is_not_ready():
+    """RUNNING means powered on. Windows takes minutes to start sshd, and
+    connecting early fails with "failed to connect to backend" — which reads
+    like a permissions problem and is not."""
+    from comfy_qa.lifecycle import wait_for_ssh
+
+    attempts = {"n": 0}
+
+    def runner(args, mode):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise GcloudError("failed to connect to backend")
+        return "ok"
+
+    lines, say = said()
+    wait_for_ssh(Gcloud(runner=runner), WIN, say, sleep=lambda _: None)
+    assert attempts["n"] == 3
+    assert any("few minutes" in line for line in lines)
+
+
+def test_waiting_for_ssh_gives_up_with_the_manual_way_in():
+    from comfy_qa.lifecycle import wait_for_ssh
+
+    def runner(args, mode):
+        raise GcloudError("failed to connect to backend")
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        wait_for_ssh(Gcloud(runner=runner), WIN, say, timeout=0, sleep=lambda _: None)
+    assert "not accepting commands" in str(caught.value)
+    assert "reset-windows-password" in caught.value.fix
