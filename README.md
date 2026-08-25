@@ -32,10 +32,19 @@ do on purpose.
 ### Available now
 
 ```sh
-comfy-qat host init      # write a starter host list
-comfy-qat host list      # show every declared machine
-comfy-qat host           # same as list — read-only is the safe default
+comfy-qat host init        # write a starter host list
+comfy-qat host list        # show every declared machine
+comfy-qat host stamp local # what is this machine, exactly?
+comfy-qat host            # same as list — read-only is the safe default
 ```
+
+```
+local · local-git · ComfyUI 0.33.0 · darwin · mps (32GB) · torch 2.13.0 · python 3.12.13
+```
+
+That line is the point. It is the record nothing else keeps — paste it into a report
+and nobody has to ask which machine produced the result. `--json` gives the same
+thing using ComfyUI's own field names.
 
 ```
 NAME         KIND   OS            GPU  URL

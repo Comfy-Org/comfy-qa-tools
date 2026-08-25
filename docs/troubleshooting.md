@@ -59,6 +59,18 @@ Name it: `comfy-qat setup --project <id>`.
 Only you can attach billing. The error prints the direct link; do that, then run
 setup again.
 
+## Stamping a machine
+
+**`nothing answered at http://127.0.0.1:8190`**
+Nothing is listening on that port. For a local host, ComfyUI is not running. For a
+cloud host, either the box is off or the tunnel is not up. Check the port in your
+host list matches what the machine actually serves.
+
+**`answered, but not with ComfyUI's /system_stats`**
+Something is on that port, but it is not ComfyUI — a dev server, or another tunnel.
+This is exactly the mix-up the port rules exist to prevent, so it is worth chasing
+rather than working around.
+
 ## Google Cloud
 
 **`gcloud is not installed or not on PATH`**

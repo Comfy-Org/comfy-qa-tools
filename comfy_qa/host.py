@@ -6,12 +6,14 @@ a starter host list. Everything that talks to gcloud lands in the next pass.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 
-from .config import COMFYUI_DEFAULT_PORT, DEFAULT_CONFIG_PATH, ConfigError, load
+from .config import COMFYUI_DEFAULT_PORT, DEFAULT_CONFIG_PATH, ConfigError, find, load
+from .stamp import ProbeError, fetch
 
 app = typer.Typer(
     help="Operate the machines you test on — local installs and cloud GPU boxes.",
@@ -84,6 +86,39 @@ def init_cmd(
     path.write_text(STARTER, encoding="utf-8")
     typer.echo(f"wrote {path}")
     typer.echo("Edit it to add your cloud boxes, then run `comfy-qat host list`.")
+
+
+@app.command("stamp")
+def stamp_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    as_json: Annotated[bool, typer.Option(
+        "--json", help="Machine-readable, for pasting into a report or a test.")] = False,
+) -> None:
+    """Ask a machine what it is, and print the line you paste into a report.
+
+    This is the record nothing else keeps. A recorded test does not carry it, and
+    a hand-written bug report usually does not either — which is how "cannot
+    reproduce" happens between two machines that were never the same.
+    """
+    try:
+        host = find(load(config), name)
+    except ConfigError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        stamp = fetch(host.url, host=host.name)
+    except ProbeError as exc:
+        typer.echo(str(exc), err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=1)
+
+    if as_json:
+        typer.echo(json.dumps(stamp.as_dict(), indent=2))
+    else:
+        typer.echo(stamp.line())
 
 
 @app.callback(invoke_without_command=True)
