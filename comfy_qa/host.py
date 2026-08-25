@@ -1,4 +1,4 @@
-"""`comfy-qa host` — operate the machines you test on.
+"""`comfy-qat host` — operate the machines you test on.
 
 Only the offline commands live here so far: listing what is declared, and writing
 a starter host list. Everything that talks to gcloud lands in the next pass.
@@ -19,7 +19,7 @@ app = typer.Typer(
 )
 
 STARTER = f"""\
-# comfy-qa host list.
+# comfy-qat host list.
 #
 # Every machine you test on is declared here, local or cloud. Naming them all
 # means there is no invisible default, which is how you end up reading results
@@ -51,7 +51,7 @@ def _config_option() -> Path:
 @app.command("list")
 def list_cmd(
     config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa/hosts.toml.")] = None,
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
 ) -> None:
     """Show every declared machine: what it is, and where it answers."""
     try:
@@ -83,7 +83,7 @@ def init_cmd(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(STARTER, encoding="utf-8")
     typer.echo(f"wrote {path}")
-    typer.echo("Edit it to add your cloud boxes, then run `comfy-qa host list`.")
+    typer.echo("Edit it to add your cloud boxes, then run `comfy-qat host list`.")
 
 
 @app.callback(invoke_without_command=True)

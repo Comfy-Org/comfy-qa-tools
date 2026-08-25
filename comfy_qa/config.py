@@ -20,7 +20,7 @@ COMFYUI_DEFAULT_PORT = 8188
 
 Kind = Literal["local", "gce"]
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "comfy-qa" / "hosts.toml"
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "comfy-qa-tools" / "hosts.toml"
 
 
 class ConfigError(Exception):
@@ -134,7 +134,7 @@ def load(path: Path | None = None) -> list[Host]:
     path = path or DEFAULT_CONFIG_PATH
     if not path.exists():
         raise ConfigError(
-            f"no host list at {path}. Run `comfy-qa host init` to write a starter one."
+            f"no host list at {path}. Run `comfy-qat host init` to write a starter one."
         )
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
