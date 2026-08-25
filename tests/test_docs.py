@@ -53,6 +53,8 @@ ERROR_PHRASES = [
     "could not start",
     "could not run a command on",
     "did not finish",
+    "capacity in",
+    "NO_PYTHON",
 ]
 
 

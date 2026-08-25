@@ -90,6 +90,17 @@ either not installed or not started. **The box is billing while this is true.**
 The error prints how to get onto it, which differs by OS: Windows needs a password
 reset and Remote Desktop over the tunnel, anything else takes SSH through IAP.
 
+**`Google has no L4 capacity in us-central1-a right now`**
+A stockout. The zone has none of that card free, which is routine for GPUs and
+nothing to do with your account, your quota or your billing. Retrying in the same
+zone will not help — wait, or move the box to another zone. Google's raw message
+mentions `STOCKOUT` and reads far more alarming than it is.
+
+**`NO_PYTHON`** in the ComfyUI startup log
+ComfyUI is installed but no interpreter was found beside it — no `venv`, no
+portable `python_embeded`, and no system `python`. Get onto the box and create one,
+or reinstall with `host go` on a box that has none.
+
 **`comfy-win did not reach RUNNING within 300s`**
 The instance was asked to start and did not. Check it in the Google Cloud console;
 this usually means capacity or a quota problem in that zone rather than a fault

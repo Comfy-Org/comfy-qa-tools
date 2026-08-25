@@ -88,3 +88,24 @@ def test_install_says_what_it_is_doing(host):
 def test_windows_installs_into_the_conventional_place():
     assert WINDOWS_ROOT in install_command(WIN)
     assert WINDOWS_ROOT == r"C:\ComfyUI"
+
+
+@pytest.mark.parametrize("host", ALL)
+def test_the_interpreter_is_found_not_assumed(host):
+    """A live box reported "'.\\venv\\Scripts\\python.exe' is not recognized" —
+    ComfyUI was installed, just not with a venv. An install may carry a venv, the
+    Windows portable bundle's embedded Python, or neither.
+    """
+    command = launch_command(host)
+    assert "NO_PYTHON" in command, "it must say so rather than fail obscurely"
+    if is_windows(host):
+        assert "python_embeded" in command, "the portable bundle's layout"
+        assert "Test-Path" in command
+    else:
+        assert "command -v python3" in command
+
+
+@pytest.mark.parametrize("host", ALL)
+def test_the_launch_reports_which_interpreter_it_chose(host):
+    """Otherwise a wrong-Python failure looks like a ComfyUI failure."""
+    assert "using" in launch_command(host)
