@@ -162,7 +162,7 @@ def test_expired_session_is_named_not_quoted_from_the_last_line():
     """The real failure this caught: the last line is a useless fragment."""
     from comfy_qa.gcloud import explain_failure
 
-    message, fix = explain_failure(REAUTH, "", 1)
+    message, fix, _ = explain_failure(REAUTH, "", 1)
     assert message == "your gcloud session has expired"
     assert fix == "gcloud auth login"
     assert "already authenticated account" not in message
@@ -171,14 +171,14 @@ def test_expired_session_is_named_not_quoted_from_the_last_line():
 def test_error_line_wins_over_the_first_line():
     from comfy_qa.gcloud import explain_failure
 
-    message, _ = explain_failure("Updates are available.\nERROR: (gcloud.foo) it broke", "", 1)
+    message, _, _ = explain_failure("Updates are available.\nERROR: (gcloud.foo) it broke", "", 1)
     assert message == "it broke"
 
 
 def test_empty_output_still_says_something():
     from comfy_qa.gcloud import explain_failure
 
-    message, fix = explain_failure("", "", 7)
+    message, fix, _ = explain_failure("", "", 7)
     assert "7" in message and fix is None
 
 
@@ -189,3 +189,24 @@ def test_expired_session_surfaces_its_own_fix_through_the_checks():
     checks = run_checks(gc)
     assert checks[-1].name == "billing"
     assert checks[-1].fix == "gcloud auth login"
+
+
+def test_a_compute_error_summary_of_dashes_is_not_the_message():
+    """gcloud prints `ERROR: (gcloud.compute.instances.start) ---` and puts the
+    real sentence further down. Reporting `---` tells nobody anything."""
+    from comfy_qa.gcloud import explain_failure, localized_message
+
+    raw = (
+        "ERROR: (gcloud.compute.instances.start) ---\n"
+        "code: ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS\n"
+        "errorDetails:\n"
+        "- localizedMessage:\n"
+        "    locale: en-US\n"
+        "    message: A g2-standard-8 VM instance is currently\n"
+        "      unavailable in the us-central1-a zone.\n"
+    )
+    message, _, text = explain_failure(raw, "", 1)
+    assert message.startswith("A g2-standard-8 VM instance")
+    assert "unavailable in the us-central1-a zone." in message
+    assert text == raw.strip(), "the full output is kept for classification"
+    assert localized_message("nothing here") is None

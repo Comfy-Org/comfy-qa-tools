@@ -91,10 +91,13 @@ The error prints how to get onto it, which differs by OS: Windows needs a passwo
 reset and Remote Desktop over the tunnel, anything else takes SSH through IAP.
 
 **`Google has no L4 capacity in us-central1-a right now`**
-A stockout. The zone has none of that card free, which is routine for GPUs and
-nothing to do with your account, your quota or your billing. Retrying in the same
-zone will not help — wait, or move the box to another zone. Google's raw message
-mentions `STOCKOUT` and reads far more alarming than it is.
+A stockout. The zone has none of that card free, which is routine for GPUs and has
+nothing to do with your account, quota or billing. Retrying in the same zone will
+not help.
+
+Google usually names a zone that *does* have capacity, and the fix line repeats it —
+"Google says us-central1-b has capacity right now". A box in that zone would start
+today. Otherwise, wait: capacity varies by hour.
 
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no

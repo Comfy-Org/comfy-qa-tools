@@ -256,3 +256,43 @@ def test_a_capacity_failure_stops_go_rather_than_becoming_an_ssh_error(tmp_path)
     with pytest.raises(LifecycleError) as caught:
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
     assert caught.value.kind != COMFYUI_ABSENT
+
+
+# Exactly what gcloud printed when the zone ran out of L4s. The ERROR: line is
+# literally `---`, which is how the stockout went unrecognised the first time.
+STOCKOUT_OUTPUT = """Starting instance(s) comfy-win...
+..........................................failed.
+ERROR: (gcloud.compute.instances.start) ---
+code: ZONE_RESOURCE_POOL_EXHAUSTED_WITH_DETAILS
+errorDetails:
+- localizedMessage:
+    locale: en-US
+    message: A g2-standard-8 VM instance with 1 nvidia-l4 accelerator(s) is currently
+      unavailable in the us-central1-a zone. Consider trying your request in the us-central1-b
+      zone(s), which currently has capacity to accommodate your request.
+"""
+
+
+def test_the_real_stockout_output_is_recognised(tmp_path):
+    """It was not, because classification ran on the summary — which is `---`."""
+    from comfy_qa.lifecycle import STOCKOUT, is_capacity_failure, suggested_zones
+
+    assert is_capacity_failure(STOCKOUT_OUTPUT)
+    assert suggested_zones(STOCKOUT_OUTPUT) == ["us-central1-b"]
+
+    _, say = said()
+    gc = gcloud(["TERMINATED"], fail=GcloudError("---", raw=STOCKOUT_OUTPUT))
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert caught.value.kind == STOCKOUT
+    assert "no L4 capacity in us-central1-a" in str(caught.value)
+    assert "us-central1-b has capacity right now" in caught.value.fix
+
+
+def test_a_stockout_with_no_suggestion_still_advises_something_useful(tmp_path):
+    _, say = said()
+    gc = gcloud(["TERMINATED"], fail=GcloudError("---", raw="state:STOCKOUT"))
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+    assert "another zone" in caught.value.fix

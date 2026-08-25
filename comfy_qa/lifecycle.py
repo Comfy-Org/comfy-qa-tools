@@ -61,14 +61,42 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=time.sleep, now=time
         sleep(POLL_SECONDS)
 
 
+import re
+
+_CAPACITY_SIGNS = (
+    "stockout",
+    "does not have enough resources",
+    "zone_resource_pool_exhausted",
+    "is currently unavailable in the",
+)
+
+_SUGGESTED_ZONES = re.compile(
+    r"trying your request in the ([a-z0-9\-]+(?:[,\s]+[a-z0-9\-]+)*)\s+zone", re.IGNORECASE
+)
+
+
 def is_capacity_failure(message: str) -> bool:
     """Did the zone simply run out of the machine you asked for?
 
     GPU stockouts are routine and the raw message is long and alarming. Saying so
-    plainly saves someone debugging their own account for an hour.
+    plainly saves someone debugging their own account for an hour. This reads the
+    *full* gcloud output, not the one-line summary — on compute errors that
+    summary is literally `---`, which is how a stockout went unrecognised once.
     """
     lowered = message.lower()
-    return "stockout" in lowered or "does not have enough resources" in lowered
+    return any(sign in lowered for sign in _CAPACITY_SIGNS)
+
+
+def suggested_zones(message: str) -> list[str]:
+    """Zones Google itself says have capacity right now.
+
+    The stockout message names them. Repeating that is the single most useful
+    thing this tool can do with the error.
+    """
+    match = _SUGGESTED_ZONES.search(message or "")
+    if not match:
+        return []
+    return [zone for zone in re.split(r"[,\s]+", match.group(1)) if zone]
 
 
 def is_windows(host: Host) -> bool:
@@ -136,16 +164,23 @@ def bring_up(
         try:
             gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
         except GcloudError as exc:
-            if is_capacity_failure(str(exc)):
+            # Classify on everything gcloud printed. The one-line summary for a
+            # compute error is `---`, which matches nothing.
+            if is_capacity_failure(exc.raw):
+                elsewhere = suggested_zones(exc.raw)
+                advice = (
+                    f"Google says {', '.join(elsewhere)} has capacity right now — "
+                    f"a box there would start today."
+                    if elsewhere else
+                    "wait and try later, or use another zone. Capacity varies by "
+                    "zone and by hour."
+                )
                 raise LifecycleError(
                     f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
                     f"right now, so {host.name} cannot start. This is not a fault on "
-                    f"your side and retrying in the same zone will not help.",
+                    f"your side, and retrying in the same zone will not help.",
                     kind=STOCKOUT,
-                    fix=(
-                        "wait and try later, or move the box to another zone. "
-                        "Capacity varies by zone and by hour."
-                    ),
+                    fix=advice,
                 ) from exc
             raise LifecycleError(f"could not start {host.name}: {exc}", fix=exc.fix) from exc
         started = True

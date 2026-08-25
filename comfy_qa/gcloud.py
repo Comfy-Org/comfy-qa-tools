@@ -32,11 +32,17 @@ INSTANCE_TIMEOUT = 300
 
 
 class GcloudError(Exception):
-    """A gcloud call that failed. `fix` is a command the user can run."""
+    """A gcloud call that failed.
 
-    def __init__(self, message: str, fix: str | None = None) -> None:
+    `fix` is a command the user can run. `raw` is everything gcloud printed —
+    kept because the one-line summary is not always enough to classify a failure,
+    and classifying on the summary meant a capacity stockout went unrecognised.
+    """
+
+    def __init__(self, message: str, fix: str | None = None, raw: str = "") -> None:
         super().__init__(message)
         self.fix = fix
+        self.raw = raw or message
 
 
 @dataclass
@@ -78,8 +84,8 @@ class Gcloud:
             ) from exc
 
         if proc.returncode != 0:
-            message, fix = explain_failure(proc.stderr, proc.stdout, proc.returncode)
-            raise GcloudError(message, fix=fix)
+            message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
+            raise GcloudError(message, fix=fix, raw=raw)
 
         out = proc.stdout.strip()
         if not parse_json:
@@ -204,8 +210,8 @@ class Gcloud:
             raise GcloudError("gcloud is not installed or not on PATH.")
         proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=INSTANCE_TIMEOUT)
         if proc.returncode != 0:
-            message, fix = explain_failure(proc.stderr, proc.stdout, proc.returncode)
-            raise GcloudError(message, fix=fix)
+            message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
+            raise GcloudError(message, fix=fix, raw=raw)
         return proc.stdout.strip()
 
     def quota_preferences(self, project: str) -> list[dict]:
@@ -214,23 +220,59 @@ class Gcloud:
         ]) or []
 
 
+def localized_message(text: str) -> str | None:
+    """Pull the human-readable message out of gcloud's YAML error dump.
+
+    Compute errors put the useful sentence under `localizedMessage.message`,
+    wrapped across indented lines, while the ERROR: line itself can be nothing
+    but `---`. That literal case is how a capacity stockout arrived as "---".
+    """
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("message:"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        parts = [stripped[len("message:"):].strip()]
+        for following in lines[index + 1:]:
+            if not following.strip():
+                break
+            if len(following) - len(following.lstrip()) <= indent:
+                break
+            parts.append(following.strip())
+        joined = " ".join(part for part in parts if part)
+        if joined:
+            return joined
+    return None
+
+
+def _is_separator(value: str) -> bool:
+    return not value.strip("-_= ")
+
+
 def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
-    """Turn gcloud's multi-line output into one line plus the command that fixes it.
+    """Turn gcloud's multi-line output into one line, a fix, and the raw text.
 
     gcloud writes long, friendly errors across many lines. Taking the last line
     yields a fragment like "to select an already authenticated account to use."
-    — technically from the error, useless on its own. The ERROR: line is the one
-    that says what actually went wrong.
+    The ERROR: line is usually the one that matters — except on compute errors,
+    where it is literally `---` and the real sentence is further down.
     """
     text = (stderr or stdout or "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
-        return f"gcloud exited {returncode}", None
+        return f"gcloud exited {returncode}", None, text
 
     message = next((line for line in lines if line.startswith("ERROR:")), lines[0])
     message = message.removeprefix("ERROR:").strip()
     # Drop the "(gcloud.billing.projects.describe)" breadcrumb; the caller knows.
     message = re.sub(r"^\(gcloud\.[^)]*\)\s*", "", message)
+
+    if _is_separator(message):
+        message = localized_message(text) or next(
+            (line for line in lines if not _is_separator(line) and not line.startswith("ERROR:")),
+            f"gcloud exited {returncode}",
+        )
 
     fix = None
     lowered = text.lower()
@@ -241,7 +283,7 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
         message = "no active gcloud account"
         fix = "gcloud auth login"
 
-    return message, fix
+    return message, fix, text
 
 
 def quota_request_command(
