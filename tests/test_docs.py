@@ -40,6 +40,9 @@ ERROR_PHRASES = [
     # gpu quota
     "reports no quota for",
     "still pending",
+    # stamping
+    "nothing answered at",
+    "not with ComfyUI",
 ]
 
 

@@ -67,3 +67,21 @@ cloud box will happily answer on the same port and look identical.
 
 [troubleshooting.md](troubleshooting.md) lists every error this tool can print,
 what causes it, and how to fix it.
+
+## 4. Stamp what you tested
+
+```sh
+comfy-qat host stamp local
+```
+
+```
+local · local-git · ComfyUI 0.33.0 · darwin · mps (32GB) · torch 2.13.0 · python 3.12.13
+```
+
+That is the line you paste into a bug report. It is the record almost nothing else
+keeps: a recorded test does not carry it, and a hand-written report usually does
+not either — which is how "cannot reproduce" happens between two machines that were
+never the same in the first place.
+
+`--json` gives the same thing machine-readably, using the field names ComfyUI itself
+uses, so anything else that reads them can consume it directly.
