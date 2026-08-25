@@ -54,6 +54,9 @@ comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190
 
 ### The host list
 
+Lives at `~/.config/comfy-qa-tools/hosts.toml`. `comfy-qat host init` writes a
+starter one with your local ComfyUI already in it.
+
 `~/.config/comfy-qa/hosts.toml`:
 
 ```toml
@@ -169,6 +172,18 @@ pip uninstall -y comfy-qa-cli comfy-qa
 ```
 
 Then update any shell alias to point at `comfy-qat`.
+
+## What it writes
+
+One file: `~/.config/comfy-qa-tools/hosts.toml`. That is the whole footprint.
+
+Signing in is gcloud's job, so credentials live in gcloud's own store
+(`~/.config/gcloud/`) and are refreshed by it. **This tool never sees, stores or
+prints a credential.**
+
+It does not touch your ComfyUI installs, your `PATH`, your shell config, or any
+service. It will not overwrite a host list you already have, and running `setup`
+again is safe — it skips whatever is already done.
 
 ## Design
 
