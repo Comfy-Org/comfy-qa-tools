@@ -78,6 +78,30 @@ class Gcloud:
         except json.JSONDecodeError as exc:
             raise GcloudError(f"gcloud returned output that is not JSON: {out[:200]}") from exc
 
+    def run_interactive(self, args: list[str]) -> int:
+        """Run gcloud with the terminal attached, for commands that need a human.
+
+        `gcloud auth login` opens a browser and prompts. Capturing its output
+        would hide the prompt and hang, so stdio is inherited rather than piped.
+        Returns the exit code; nothing is parsed.
+        """
+        if self.runner is not None:
+            return self.runner(args, "interactive")
+
+        exe = self.available()
+        if exe is None:
+            raise GcloudError(
+                "gcloud is not installed or not on PATH.",
+                fix="https://cloud.google.com/sdk/docs/install",
+            )
+        return subprocess.run([exe, *args]).returncode
+
+    def list_projects(self) -> list[dict]:
+        return self.run(["projects", "list"]) or []
+
+    def set_project(self, project: str) -> None:
+        self.run(["config", "set", "project", project], parse_json=False)
+
     # --- the specific calls this tool makes -------------------------------
 
     def active_account(self) -> str | None:

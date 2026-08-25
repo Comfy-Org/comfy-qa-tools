@@ -31,6 +31,12 @@ ERROR_PHRASES = [
     "zero GPU quota",
     "still pending",
     "gcloud timed out",
+    # setup
+    "not signed in to Google Cloud",
+    "sign-in did not complete",
+    "this account has no Google Cloud projects",
+    "no project set and",
+    "no billing account is linked",
 ]
 
 
@@ -56,8 +62,16 @@ def test_docs_do_not_reference_the_old_command_name():
             assert "comfy-qa " not in line, f"{page.name}: stale command name in {line!r}"
 
 
-def test_guide_names_the_four_first_run_steps():
+def test_guide_leads_with_the_single_setup_command():
+    """Setup is one command. If guide ever lists steps again, this fails."""
     from comfy_qa.cli import FIRST_RUN
 
-    for step in ["gcloud auth login", "auth status", "host init", "host list"]:
-        assert step in FIRST_RUN
+    assert "comfy-qat setup" in FIRST_RUN
+    for follow_up in ["host list", "auth status"]:
+        assert follow_up in FIRST_RUN
+
+
+def test_getting_started_leads_with_setup_not_a_command_list():
+    text = (DOCS / "getting-started.md").read_text()
+    assert "comfy-qat setup" in text
+    assert text.index("comfy-qat setup") < text.index("comfy-qat host list")

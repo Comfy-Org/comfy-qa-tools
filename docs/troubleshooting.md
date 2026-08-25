@@ -36,6 +36,29 @@ tunnel uses, because that is the number you will type into a browser.
 **`port 80 is outside 1024-65535`**
 Ports below 1024 need root. Pick a high one.
 
+## Setup
+
+Setup stops rather than guessing whenever the fix is something only you can do. It
+is safe to run again: it skips whatever is already done.
+
+**`not signed in to Google Cloud`**
+You used `--non-interactive`, so setup would not open a browser. Run
+`gcloud auth login`, then setup again.
+
+**`sign-in did not complete`**
+The browser sign-in was cancelled or failed. Run `comfy-qat setup` again.
+
+**`this account has no Google Cloud projects`**
+Nothing to work in. Create one at the link printed, then run setup again.
+
+**`no project set and 3 to choose from`**
+You used `--non-interactive` with several projects, so setup will not pick for you.
+Name it: `comfy-qat setup --project <id>`.
+
+**`no billing account is linked to <project>, so no instance can start`**
+Only you can attach billing. The error prints the direct link; do that, then run
+setup again.
+
 ## Google Cloud
 
 **`gcloud is not installed or not on PATH`**
