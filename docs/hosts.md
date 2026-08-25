@@ -18,6 +18,11 @@ gce_project  = "your-project-id"
 port         = 8190
 ```
 
+Most of it is filled in for you. `comfy-qat setup` and `comfy-qat host discover`
+read your Compute Engine instances and write an entry for each one, assigning a free
+local port. Matching is on the GCE instance name, so renaming a host in this file
+does not make it come back as a duplicate.
+
 ## Fields
 
 | field | applies to | meaning |

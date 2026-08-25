@@ -127,6 +127,10 @@ Approval can take days. Run the same command again to keep waiting, or
 `comfy-qat auth quota list` to check. The console link printed with the request
 shows the same thing.
 
+**`could not list cloud boxes (...)`** during setup
+Discovery failed, so nothing was added. Setup finishes anyway; add hosts by hand
+from [hosts.md](hosts.md), or run `comfy-qat host discover` later.
+
 **`could not read GPU quota (...)`** during setup
 Setup carries on regardless — quota can take days to change and is never a reason
 to strand you mid-setup. Check it afterwards with `comfy-qat auth quota`.

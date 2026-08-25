@@ -34,6 +34,7 @@ do on purpose.
 ```sh
 comfy-qat host init        # write a starter host list
 comfy-qat host list        # show every declared machine
+comfy-qat host discover    # find cloud boxes and add them
 comfy-qat host stamp local # what is this machine, exactly?
 comfy-qat host            # same as list — read-only is the safe default
 ```
@@ -54,8 +55,10 @@ comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190
 
 ### The host list
 
-Lives at `~/.config/comfy-qa-tools/hosts.toml`. `comfy-qat host init` writes a
-starter one with your local ComfyUI already in it.
+Lives at `~/.config/comfy-qa-tools/hosts.toml`. `comfy-qat setup` writes it and
+fills in your cloud boxes automatically — Google already knows each one's zone,
+card and operating system, so none of it needs typing. `comfy-qat host discover`
+does the same on demand, and never touches entries you already have.
 
 `~/.config/comfy-qa/hosts.toml`:
 

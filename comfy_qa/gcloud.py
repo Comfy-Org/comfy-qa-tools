@@ -139,6 +139,12 @@ class Gcloud:
         ], timeout=QUOTA_TIMEOUT) or []
         return [q for q in infos if "GPU" in (q.get("quotaId") or "").upper()]
 
+    def list_instances(self, project: str) -> list[dict]:
+        """Every Compute Engine instance on the project, across all zones."""
+        return self.run([
+            "compute", "instances", "list", f"--project={project}",
+        ]) or []
+
     def quota_preferences(self, project: str) -> list[dict]:
         return self.run([
             "quotas", "preferences", "list", f"--project={project}",
