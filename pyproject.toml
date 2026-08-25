@@ -1,17 +1,17 @@
 [project]
-name = "comfy-qa-cli"
+name = "comfy-qa-tools"
 version = "0.1.0"
 description = "QA tooling for testing Comfy — know what you are testing, and record it"
-requires-python = ">=3.10"
+requires-python = ">=3.11"  # tomllib
 dependencies = ["typer>=0.12.5"]
 
 [project.scripts]
-comfy-qa-cli = "comfy_qa.commands:main"
+comfy-qat = "comfy_qa.cli:main"
 
 # Once comfy-cli ships a plugin entry-point group upstream, this is the only
 # change needed to become a true `comfy qa` subcommand:
 # [project.entry-points."comfy_cli.commands"]
-# qa = "comfy_qa.commands:register"
+# qa = "comfy_qa.cli:register"
 
 [build-system]
 requires = ["setuptools>=68"]
