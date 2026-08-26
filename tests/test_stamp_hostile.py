@@ -235,9 +235,19 @@ def test_a_body_that_never_ends_is_not_read_into_memory():
         def __exit__(self, *exc):
             return False
 
-    with pytest.raises(ProbeError):
+    with pytest.raises(ProbeError) as caught:
         fetch("http://127.0.0.1:8190", host="comfy-win",
               opener=lambda request, timeout=None: Endless())
+
+    # Two properties, and only the first was pinned. `Endless` asserts on an
+    # unbounded read, so a dropped `read(MAX_BODY + 1)` fails loudly. But the
+    # refusal that follows it was covered only by `raises(ProbeError)`, and
+    # deleting that check still raises — an oversized body just falls through to
+    # the generic "not with ComfyUI's" after a second wasted round-trip. Proven
+    # by removing the check: the suite stayed green at 965. So the size is named
+    # here, because "1024KB" is what tells someone the port is streaming at them
+    # rather than serving something merely unrecognisable.
+    assert "more than" in str(caught.value)
 
 
 # --- the declared machine and the answering machine ---------------------------
