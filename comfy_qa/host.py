@@ -462,7 +462,16 @@ def stamp_cmd(
 
 
 @app.callback(invoke_without_command=True)
-def default(ctx: typer.Context) -> None:
-    """With no subcommand, listing is the safe thing to do."""
+def default(
+    ctx: typer.Context,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+) -> None:
+    """With no subcommand, listing is the safe thing to do.
+
+    `--config` is accepted here as well as on the subcommands: every other
+    command takes it, so `host --config x` failing as a usage error is a
+    surprise, and a surprise on the read-only default is a bad one.
+    """
     if ctx.invoked_subcommand is None:
-        ctx.invoke(list_cmd, config=None)
+        ctx.invoke(list_cmd, config=config)

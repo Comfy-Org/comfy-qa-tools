@@ -76,11 +76,30 @@ def test_every_error_has_a_troubleshooting_entry(phrase):
     )
 
 
+def _occurrences(line: str, needle: str) -> list[int]:
+    found, start = [], line.find(needle)
+    while start != -1:
+        found.append(start)
+        start = line.find(needle, start + 1)
+    return found
+
+
 def test_docs_do_not_reference_the_old_command_name():
-    """The binary is comfy-qat; comfy-qa is a different project's binary."""
+    """The binary is comfy-qat; comfy-qa is a different project's binary.
+
+    Naming the old name to *remove* it is the one legitimate use, so an uninstall
+    line is exempt. Telling someone to run it never is.
+    """
     for page in DOCS.glob("*.md"):
         for line in page.read_text().splitlines():
-            assert "comfy-qa " not in line, f"{page.name}: stale command name in {line!r}"
+            if "pip uninstall" in line:
+                continue
+            # A path that happens to contain the name is not an invocation.
+            invocations = [
+                index for index in _occurrences(line, "comfy-qa ")
+                if index == 0 or line[index - 1] not in "/-"
+            ]
+            assert not invocations, f"{page.name}: stale command name in {line!r}"
 
 
 def test_guide_leads_with_the_single_setup_command():
@@ -132,3 +151,23 @@ def test_no_superseded_planning_documents_remain():
     root = DOCS.parent
     for name in ("ROADMAP.md", "DEVELOPMENT.md"):
         assert not (root / name).exists(), f"{name} is superseded and should be gone"
+
+
+def test_the_test_criteria_are_actually_pasteable():
+    """The first version opened with `QAT=/path/to/venv/bin/comfy-qat`.
+
+    A tester pasted it verbatim — which is the correct thing to do with a block
+    labelled copy-paste — and every one of the forty checks after it failed on a
+    path that does not exist. A placeholder inside a runnable block is a bug.
+    """
+    text = (DOCS / "test-criteria.md").read_text()
+    assert "/path/to/" not in text
+    assert "<your-" not in text
+
+    # The preamble has to define what every later block leans on.
+    for name in ["VENV=", "REPO=", "QAT=", "PY=", "qat()"]:
+        assert name in text, f"the preamble does not set {name}"
+
+    # `python` is not on PATH on a stock macOS; the venv's interpreter is.
+    for line in text.splitlines():
+        assert not line.strip().startswith("python "), f"bare python in {line!r}"
