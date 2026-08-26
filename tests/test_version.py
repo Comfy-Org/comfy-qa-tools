@@ -8,6 +8,8 @@ from one place, the commit appears when there is one, and neither goes missing.
 
 from __future__ import annotations
 
+import re
+
 import subprocess
 import sys
 import tomllib
@@ -138,8 +140,29 @@ def test_the_changelog_names_the_version_that_ships():
     )
 
 
+def _plain(text: str) -> str:
+    """Help output as words, with the box drawing and the wrapping taken out.
+
+    Rich renders `--help` into a panel whose width comes from the terminal, and
+    CI has no terminal. This assertion passed locally and failed on all four CI
+    jobs because the flag had been wrapped onto its own line inside a box. The
+    test was checking the rendering, not the fact.
+    """
+    without_ansi = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    without_box = re.sub(r"[│╭╮╰╯─┃━]", " ", without_ansi)
+    return " ".join(without_box.split())
+
+
 def test_help_documents_the_version_flag():
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "--version" in result.output
+    assert "--version" in _plain(result.output)
+
+
+def test_the_version_flag_works_at_any_terminal_width():
+    """The flag itself, not its help rendering — this is the fact that matters."""
+    for width in ("40", "80", "200"):
+        result = runner.invoke(app, ["--version"], env={"COLUMNS": width})
+        assert result.exit_code == 0, f"at COLUMNS={width}: {result.output}"
+        assert "comfy-qat" in _plain(result.output)
