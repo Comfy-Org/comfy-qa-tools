@@ -287,12 +287,13 @@ class Clock:
 
 
 def fake_tunnel_launcher(processes: list) -> callable:
-    """A launcher that starts a real, harmless process that looks like a tunnel.
+    """A launcher that starts a real, harmless process that stands in for a tunnel.
 
-    Not a made-up pid: the pid file, the liveness check, the "is this still our
-    process" check and the SIGTERM in `down` all have to work against something
-    real, and the staleness check reads the process's command line — so the
-    stand-in carries the same argv a tunnel would.
+    Not a made-up pid: the pid file, the liveness check and the SIGTERM in `down`
+    all have to work against something real. It carries the tunnel's argv too, so
+    the process reads as one to anybody looking; what the tool itself asks — "is
+    this still the process I recorded" — is answered by the table in conftest.py,
+    so no result here depends on this platform's `ps`.
     """
 
     def launch(cmd: list[str], log: Path) -> int:

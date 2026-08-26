@@ -56,6 +56,25 @@ build now has a version worth quoting.
 
 ### Fixes worth knowing
 
+- A tunnel was trusted on the strength of a process id alone. Pids are recycled,
+  so a stale pid file read as "tunnel already open" and `down` would SIGTERM
+  whatever now owned that number. The record now names the instance, zone, port
+  and the moment the process started, and all of it has to still fit.
+- `open` never looked at the port. Anything else already holding it — another
+  box's tunnel, a dev server, a run that never died — meant the URL handed back
+  answered for that instead. It is now refused rather than reported.
+- `stamp` reported fields it had not actually been told. Comfy Cloud sends `os`,
+  `python_version` and `pytorch_version` as empty strings, and the line printed
+  them as facts while `--json` disagreed about which ones it had. A field that
+  cannot be read is now absent from both. Cloud is also reached on its `/api`
+  alias instead of being called a wrong port, VRAM no longer rounds a 256 MB
+  device to `0GB`, four identical cards are one fact rather than 180 characters,
+  and 401/403/404 are told apart from nothing answering at all.
+- `stamp` accepted any JSON as ComfyUI, and followed redirects, so a health
+  endpoint stamped as a machine and a 302 could report the local Mac under a
+  cloud box's name. Both are refused; a hostile field can no longer forge parts
+  of the evidence line. `stamp.mismatch()` can now compare the machine that
+  answered against the one your host list declared; nothing calls it yet.
 - `go` swallowed the real failure and then tried SSH against a stopped box. (#16)
 - Capacity stockouts were reported as generic start failures; they are now named,
   and the zone Google suggests is repeated back. (#17, #18)

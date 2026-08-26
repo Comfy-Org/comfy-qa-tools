@@ -117,12 +117,14 @@ def test_closing_never_signals_a_process_that_is_not_our_tunnel(tmp_path, proces
 
 def test_when_the_process_cannot_be_read_the_pid_is_still_believed(tmp_path, processes):
     """On a machine where `ps` says nothing, the old behaviour is the safe one:
-    an unrecognised tunnel would be stacked on top of a live one."""
-    other = _something_else(processes)
-    pid_file("comfy-win", tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    pid_file("comfy-win", tmp_path).write_text(str(other.pid))
+    an unrecognised tunnel would be stacked on top of a live one.
 
-    state = status("comfy-win", tmp_path, inspect=lambda pid: "")
+    The identity check has to degrade to "trust the record", not to "there is no
+    tunnel" — the second is what stacks a second tunnel on a live port.
+    """
+    open_tunnel(WIN, tmp_path, launcher=_looks_like_a_tunnel(processes))
+
+    state = status("comfy-win", tmp_path, identify=lambda pid: "")
     assert state.running is True
 
 
@@ -180,15 +182,13 @@ def test_a_tunnel_that_dies_on_startup_never_gets_a_pid_file(tmp_path, real_spaw
     assert not pid_file("comfy-win", tmp_path).exists()
 
 
-def test_a_tunnel_that_stays_up_is_handed_back(tmp_path):
+def test_a_tunnel_that_stays_up_is_handed_back(tmp_path, real_spawn):
     """The other half of the same check: a healthy tunnel must not be mistaken
     for a dead one just because it has not finished connecting yet."""
     import os
     import signal
 
-    import comfy_qa.tunnel as tunnel_module
-
-    pid = tunnel_module._spawn(
+    pid = real_spawn(
         [sys.executable, "-c", "import time; time.sleep(60)"],
         tmp_path / "comfy-win.log", grace=0.2)
     try:

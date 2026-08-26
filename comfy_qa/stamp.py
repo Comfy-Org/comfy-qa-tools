@@ -9,20 +9,40 @@ Key names match what `comfy-test` reads from the same endpoint — `comfyui_vers
 `cloud_version`, `deploy_environment` — so anything already speaking that vocabulary
 can consume this without anyone negotiating a format.
 
+A stamp is pasted into a report and believed, which is what makes both of the
+rules below non-negotiable.
+
 **The endpoint is not a contract.** Across the machines this tool is pointed at,
 the same field arrives as a string, as `null`, as an empty string, or not at all:
 Comfy Cloud reports `os`, `python_version` and `pytorch_version` as `""`; a
-ComfyUI old enough has no `comfyui_version` at all. Because this line is pasted
-into bug reports as evidence, a wrong field is worse than a missing one, so
-everything here follows one rule: **a field we cannot read is absent — from the
-line and from the JSON alike — never guessed, and never a placeholder.**
+ComfyUI old enough has no `comfyui_version` at all. A wrong field is worse than a
+missing one, so **a field we cannot read is absent — from the line and from the
+JSON alike — never guessed, and never a placeholder.**
+
+**The answerer is a stranger.** A port is answered by whoever holds it, and on
+the near end of a tunnel that need not be the machine you named. So **nothing the
+answer says is trusted further than it can be checked**:
+
+  * a JSON body is not proof of ComfyUI — the payload has to carry enough of
+    `/system_stats`'s own vocabulary, or the probe fails rather than stamping a
+    health endpoint as a machine;
+  * a redirect is refused — anything on that port can answer 302 and send the
+    probe to the ComfyUI on 8188, which would record this Mac under a cloud box's
+    name;
+  * every value is text chosen by the machine that answered, so it is cleaned and
+    bounded before it reaches a line someone pastes;
+  * the body is capped — a wrong service can stream forever, and the timeout
+    covers each read, not the total;
+  * no shape of answer produces a traceback.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 
@@ -35,6 +55,44 @@ TIMEOUT = 10
 # that something else is listening on the port.
 PATHS = ("/system_stats", "/api/system_stats")
 
+# /system_stats is a few hundred bytes. Anything past this is not that endpoint,
+# and a wrong service can stream for as long as it likes: the timeout covers each
+# read, not the total.
+MAX_BODY = 1 << 20
+
+# The separator is structure, so no value may contain it — otherwise a field can
+# forge extra segments and a line reads as facts the machine never claimed.
+SEPARATOR = " · "
+
+_FIELD_LIMIT = 64
+_LINE_LIMIT = 300
+_MAX_DEVICES = 8
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+# Enough of ComfyUI's own vocabulary that a health endpoint cannot pass for it.
+# Every field the parser reads is optional, so without this check `{"ok": true}`
+# stamps cleanly as the bare host name.
+_SYSTEM_STATS_KEYS = (
+    "comfyui_version", "python_version", "pytorch_version", "os", "ram_total",
+    "argv", "embedded_python", "required_frontend_version",
+)
+
+# ComfyUI formats a CUDA device as `"{device} {name} : {allocator_backend}"`.
+# The allocator backend is a torch build detail, not machine identity, and when
+# it is empty the name ends in a dangling `" : "`. Neither belongs in a line
+# somebody has to read at a glance.
+_ALLOCATOR_SUFFIX = re.compile(r"\s:\s*\w*\Z")
+
+# `cuda:0 NVIDIA L4` -> `NVIDIA L4`, used only to recognise that the four cards
+# in a multi-GPU box are the same card. The ordinal is kept whenever a device
+# is reported on its own.
+_ORDINAL_PREFIX = re.compile(r"\A[a-z]+:\d+\s+")
+
+# A VRAM figure the server already humanised, e.g. `"22.0 GB"`. Matched strictly,
+# because the whole point is to tell a size the server wrote out from a string
+# that is not a size at all.
+_HUMAN_VRAM = re.compile(r"\A\d+(?:[.,]\d+)?\s*(?:[KMGTP]i?B|bytes?)\Z", re.IGNORECASE)
+
 
 class ProbeError(Exception):
     """The machine could not be asked. `fix` is what to do about it."""
@@ -42,6 +100,136 @@ class ProbeError(Exception):
     def __init__(self, message: str, fix: str | None = None) -> None:
         super().__init__(message)
         self.fix = fix
+
+
+def _clean(value: object, limit: int = _FIELD_LIMIT) -> str | None:
+    """One field, as text safe to print, paste and read back — or `None`.
+
+    Two jobs, and both are load-bearing.
+
+    Unknown is unknown: `""`, `"   "`, `null` and a missing key all mean the same
+    thing to a reader, and all come back `None`. Booleans are rejected outright —
+    `True` is not a version string, and `isinstance(True, int)` would otherwise
+    let it through as `"True"`. So is anything that is not scalar: a list or a
+    table is not a field we can read, and `"['3.12.13']"` would be an invention
+    rather than a fact.
+
+    And the text is the answering machine's, not ours: control characters would
+    move a terminal cursor, newlines would split the evidence line in two, the
+    separator would forge a field, and an unbounded value would bury the report.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        value = str(value)
+    elif not isinstance(value, str):
+        return None
+    text = _CONTROL.sub(" ", value).replace(SEPARATOR.strip(), " ")
+    text = " ".join(text.split())
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _mapping(value: object) -> dict:
+    """`system` is supposed to be an object. Sometimes it is not."""
+    return value if isinstance(value, dict) else {}
+
+
+def _short_python(raw: object) -> str | None:
+    """`3.12.13 (main, ...) [Clang]` -> `3.12.13`. The rest is noise in a report."""
+    text = _clean(raw)
+    if not text:
+        return None
+    return text.split()[0] or None
+
+
+def _gigabytes(total: float) -> str | None:
+    """Bytes as GB, or `None` when there is nothing honest to say.
+
+    Rounding a real 256 MB device to `0GB` reads as "no VRAM", which is a
+    different and wrong claim, so small devices keep their decimals.
+    """
+    if total <= 0:
+        return None
+    gb = total / 1024**3
+    if gb >= 10:
+        return f"{round(gb)}GB"
+    if gb >= 1:
+        return f"{gb:.1f}GB".replace(".0GB", "GB")
+    return f"{gb:.2f}GB"
+
+
+def _vram(total: object) -> str | None:
+    """VRAM as the server reported it: raw bytes, or already humanised.
+
+    A string that is a size is repeated verbatim, because re-deriving a number
+    from `"22.0 GB"` would only be guessing at the units. A string that is not a
+    size — `"lots"`, or whatever else a stranger on the port decides to send — is
+    not a fact about any hardware, so the device is named without one.
+    """
+    if isinstance(total, bool):
+        return None
+    if isinstance(total, (int, float)):
+        return _gigabytes(total)
+    text = _clean(total, limit=24)
+    if text is None:
+        return None
+    try:
+        return _gigabytes(float(text))
+    except ValueError:
+        pass
+    return text if _HUMAN_VRAM.match(text) else None
+
+
+def _devices(payload: dict) -> list[str]:
+    """Name each accelerator, with its VRAM when the server reports it.
+
+    This is what proves a result is hardware-specific — the difference between
+    "doesn't repro" and "doesn't repro on MPS". One entry per device, in the
+    order ComfyUI reported them (primary first); `line()` is what collapses a
+    row of identical cards.
+
+    Shapes other than a list of tables happen: this is whatever answered on the
+    port, not a schema. The count is capped because how many devices come back
+    is the answerer's choice too.
+    """
+    entries = payload.get("devices")
+    if not isinstance(entries, list):
+        return []
+
+    named = []
+    for device in entries[:_MAX_DEVICES]:
+        if not isinstance(device, dict):
+            continue
+        name = _clean(device.get("name")) or _clean(device.get("type"))
+        if not name:
+            continue
+        name = _ALLOCATOR_SUFFIX.sub("", name).strip()
+        if not name:
+            continue
+        vram = _vram(device.get("vram_total"))
+        named.append(f"{name} ({vram})" if vram else name)
+    return named
+
+
+def _summarise(devices: list[str]) -> list[str]:
+    """Collapse a run of identical cards. Eight GPUs are not eight facts.
+
+    Four L4s otherwise spend 180 characters saying the same thing four times,
+    and the line stops being something anyone pastes. A lone device keeps its
+    ordinal, because with one card `cuda:0` is the whole of what is known.
+    """
+    groups: list[list] = []
+    for label in devices:
+        label = str(label)
+        key = _ORDINAL_PREFIX.sub("", label)
+        if groups and groups[-1][0] == key:
+            groups[-1][1] += 1
+        else:
+            groups.append([key, 1, label])
+    return [f"{count} x {key}" if count > 1 else first
+            for key, count, first in groups]
 
 
 @dataclass
@@ -69,7 +257,14 @@ class Stamp:
         Ordered by what a reader needs first: which machine, then what it runs,
         then the details that explain a hardware-specific result.
         """
-        parts = [self.host.strip() or self.url]
+        # The host name comes out of a config file and the url from a caller, so
+        # neither is guaranteed to be printable text — hence `_clean`. But a bare
+        # `"?"` when it cleans away is worse than the problem it solves: the first
+        # segment is the only thing telling a reader which machine the rest of the
+        # line is about, and a stamp that cannot name where it came from is not
+        # evidence. Fall back to the url, which at least says where the answer was
+        # fetched from; `"?"` is the last resort when even that is unreadable.
+        parts = [_clean(self.host) or _clean(self.url, limit=_LINE_LIMIT) or "?"]
         if self.deploy_environment:
             parts.append(self.deploy_environment)
         if self.comfyui_version:
@@ -78,14 +273,18 @@ class Stamp:
             parts.append(f"cloud {self.cloud_version}")
         if self.os:
             parts.append(self.os)
-        summary = _summarise(self.devices)
+        # Summarised *and* bounded: identical cards collapse to one fact, and
+        # whatever survives that is still capped, because how many devices get
+        # reported is the answering machine's choice.
+        summary = _summarise(self.devices)[:_MAX_DEVICES]
         if summary:
             parts.append(" + ".join(summary))
         if self.pytorch_version:
             parts.append(f"torch {self.pytorch_version}")
         if self.python_version:
             parts.append(f"python {self.python_version}")
-        return " · ".join(parts)
+        line = SEPARATOR.join(str(part) for part in parts)
+        return line if len(line) <= _LINE_LIMIT else line[: _LINE_LIMIT - 1] + "…"
 
     def as_dict(self) -> dict:
         """The same capture, machine-readable, under ComfyUI's own key names.
@@ -100,153 +299,48 @@ class Stamp:
         }
 
 
-def _text(value: object) -> str | None:
-    """A field as text, or `None` when the server told us nothing usable.
+def looks_like_comfyui(payload: object) -> bool:
+    """Is this ComfyUI's `/system_stats`, or just something that speaks JSON?
 
-    `""`, `"   "`, `null` and a missing key all mean the same thing to a reader:
-    unknown. Booleans are rejected outright — `True` is not a version string,
-    and `isinstance(True, int)` would otherwise let it through as `"True"`.
+    Every field the parser reads is optional, so without this a health endpoint
+    on the port stamps cleanly as the bare host name — a line that looks like a
+    successful probe and says nothing true about any machine.
     """
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, str):
-        return value.strip() or None
-    return None
-
-
-def _mapping(value: object) -> dict:
-    """`system` is supposed to be an object. Sometimes it is not."""
-    return value if isinstance(value, dict) else {}
-
-
-def _short_python(raw: object) -> str | None:
-    """`3.12.13 (main, ...) [Clang]` -> `3.12.13`. The rest is noise in a report."""
-    text = _text(raw)
-    if text is None:
-        return None
-    return text.split()[0]
-
-
-# ComfyUI formats a CUDA device as `"{device} {name} : {allocator_backend}"`.
-# The allocator backend is a torch build detail, not machine identity, and when
-# it is empty the name ends in a dangling `" : "`. Neither belongs in a line
-# somebody has to read at a glance.
-_ALLOCATOR_SUFFIX = re.compile(r"\s:\s*\w*\Z")
-
-# `cuda:0 NVIDIA L4` -> `NVIDIA L4`, used only to recognise that the four cards
-# in a multi-GPU box are the same card. The ordinal is kept whenever a device
-# is reported on its own.
-_ORDINAL_PREFIX = re.compile(r"\A[a-z]+:\d+\s+")
-
-
-def _gigabytes(total: float) -> str | None:
-    """Bytes as GB, or `None` when there is nothing honest to say.
-
-    Rounding a real 256 MB device to `0GB` reads as "no VRAM", which is a
-    different and wrong claim, so small devices keep their decimals.
-    """
-    if total <= 0:
-        return None
-    gb = total / 1024**3
-    if gb >= 10:
-        return f"{round(gb)}GB"
-    if gb >= 1:
-        return f"{gb:.1f}GB".replace(".0GB", "GB")
-    return f"{gb:.2f}GB"
-
-
-def _vram(total: object) -> str | None:
-    """VRAM as the server reported it: raw bytes, or already humanised."""
-    if isinstance(total, bool):
-        return None
-    if isinstance(total, (int, float)):
-        return _gigabytes(total)
-    if isinstance(total, str):
-        text = total.strip()
-        if not text:
-            return None
-        try:
-            return _gigabytes(float(text))
-        except ValueError:
-            # Already a human string like "22.0 GB". Repeat it verbatim rather
-            # than trying to re-derive a number we would only be guessing at.
-            return text
-    return None
-
-
-def _devices(payload: dict) -> list[str]:
-    """Name each accelerator, with its VRAM when the server reports it.
-
-    This is what proves a result is hardware-specific — the difference between
-    "doesn't repro" and "doesn't repro on MPS". One entry per device, in the
-    order ComfyUI reported them (primary first); `line()` is what collapses a
-    row of identical cards.
-    """
-    entries = payload.get("devices")
-    if not isinstance(entries, list):
-        return []
-
-    named = []
-    for device in entries:
-        if not isinstance(device, dict):
-            continue
-        name = _text(device.get("name")) or _text(device.get("type"))
-        if not name:
-            continue
-        name = _ALLOCATOR_SUFFIX.sub("", name).strip()
-        if not name:
-            continue
-        vram = _vram(device.get("vram_total"))
-        named.append(f"{name} ({vram})" if vram else name)
-    return named
-
-
-def _summarise(devices: list[str]) -> list[str]:
-    """Collapse a run of identical cards. Eight GPUs are not eight facts.
-
-    Four L4s otherwise spend 180 characters saying the same thing four times,
-    and the line stops being something anyone pastes. A lone device keeps its
-    ordinal, because with one card `cuda:0` is the whole of what is known.
-    """
-    groups: list[list] = []
-    for label in devices:
-        key = _ORDINAL_PREFIX.sub("", label)
-        if groups and groups[-1][0] == key:
-            groups[-1][1] += 1
-        else:
-            groups.append([key, 1, label])
-    return [f"{count} x {key}" if count > 1 else first
-            for key, count, first in groups]
+    if not isinstance(payload, dict):
+        return False
+    system = payload.get("system")
+    if not isinstance(system, dict):
+        return False
+    return any(key in system for key in _SYSTEM_STATS_KEYS)
 
 
 def parse(payload: dict, *, host: str, url: str) -> Stamp:
     """Turn a /system_stats body into a Stamp. Tolerant of missing fields."""
-    system = _mapping(payload.get("system"))
+    top = payload if isinstance(payload, dict) else {}
+    system = _mapping(top.get("system"))
     return Stamp(
         host=host,
         url=url,
-        os=_text(system.get("os")),
-        devices=_devices(payload),
-        comfyui_version=_text(system.get("comfyui_version")),
+        os=_clean(system.get("os")),
+        devices=_devices(top),
+        comfyui_version=_clean(system.get("comfyui_version")),
         python_version=_short_python(system.get("python_version")),
-        pytorch_version=_text(system.get("pytorch_version")),
+        pytorch_version=_clean(system.get("pytorch_version")),
         # Present on cloud deployments, absent locally. Both are fine.
         cloud_version=(
-            _text(system.get("cloud_version")) or _text(payload.get("cloud_version"))
+            _clean(system.get("cloud_version")) or _clean(top.get("cloud_version"))
         ),
         deploy_environment=(
-            _text(system.get("deploy_environment"))
-            or _text(payload.get("deploy_environment"))
+            _clean(system.get("deploy_environment"))
+            or _clean(top.get("deploy_environment"))
         ),
     )
 
 
-def _read(opener, url: str) -> object:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with opener(request, timeout=TIMEOUT) as response:
-        return json.loads(response.read().decode("utf-8"))
+def _where(url: str) -> str:
+    """The machine half of a URL. Which path answered does not matter; who did."""
+    parsed = urllib.parse.urlsplit(url)
+    return parsed.netloc or url
 
 
 def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
@@ -255,27 +349,79 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
     Tries the bare path first, then the `/api` alias, because a Comfy Cloud
     deployment answers the bare path with its HTML shell and a 200 — which is
     indistinguishable from "wrong port" unless you go on to ask properly.
+
+    Everything the far end sends is checked before it is believed: it must not
+    have redirected somewhere else, it must be small enough to be that endpoint,
+    and it must speak `/system_stats`'s vocabulary rather than merely JSON.
     """
     base = url.rstrip("/")
     http_error: urllib.error.HTTPError | None = None
 
     for path in PATHS:
+        asked = base + path
         try:
-            payload = _read(opener, base + path)
+            request = urllib.request.Request(asked, headers={"User-Agent": USER_AGENT})
+        except ValueError as exc:
+            # A malformed url fails identically on both paths; nothing to retry.
+            raise ProbeError(
+                f"{url!r} is not a URL this can ask: {exc}",
+                fix="give the host a scheme and a port, as in http://127.0.0.1:8188",
+            ) from exc
+
+        try:
+            response = opener(request, timeout=TIMEOUT)
         except urllib.error.HTTPError as exc:
             # Something is definitely there — it just refused this path.
             http_error = exc
             continue
-        except OSError as exc:
-            # URLError and bare socket failures alike: nothing is listening.
+        except (OSError, http.client.HTTPException) as exc:
+            # URLError, bare socket failures, and a connection closed before any
+            # response at all: nothing usable is listening, and the `/api` alias
+            # will not change that.
             raise ProbeError(
                 f"nothing answered at {url}",
                 fix="start ComfyUI on that machine, or check the port in your host list",
             ) from exc
+
+        try:
+            with response:
+                # Where the answer actually came from — which urllib will have
+                # followed a redirect to reach, without saying so.
+                answered = getattr(response, "geturl", lambda: asked)()
+                body = response.read(MAX_BODY + 1)
+        except (OSError, http.client.HTTPException) as exc:
+            # A read timeout is not a URLError, and a tunnel dropping mid-answer
+            # is routine. Neither is a traceback.
+            raise ProbeError(
+                f"{url} stopped answering part-way through: {exc}",
+                fix="check the tunnel is still open, then try again",
+            ) from exc
+
+        # Both of these say the far end is not the machine that was asked — not
+        # that this was the wrong path — so they stop the probe rather than
+        # falling through to the alias.
+        if _where(answered) != _where(asked):
+            raise ProbeError(
+                f"{url} redirected to {_where(answered)} — that is a different machine, "
+                "so anything it says would be recorded under the wrong name.",
+                fix="check the port — something else may be listening on it",
+            )
+
+        if len(body) > MAX_BODY:
+            raise ProbeError(
+                f"{url} answered with more than {MAX_BODY // 1024}KB, which /system_stats "
+                "never does",
+                fix="check the port — something else may be listening on it",
+            )
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             continue  # answered, but not with JSON — try the other path
-        if isinstance(payload, dict):
+
+        if looks_like_comfyui(payload):
             return parse(payload, host=host, url=url)
+        # JSON, but not this endpoint's vocabulary. The alias may still be real.
 
     if http_error is not None:
         code = http_error.code
@@ -291,6 +437,50 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
         )
 
     raise ProbeError(
-        f"{url} answered, but not with ComfyUI's /system_stats",
+        f"{url} answered, but not with ComfyUI's /system_stats. Something else is "
+        "on that port, and a stamp from it would name the wrong machine.",
         fix="check the port — something else may be listening on it",
     )
+
+
+# Matched as substrings, so every token has to be one that cannot turn up inside
+# another operating system's name: "nt" alone reads "ubuntu" as Windows.
+_OS_FAMILIES = {
+    "windows": ("windows", "win32", "winnt", "microsoft"),
+    "linux": ("linux", "ubuntu", "debian", "centos", "rocky", "fedora"),
+    "darwin": ("darwin", "macos", "mac os", "osx"),
+}
+
+
+def _family(text: str | None) -> str | None:
+    lowered = (text or "").lower()
+    for family, words in _OS_FAMILIES.items():
+        if any(word in lowered for word in words):
+            return family
+    return None
+
+
+def mismatch(host, stamp: Stamp) -> str | None:
+    """Does the machine that answered contradict the machine you declared?
+
+    The host list says what a box is; the stamp says what answered on its port.
+    When those disagree the port is not reaching the box you named — which is the
+    wrong-machine failure, arriving as a line that otherwise looks like evidence.
+    Returns None when there is nothing to compare, because `os` and `gpu` are
+    optional for a local host.
+    """
+    declared, answering = _family(getattr(host, "os", None)), _family(stamp.os)
+    if declared and answering and declared != answering:
+        return (
+            f"{host.name} is declared as {host.os}, but {stamp.url} answered as "
+            f"{stamp.os}. That port is not reaching {host.name}."
+        )
+
+    gpu = (getattr(host, "gpu", None) or "").strip().lower()
+    accelerators = [d for d in stamp.devices if not d.lower().startswith("cpu")]
+    if gpu and accelerators and not any(gpu in d.lower() for d in accelerators):
+        return (
+            f"{host.name} is declared with a {host.gpu}, but {stamp.url} answered with "
+            f"{', '.join(accelerators)}. That port is not reaching {host.name}."
+        )
+    return None

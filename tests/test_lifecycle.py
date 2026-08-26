@@ -54,42 +54,13 @@ def said():
     return lines, lines.append
 
 
-@pytest.fixture(autouse=True)
-def never_a_real_tunnel(monkeypatch):
-    """No test here may start gcloud.
-
-    Every `bring_up` that gets as far as the tunnel used to run the real launcher,
-    which starts a `gcloud compute start-iap-tunnel` against a project that does
-    not exist — so a plain `pytest` left a handful of them behind, each retrying
-    for a minute.
-
-    The stand-in is a real, harmless process carrying a real tunnel's command
-    line, because everything downstream of the pid file is real: the liveness
-    check, the "is this still ours" check, and the SIGTERM that `down` sends. A
-    pid standing in for a tunnel has to be a pid it is safe to kill.
-    """
-    import subprocess
-    import sys
-
-    from comfy_qa import tunnel as tunnel_module
-
-    started = []
-
-    def launch(cmd, log):
-        process = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(60)", *cmd],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        started.append(process)
-        return process.pid
-
-    monkeypatch.setattr(tunnel_module, "_spawn", launch)
-    yield
-    for process in started:
-        try:
-            process.kill()
-            process.wait(timeout=5)
-        except OSError:
-            pass
+# No test here may start gcloud: `bring_up` opens a tunnel for real, and a plain
+# `pytest` used to leave a handful of `gcloud compute start-iap-tunnel` processes
+# behind, each retrying for a minute against a project that does not exist. The
+# stand-in used to live here and launched a real process wearing a tunnel's argv,
+# which made these tests depend on what `ps` says and on the platform's pid range
+# — they passed on macOS and failed on Ubuntu. The one seam now lives in
+# conftest.py, which answers the identity lookup from its own record instead.
 
 
 def test_a_stopped_box_is_started_tunnelled_and_confirmed(tmp_path):

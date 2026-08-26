@@ -131,10 +131,18 @@ def gcloud(statuses: dict[str, object], fail: Exception | None = None):
 
 
 def tunnels(*open_for: str):
-    """Stand in for the tunnel pid files, which live in the real config dir."""
+    """Stand in for the tunnel records, which live in the real config dir.
+
+    An open tunnel is `known` and `verified` as well as `alive`: a live pid on
+    its own stopped meaning "tunnel up" when the records started carrying which
+    machine the tunnel goes to and which process is carrying it. A fake that only
+    sets `alive` describes a stale pid file, which is the opposite of what every
+    caller here is asking for.
+    """
     def status(name, directory=None):
-        return TunnelState(host=name, pid=99 if name in open_for else None,
-                           alive=name in open_for)
+        up = name in open_for
+        return TunnelState(host=name, pid=99 if up else None, alive=up,
+                           known=up, verified=up)
     return status
 
 

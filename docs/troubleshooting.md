@@ -202,6 +202,40 @@ why — most often an expired session, a missing IAP permission, or something
 already holding the local port. **The box is running while this is true**, so the
 fix line ends with the command that stops it.
 
+**`something is already listening on 127.0.0.1:8190, and it is not a tunnel this
+tool opened. A tunnel started now could not bind that port, so
+http://127.0.0.1:8190 would answer for whatever is already there.`**
+The port is checked before gcloud is started, because gcloud that cannot bind
+still runs — so the URL you are handed reaches whoever holds the port, which on
+this Mac is usually a tunnel to a different box or the local ComfyUI. Find it with
+`lsof -nP -iTCP:8190 -sTCP:LISTEN`, or give the host a different port in your host
+list.
+
+**`a tunnel called 'comfy-win' is already open (pid 4242), but it goes to
+comfy-win-2 in us-west1-b on port 8195, not to comfy-win in us-central1-a on port
+8190.`**
+The name is not the machine. A second host list — `--config other.toml`, or an
+edited one — can call a different instance `comfy-win`, and a tunnel is only reused
+when the instance, the zone, the project and the port all match what you asked for.
+`comfy-qat host down comfy-win`, then open this one.
+
+**`another comfy-qat is opening the tunnel to comfy-win right now.`**
+Two terminals opening at once would each start gcloud: one binds the port, the
+other does not, and only one of them ends up recorded — leaving a tunnel running
+that nothing can find or stop. The claim is released as soon as the other command
+finishes, and is assumed abandoned after two minutes. Wait, then run it again.
+
+**`the tunnel to comfy-win started (pid 4242) but could not be recorded: ..., so it
+was closed again.`**
+A tunnel nothing has a record of cannot be closed by `down`: it holds a local port
+onto a machine you are still paying for until someone finds it by hand. So it is
+stopped rather than left running. Check the permissions on
+`~/.config/comfy-qa-tools/tunnels/`, then open it again.
+
+**`comfy-win is local — there is nothing to tunnel. It is at http://127.0.0.1:8188.`**
+The host is not a cloud box, so there is no `--zone` or `--project` to tunnel with.
+Use the URL directly.
+
 **`the tunnel to comfy-win closed, so nothing is listening on http://127.0.0.1:8190 any more. ComfyUI was never reached.`**
 The tunnel opened and then died, which from the near end looks exactly like a box
 with no ComfyUI on it — silence on a port. Only one of those is fixed by going onto
@@ -390,10 +424,38 @@ Nothing is listening on that port. For a local host, ComfyUI is not running. For
 cloud host, either the box is off or the tunnel is not up. Check the port in your
 host list matches what the machine actually serves.
 
-**`http://127.0.0.1:8190 answered, but not with ComfyUI's /system_stats`**
+**`http://127.0.0.1:8190 answered, but not with ComfyUI's /system_stats. Something
+else is on that port, and a stamp from it would name the wrong machine.`**
 Something is on that port, but it is not ComfyUI — a dev server, or another tunnel.
-This is exactly the mix-up the port rules exist to prevent, so it is worth chasing
-rather than working around.
+A JSON body is not enough on its own: a health endpoint answering `{"ok": true}`
+would otherwise stamp cleanly as the bare host name, which reads like a successful
+probe and says nothing true about any machine. So the body has to carry
+`/system_stats`'s own field names before anything is recorded from it. This is
+exactly the mix-up the port rules exist to prevent, so it is worth chasing rather
+than working around.
+
+**`http://127.0.0.1:8190 redirected to 127.0.0.1:8188 — that is a different
+machine, so anything it says would be recorded under the wrong name.`**
+Whatever holds the port answered with a redirect, and following it would have
+stamped a different machine under this host's name — on this Mac, usually the local
+ComfyUI on 8188. ComfyUI does not redirect `/system_stats`, so something else is on
+that port: a proxy, a dev server, or a tunnel pointing somewhere you did not mean.
+Check what is bound to the port before trusting any line from it.
+
+**`http://127.0.0.1:8190 answered with more than 1024KB, which /system_stats never
+does`**
+That endpoint is a few hundred bytes. A body this size means something else is on
+the port — often one that will stream for as long as you keep reading, since the
+timeout covers each read and not the total. Find out what is holding the port.
+
+**`http://127.0.0.1:8190 stopped answering part-way through: ...`**
+The connection opened and then broke mid-answer — a tunnel that dropped, a box that
+went away, or a read that timed out. Different from "nothing answered": something
+was there. Check the tunnel is still open, then run the stamp again.
+
+**`'127.0.0.1:8190' is not a URL this can ask: unknown url type`**
+The host's url is missing its scheme, or is not a url at all. Write it in full, as
+in `http://127.0.0.1:8188` — a bare `host:port` cannot be fetched.
 
 ## Checking environments
 
