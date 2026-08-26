@@ -128,6 +128,15 @@ see [cost.md](cost.md) and ask again later.
 Discovery failed, so nothing was added. Setup finishes anyway; add hosts by hand
 from [hosts.md](hosts.md), or run `comfy-qat host discover` later.
 
+**`could not read your host list (...), so nothing was added to it`**
+Discovery found cloud boxes but your `hosts.toml` will not parse, so setup left it
+completely alone rather than appending to a file it cannot read. That restraint is
+deliberate: appending to a broken list would add a second `[hosts.<name>]` table
+for a box already declared, and a duplicate table is not valid TOML — one fixable
+mistake would become a file nothing can load, on the one command that promises to
+change nothing. The message carries the parse error; fix that in the file, then run
+`comfy-qat host discover`.
+
 ## Starting and stopping
 
 **`ComfyUI is not answering on http://127.0.0.1:8188`**
@@ -300,6 +309,21 @@ exactly.
 **`name what you want: --gpu l4,a100 (or --quota-id for a raw id)`**
 `auth quota request` was run with nothing to request. It will not guess a card for
 you — asking for the wrong one wastes days of approval time.
+
+**`a project-wide allowance only, no specific card granted`**
+`GPUS-ALL-REGIONS-per-project` is a ceiling on how many GPUs you may run in total.
+It is not permission to run any particular card, and on its own it starts nothing —
+which is why this reads as a failure rather than a pass. Ask for an actual card:
+```sh
+comfy-qat auth quota request --gpu l4 --region us-central1
+```
+
+**`this project reports no quota for 'l4' in europe-west4. It is metered in us-central1. Available: L4`**
+You have that card, somewhere else. Quota is granted per region, so an L4 approved
+in `us-central1` does nothing for a box in `europe-west4`. Either build in the
+region that has it, or request it where you want it. The older wording said
+`no quota for 'l4' … Available: L4`, which read as a contradiction; the region is
+the missing half.
 
 **`this project reports no quota for 'h100'. Available: A100, L4, T4`**
 You asked for a card Google does not offer this project, or not in that region.
