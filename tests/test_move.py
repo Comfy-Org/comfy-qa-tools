@@ -511,9 +511,12 @@ def test_a_zone_that_does_not_offer_the_card_fails_before_the_slow_part():
 
     _, say = recorder()
     _, register = registrations()
-    with pytest.raises(MoveError):
+    # `MoveError` has many raise sites, so catching one proves nothing about
+    # which rule fired. Assert the message: another rule stopping the run first
+    # would leave this test green while the check it is named for was gone.
+    with pytest.raises(MoveError, match="does not offer g2-standard-8"):
         run_move(gc, plan, found, say, register=register)
-    assert cloud.ran("compute disks snapshot") == []
+    assert cloud.ran("compute disks snapshot") == [], "and before the slow part"
 
 
 def test_what_stops_the_run_is_what_the_preview_reports():
