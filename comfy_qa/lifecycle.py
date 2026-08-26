@@ -638,6 +638,22 @@ def put_away(
         say("tunnel closed")
 
     if host.kind == "local":
+        # A host list that says `local` while naming a cloud instance is refused
+        # when it is parsed — but a Host is also built in code, by `move`, by
+        # `switch` and by every test, and this is where the money is decided.
+        # Saying "left running" about a GPU box that is still billing is the most
+        # expensive thing this function could get wrong, so it is checked here
+        # too rather than trusted from upstream.
+        named = [field for field in (host.gce_instance, host.gce_zone, host.gce_project)
+                 if field]
+        if named:
+            raise LifecycleError(
+                f"{host.name} says kind = 'local' but names a cloud instance "
+                f"({', '.join(named)}). Refusing to report it as stopped: if that "
+                f"machine is running, it is billing.",
+                fix=(f"fix the entry in your host list — a cloud box is "
+                     f"kind = 'gce' — then:\n        comfy-qat host down {host.name}"),
+            )
         say("local ComfyUI left running — this tool did not start it")
         return
 

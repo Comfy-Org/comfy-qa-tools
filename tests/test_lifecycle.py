@@ -635,3 +635,26 @@ def test_every_failure_after_the_box_is_running_says_how_to_stop_paying(tmp_path
 
     for failure in failures:
         assert "comfy-qat host down comfy-win" in (failure.fix or ""), str(failure)
+
+
+def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):
+    """The refusal is at the point of the decision, not only at the parse.
+
+    `config.parse` rejects this host list, but a `Host` is also built in code —
+    by `move`, by `switch`, by tests — and `put_away` branching on `kind` alone
+    would print "local ComfyUI left running" about a GPU box that is still
+    billing. That is the most expensive sentence this tool can say.
+    """
+    from comfy_qa.config import Host
+    from comfy_qa.lifecycle import put_away
+
+    lying = Host(name="comfy-win", kind="local", port=8188,
+                 gce_instance="comfy-win", gce_zone="us-central1-a",
+                 gce_project="a-project")
+
+    with pytest.raises(LifecycleError) as caught:
+        put_away(gcloud(["RUNNING"]), lying, lambda line: None, tunnel_dir=tmp_path)
+
+    assert "names a cloud instance" in str(caught.value)
+    assert "billing" in str(caught.value)
+    assert "kind = 'gce'" in caught.value.fix

@@ -235,6 +235,12 @@ with the box.
 gcloud refused. The most common cause is GPU quota — `comfy-qat auth quota` shows
 what you actually have.
 
+**`comfy-win says kind = 'local' but names a cloud instance (comfy-win, us-central1-a, a-project). Refusing to report it as stopped: if that machine is running, it is billing.`**
+A host entry claims to be a local install while carrying the fields that identify
+a Google Cloud box. `host down` would have closed the tunnel, said "local ComfyUI
+left running — this tool did not start it", and left a GPU instance running.
+A cloud box is `kind = "gce"`; fix the entry and run `host down` again.
+
 **`could not stop comfy-win: ...`**
 gcloud refused to stop the machine, so **it is still running and still billing.**
 Try again, and if it keeps failing stop it in the Google Cloud console — an
