@@ -134,9 +134,18 @@ def run_checks(gc: Gcloud) -> list[Check]:
             request_fix,
         ))
         return results
+    # Collapsed per card, not per region: Google meters some cards region by
+    # region, so the raw rows read `K80=1, K80=1, K80=1, K80=1` — four entries
+    # for one card nobody wants — while the L4 you would actually use fell off
+    # the end of a silent truncation at four. Say how many there are, and never
+    # cut without saying so.
+    summary = [card for card in summarise(cards) if card.usable]
+    shown = ", ".join(f"{card.gpu}={card.limit}" for card in summary[:4])
+    if len(summary) > 4:
+        shown += f" (+{len(summary) - 4} more)"
     results.append(Check(
         "gpu quota", True,
-        ", ".join(f"{row.gpu}={row.limit}" for row in cards[:4]),
+        f"{shown} — {len(summary)} card(s) ready",
     ))
 
     return results

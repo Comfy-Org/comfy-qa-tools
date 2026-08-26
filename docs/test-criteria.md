@@ -132,6 +132,20 @@ echo "=== B10 missing file"; qat host list --config $T/nope.toml; echo "exit $?"
 
 ## Phase C — sign-in, billing, quota *(cloud reads only, no cost)*
 
+**Precondition, and it is a STOP.** Every check from here on reads Google Cloud,
+and a Workspace session expires on a policy you do not control — which is exactly
+what killed the first attempt at this pass. Sign in first, in *your own* terminal,
+because the prompt cannot appear in a captured one:
+
+```sh
+gcloud auth login
+```
+
+**This block takes about six minutes.** Each quota call is a fresh fetch of every
+compute quota on the project — roughly a megabyte, about 95 seconds — and there
+are four of them. That is expected, not a hang.
+
+
 ```sh
 echo "=== C1 status"; qat auth status
 echo "=== C2 status json"; qat auth status --json | head -30
@@ -142,29 +156,56 @@ echo "=== C6 by region"; qat auth quota list --by-region 2>&1 | head -15
 echo "=== C7 quota json"; qat auth quota list --json 2>&1 | head -20
 ```
 
-- [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota. Stops at the first failure rather than printing five.
+- [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota.
+      Stops at the first failure rather than printing five. **If this fails, stop:
+      nothing else in phases C to G can pass.**
 - [ ] **C2** — valid JSON, same facts, **no credential or token anywhere in it**.
 - [ ] **C3** — prints commands for you to run; does not open a browser.
-- [ ] **C4** — one row per card with LIMIT / WHERE / STATUS; warns first that it takes about a minute; finishes well under 240s.
+- [ ] **C4** — one row per card with LIMIT / WHERE / STATUS; warns first that it
+      takes about a minute; finishes well under 240s. *(Measured live: 95s.)*
+- [ ] **C4b** — **the same cards, in the same numbers, as `auth status`'s quota
+      line.** Two commands in one tool must not disagree about what you can run.
+      A committed-use, preemptible or VWS grant is not a usable card: it must
+      never make either command report a card as ready, and `COMMITTED-` must not
+      appear as though it were one. This is how a real defect reached the release
+      — `auth status` counted 25 grants of which 18 could not start anything.
+- [ ] **C4c** — if the line is cut short it says so (`+2 more — 6 card(s) ready`).
+      A silent truncation reads as the whole answer.
 - [ ] **C5/C6** — narrowing works and the numbers agree with C4.
 - [ ] **C7** — valid JSON with `project`, `gpus`, `by_region`.
 - [ ] **C8** — if nothing is usable, it prints the exact `quota request` command to fix that.
 
 ## Phase D — the local machine *(no cost)*
 
-Start your local ComfyUI first if it is not running.
+If no local ComfyUI is running, start one in **another** terminal and leave it
+there — this tool never starts or stops anything on your own machine:
 
 ```sh
-echo "=== D1 real host list"; qat host list
-echo "=== D2 stamp local"; qat host stamp local
-echo "=== D3 stamp json"; qat host stamp local --json
-echo "=== D4 open on a local host"; qat host open local
-echo "=== D5 stamp with ComfyUI down (stop it first)"; qat host stamp local; echo "exit $?"
+~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 --listen 127.0.0.1
 ```
 
-- [ ] **D1** — your real machines, including every cloud box on the project.
+```sh
+echo "=== D1 declared machines"; qat host list
+echo "=== D2 stamp local"; qat host stamp local; echo "exit $?"
+echo "=== D3 stamp json"; qat host stamp local --json
+echo "=== D3b does the stamp match the machine"; curl -s http://127.0.0.1:8188/system_stats | head -c 600; echo
+echo "=== D4 open on a local host"; qat host open local; echo "exit $?"
+```
+
+Then stop that ComfyUI (Ctrl-C in the other terminal) and run this on its own:
+
+```sh
+echo "=== D5 stamp with nothing serving"; qat host stamp local; echo "exit $?"
+```
+
+- [ ] **D1** — every machine you have **declared**. `host list` reads your host
+      list and never calls Google, so a box you created and have not discovered
+      yet is correctly absent; `host discover --dry-run` is what compares the two.
 - [ ] **D2** — one line: host, ComfyUI version, OS, device, torch, python. Correct against what ComfyUI's own `/system_stats` says.
 - [ ] **D3** — the same values under ComfyUI's field names.
+- [ ] **D3b** — every value in the line traces to that raw payload, and anything
+      the payload does not contain is **absent** from the line rather than
+      guessed or shown as a placeholder.
 - [ ] **D4** — says local needs no tunnel and prints the URL. Does not start anything.
 - [ ] **D5** — says nothing answered, names the URL, exit 1. Not a traceback.
 
@@ -293,6 +334,63 @@ echo "=== H4 setup is safe to re-run"; qat setup --non-interactive 2>&1 | tail -
 
 ---
 
+## Phase J — switching machines *(offline parts free; E-J together bill)*
+
+The workflow this release exists for: you are testing on one box and you need the
+other OS, or the other card. Everything up to J4 is offline and costs nothing.
+
+```sh
+echo "=== J1 what have I got, and what is up"; qat host list
+echo "=== J2 name a machine by its OS"; qat host stamp windows; echo "exit $?"
+echo "=== J3 name a machine by its card"; qat host stamp l4; echo "exit $?"
+echo "=== J4 both halves"; qat host stamp windows/l4; echo "exit $?"
+echo "=== J5 the wrong separator"; qat host stamp windows-l4; echo "exit $?"
+echo "=== J6 something you do not have"; qat host stamp rtx4090; echo "exit $?"
+echo "=== J7 the plan, without doing it"; qat host switch windows --dry-run; echo "exit $?"
+```
+
+- [ ] **J1** — one line per machine with OS, card, URL and STATE. STATE says which
+      box is running and which is tunnelled, without asking Google.
+- [ ] **J2/J3/J4** — each resolves to exactly one machine and **prints what it
+      resolved to** before doing anything: `windows -> comfy-win (Windows Server
+      2022, L4)`. A silent resolution is a fail even if it picks correctly.
+- [ ] **J5** — says the separator is `/` and shows `windows/l4`. Exit 2.
+- [ ] **J6** — lists what is declared *and* the vocabulary it accepts. Exit 2.
+- [ ] **J7** — states what it would start and what it would stop, then stops.
+      Nothing is contacted.
+
+With two or more cloud boxes declared, the ambiguity case matters more than any
+of the above:
+
+- [ ] **J8** — with two Windows boxes, `host switch windows` refuses and names
+      both with their cards. **It must never pick one.** Guessing here is the
+      whole failure this tool exists to prevent.
+- [ ] **J9** — `host switch windows/l4` then resolves cleanly to the one you meant.
+
+The real switch, which bills:
+
+```sh
+echo "=== J10 switch"; qat host switch windows
+echo "=== J11 what is up now"; qat host list --live
+```
+
+- [ ] **J10** — starts the one you asked for, waits until ComfyUI answers, **then**
+      stops the one you were on, and says both. The order matters: if the target
+      cannot start you must still have the machine you were using.
+- [ ] **J11** — exactly one cloud box running, and it is the one you asked for.
+
+And the case that started all this — switching when the box you want cannot start:
+
+- [ ] **J12** — on a stockout, `switch` leaves the machine you were on untouched
+      and says so.
+- [ ] **J13** — it then lists where you *can* test, easiest first, same OS before
+      a different one, and marks any alternative in the same zone as likely to hit
+      the same shortage.
+- [ ] **J14** — only after that does it offer `host move`, and it says the zone
+      Google named is where there was capacity *when it asked* — not a promise.
+- [ ] **J15** — with one box and nowhere to go, it says that plainly and points at
+      `host discover` rather than leaving you at a dead end.
+
 ## Putting your machine back
 
 ```sh
@@ -314,5 +412,7 @@ Paste the whole terminal. For anything that failed, the useful facts are: the
 phase and check id, what it printed, and the exit code. A check that could not be
 run — no capacity, no second box — is "not run", not a pass.
 
-A release-1 pass needs: every box in phases A–D and G–H ticked, E3 and E4 ticked,
-and no unexplained traceback anywhere in the run.
+A release-1 pass needs: every box in phases A–D, G, H and I ticked; E3 and E4
+ticked; J1–J7 ticked; and no unexplained traceback anywhere in the run. J8–J15
+need a second cloud box or a real stockout — record them as "not run" rather than
+assumed, and say which.

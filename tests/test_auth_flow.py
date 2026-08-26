@@ -510,3 +510,28 @@ def test_no_wait_hands_you_back_the_moment_it_is_submitted():
     assert result.exit_code == 0, result.output
     assert "track them:" in result.output
     assert cloud.quota_reads == 1, "it did not poll after submitting"
+
+
+def test_the_status_quota_line_is_one_row_per_card_and_admits_truncation():
+    """Live testing on a real project showed `K80=1, K80=1, K80=1, K80=1`.
+
+    Google meters some cards region by region, so the raw rows repeat one card —
+    and the silent cut at four then hid the L4 that was the only card anybody
+    wanted to use. A truncation nobody is told about is worse than a long line:
+    it reads as the whole answer.
+    """
+    cloud = FakeCloud(quotas=[
+        K80_PER_REGION,
+        quota("NVIDIA-L4-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-P100-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-P4-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-T4-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-V100-GPUS-per-project-region", 1, REGIONS),
+    ])
+    result = run(cloud, "status")
+
+    line = next(line for line in result.output.splitlines() if "gpu quota" in line)
+    assert result.exit_code == 0
+    assert line.count("K80") == 1, f"one row per card, not per region: {line}"
+    assert "L4=1" in line, "the card you would actually use must survive the cut"
+    assert "+2 more" in line and "6 card(s) ready" in line
