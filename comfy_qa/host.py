@@ -1,7 +1,11 @@
 """`comfy-qat host` — operate the machines you test on.
 
-Only the offline commands live here so far: listing what is declared, and writing
-a starter host list. Everything that talks to gcloud lands in the next pass.
+Two halves. `list`, `init` and the config rules are offline and never call
+anything: declaring a machine is not the same act as touching it, and the rules
+that stop you reading the wrong box are worth enforcing before a network exists.
+`discover`, `up`, `open`, `down`, `go`, `move` and `stamp` reach out — each one
+importing what it needs inside the function, so the offline half stays usable
+when gcloud is not installed at all.
 """
 
 from __future__ import annotations
