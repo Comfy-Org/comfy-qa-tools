@@ -36,6 +36,17 @@ not write it ([`docs/test-criteria.md`](docs/test-criteria.md)).
 
 ### Fixes worth knowing
 
+- A tunnel was trusted on the strength of a process id alone. Pids are recycled,
+  so a stale pid file read as "tunnel already open" and `down` would SIGTERM
+  whatever now owned that number. The record now names the instance, zone, port
+  and the moment the process started, and all of it has to still fit.
+- `open` never looked at the port. Anything else already holding it — another
+  box's tunnel, a dev server, a run that never died — meant the URL handed back
+  answered for that instead. It is now refused rather than reported.
+- `stamp` accepted any JSON as ComfyUI, and followed redirects, so a health
+  endpoint stamped as a machine and a 302 could report the local Mac under a
+  cloud box's name. Both are refused; a hostile field can no longer forge parts
+  of the evidence line.
 - `go` swallowed the real failure and then tried SSH against a stopped box. (#16)
 - Capacity stockouts were reported as generic start failures; they are now named,
   and the zone Google suggests is repeated back. (#17, #18)
