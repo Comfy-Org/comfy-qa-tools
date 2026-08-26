@@ -267,7 +267,7 @@ def test_the_project_wide_allowance_is_not_listed_as_a_card(tmp_path):
     p = prompts()
     run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
 
-    line = next(l for l in p.said if l.startswith("GPU quota ready"))
+    line = next(said for said in p.said if said.startswith("GPU quota ready"))
     assert "L4" in line
     assert "global" not in line
 

@@ -12,6 +12,7 @@ running all night.
 from __future__ import annotations
 
 import http.client
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,8 +90,6 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None) -> b
         sleep(POLL_SECONDS)
 
 
-import re
-
 _CAPACITY_SIGNS = (
     "stockout",
     "does not have enough resources",
@@ -154,7 +153,7 @@ def how_to_get_in(host: Host) -> str:
             f"gcloud compute reset-windows-password {host.gce_instance} {where}\n"
             f"        gcloud compute start-iap-tunnel {host.gce_instance} 3389 "
             f"--local-host-port=localhost:33389 {where}\n"
-            f"        then point Remote Desktop at localhost:33389"
+            "        then point Remote Desktop at localhost:33389"
         )
     return f"gcloud compute ssh {host.gce_instance} --tunnel-through-iap {where}"
 
@@ -247,7 +246,7 @@ def bring_up(
                 f"ComfyUI is not answering on {host.url}",
                 kind=COMFYUI_ABSENT,
                 fix=f"~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port {host.port} "
-                    f"--listen 127.0.0.1",
+                    "--listen 127.0.0.1",
             )
         say(f"{host.name} is already up")
         return Ready(host=host, stamp=stamp, started=False, tunnelled=False)
@@ -281,7 +280,7 @@ def bring_up(
                 raise LifecycleError(
                     f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
                     f"right now, so {host.name} cannot start. This is not a fault on "
-                    f"your side, and retrying in the same zone will not help.",
+                    "your side, and retrying in the same zone will not help.",
                     kind=STOCKOUT,
                     fix=advice,
                 ) from exc
@@ -311,7 +310,7 @@ def bring_up(
                 ) from last_error
             raise LifecycleError(
                 f"{host.name} did not reach RUNNING within {boot_timeout}s. It was "
-                f"asked to start, so it may be billing already.",
+                "asked to start, so it may be billing already.",
                 fix=("check it in the console, then try again, or:\n        "
                      + stop_paying(host)),
             )
@@ -349,7 +348,7 @@ def bring_up(
                 kind=TUNNEL_DOWN,
                 fix=(f"read what gcloud said in {log_file(host.name, tunnel_dir)}, "
                      f"then:\n        comfy-qat host open {host.name}"
-                     f"\n        or stop paying for it:\n        "
+                     "\n        or stop paying for it:\n        "
                      + stop_paying(host)),
             )
         if now() >= deadline:
@@ -360,7 +359,7 @@ def bring_up(
         raise LifecycleError(
             f"{host.name} is running and tunnelled, but ComfyUI is not answering on "
             f"{host.url}. The machine is up and billing; ComfyUI is not installed or "
-            f"not started.",
+            "not started.",
             kind=COMFYUI_ABSENT,
             fix=(
                 "get onto the machine and install or start ComfyUI:\n        "
@@ -408,7 +407,7 @@ def wait_for_ssh(
                 stand_down(host, tunnel_dir, say)
                 raise LifecycleError(
                     f"gcloud is not signed in, so {host.name} cannot be reached: {exc}. "
-                    f"Waiting will not fix this, and the machine is running and billing.",
+                    "Waiting will not fix this, and the machine is running and billing.",
                     fix=((exc.fix or "gcloud auth login")
                          + "\n        or stop paying for it:\n        "
                          + stop_paying(host)),
@@ -544,7 +543,7 @@ def serve(
     if code == NO_PYTHON_EXIT:
         raise give_up(
             f"there is no Python on {host.name} to run ComfyUI with (NO_PYTHON), so "
-            f"it could not be started.")
+            "it could not be started.")
     if code not in (0, INTERRUPTED_EXIT):
         raise give_up(f"ComfyUI on {host.name} exited with {code} instead of starting.")
 
@@ -557,7 +556,7 @@ def serve(
         stand_down(host, tunnel_dir, say)
         raise LifecycleError(
             f"ComfyUI on {host.name} exited without ever answering on {host.url}. "
-            f"The machine is up and billing.",
+            "The machine is up and billing.",
             fix=("read the log above, then get onto the machine:\n        "
                  + how_to_get_in(host)
                  + "\n        or stop paying for it:\n        "

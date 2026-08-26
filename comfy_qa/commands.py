@@ -8,7 +8,6 @@ Nothing new should be added here — it gets rewritten when `env` ships properly
 from __future__ import annotations
 
 import json
-import sys
 from typing import Annotated, Optional
 
 import typer
