@@ -353,10 +353,38 @@ Nothing is listening on that port. For a local host, ComfyUI is not running. For
 cloud host, either the box is off or the tunnel is not up. Check the port in your
 host list matches what the machine actually serves.
 
-**`http://127.0.0.1:8190 answered, but not with ComfyUI's /system_stats`**
+**`http://127.0.0.1:8190 answered, but not with ComfyUI's /system_stats. Something
+else is on that port, and a stamp from it would name the wrong machine.`**
 Something is on that port, but it is not ComfyUI — a dev server, or another tunnel.
-This is exactly the mix-up the port rules exist to prevent, so it is worth chasing
-rather than working around.
+A JSON body is not enough on its own: a health endpoint answering `{"ok": true}`
+would otherwise stamp cleanly as the bare host name, which reads like a successful
+probe and says nothing true about any machine. So the body has to carry
+`/system_stats`'s own field names before anything is recorded from it. This is
+exactly the mix-up the port rules exist to prevent, so it is worth chasing rather
+than working around.
+
+**`http://127.0.0.1:8190 redirected to 127.0.0.1:8188 — that is a different
+machine, so anything it says would be recorded under the wrong name.`**
+Whatever holds the port answered with a redirect, and following it would have
+stamped a different machine under this host's name — on this Mac, usually the local
+ComfyUI on 8188. ComfyUI does not redirect `/system_stats`, so something else is on
+that port: a proxy, a dev server, or a tunnel pointing somewhere you did not mean.
+Check what is bound to the port before trusting any line from it.
+
+**`http://127.0.0.1:8190 answered with more than 1024KB, which /system_stats never
+does`**
+That endpoint is a few hundred bytes. A body this size means something else is on
+the port — often one that will stream for as long as you keep reading, since the
+timeout covers each read and not the total. Find out what is holding the port.
+
+**`http://127.0.0.1:8190 stopped answering part-way through: ...`**
+The connection opened and then broke mid-answer — a tunnel that dropped, a box that
+went away, or a read that timed out. Different from "nothing answered": something
+was there. Check the tunnel is still open, then run the stamp again.
+
+**`'127.0.0.1:8190' is not a URL this can ask: unknown url type`**
+The host's url is missing its scheme, or is not a url at all. Write it in full, as
+in `http://127.0.0.1:8188` — a bare `host:port` cannot be fetched.
 
 ## Checking environments
 
