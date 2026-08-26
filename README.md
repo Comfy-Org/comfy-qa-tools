@@ -24,9 +24,10 @@ never collide on `PATH`.
 ## Status
 
 **Release 1 — `host` and `auth` — is code complete.** Every command below is
-implemented, tested and on `main`. What remains before it is called done is an
-end-to-end pass on a real Google Cloud project by someone who did not write it:
-see [`docs/test-criteria.md`](docs/test-criteria.md).
+implemented and tested. Phases A to D and I to J of
+[`docs/test-criteria.md`](docs/test-criteria.md) have been run against a real
+Google Cloud project by someone who did not write the tool; the phases that start
+a GPU box have not, and are recorded as not run rather than assumed.
 
 | area | state |
 |---|---|
@@ -41,8 +42,15 @@ see [`docs/test-criteria.md`](docs/test-criteria.md).
 | `host create` | **not built.** Boxes are made in the console, then `host discover` |
 | `env` | carried over from v0, unchanged, awaiting its own release |
 
-Version **1.0.0**. Tests run on Python 3.11, 3.12 and 3.13, on Ubuntu and macOS,
-and CI installs the built wheel and runs the binary from outside the checkout.
+Version **1.0.0**, 1049 tests. They run on Python 3.11, 3.12 and 3.13, on Ubuntu
+and macOS, and CI builds the wheel, installs it into a throwaway virtualenv and
+runs the binary from outside the checkout — because testing the source tree never
+proved the thing people actually install works.
+
+Three rules hold the docs to the code, each enforced by a test: every error the
+tool can print has an entry in [troubleshooting](docs/troubleshooting.md), every
+command in the binary appears in this README and every command in this README
+exists in the binary, and no test file may vanish from the suite unnoticed.
 
 ---
 
