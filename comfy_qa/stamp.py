@@ -294,3 +294,46 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
         f"{url} answered, but not with ComfyUI's /system_stats",
         fix="check the port — something else may be listening on it",
     )
+
+
+# Matched as substrings, so every token has to be one that cannot turn up inside
+# another operating system's name: "nt" alone reads "ubuntu" as Windows.
+_OS_FAMILIES = {
+    "windows": ("windows", "win32", "winnt", "microsoft"),
+    "linux": ("linux", "ubuntu", "debian", "centos", "rocky", "fedora"),
+    "darwin": ("darwin", "macos", "mac os", "osx"),
+}
+
+
+def _family(text: str | None) -> str | None:
+    lowered = (text or "").lower()
+    for family, words in _OS_FAMILIES.items():
+        if any(word in lowered for word in words):
+            return family
+    return None
+
+
+def mismatch(host, stamp: Stamp) -> str | None:
+    """Does the machine that answered contradict the machine you declared?
+
+    The host list says what a box is; the stamp says what answered on its port.
+    When those disagree the port is not reaching the box you named — which is the
+    wrong-machine failure, arriving as a line that otherwise looks like evidence.
+    Returns None when there is nothing to compare, because `os` and `gpu` are
+    optional for a local host.
+    """
+    declared, answering = _family(getattr(host, "os", None)), _family(stamp.os)
+    if declared and answering and declared != answering:
+        return (
+            f"{host.name} is declared as {host.os}, but {stamp.url} answered as "
+            f"{stamp.os}. That port is not reaching {host.name}."
+        )
+
+    gpu = (getattr(host, "gpu", None) or "").strip().lower()
+    accelerators = [d for d in stamp.devices if not d.lower().startswith("cpu")]
+    if gpu and accelerators and not any(gpu in d.lower() for d in accelerators):
+        return (
+            f"{host.name} is declared with a {host.gpu}, but {stamp.url} answered with "
+            f"{', '.join(accelerators)}. That port is not reaching {host.name}."
+        )
+    return None

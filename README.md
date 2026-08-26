@@ -240,10 +240,13 @@ per OS you never have to remember what you called it. Every field is documented 
 Everything lives under `~/.config/comfy-qa-tools/`:
 
 - `hosts.toml` — the host list, and the only file you would ever edit.
-- `tunnels/<host>.pid` and `tunnels/<host>.log` — written by `host open`, `up` and
-  `go`. A tunnel outlives the command that started it, so its process id is
-  recorded rather than assumed; the log is what gcloud said while opening it. Both
-  are removed by `host down`, and a stale pid file is recognised, not trusted.
+- `tunnels/<host>.pid`, `tunnels/<host>.json` and `tunnels/<host>.log` — written by
+  `host open`, `up` and `go`. A tunnel outlives the command that started it, so
+  what it is gets recorded rather than assumed: the pid, the moment that process
+  started, and which instance, zone and port it goes to. Pids are recycled, so the
+  number alone is not an identity and a record that no longer fits is treated as
+  stale rather than trusted. The log is what gcloud said while opening it. All
+  three are removed by `host down`.
 
 Signing in is gcloud's job, so credentials live in gcloud's own store
 (`~/.config/gcloud/`) and are refreshed by it. **This tool never sees, stores or
