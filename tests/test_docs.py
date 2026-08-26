@@ -58,7 +58,10 @@ ERROR_PHRASES = [
 ]
 
 
-@pytest.mark.parametrize("name", ["getting-started", "hosts", "troubleshooting", "cost"])
+@pytest.mark.parametrize(
+    "name",
+    ["getting-started", "machines", "hosts", "troubleshooting", "cost", "test-criteria"],
+)
 def test_page_exists_and_is_not_a_stub(name):
     page = DOCS / f"{name}.md"
     assert page.exists(), f"docs/{name}.md is missing"
