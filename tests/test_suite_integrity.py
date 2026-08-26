@@ -65,6 +65,24 @@ REQUIRED = {
     "test_version",
 }
 
+# conftest.py is deliberately not in that list, and does not need to be.
+#
+# It is not a `test_*.py`, so `present()` cannot see it — which raises the fair
+# question of whether the same silent "deleted by us, unmodified by them" merge
+# could drop it too. It could, and it would matter more than losing a test file:
+# conftest.py holds the autouse fixture that stops the suite spawning real
+# `gcloud compute start-iap-tunnel` processes, and eleven were once alive at once
+# on the machine this was written on.
+#
+# Checked rather than assumed: with conftest.py removed the suite does not go
+# quietly green, it goes to five failures and an error, and the error is
+# `test_tunnel_identity.py::test_the_suite_never_starts_a_real_tunnel` — a guard
+# that cannot even collect without the fixture it names. So that file already
+# announces its own absence, loudly, and listing it here would add nothing.
+#
+# Do not "fix" this by adding "conftest" to REQUIRED: `present()` globs
+# `test_*.py`, so it would report the file missing on every run.
+
 
 def present() -> set[str]:
     return {path.stem for path in TESTS.glob("test_*.py")}
