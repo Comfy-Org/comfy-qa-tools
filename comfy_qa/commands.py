@@ -51,6 +51,16 @@ def env_cmd(
                    f"known: {', '.join(CLOUD_ENVS)}, local", err=True)
         raise typer.Exit(code=2)
 
+    # `--json` and `--evidence` are two different answers to the same question,
+    # and asking for both silently threw one away. Say so instead.
+    if as_json and evidence_for:
+        typer.echo("--json and --evidence produce different output; pick one",
+                   err=True)
+        raise typer.Exit(code=2)
+    if flags_only and not evidence_for:
+        typer.echo("note: --flags only affects the evidence block; add --evidence "
+                   "<env> to see it", err=True)
+
     reports = collect(targets, local=not no_local, local_url=local_url, resolve=not no_resolve)
 
     if as_json:
@@ -75,8 +85,10 @@ def env_cmd(
     if expect:
         checked = [r for r in reports if r.kind == "cloud"]
         if len(checked) != 1:
+            # The binary is `comfy-qat`; `comfy qa` was v0's, and pasting it
+            # into a shell gets "no such command".
             typer.echo("--expect needs exactly one cloud environment, "
-                       "e.g. `comfy qa env testcloud --expect <sha>`", err=True)
+                       "e.g. `comfy-qat env testcloud --expect <sha>`", err=True)
             raise typer.Exit(code=2)
         got = checked[0].sha or ""
         if not got.startswith(expect):

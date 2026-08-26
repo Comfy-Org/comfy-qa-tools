@@ -9,6 +9,7 @@ response header; a local ComfyUI does not, but reports more via ``/system_stats`
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -25,8 +26,12 @@ TIMEOUT = 10
 
 # /api/features also carries Firebase / PostHog / Mixpanel / Sentry / Churnkey
 # config. Only booleans are ever printed — a whitelist by TYPE, so a new secret
-# added upstream can never leak into a pasted evidence block.
-def _boolean_flags(payload: dict) -> dict[str, bool]:
+# added upstream can never leak into a pasted evidence block. Verified against
+# all three live environments: `mixpanel_token` is a string and the Firebase
+# `apiKey` is nested, so neither survives the filter.
+def _boolean_flags(payload: object) -> dict[str, bool]:
+    if not isinstance(payload, dict):
+        return {}
     return {k: v for k, v in payload.items() if isinstance(v, bool)}
 
 
@@ -91,7 +96,12 @@ def probe_cloud(name: str, url: str, *, resolve: bool = True) -> EnvReport:
     try:
         with _get(url + "/", head=True) as resp:
             r.sha = resp.headers.get("x-frontend-version")
-    except (urllib.error.URLError, OSError) as e:
+    except urllib.error.HTTPError as e:
+        # It answered. "unreachable" would send someone to check their network
+        # when the real answer is that the CDN or the origin turned them away.
+        r.error = f"answered HTTP {e.code}"
+        return r
+    except OSError as e:
         r.error = f"unreachable: {e}"
         return r
     if not r.sha:
@@ -110,15 +120,25 @@ def probe_local(url: str = LOCAL_DEFAULT) -> EnvReport:
     r = EnvReport(name="local", url=url, kind="local")
     try:
         with _get(url + "/system_stats") as resp:
-            stats = json.load(resp).get("system", {})
-    except (urllib.error.URLError, OSError, ValueError) as e:
+            body = json.load(resp)
+    except (OSError, ValueError) as e:
         r.error = f"not running ({e})"
         return r
-    r.comfyui_version = stats.get("comfyui_version")
-    r.frontend_required = stats.get("required_frontend_version")
-    for pkg in stats.get("comfy_package_versions") or []:
-        if pkg.get("name") == "comfyui-frontend-package":
-            r.frontend_installed = pkg.get("installed")
+
+    # `/system_stats` is not a stable contract: `system` has arrived as null,
+    # and the whole body as something other than an object. Neither is a reason
+    # to traceback at a QA engineer.
+    system = body.get("system") if isinstance(body, dict) else None
+    if not isinstance(system, dict):
+        r.error = "answered, but not with ComfyUI's /system_stats"
+        return r
+
+    r.comfyui_version = system.get("comfyui_version") or None
+    r.frontend_required = system.get("required_frontend_version") or None
+    packages = system.get("comfy_package_versions")
+    for pkg in packages if isinstance(packages, list) else []:
+        if isinstance(pkg, dict) and pkg.get("name") == "comfyui-frontend-package":
+            r.frontend_installed = pkg.get("installed") or None
     return r
 
 
@@ -146,7 +166,6 @@ def flag_diff(reports: list[EnvReport]) -> dict[str, dict[str, bool]]:
 
 def release_line(reports: list[EnvReport]) -> str | None:
     """The frontend version the cloud side is on, if a commit subject names one."""
-    import re
     for r in reports:
         if r.kind == "cloud" and r.commit_subject:
             m = re.search(r"\b(\d+\.\d+)(?:\.\d+)?\b", r.commit_subject)
