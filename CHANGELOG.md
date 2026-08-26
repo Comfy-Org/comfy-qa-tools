@@ -3,10 +3,13 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
-## Unreleased — release 1: `host` and `auth`
+## 1.0.0 — release 1: `host` and `auth`
 
-Code complete. Awaiting an end-to-end pass on a real project by someone who did
-not write it ([`docs/test-criteria.md`](docs/test-criteria.md)).
+Code complete, and numbered accordingly: the command surface below is the one
+this tool is committing to, so `0.1.0` was describing a different project. Still
+awaiting an end-to-end pass on a real project by someone who did not write it
+([`docs/test-criteria.md`](docs/test-criteria.md)) — which is the reason the
+build now has a version worth quoting.
 
 ### Machines
 
@@ -40,6 +43,22 @@ not write it ([`docs/test-criteria.md`](docs/test-criteria.md)).
 - Capacity stockouts were reported as generic start failures; they are now named,
   and the zone Google suggests is repeated back. (#17, #18)
 - Quota parsing crashed on the shape Google actually returns. (#9)
+
+### Saying what you ran
+
+- `comfy-qat --version` — prints `comfy-qat 1.0.0`, and the short commit as well
+  when it is running from a checkout. A tool whose whole pitch is "record what
+  produced this result" could not name its own build, which made every report it
+  produced unciteable. The number is read back from the installed package
+  metadata, never restated in Python: `version` in `pyproject.toml` is the only
+  place it is written down, and a test fails if a second copy appears.
+- Installing is now tested, not assumed: CI builds the package, installs it into
+  a throwaway venv and runs `comfy-qat --version` from outside the checkout, so
+  a missing console script or a file the wheel forgot to ship fails the build
+  rather than the first person to `pip install` it.
+- CI runs on Python 3.11, 3.12 and 3.13, and on macOS as well as Ubuntu — every
+  user of this tool is on a Mac, and `sed`, paths and process handling differ
+  there. `ruff` lints the tree on the same run.
 
 ### Documentation
 
