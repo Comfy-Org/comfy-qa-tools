@@ -132,6 +132,20 @@ echo "=== B10 missing file"; qat host list --config $T/nope.toml; echo "exit $?"
 
 ## Phase C — sign-in, billing, quota *(cloud reads only, no cost)*
 
+**Precondition, and it is a STOP.** Every check from here on reads Google Cloud,
+and a Workspace session expires on a policy you do not control — which is exactly
+what killed the first attempt at this pass. Sign in first, in *your own* terminal,
+because the prompt cannot appear in a captured one:
+
+```sh
+gcloud auth login
+```
+
+**This block takes about six minutes.** Each quota call is a fresh fetch of every
+compute quota on the project — roughly a megabyte, about 95 seconds — and there
+are four of them. That is expected, not a hang.
+
+
 ```sh
 echo "=== C1 status"; qat auth status
 echo "=== C2 status json"; qat auth status --json | head -30
@@ -142,29 +156,56 @@ echo "=== C6 by region"; qat auth quota list --by-region 2>&1 | head -15
 echo "=== C7 quota json"; qat auth quota list --json 2>&1 | head -20
 ```
 
-- [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota. Stops at the first failure rather than printing five.
+- [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota.
+      Stops at the first failure rather than printing five. **If this fails, stop:
+      nothing else in phases C to G can pass.**
 - [ ] **C2** — valid JSON, same facts, **no credential or token anywhere in it**.
 - [ ] **C3** — prints commands for you to run; does not open a browser.
-- [ ] **C4** — one row per card with LIMIT / WHERE / STATUS; warns first that it takes about a minute; finishes well under 240s.
+- [ ] **C4** — one row per card with LIMIT / WHERE / STATUS; warns first that it
+      takes about a minute; finishes well under 240s. *(Measured live: 95s.)*
+- [ ] **C4b** — **the same cards, in the same numbers, as `auth status`'s quota
+      line.** Two commands in one tool must not disagree about what you can run.
+      A committed-use, preemptible or VWS grant is not a usable card: it must
+      never make either command report a card as ready, and `COMMITTED-` must not
+      appear as though it were one. This is how a real defect reached the release
+      — `auth status` counted 25 grants of which 18 could not start anything.
+- [ ] **C4c** — if the line is cut short it says so (`+2 more — 6 card(s) ready`).
+      A silent truncation reads as the whole answer.
 - [ ] **C5/C6** — narrowing works and the numbers agree with C4.
 - [ ] **C7** — valid JSON with `project`, `gpus`, `by_region`.
 - [ ] **C8** — if nothing is usable, it prints the exact `quota request` command to fix that.
 
 ## Phase D — the local machine *(no cost)*
 
-Start your local ComfyUI first if it is not running.
+If no local ComfyUI is running, start one in **another** terminal and leave it
+there — this tool never starts or stops anything on your own machine:
 
 ```sh
-echo "=== D1 real host list"; qat host list
-echo "=== D2 stamp local"; qat host stamp local
-echo "=== D3 stamp json"; qat host stamp local --json
-echo "=== D4 open on a local host"; qat host open local
-echo "=== D5 stamp with ComfyUI down (stop it first)"; qat host stamp local; echo "exit $?"
+~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 --listen 127.0.0.1
 ```
 
-- [ ] **D1** — your real machines, including every cloud box on the project.
+```sh
+echo "=== D1 declared machines"; qat host list
+echo "=== D2 stamp local"; qat host stamp local; echo "exit $?"
+echo "=== D3 stamp json"; qat host stamp local --json
+echo "=== D3b does the stamp match the machine"; curl -s http://127.0.0.1:8188/system_stats | head -c 600; echo
+echo "=== D4 open on a local host"; qat host open local; echo "exit $?"
+```
+
+Then stop that ComfyUI (Ctrl-C in the other terminal) and run this on its own:
+
+```sh
+echo "=== D5 stamp with nothing serving"; qat host stamp local; echo "exit $?"
+```
+
+- [ ] **D1** — every machine you have **declared**. `host list` reads your host
+      list and never calls Google, so a box you created and have not discovered
+      yet is correctly absent; `host discover --dry-run` is what compares the two.
 - [ ] **D2** — one line: host, ComfyUI version, OS, device, torch, python. Correct against what ComfyUI's own `/system_stats` says.
 - [ ] **D3** — the same values under ComfyUI's field names.
+- [ ] **D3b** — every value in the line traces to that raw payload, and anything
+      the payload does not contain is **absent** from the line rather than
+      guessed or shown as a placeholder.
 - [ ] **D4** — says local needs no tunnel and prints the URL. Does not start anything.
 - [ ] **D5** — says nothing answered, names the URL, exit 1. Not a traceback.
 
