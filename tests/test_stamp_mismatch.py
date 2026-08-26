@@ -217,6 +217,25 @@ def test_an_os_that_names_no_family_is_skipped_rather_than_guessed(answered_os):
                     answered("cuda:0 NVIDIA L4 (22GB)", os=answered_os)) is None
 
 
+@pytest.mark.parametrize("declared_os", ["macOS 15", "Ubuntu 22.04"])
+def test_posix_names_two_families_at_once_so_it_can_never_be_mapped(declared_os):
+    """The half of that gap that is not a judgement call.
+
+    `os.name` is `posix` on macOS *and* on Linux, so an older ComfyUI answering
+    `posix` is telling you it is one of two families and not which. Both
+    declarations below are a machine describing itself correctly, and mapping
+    `posix` to either family would refuse one of them.
+
+    Worse than refusing a good machine: mapping it to `linux` would clear a
+    tunnel that had really landed on this Mac while claiming to be a cloud box —
+    the exact case the caller refuses for. A word-boundary match makes `posix`
+    look safe to close, since it collides with no other OS name. It is still
+    wrong. Only `nt` is closeable.
+    """
+    assert mismatch(declared("L4", os=declared_os),
+                    answered("cuda:0 NVIDIA L4 (22GB)", os="posix")) is None
+
+
 def test_discover_writes_the_os_strings_these_cases_assume():
     """Same guard the card cases have: fixtures that drift prove nothing."""
     from comfy_qa.discover import operating_system
