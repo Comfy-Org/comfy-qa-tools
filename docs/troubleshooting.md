@@ -235,6 +235,17 @@ retry, or move by hand. Any half-made snapshot or disk is left behind for you to
 look at and is not cleaned up automatically; delete it in the console once you are
 done.
 
+**`http://127.0.0.1:8190 refused the request (401)`**
+Something is there and it wants credentials. A stamp reads ComfyUI's own
+`/system_stats`, which needs none — so this is almost always a different service on
+that port, or a proxy in front of it. Check the port in your host list against what
+the machine actually serves.
+
+**`http://127.0.0.1:8190 answered 404 for /system_stats`**
+A web server, but not a ComfyUI: the port answers and the endpoint is not there.
+Reported separately from "nothing answered" on purpose — that difference decides
+whether you go and start a server or go and find out what is holding the port.
+
 ## Naming the machine you want
 
 Every command that takes a machine accepts its name, an operating system, a card,
@@ -331,6 +342,13 @@ target named. With none or several there is nothing unambiguous to compare.
 The environment is not running the build you named — which is the whole point of
 the check, and usually means the deploy did not land rather than that you typed the
 wrong SHA. Confirm the SHA in the frontend repo before assuming the deploy failed.
+
+**`--json and --evidence produce different output; pick one`**
+Two answers to the same question. Asking for both used to silently discard one.
+
+**`note: --flags only affects the evidence block; add --evidence <env> to see it`**
+Not an error — `--flags` names the flags called out in an evidence block, so on its
+own it changes nothing you can see.
 
 ## Google Cloud
 
