@@ -23,7 +23,10 @@ build now has a version worth quoting.
   none, then serve it in the foreground with its startup log on your terminal. (#15)
 - `host move` — a GPU stockout cannot be fixed where you are. Snapshot the disk,
   rebuild the box in a zone that has capacity, keep the install, and never remove
-  the original. (#19)
+  the original. Reads the boot disk off the instance rather than guessing its name,
+  resumes a move that stopped part-way instead of colliding with what it left,
+  reports every leftover with its size and the command that removes it, and keeps
+  the new disk the same type as the one it copies. (#19)
 - `host switch` — change machine in one command. Start the one you want, then
   stop whichever other cloud box was running or tunnelled, which is the half
   people forget and the half that bills. `--dry-run`, `--keep-others`.
@@ -36,6 +39,7 @@ build now has a version worth quoting.
 - A box that will not start now says where else you can work. A GPU stockout
   used to end with a four-step rebuild; it now offers the other declared
   machines first, same OS first, and the rebuild second.
+
 
 - `host stamp` — one pasteable line saying what a machine actually is, from
   ComfyUI's own `/system_stats`. `--json` uses ComfyUI's field names. (#6)
@@ -82,6 +86,13 @@ build now has a version worth quoting.
 - `open` never looked at the port. Anything else already holding it — another
   box's tunnel, a dev server, a run that never died — meant the URL handed back
   answered for that instead. It is now refused rather than reported.
+- `stamp` reported fields it had not actually been told. Comfy Cloud sends `os`,
+  `python_version` and `pytorch_version` as empty strings, and the line printed
+  them as facts while `--json` disagreed about which ones it had. A field that
+  cannot be read is now absent from both. Cloud is also reached on its `/api`
+  alias instead of being called a wrong port, VRAM no longer rounds a 256 MB
+  device to `0GB`, four identical cards are one fact rather than 180 characters,
+  and 401/403/404 are told apart from nothing answering at all.
 - `stamp` accepted any JSON as ComfyUI, and followed redirects, so a health
   endpoint stamped as a machine and a 302 could report the local Mac under a
   cloud box's name. Both are refused; a hostile field can no longer forge parts

@@ -21,7 +21,7 @@ the file where that matters most:
   * **The name is not the machine.** A second host list can call a different box
     `comfy-win` too. The record names the instance, the zone, the project and the
     port, and a tunnel is only reused when all of them match.
-  * **You are not the only comfy-qat running.** Opening claims the host with an
+  * **You are not the only `comfy-qat` running.** Opening claims the host with an
     exclusive lock, so two terminals cannot stack two tunnels on one port and
     leave one of them with no record that it exists.
 """
@@ -311,7 +311,7 @@ def _claim(host: str, directory: Path, now=time.time) -> Path:
             age = LOCK_STALE_SECONDS + 1
         if age < LOCK_STALE_SECONDS:
             raise TunnelError(
-                f"another comfy-qat is opening the tunnel to {host} right now.",
+                f"another `comfy-qat` is opening the tunnel to {host} right now.",
                 fix="wait for it to finish, then run this again",
             ) from None
         lock.unlink(missing_ok=True)
@@ -319,7 +319,7 @@ def _claim(host: str, directory: Path, now=time.time) -> Path:
             handle = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
             raise TunnelError(
-                f"another comfy-qat is opening the tunnel to {host} right now.",
+                f"another `comfy-qat` is opening the tunnel to {host} right now.",
                 fix="wait for it to finish, then run this again",
             ) from None
     with os.fdopen(handle, "w") as writing:

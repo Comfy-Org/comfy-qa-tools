@@ -211,12 +211,22 @@ ComfyUI install intact: snapshot the boot disk, create a disk from the snapshot 
 the new zone, create the instance, add it to your host list on a free port. `--to
 us-central1-b` picks the zone yourself, `--dry-run` shows the plan and stops.
 
-Two things worth knowing before you run it:
+Four things worth knowing before you run it:
 
 - **The original is never removed.** It stays stopped in its old zone, and deleting
   it is a deliberate act you take once the new one has proved itself.
 - **The snapshot is the slow part.** A boot disk with models on it takes a while.
-  If the move fails partway, nothing has been removed and the error says so.
+- **A move that stops part-way is resumed, not restarted.** Nothing is removed, but
+  a snapshot and a 300 GB disk may now exist, and they bill. Run the same command
+  again: it reads the project first, says what it found, and carries on from there.
+  Every leftover it reports comes with the exact command that removes it, and
+  `--clean` removes the ones belonging to this move and stops. It never deletes
+  anything without being asked.
+- **The zone Google suggests can be out by the time you get there.** It is where
+  there was capacity when it answered, not a reservation, and there is no way to
+  check a zone's free capacity in advance. If the machine cannot be created after
+  the disk is copied, the snapshot is kept, so moving to a different zone repeats
+  only the disk rather than the whole copy.
 
 The new box gets a new name — the instance name with a zone suffix — because two
 machines that differ only by zone and share a name is how you end up reading

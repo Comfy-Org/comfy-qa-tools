@@ -331,6 +331,7 @@ def test_commands_we_tell_people_to_run_exist(where, words):
         node = node[word]
 
 
+
 @pytest.mark.parametrize(
     "name",
     ["getting-started", "machines", "hosts", "troubleshooting", "cost", "test-criteria"],

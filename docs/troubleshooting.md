@@ -316,7 +316,7 @@ outlived its pid file, or a local server. The fix line gives you
 `lsof -nP -iTCP:8190 -sTCP:LISTEN` to find it; the alternative is giving that host
 a different port in your host list.
 
-**`another comfy-qat is opening the tunnel to comfy-win right now.`**
+**``another `comfy-qat` is opening the tunnel to comfy-win right now.``**
 Two commands tried to open the same tunnel at once, which is ordinary on a machine
 running several agents. One of them wins; wait a moment and run yours again. A
 claim older than two minutes is treated as abandoned, so a killed command does not
@@ -431,6 +431,45 @@ followed by the `host move` command for a zone Google says has capacity. Read
 can be stale by the time you use it, and a move that fails late leaves a disk and a
 snapshot behind that you will pay for.
 
+**`already on the project:`** followed by a disk or a snapshot
+An earlier `host move` did not finish, and what it created is still there and still
+billing. This is a report, not an error — the move carries on and reuses what it
+can. Each line is followed by the exact `gcloud ... delete` command that removes it,
+and `comfy-qat host move <name> --clean` removes them all and stops. Nothing is
+deleted for you.
+
+**`comfy-win-a-b already exists in us-central1-b, but ...`**
+A disk is sitting where the move wants to put one, and it could not be confirmed as
+a copy of this box's boot disk — it is attached to something, it came from a
+different snapshot, it is a different size, or it is older than the snapshot it
+claims to come from. Carrying on with it would boot the wrong machine and look like
+a move that worked, so the move stops. Check it is not something you want, then run
+the printed delete command and move again.
+
+**`us-central1-b does not offer g2-standard-8 at all`**
+The zone does not have that machine type, so the instance could never be created
+there. Nothing has been snapshotted. Pick a zone that does:
+`gcloud compute machine-types list --filter='name=g2-standard-8'`.
+
+**`us-central1-b has no L4 capacity either`**
+The move got as far as creating the machine and the destination zone was out of
+capacity by the time it got there. The zone Google names in a stockout message is
+where there was capacity when it answered, not a reservation, and it goes stale.
+The snapshot and the disk both exist and are billing; the error names them. Trying
+another zone reuses the snapshot, so it repeats only the disk, not the slow 300 GB
+copy. There is no way to check a zone's free capacity in advance — Google publishes
+no API for it — so this failure can only be reported well, not prevented.
+
+**`the move stopped at: ...`**
+Some other step failed. The error names what now exists because of the run, and the
+original box is untouched and still stopped in its old zone. Run the same command
+again: it looks at the project first and carries on from where it stopped.
+
+**`could not delete the snapshot ...`** after a move otherwise succeeded
+The new machine is up and in your host list; only the cleanup failed. The snapshot
+is still billing and the message repeats the command that removes it.
+
+
 ## Stamping a machine
 
 **`nothing answered at http://127.0.0.1:8190`**
@@ -438,10 +477,38 @@ Nothing is listening on that port. For a local host, ComfyUI is not running. For
 cloud host, either the box is off or the tunnel is not up. Check the port in your
 host list matches what the machine actually serves.
 
-**`http://127.0.0.1:8190 answered, but not with ComfyUI's /system_stats`**
+**`http://127.0.0.1:8190 answered, but not with ComfyUI's /system_stats. Something
+else is on that port, and a stamp from it would name the wrong machine.`**
 Something is on that port, but it is not ComfyUI — a dev server, or another tunnel.
-This is exactly the mix-up the port rules exist to prevent, so it is worth chasing
-rather than working around.
+A JSON body is not enough on its own: a health endpoint answering `{"ok": true}`
+would otherwise stamp cleanly as the bare host name, which reads like a successful
+probe and says nothing true about any machine. So the body has to carry
+`/system_stats`'s own field names before anything is recorded from it. This is
+exactly the mix-up the port rules exist to prevent, so it is worth chasing rather
+than working around.
+
+**`http://127.0.0.1:8190 redirected to 127.0.0.1:8188 — that is a different
+machine, so anything it says would be recorded under the wrong name.`**
+Whatever holds the port answered with a redirect, and following it would have
+stamped a different machine under this host's name — on this Mac, usually the local
+ComfyUI on 8188. ComfyUI does not redirect `/system_stats`, so something else is on
+that port: a proxy, a dev server, or a tunnel pointing somewhere you did not mean.
+Check what is bound to the port before trusting any line from it.
+
+**`http://127.0.0.1:8190 answered with more than 1024KB, which /system_stats never
+does`**
+That endpoint is a few hundred bytes. A body this size means something else is on
+the port — often one that will stream for as long as you keep reading, since the
+timeout covers each read and not the total. Find out what is holding the port.
+
+**`http://127.0.0.1:8190 stopped answering part-way through: ...`**
+The connection opened and then broke mid-answer — a tunnel that dropped, a box that
+went away, or a read that timed out. Different from "nothing answered": something
+was there. Check the tunnel is still open, then run the stamp again.
+
+**`'127.0.0.1:8190' is not a URL this can ask: unknown url type`**
+The host's url is missing its scheme, or is not a url at all. Write it in full, as
+in `http://127.0.0.1:8188` — a bare `host:port` cannot be fetched.
 
 **`comfy-win is declared as Windows Server 2022, but http://127.0.0.1:8190
 answered as darwin. That port is not reaching comfy-win.`** — or the same about a
