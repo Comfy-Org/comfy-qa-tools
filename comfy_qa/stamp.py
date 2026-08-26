@@ -471,6 +471,15 @@ def _family(text: str | None) -> str | None:
     the right way round while the caller refuses on a complaint. Do not close it
     by adding `"nt"` to the table below — as a substring it reads `ubuntu` as
     Windows, which is the false positive this comment exists to prevent.
+
+    Half of that gap is not a decision at all: **`posix` cannot be mapped, by any
+    matching technique.** `os.name` is `posix` on macOS and on Linux alike, so
+    the string genuinely names two families and picking either is a coin toss —
+    on a tunnel that really has landed on this Mac, mapping it to `linux` would
+    clear the exact wrong-machine case the caller refuses for. A word-boundary
+    match would make `posix` look safe to close, because it collides with no
+    other OS name; it would still be wrong. Only `nt` is closeable, and that is
+    the judgement call left open above.
     """
     lowered = (text or "").lower()
     for family, words in _OS_FAMILIES.items():
