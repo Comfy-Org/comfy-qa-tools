@@ -202,6 +202,28 @@ why — most often an expired session, a missing IAP permission, or something
 already holding the local port. **The box is running while this is true**, so the
 fix line ends with the command that stops it.
 
+**`gcloud is not installed or not on PATH, so no tunnel can be opened.`**
+The tunnel is `gcloud compute start-iap-tunnel` and nothing else, so there is no
+fallback. Install the SDK from the link in the fix line. Note `gcloud` may be on
+your interactive `PATH` and not on the one a script or a launchd job runs with.
+
+**`could not start the tunnel: ...`** and
+**`could not start the tunnel to comfy-win: ...`**
+The process could not be launched at all — the first when `Popen` itself failed,
+the second when gcloud was not where it was expected. The operating system's own
+reason is quoted. Check that gcloud is installed and on your `PATH`.
+
+**`the tunnel closed as soon as it was opened (gcloud exited 1). gcloud said: ...`**
+The one failure that used to be recorded as a success. gcloud fails immediately far
+more often than it fails later — an expired credential is the common case, and
+because its output is captured it cannot prompt, so it exits rather than asking. A
+pid file written over that turns a credential failure into "the box is up but
+ComfyUI is not answering", with the machine left running and billing. So a fresh
+tunnel is watched for a second and a half, and a dead one is reported with the end
+of gcloud's own log instead of being written down. If it mentions credentials or
+reauthentication, `gcloud auth login` and try again; the full log is in
+`~/.config/comfy-qa-tools/tunnels/<host>.log`.
+
 **`something is already listening on 127.0.0.1:8190, and it is not a tunnel this
 tool opened. A tunnel started now could not bind that port, so
 http://127.0.0.1:8190 would answer for whatever is already there.`**
@@ -219,7 +241,7 @@ edited one — can call a different instance `comfy-win`, and a tunnel is only r
 when the instance, the zone, the project and the port all match what you asked for.
 `comfy-qat host down comfy-win`, then open this one.
 
-**`another comfy-qat is opening the tunnel to comfy-win right now.`**
+**"another `comfy-qat` is opening the tunnel to comfy-win right now."**
 Two terminals opening at once would each start gcloud: one binds the port, the
 other does not, and only one of them ends up recorded — leaving a tunnel running
 that nothing can find or stop. The claim is released as soon as the other command
