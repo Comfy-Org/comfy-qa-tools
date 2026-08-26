@@ -136,11 +136,14 @@ def bring_up(
     tunnel_dir: Path | None = None,
     sleep=time.sleep,
     now=time.monotonic,
-    probe_fn=probe,
+    probe_fn=None,
     boot_timeout: int = BOOT_TIMEOUT,
     comfy_timeout: int = COMFY_TIMEOUT,
 ) -> Ready:
     """Start the machine, tunnel to it, and wait until ComfyUI answers."""
+    # Looked up here rather than bound as a default, so a test can replace the
+    # HTTP probe without also replacing this function. `serve` already does this.
+    probe_fn = probe_fn or probe
     if host.kind == "local":
         stamp = probe_fn(host)
         if stamp is None:
@@ -335,6 +338,63 @@ def serve(
     say(f"starting ComfyUI on {host.name} — its log follows. Ctrl-C to stop it.")
     return gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                   launch_command(host), stream=True)
+
+
+def _family(host: Host) -> str:
+    """"Windows Server 2022" -> "windows". Enough to say "the same kind of box"."""
+    words = (host.os or "").lower().split()
+    return words[0] if words else ""
+
+
+def alternatives(hosts: list[Host], unavailable: Host) -> list[Host]:
+    """Where else a tester could work, when one machine will not start.
+
+    A capacity shortage is a fact about one card in one zone, so it says nothing
+    about the other boxes — and being told "no capacity" without being told where
+    to go next is the moment a test session stops. Same operating system first,
+    because someone who asked for Windows usually needs Windows; then anywhere
+    but the zone that just refused; local last, since MPS is not CUDA and it
+    answers a different question.
+    """
+    def rank(host: Host) -> tuple:
+        return (
+            1 if host.kind == "local" else 0,
+            0 if _family(host) == _family(unavailable) else 1,
+            1 if host.gce_zone and host.gce_zone == unavailable.gce_zone else 0,
+            host.name,
+        )
+
+    return sorted((h for h in hosts if h.name != unavailable.name), key=rank)
+
+
+def running_elsewhere(
+    gc: Gcloud,
+    hosts: list[Host],
+    target: Host,
+    *,
+    tunnel_dir: Path | None = None,
+) -> list[tuple[Host, str]]:
+    """The other cloud boxes that are on, and why we say so.
+
+    Changing machine is two acts, and the one people forget is the first: a box
+    left RUNNING bills whether or not anything is tunnelled to it. Both signs are
+    read, because they fail differently — a tunnel opened here is local evidence,
+    while a box someone started in the console has no tunnel and is the expensive
+    case. Local hosts never appear: this tool did not start the local ComfyUI and
+    does not get to stop it.
+    """
+    found: list[tuple[Host, str]] = []
+    for host in hosts:
+        if host.name == target.name or host.kind == "local":
+            continue
+        reasons = []
+        if gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project) == RUNNING:
+            reasons.append("running")
+        if tunnel_status(host.name, tunnel_dir).running:
+            reasons.append("tunnelled")
+        if reasons:
+            found.append((host, " and ".join(reasons)))
+    return found
 
 
 def put_away(

@@ -21,6 +21,19 @@ not write it ([`docs/test-criteria.md`](docs/test-criteria.md)).
 - `host move` — a GPU stockout cannot be fixed where you are. Snapshot the disk,
   rebuild the box in a zone that has capacity, keep the install, and never remove
   the original. (#19)
+- `host switch` — change machine in one command. Start the one you want, then
+  stop whichever other cloud box was running or tunnelled, which is the half
+  people forget and the half that bills. `--dry-run`, `--keep-others`.
+- **Say what you want, not what you called it.** Every command that takes a host
+  now also takes a description of one: `windows`, `l4`, `windows/l4`. It is used
+  only when exactly one declared host fits, the host it picked is printed, and
+  two candidates are refused with both named. Names always win.
+- `host list` gained a STATE column — which box you are tunnelled to, free and
+  offline. `--live` adds what Google says about each instance.
+- A box that will not start now says where else you can work. A GPU stockout
+  used to end with a four-step rebuild; it now offers the other declared
+  machines first, same OS first, and the rebuild second.
+
 - `host stamp` — one pasteable line saying what a machine actually is, from
   ComfyUI's own `/system_stats`. `--json` uses ComfyUI's field names. (#6)
 
@@ -40,6 +53,8 @@ not write it ([`docs/test-criteria.md`](docs/test-criteria.md)).
 - Capacity stockouts were reported as generic start failures; they are now named,
   and the zone Google suggests is repeated back. (#17, #18)
 - Quota parsing crashed on the shape Google actually returns. (#9)
+- A misspelt field in `hosts.toml` was reported as five missing fields that were
+  all present. `gce_zoen` now names itself, and suggests `gce_zone`.
 
 ### Documentation
 

@@ -3,9 +3,13 @@
 Two halves. `list`, `init` and the config rules are offline and never call
 anything: declaring a machine is not the same act as touching it, and the rules
 that stop you reading the wrong box are worth enforcing before a network exists.
-`discover`, `up`, `open`, `down`, `go`, `move` and `stamp` reach out — each one
-importing what it needs inside the function, so the offline half stays usable
-when gcloud is not installed at all.
+`discover`, `up`, `open`, `down`, `go`, `switch`, `move` and `stamp` reach out —
+each one importing what it needs inside the function, so the offline half stays
+usable when gcloud is not installed at all.
+
+Every command that takes a machine takes it through `_lookup`, so `windows`,
+`l4` and `windows/l4` work wherever a name works, and the machine a description
+resolved to is printed rather than assumed.
 """
 
 from __future__ import annotations
@@ -16,7 +20,15 @@ from typing import Annotated, Optional
 
 import typer
 
-from .config import COMFYUI_DEFAULT_PORT, DEFAULT_CONFIG_PATH, ConfigError, find, load
+from .config import (
+    COMFYUI_DEFAULT_PORT,
+    DEFAULT_CONFIG_PATH,
+    ConfigError,
+    Host,
+    describe,
+    load,
+    resolve,
+)
 from .stamp import ProbeError, fetch
 
 app = typer.Typer(
@@ -54,20 +66,56 @@ def _config_option() -> Path:
     return DEFAULT_CONFIG_PATH
 
 
+def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
+    """What each machine is doing right now.
+
+    The tunnel is what makes a cloud box answer on 127.0.0.1, so "tunnelled" is
+    the honest answer to "which box am I on?" — and reading a pid file costs
+    nothing, so it is always shown. Whether the instance is *running* is a gcloud
+    call per box, which is not free, so it waits to be asked for with --live.
+    """
+    from .tunnel import status as tunnel_status
+
+    gc = None
+    states: dict[str, str] = {}
+    for host in hosts:
+        parts = []
+        if host.is_remote:
+            if live:
+                from .gcloud import Gcloud, GcloudError
+
+                gc = gc or Gcloud()
+                try:
+                    state = gc.instance_status(
+                        host.gce_instance, host.gce_zone, host.gce_project)
+                except GcloudError:
+                    state = "unknown"
+                # TERMINATED is Google's word for stopped, and reads as broken.
+                parts.append({"RUNNING": "running", "TERMINATED": "stopped"}.get(
+                    state, state.lower()))
+            if tunnel_status(host.name).running:
+                parts.append("tunnelled")
+        states[host.name] = ", ".join(parts) or "-"
+    return states
+
+
 @app.command("list")
 def list_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    live: Annotated[bool, typer.Option(
+        "--live", help="Ask Google whether each cloud box is running. One call per box.")] = False,
 ) -> None:
-    """Show every declared machine: what it is, and where it answers."""
+    """Show every declared machine: what it is, where it answers, and what is up."""
     try:
         hosts = load(config)
     except ConfigError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
 
-    rows = [("NAME", "KIND", "OS", "GPU", "URL")] + [
-        (h.name, h.kind, h.os or "-", h.gpu or "-", h.url) for h in hosts
+    state = _states(hosts, live=live)
+    rows = [("NAME", "KIND", "OS", "GPU", "URL", "STATE")] + [
+        (h.name, h.kind, h.os or "-", h.gpu or "-", h.url, state[h.name]) for h in hosts
     ]
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     for row in rows:
@@ -152,12 +200,26 @@ def discover_cmd(
     typer.echo(f"\nadded {len(additions)} to {path}")
 
 
-def _host(name: str, config: Optional[Path]):
+def _lookup(name: str, config: Optional[Path]) -> tuple[list[Host], Host]:
+    """The whole host list, and the one machine the argument meant.
+
+    The resolution line goes to stderr so that `--json` and `--dry-run` keep
+    printing only the thing you were going to paste, while you still see which
+    machine `windows` turned out to be.
+    """
     try:
-        return find(load(config), name)
+        hosts = load(config)
+        chosen = resolve(hosts, name)
     except ConfigError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2)
+    if chosen.line() is not None:
+        typer.echo(chosen.line(), err=True)
+    return hosts, chosen.host
+
+
+def _host(name: str, config: Optional[Path]) -> Host:
+    return _lookup(name, config)[1]
 
 
 def _act(action, *args, **kwargs):
@@ -175,7 +237,7 @@ def _act(action, *args, **kwargs):
 
 @app.command("up")
 def up_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],
+    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
 ) -> None:
     """Start a machine and wait until ComfyUI actually answers.
@@ -184,16 +246,22 @@ def up_cmd(
     booted and serves nothing looks like success and bills like success.
     """
     from .gcloud import Gcloud
-    from .lifecycle import bring_up
+    from .lifecycle import LifecycleError, bring_up
 
-    host = _host(name, config)
-    _act(bring_up, Gcloud(), host, lambda line: typer.echo(f"  {line}"))
+    hosts, host = _lookup(name, config)
+    try:
+        bring_up(Gcloud(), host, lambda line: typer.echo(f"  {line}"))
+    except LifecycleError as exc:
+        # A box that will not start ends the session unless you are told where
+        # else you could work, and a GPU shortage is the usual reason.
+        _failed(host, hosts, exc)
+        raise typer.Exit(code=1)
     typer.echo(f"\nOpen {host.url} in your browser.")
 
 
 @app.command("open")
 def open_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine.")],
+    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the tunnel command instead of running it.")] = False,
@@ -225,7 +293,7 @@ def open_cmd(
 
 @app.command("down")
 def down_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine.")],
+    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     keep_running: Annotated[bool, typer.Option(
         "--keep-running", help="Close the tunnel but leave the machine on.")] = False,
@@ -241,7 +309,7 @@ def down_cmd(
 
 @app.command("go")
 def go_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine.")],
+    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     no_browser: Annotated[bool, typer.Option(
         "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
@@ -254,36 +322,97 @@ def go_cmd(
     away; otherwise it is installed if needed and launched in the foreground, with
     its startup log on this terminal exactly as a local `main.py` would print it.
     """
+    from .gcloud import Gcloud
+
+    hosts, host = _lookup(name, config)
+    gc = Gcloud()
+    ready = _bring_up(gc, host, hosts)
+    _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
+
+
+def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
+    """A box that will not start is not the end of a test session. Say what is.
+
+    Being told "no capacity in this zone" and nothing else is where testing
+    stops: the next move is a four-step rebuild nobody has memorised. The
+    tester's real question is "where can I work right now", so that is answered
+    first, and the rebuild is offered second, for when it has to be that box.
+    """
+    from .lifecycle import alternatives
+
+    typer.echo(f"\n{exc}", err=True)
+
+    if kept:
+        still = ", ".join(other.name for other in kept)
+        typer.echo(f"\n{still} is untouched — you still have the machine you were on."
+                   if len(kept) == 1 else
+                   f"\n{still} are untouched — you still have the machines you were on.",
+                   err=True)
+
+    options = alternatives(hosts, host)[:3]
+    if options:
+        commands = [f"comfy-qat host switch {other.name}" for other in options]
+        width = max(len(command) for command in commands)
+        typer.echo("\nWhere you can test instead, easiest first:", err=True)
+        for other, command in zip(options, commands):
+            note = ""
+            if other.gce_zone and other.gce_zone == host.gce_zone:
+                note = ", same zone — it may hit the same shortage"
+            typer.echo(f"  {command.ljust(width)}   # {describe(other)}{note}", err=True)
+    else:
+        typer.echo("\nNo other machine is declared, so there is nowhere to switch to:",
+                   err=True)
+        typer.echo("  comfy-qat host discover   # declare a box you already have",
+                   err=True)
+
+    if exc.fix:
+        typer.echo(f"\nIf it has to be {host.name}:", err=True)
+        for line in exc.fix.splitlines():
+            typer.echo(f"  {line.strip()}", err=True)
+
+
+def _failed(host: Host, hosts: list[Host], exc, kept: list[Host] | None = None) -> None:
+    """Report a machine that would not come up, in the most useful way there is."""
+    from .lifecycle import STOCKOUT
+
+    if getattr(exc, "kind", "") == STOCKOUT:
+        _unavailable(host, hosts, exc, kept or [])
+        return
+    typer.echo(f"\n{exc}", err=True)
+    if exc.fix:
+        typer.echo(f"to fix: {exc.fix}", err=True)
+
+
+def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None):
+    """Get the machine up, with every failure turned into a next command.
+
+    Returns None when the box is up but ComfyUI is absent — the one failure the
+    steps after this one exist to fix.
+    """
+    from .lifecycle import COMFYUI_ABSENT, LifecycleError, bring_up
+
+    try:
+        return bring_up(gc, host, lambda line: typer.echo(f"  {line}"), comfy_timeout=15)
+    except LifecycleError as exc:
+        # Only "ComfyUI is not there yet" is worth continuing past. Anything else
+        # (the box would not start, the tunnel failed) must be shown, not
+        # swallowed — that once hid a failed start and then tried SSH against it.
+        if exc.kind == COMFYUI_ABSENT:
+            return None
+        _failed(host, hosts, exc, kept)
+        raise typer.Exit(code=1)
+
+
+def _serve(gc, host: Host, ready, *, no_browser: bool = False,
+           no_install: bool = False) -> None:
+    """The rest of `go` once the machine is up: install if needed, then run it."""
     import webbrowser
 
-    from .gcloud import Gcloud, GcloudError
-    from .lifecycle import (
-        COMFYUI_ABSENT,
-        LifecycleError,
-        bring_up,
-        ensure_installed,
-        serve,
-        wait_for_ssh,
-    )
+    from .gcloud import GcloudError
+    from .lifecycle import LifecycleError, ensure_installed, serve, wait_for_ssh
 
-    host = _host(name, config)
-    gc = Gcloud()
     say = lambda line: typer.echo(f"  {line}")
     browser = None if no_browser else (lambda url: webbrowser.open(url))
-
-    # Already serving? Then there is nothing to install or launch.
-    try:
-        ready = bring_up(gc, host, say, comfy_timeout=15)
-    except LifecycleError as exc:
-        # Only "ComfyUI is not there yet" is worth continuing past — that is what
-        # the next steps fix. Anything else (the box would not start, the tunnel
-        # failed) must be shown, not swallowed.
-        if exc.kind != COMFYUI_ABSENT:
-            typer.echo(f"\n{exc}", err=True)
-            if exc.fix:
-                typer.echo(f"to fix: {exc.fix}", err=True)
-            raise typer.Exit(code=1)
-        ready = None
 
     if ready is not None and ready.stamp is not None:
         typer.echo(f"\n{host.url}")
@@ -325,9 +454,68 @@ def go_cmd(
                f"`comfy-qat host down {host.name}` to stop the machine.")
 
 
+@app.command("switch")
+def switch_cmd(
+    name: Annotated[str, typer.Argument(
+        help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    keep_others: Annotated[bool, typer.Option(
+        "--keep-others", help="Leave the other machines running. They keep billing.")] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
+    no_browser: Annotated[bool, typer.Option(
+        "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
+    no_install: Annotated[bool, typer.Option(
+        "--no-install", help="Fail rather than installing ComfyUI if it is absent.")] = False,
+) -> None:
+    """Change machine: start the one you want, stop the one you were on.
+
+    `go` with the step people forget on the front — a GPU box left running bills
+    all night whether or not anything is tunnelled to it. Nothing here is new and
+    nothing is remembered: there is still no current host, and `switch` names
+    what it starts and what it stops before it does either.
+
+    The target is brought up *first*. If it cannot start — a capacity shortage is
+    routine on GPUs — you still have the machine you were on, and you are told
+    where you can work instead.
+    """
+    from .gcloud import Gcloud, GcloudError
+    from .lifecycle import put_away, running_elsewhere
+
+    hosts, host = _lookup(name, config)
+    gc = Gcloud()
+
+    try:
+        others = [] if keep_others else running_elsewhere(gc, hosts, host)
+    except GcloudError as exc:
+        typer.echo(str(exc), err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("")
+    typer.echo(f"  - go to {host.name} ({describe(host)}) on {host.url}")
+    for other, why in others:
+        typer.echo(f"  - then stop {other.name} ({describe(other)}) — {why}")
+    if not others:
+        typer.echo("  - leaving the other machines running (--keep-others)" if keep_others
+                   else "  - nothing else is running, so nothing to stop")
+
+    if dry_run:
+        typer.echo("\n--dry-run: nothing changed")
+        return
+
+    typer.echo("")
+    ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
+
+    for other, _why in others:
+        _act(put_away, gc, other, lambda line: typer.echo(f"  {line}"))
+
+    _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
+
+
 @app.command("move")
 def move_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine to move.")],
+    name: Annotated[str, typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")],
     to: Annotated[Optional[str], typer.Option(
         "--to", help="Zone to move it to. Default: whichever one Google says has capacity.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
@@ -430,7 +618,7 @@ def move_cmd(
 
 @app.command("stamp")
 def stamp_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine. See `host list`.")],
+    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     as_json: Annotated[bool, typer.Option(
         "--json", help="Machine-readable, for pasting into a report or a test.")] = False,
@@ -441,11 +629,7 @@ def stamp_cmd(
     a hand-written bug report usually does not either — which is how "cannot
     reproduce" happens between two machines that were never the same.
     """
-    try:
-        host = find(load(config), name)
-    except ConfigError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2)
+    host = _host(name, config)
 
     try:
         stamp = fetch(host.url, host=host.name)
