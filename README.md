@@ -178,8 +178,9 @@ printed; one that fits two is refused with both named.
 | `comfy-qat host down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
 | `comfy-qat host go <host>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
 | `comfy-qat host switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
-| `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. `--to`, `--dry-run`, `--yes` |
+| `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
 | `comfy-qat host stamp <host>` | ask a machine what it is. `--json` |
+
 | `comfy-qat env` | v0's build and feature-flag check for deployed environments |
 
 Every command takes `--config` to point at a host list somewhere other than the

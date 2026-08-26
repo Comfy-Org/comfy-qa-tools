@@ -23,7 +23,10 @@ build now has a version worth quoting.
   none, then serve it in the foreground with its startup log on your terminal. (#15)
 - `host move` — a GPU stockout cannot be fixed where you are. Snapshot the disk,
   rebuild the box in a zone that has capacity, keep the install, and never remove
-  the original. (#19)
+  the original. Reads the boot disk off the instance rather than guessing its name,
+  resumes a move that stopped part-way instead of colliding with what it left,
+  reports every leftover with its size and the command that removes it, and keeps
+  the new disk the same type as the one it copies. (#19)
 - `host switch` — change machine in one command. Start the one you want, then
   stop whichever other cloud box was running or tunnelled, which is the half
   people forget and the half that bills. `--dry-run`, `--keep-others`.
@@ -36,6 +39,7 @@ build now has a version worth quoting.
 - A box that will not start now says where else you can work. A GPU stockout
   used to end with a four-step rebuild; it now offers the other declared
   machines first, same OS first, and the rebuild second.
+
 
 - `host stamp` — one pasteable line saying what a machine actually is, from
   ComfyUI's own `/system_stats`. `--json` uses ComfyUI's field names. (#6)
