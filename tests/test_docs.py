@@ -3,59 +3,303 @@
 The rule we hold ourselves to: an error and its troubleshooting entry get written
 together. A command whose failure modes cannot be documented is a command that is
 not understood yet. This test is what stops that rule quietly lapsing.
+
+It used to enforce that against a hand-written list of phrases, which only worked
+while somebody remembered to extend it — an error added without touching the list
+was invisible, so the rule held for the errors we had already thought about and
+nowhere else. The list is now read out of the source instead, by walking the AST
+of every module in `comfy_qa/` for the ways this tool tells someone that something
+went wrong:
+
+  1. `typer.echo(..., err=True)` — anything written to stderr
+  2. `ConfigError`, `GcloudError`, `LifecycleError`, `ProbeError`, `SetupStopped`
+     — the message argument of every failure this tool raises at a person
+  3. `Check(..., False, ...)` and a `say(...)` inside an `except` handler — the
+     two places a failure is reported without being raised
+  4. anything assigned to a local called `message`, because gcloud's failure
+     classifier builds its message that way and the raise site carries no literal
+
+A message is then cut at each interpolation, and every run of literal text long
+enough to identify it has to appear in troubleshooting.md — verbatim, because the
+point of the page is that a pasted error finds its own entry. A message with no
+run that long is held to its longest, so a two-word error cannot slip through on
+a technicality.
+
+Adding an error without documenting it fails. Nothing has to be remembered.
 """
 
 from __future__ import annotations
 
+import ast
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-DOCS = Path(__file__).resolve().parent.parent / "docs"
+ROOT = Path(__file__).resolve().parent.parent
+DOCS = ROOT / "docs"
+PACKAGE = ROOT / "comfy_qa"
 
-# Phrases the code can actually print. Each must be findable by someone who pasted
-# the error into the troubleshooting page.
-ERROR_PHRASES = [
-    "no host list at",
-    "reserved for the local ComfyUI",
-    "both use port",
-    "kind must be",
-    "unknown field",
-    "requires an explicit port",
-    "outside 1024-65535",
-    "gcloud is not installed",
-    "your gcloud session has expired",
-    "no active gcloud account",
-    "no project set",
-    "no billing account linked",
-    "zero GPU quota",
-    "still pending",
-    "gcloud timed out",
-    # setup
-    "not signed in to Google Cloud",
-    "sign-in did not complete",
-    "this account has no Google Cloud projects",
-    "no project set and",
-    "no billing account is linked",
-    # gpu quota
-    "reports no quota for",
-    "still pending",
-    # stamping
-    "nothing answered at",
-    "not with ComfyUI",
-    # installing
-    "command not found",
-    "could not read GPU quota",
-    "could not list cloud boxes",
-    # starting and stopping
-    "ComfyUI is not answering",
-    "did not reach RUNNING",
-    "could not start",
-    "could not run a command on",
-    "did not finish",
-    "capacity in",
-    "NO_PYTHON",
-]
+# Every exception whose message is shown to a person rather than raised into a
+# traceback. Each takes that message as its first positional argument.
+ERROR_TYPES = ("ConfigError", "GcloudError", "LifecycleError", "ProbeError", "SetupStopped")
+
+# Literal text that is deliberately *not* a troubleshooting entry. There are only
+# two kinds, and both have to be argued for in a comment before being added:
+#
+#   - a wrapper that prints an error raised somewhere else. The entry belongs at
+#     the place the error is raised, not on every line that reprints it.
+#   - a progress line that happens to be printed from inside an `except` handler.
+#
+# Anything else added here is the hand-maintained list coming back, so keep it
+# short and keep the reasons honest.
+NOT_AN_ENTRY = {
+    # `setup` and `host` reprint a SetupStopped / GcloudError / LifecycleError
+    # message and its fix under these two prefixes. Both are documented where
+    # they are raised.
+    "setup stopped": "prefix on an error raised elsewhere",
+    "to fix": "prefix on an error's own fix line",
+    # Not a failure: SSH is retried until the box answers, and this says why the
+    # wait is long. Windows takes minutes to start its SSH server.
+    "waiting for the machine to accept commands — Windows takes a few minutes":
+        "progress while retrying, not a failure",
+    # Not a failure either: `auth quota list` warns on stderr that the call is
+    # slow, so the warning stays out of --json's stdout.
+    "reading quota — this takes about a minute…":
+        "progress on stderr so it stays out of --json output",
+}
+
+# A run this long identifies the message on its own, so every one of them has to
+# be findable in the page. A message made only of shorter runs — `f"{name}: no"` —
+# still has to be documented, by its longest run, or a two-word error would slip
+# through on a technicality.
+IDENTIFYING = 12
+
+
+def _normalise(text: str) -> str:
+    """One space between words, no glue punctuation at the ends.
+
+    Messages are stitched together from literals and interpolations, so a run of
+    literal text routinely starts or ends mid-sentence — `". The machine is up"`.
+    The docs quote the sentence, not the glue.
+    """
+    return re.sub(r"\s+", " ", text).strip().strip(" .,;:—-")
+
+
+def _literal_runs(node: ast.AST | None) -> list[str]:
+    """Every uninterrupted run of literal text in a message expression.
+
+    An f-string yields one run per gap between interpolations, so
+    `f"could not start {name}: {exc}"` yields `["could not start ", ": "]`.
+    """
+    if node is None:
+        return []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    if isinstance(node, ast.JoinedStr):
+        runs: list[str] = []
+        current = ""
+        for part in node.values:
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                current += part.value
+            elif current:
+                runs.append(current)
+                current = ""
+        if current:
+            runs.append(current)
+        return runs
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _literal_runs(node.left) + _literal_runs(node.right)
+    if isinstance(node, ast.IfExp):
+        return _literal_runs(node.body) + _literal_runs(node.orelse)
+    if isinstance(node, ast.BoolOp):
+        # `something or "a fallback message"` — both branches can be printed.
+        return [run for value in node.values for run in _literal_runs(value)]
+    # A call such as `str(exc)` or `", ".join(...)` carries no message of its own.
+    return []
+
+
+@dataclass(frozen=True)
+class Message:
+    """One thing the tool can say when something has gone wrong."""
+
+    where: str
+    phrase: str
+
+
+def _called_name(call: ast.Call) -> str:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    if isinstance(func, ast.Name):
+        return func.id
+    return ""
+
+
+def _is_false(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is False
+
+
+def _is_true(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is True
+
+
+def _message_argument(call: ast.Call, *, in_except: bool) -> ast.AST | None:
+    """The user-facing message this call prints, if it prints one at all."""
+    name = _called_name(call)
+
+    if name == "echo":
+        if any(kw.arg == "err" and _is_true(kw.value) for kw in call.keywords):
+            return call.args[0] if call.args else None
+        return None
+
+    if name in ERROR_TYPES:
+        return call.args[0] if call.args else None
+
+    # auth's readiness report: Check(name, ok, detail, fix). A failed check is
+    # printed as `FAIL  <name>  <detail>`; a passing one is not a failure.
+    if name == "Check" and len(call.args) >= 3 and _is_false(call.args[1]):
+        return call.args[2]
+
+    # setup reports rather than raises, through the injected `say`. Only the ones
+    # in an except handler are failures; the rest are progress.
+    if name == "say" and in_except:
+        return call.args[0] if call.args else None
+
+    return None
+
+
+def _calls_inside_except(tree: ast.AST) -> set[int]:
+    inside: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ExceptHandler):
+            for child in ast.walk(node):
+                if isinstance(child, ast.Call):
+                    inside.add(id(child))
+    return inside
+
+
+def _message_expressions(tree: ast.AST):
+    """Every expression in a module that becomes a user-facing failure message."""
+    handled = _calls_inside_except(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            message = _message_argument(node, in_except=id(node) in handled)
+            if message is not None:
+                yield node.lineno, message
+        # gcloud's failure classifier builds its message in a local and raises
+        # that, so the raise carries no literal at all. Following the variable is
+        # the only way those branches are visible here.
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "message" for target in node.targets
+        ):
+            yield node.lineno, node.value
+
+
+def collect_messages() -> list[Message]:
+    """Every failure message in comfy_qa/, read out of the source."""
+    found: list[Message] = []
+    for path in sorted(PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for lineno, expression in _message_expressions(tree):
+            runs = [_normalise(run) for run in _literal_runs(expression)]
+            runs = [run for run in runs if run and run not in NOT_AN_ENTRY]
+            if not runs:
+                # Nothing but interpolation and glue: this line reprints an error
+                # raised somewhere else, and that is where its entry lives.
+                continue
+            for phrase in [run for run in runs if len(run) >= IDENTIFYING] or [max(runs, key=len)]:
+                found.append(Message(f"{path.name}:{lineno}", phrase))
+    return sorted(set(found), key=lambda m: (m.where, m.phrase))
+
+
+MESSAGES = collect_messages()
+
+
+def _troubleshooting_text() -> str:
+    return re.sub(r"\s+", " ", (DOCS / "troubleshooting.md").read_text(encoding="utf-8"))
+
+
+def test_the_message_list_was_actually_found():
+    """A walker that silently matches nothing would pass every test below it."""
+    assert len(MESSAGES) > 40, f"only found {len(MESSAGES)} messages — the walk is broken"
+    files = {message.where.split(":")[0] for message in MESSAGES}
+    assert {"config.py", "gcloud.py", "host.py", "lifecycle.py", "setup.py"} <= files
+
+
+@pytest.mark.parametrize("message", MESSAGES, ids=lambda m: f"{m.where} {m.phrase[:40]}")
+def test_every_error_has_a_troubleshooting_entry(message):
+    assert message.phrase in _troubleshooting_text(), (
+        f"{message.where} can print {message.phrase!r}, which is not in "
+        f"troubleshooting.md. Quote it there, verbatim, with what it means and "
+        f"what to do — or, if it is not a failure, say so in NOT_AN_ENTRY."
+    )
+
+
+# --- the commands our own messages tell people to run ---------------------
+
+
+def _command_tree(app) -> dict:
+    """The real command surface, as nested names, straight off the Typer app."""
+    tree: dict = {}
+    for command in app.registered_commands:
+        tree[command.name] = {}
+    for group in app.registered_groups:
+        tree[group.name] = _command_tree(group.typer_instance)
+    return tree
+
+
+def _string_constants() -> list[tuple[str, str]]:
+    found = []
+    for path in sorted(PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.append((f"{path.name}:{node.lineno}", node.value))
+    return found
+
+
+# Three words is the depth of the deepest path we have (`auth quota request`);
+# past that it is prose, or an argument.
+_INVOCATION = re.compile(r"comfy-qat((?:\s+[a-z][a-z0-9-]*){1,3})")
+
+
+def _invocations() -> list[tuple[str, tuple[str, ...]]]:
+    calls = []
+    for where, text in _string_constants():
+        for match in _INVOCATION.finditer(re.sub(r"\s+", " ", text)):
+            calls.append((where, tuple(match.group(1).split())))
+    return calls
+
+
+@pytest.mark.parametrize(
+    "where,words",
+    _invocations(),
+    ids=lambda value: " ".join(value) if isinstance(value, tuple) else value,
+)
+def test_commands_we_tell_people_to_run_exist(where, words):
+    """A fix line naming a command that does not exist is worse than no fix line.
+
+    Walk as far into the real command tree as the words go. Stopping is only
+    allowed at a leaf, where what follows is an argument — `host stamp local`.
+    Stopping at a group means the next word was meant to name a subcommand and
+    does not: `auth quota` never became `auth quotas`, and this is what says so.
+    """
+    from comfy_qa.cli import app
+
+    node = _command_tree(app)
+    walked: list[str] = []
+    for word in words:
+        if word not in node:
+            assert not node, (
+                f"{where}: `comfy-qat {' '.join(walked + [word])}` — "
+                f"{'no such command' if not walked else f'{word!r} is not one of'} "
+                f"{', '.join(sorted(node))}"
+            )
+            break
+        walked.append(word)
+        node = node[word]
 
 
 @pytest.mark.parametrize(
@@ -66,14 +310,6 @@ def test_page_exists_and_is_not_a_stub(name):
     page = DOCS / f"{name}.md"
     assert page.exists(), f"docs/{name}.md is missing"
     assert len(page.read_text().split()) > 100, f"docs/{name}.md is a stub"
-
-
-@pytest.mark.parametrize("phrase", ERROR_PHRASES)
-def test_every_error_has_a_troubleshooting_entry(phrase):
-    text = (DOCS / "troubleshooting.md").read_text()
-    assert phrase in text, (
-        f"{phrase!r} can be printed by the tool but is not in troubleshooting.md"
-    )
 
 
 def _occurrences(line: str, needle: str) -> list[int]:
