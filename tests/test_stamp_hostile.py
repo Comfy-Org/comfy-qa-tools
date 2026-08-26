@@ -211,11 +211,36 @@ def test_a_service_that_404s_is_not_reported_as_nothing_being_there():
     assert "nothing answered" not in str(caught.value)
 
 
-@pytest.mark.parametrize("url", ["", "127.0.0.1:8190", "nonsense"])
+@pytest.mark.parametrize("url", ["", "nonsense", "://x", " "])
 def test_a_url_that_is_not_a_url_is_a_message_not_a_traceback(url):
     """`urllib.request.Request` raises ValueError before any opener is reached."""
-    with pytest.raises(ProbeError):
+    with pytest.raises(ProbeError) as caught:
         fetch(url, host="comfy-win", opener=serving(COMFYUI))
+
+    # Name the refusal, do not merely count one. `raises(ProbeError)` alone let
+    # this pass for the wrong reason: `"127.0.0.1:8190"` used to be a case here,
+    # and `Request` accepts it — it reads `127.0.0.1` as the URL *scheme* and
+    # never raises. The ProbeError came from the redirect check further down,
+    # about a guard this test does not mention, and removing that guard is what
+    # exposed it. Its real behaviour is pinned below instead.
+    assert "is not a URL this can ask" in str(caught.value)
+
+
+def test_a_scheme_less_host_and_port_is_refused_by_something():
+    """`127.0.0.1:8190` is not rejected where you would expect, and that is fine.
+
+    `Request` parses `127.0.0.1` as a scheme rather than raising, so this never
+    reaches the malformed-URL branch. It is still refused — the answer comes back
+    from a netloc that is not the one asked, so the redirect check stops it — and
+    it cannot arrive from real code anyway, because `Host.url` always builds
+    `http://127.0.0.1:{port}` itself. Pinned so the day one of those three facts
+    changes, something says so rather than a stamp quietly succeeding for a host
+    named by a string with no scheme.
+    """
+    with pytest.raises(ProbeError) as caught:
+        fetch("127.0.0.1:8190", host="comfy-win", opener=serving(COMFYUI))
+
+    assert "is not reaching" in str(caught.value) or "redirected to" in str(caught.value)
 
 
 def test_a_body_that_never_ends_is_not_read_into_memory():
