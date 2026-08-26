@@ -344,6 +344,19 @@ original stopped. Nothing is deleted, at any point, by anything here.
 **`comfy-win is local — there is nowhere to move it to.`**
 Only cloud hosts have a zone. A local install is where it is.
 
+**`--dry-run cannot work out which zone has capacity. The only way to ask is to
+try to start comfy-win, and if it starts it is billing — so a dry run that did it
+would be the most expensive command here. Say where you want it and the rest of
+the plan is printed without touching anything: comfy-qat host move comfy-win --to
+us-central1-b --dry-run.`**
+Nothing answers "where is there an L4 free". `move` finds out by trying to start
+the machine and reading the zone out of the refusal — and when there is no
+refusal, the box is up and billing. That is fine for a real move, which was going
+to start something anyway, and not fine at all for `--dry-run`, whose whole
+promise is that it changes nothing. So the two are refused together: give
+`--dry-run` a `--to` and it prints the full plan, contacting nothing that costs
+money.
+
 **`Google did not name a zone with capacity. Pick one with --to, e.g. --to
 us-central1-b`**
 Asked to find a zone itself, `move` starts the box and reads the zones out of the

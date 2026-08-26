@@ -176,10 +176,7 @@ def discover_cmd(
             raise typer.Exit(code=2)
         instances = gc.list_instances(project)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=2)
+        _refused(exc)
 
     found = [parse_instance(instance, project) for instance in instances]
     if not found:
@@ -248,6 +245,21 @@ def _reportable() -> tuple[type, ...]:
     from .tunnel import TunnelError
 
     return (LifecycleError, TunnelError)
+
+
+def _refused(exc, code: int = 2) -> None:
+    """A gcloud refusal, reported the way every other command in this group does.
+
+    One shape for the whole `host` group, because a tester reads exit codes across
+    commands: **2 means nothing was changed** — a refusal, a precondition, a bad
+    argument — and **1 means the work started and failed.** `move` used to exit 1
+    with no `to fix:` line where `auth quota list` and `host discover` exited 2
+    with one, on the same gcloud error.
+    """
+    typer.echo(str(exc), err=True)
+    if getattr(exc, "fix", None):
+        typer.echo(f"to fix: {exc.fix}", err=True)
+    raise typer.Exit(code=code)
 
 
 def _act(action, *args, **kwargs):
@@ -531,10 +543,9 @@ def switch_cmd(
     try:
         others = [] if keep_others else running_elsewhere(gc, hosts, host)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=1)
+        # Nothing has been started or stopped yet: this is only the survey of what
+        # is running elsewhere, so it is a refusal (2), not a failed switch (1).
+        _refused(exc)
 
     typer.echo("")
     typer.echo(f"  - go to {host.name} ({describe(host)}) on {host.url}")
@@ -557,6 +568,54 @@ def switch_cmd(
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
 
 
+def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
+    """Which zone Google says has capacity — found the only way there is.
+
+    Nothing answers "where is there an L4 free". The only way to find out is to
+    try to start the machine and read the zone out of the refusal, which means
+    that when it is *not* refused the box is up and billing.
+
+    That is why this cannot be part of a dry run, and why the guard lives here
+    rather than at the call site: `--dry-run` used to be consulted long after
+    this had already started a GPU instance, so the one command that promises to
+    change nothing was the one that could quietly cost the most. Anything that
+    replaces this function inherits the guard with it.
+
+    Returns the zone to move to, or None when the machine started — in which case
+    there was never anything to move, and it has been reported.
+    """
+    from .gcloud import GcloudError
+    from .lifecycle import is_capacity_failure, suggested_zones
+
+    if dry_run:
+        typer.echo(
+            f"--dry-run cannot work out which zone has capacity. The only way to ask "
+            f"is to try to start {host.gce_instance}, and if it starts it is billing — "
+            f"so a dry run that did it would be the most expensive command here. Say "
+            f"where you want it and the rest of the plan is printed without touching "
+            f"anything: comfy-qat host move {host.name} --to us-central1-b --dry-run.",
+            err=True)
+        raise typer.Exit(code=2)
+
+    typer.echo("asking Google where there is capacity…")
+    try:
+        gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        if not is_capacity_failure(exc.raw):
+            _refused(exc)
+        zones = suggested_zones(exc.raw)
+        if not zones:
+            typer.echo("Google did not name a zone with capacity. Pick one with "
+                       "--to, e.g. --to us-central1-b", err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"  {host.gce_zone} has none free; {zones[0]} does")
+        return zones[0]
+
+    typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
+    typer.echo(f"  comfy-qat host go {host.name}")
+    return None
+
+
 @app.command("move")
 def move_cmd(
     name: Annotated[str, typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")],
@@ -574,7 +633,6 @@ def move_cmd(
     """
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
-    from .lifecycle import is_capacity_failure, suggested_zones
 
     host = _host(name, config)
     if not host.is_remote:
@@ -585,30 +643,15 @@ def move_cmd(
     target = to
 
     if target is None:
-        typer.echo("asking Google where there is capacity…")
-        try:
-            gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
-        except GcloudError as exc:
-            if not is_capacity_failure(exc.raw):
-                typer.echo(str(exc), err=True)
-                raise typer.Exit(code=1)
-            zones = suggested_zones(exc.raw)
-            if not zones:
-                typer.echo("Google did not name a zone with capacity. Pick one with "
-                           "--to, e.g. --to us-central1-b", err=True)
-                raise typer.Exit(code=1)
-            target = zones[0]
-            typer.echo(f"  {host.gce_zone} has none free; {target} does")
-        else:
-            typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
-            typer.echo(f"  comfy-qat host go {host.name}")
+        # Everything a dry run must not do lives inside this call, guard included.
+        target = _zone_with_capacity(gc, host, dry_run=dry_run)
+        if target is None:
             return
 
     try:
         instance = gc.describe_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        _refused(exc)
 
     from .relocate import metadata_pairs, plan_move
 
@@ -660,6 +703,37 @@ def move_cmd(
                f"when you are happy with the new one.")
 
 
+def _probe_fix(host: Host) -> str | None:
+    """Advice for a machine that did not answer, told which machine it was.
+
+    `fetch` is handed a URL and nothing else, so its advice — "start ComfyUI on
+    that machine, or check the port in your host list" — is the local answer, and
+    for a cloud box it names neither of the two things that are actually wrong.
+    A `gce` host is reached through a tunnel, so nothing on 8190 usually means
+    there is no tunnel, or the instance is stopped, and the port in the host list
+    is fine.
+
+    Only claimed when there is really no tunnel. With one open the port is being
+    forwarded and the answer came from the far end, so `fetch` knows more about
+    what went wrong than this does. Returns None to leave its advice alone.
+    """
+    if not host.is_remote:
+        return None
+
+    from .tunnel import status as tunnel_status
+
+    if tunnel_status(host.name).running:
+        return None
+
+    return (
+        f"no tunnel to {host.name} is open, so nothing on this machine answers "
+        f"{host.url} — and {host.gce_instance} may simply be stopped. "
+        f"`comfy-qat host open {host.name}` tunnels to a box that is already "
+        f"running; `comfy-qat host go {host.name}` starts it and tunnels in one "
+        f"step. `comfy-qat host list --live` says which it is."
+    )
+
+
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
@@ -679,8 +753,9 @@ def stamp_cmd(
         stamp = fetch(host.url, host=host.name)
     except ProbeError as exc:
         typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
+        fix = _probe_fix(host) or exc.fix
+        if fix:
+            typer.echo(f"to fix: {fix}", err=True)
         raise typer.Exit(code=1)
 
     # Refused, not warned. This line exists to be copied — it is pasted into a

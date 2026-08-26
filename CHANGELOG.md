@@ -56,6 +56,22 @@ build now has a version worth quoting.
 
 ### Fixes worth knowing
 
+- **`host move --dry-run` started a GPU instance.** Nothing answers "where is
+  there an L4 free", so `move` finds out by trying to start the box and reading
+  the suggested zone out of the refusal — and `--dry-run` was not consulted until
+  well after that had happened. The one command that promises to change nothing
+  was the one that could quietly cost the most. `--dry-run` now needs a `--to`,
+  says so, and prints the whole plan without contacting anything billable.
+- `host stamp` gave a cloud box the local machine's advice: "start ComfyUI on
+  that machine, or check the port in your host list", when the real reasons
+  nothing answered were no tunnel and a stopped instance. A `gce` host with no
+  tunnel open is now pointed at `host open` and `host go`, and told the box may
+  simply be stopped. With a tunnel up the probe's own advice is kept, because
+  then it knows more than the host list does.
+- One exit code for the whole `host` group: **2 means nothing was changed**, **1
+  means the work started and failed** — and a `to fix:` line is never dropped.
+  `move` used to exit 1 with no fix where `auth quota list` and `host discover`
+  exited 2 with one, on the same gcloud error.
 - The host list enforced that every host had its own port, and never that every
   host was its own machine. Two entries could name one GCE instance — two ports,
   two tunnels, one box, and a matrix recording "reproduced on comfy-win, not on
