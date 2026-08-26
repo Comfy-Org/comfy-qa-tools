@@ -50,15 +50,48 @@ Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.
 used only when exactly one declared host fits it, and the host it picked is
 printed. See [the everyday loop](machines.md) for the full table.
 
-## The two rules
+## The rules
+
+All of them are checked when the file is read, before anything reaches the
+network, and all of them are refused outright rather than warned about. Every one
+is the same rule seen from a different side: **one entry, one machine, one way to
+reach it.** A host list that breaks any of them still loads, still lists and still
+stamps — and then a test matrix records a result against a machine that did not
+produce it.
 
 **No cloud host may use port 8188.** That is ComfyUI's default and your local
 install already holds it. A tunnel on 8188 would point you at a remote machine while
 everything on screen looked local — this is the specific mistake the tool exists to
-prevent, so it is refused outright rather than warned about.
+prevent.
 
 **No two hosts may share a port.** If two do, you cannot tell which one you reached,
 which defeats the purpose of naming them.
+
+**No two hosts may be the same cloud box.** Two entries naming one
+project/zone/instance are two ports and two tunnels onto one machine, so
+"reproduced on comfy-win, not on comfy-win-b" says nothing at all. The same
+instance name in a *different* zone is a different box and is fine — that is what
+`host move` leaves behind.
+
+**No two hosts may differ only in case.** `comfy-win` and `Comfy-Win` is one
+machine typed two ways far more often than it is two machines, and lookup already
+falls back to a case-insensitive match, so with both declared which one you get
+depends on a shift key.
+
+**`local` is reserved for the machine you are sitting at.** A `kind = "gce"` host
+may not take the name. `host stamp local` has one obvious meaning and every
+example relies on it.
+
+**A `local` host may not carry `gce_instance`, `gce_zone` or `gce_project`.**
+This is the rule that costs money when it is missing: `host down` decides what to
+stop from `kind`, so a cloud box declared `local` reads as a successful `down`
+while the GPU keeps billing. `os` and `gpu` are not cloud fields — a local host is
+welcome to declare both.
+
+**A host name has to be typeable.** It starts with a letter or a digit and holds
+only letters, digits, dots, dashes and underscores. TOML would accept `""`,
+`"   "`, `"-f"` or `"../evil"` as table keys; a name is an argument you type and
+part of a filename, and none of those is either.
 
 ## Changing OS means changing host
 

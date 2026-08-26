@@ -84,6 +84,80 @@ prevent.
 cannot tell which one you reached.`**
 Two hosts share a port. Give each its own.
 
+**`hosts 'comfy-win' and 'comfy-win-b' are the same machine: instance
+'comfy-win' in us-central1-a (proj). Two entries, two ports, two tunnels, one box
+— and a result recorded against one of those names says nothing whatever about
+the other. Delete one, or point it at a different instance.`**
+Two `gce` hosts name one GCE instance. The port rule already says every host
+answers on its own port; it does not say every host is its own machine, and this
+is what does. Left alone it is the worst failure this tool has, because nothing
+looks wrong: both entries load, both tunnel, both stamp, and a matrix records
+"reproduced on comfy-win, not on comfy-win-b" about the same box. Usually it is a
+copied entry someone forgot to repoint after `host move`.
+
+**`hosts 'comfy-win' and 'Comfy-Win' differ only in case. Which machine you
+reached would depend on a shift key, so they cannot both be declared. Rename one
+of them, or delete it if they are the same box.`**
+Two names that differ only in capitalisation are one machine typed two ways far
+more often than they are two machines. Looking a host up already falls back to a
+case-insensitive match, so with both declared which of them you get depends on
+how you typed it.
+
+**`host 'local': kind 'local' cannot carry gce_instance, gce_zone, gce_project.
+Stopping a machine is decided from 'kind', so a cloud box declared local is never
+stopped and keeps billing. Set kind = "gce" if it is a cloud box, or delete those
+fields if it is not.`**
+This one costs money. `host down` decides what to stop from `kind` alone: for a
+local host it reports "local ComfyUI left running" and returns without stopping
+anything. A cloud box mistyped as `local` — or edited down to one after a move —
+therefore reads as a successful `host down` while the GPU bills all night. The
+contradiction is refused when the host list is read, so `down` can never be
+handed one.
+
+**`host 'local': the name 'local' is reserved for the ComfyUI on this computer,
+which is what every example and the starter host list means by it. A cloud box
+wearing it puts an invisible default back. Rename the box, e.g. comfy-win or
+comfy-linux.`**
+`comfy-qat host stamp local` has one obvious meaning, and the starter host list
+teaches it. A `gce` host holding that name reinstates exactly the invisible
+default the rest of this file exists to remove.
+
+**`host name '--config' cannot be used. A name has to start with a letter or a
+digit and hold only letters, digits, dots, dashes and underscores — it is typed
+as an argument and used as a filename, so a name that is blank, padded, or starts
+with a dash is read as an option or cannot be typed at all. Rename it, e.g.
+comfy-win.`**
+TOML table keys are unrestricted, so `""`, `"   "`, `"../evil"`, `"-f"` and
+`"comfy\nwin"` are all valid keys — and a host name is both an argument you type
+and part of a filename, so none of them is usable as one. Rename the table.
+
+**`expected a host list of [hosts.<name>] tables, got list`**
+Whatever was handed to the parser is not a table at all. From a file this is
+unusual — TOML always decodes to a table — so it generally means something is
+calling `parse` with the wrong thing.
+
+**`~/.config/comfy-qa-tools/hosts.toml could not be read: [Errno 21] Is a
+directory. Check that it is a file rather than a directory, and that you own it —
+`--config` pointed at the folder instead of the hosts.toml inside it looks
+exactly like this.`**
+The path exists but cannot be opened. The usual cause is the one named: `--config`
+given `~/.config/comfy-qa-tools` rather than the `hosts.toml` in it. The other is
+a file restored from a backup with the wrong owner — `ls -l` it and `chown` it
+back.
+
+**`~/.config/comfy-qa-tools/hosts.toml is not UTF-8 text, so it cannot be a host
+list. Check it was not saved as UTF-16 by an editor, truncated by a half-finished
+write, or overwritten with something binary.`**
+The file is not text this tool can decode. Open it and look — if it is
+unrecognisable, `comfy-qat host init --force` writes a fresh starter one, and you
+will have to re-add your cloud hosts.
+
+**`could not write a host list to /somewhere/hosts.toml: [Errno 13] Permission
+denied. Give `--config` a path you can write to — the file itself, not the folder
+it goes in.`**
+`host init` could not create the file. Either the folder is not writable, or
+`--config` was pointed at a directory. It names the path it tried.
+
 ## Setup
 
 Setup stops rather than guessing whenever the fix is something only you can do. It
@@ -311,6 +385,56 @@ Google usually names a zone that *does* have capacity, and the fix line repeats 
 "Google says us-central1-b has capacity right now" — with the `host move` command
 to go there. Otherwise, wait: capacity varies by hour.
 
+## Tunnels
+
+A tunnel outlives the command that opened it, so what it is gets recorded rather
+than assumed — the instance, the zone, the project and the port, beside the
+process id. Everything below is that record refusing to be taken on trust. All of
+it reaches you through `host open`, and through `host up` and `host go`, which
+open a tunnel on the way.
+
+**`comfy-win is local — there is nothing to tunnel. It is at
+http://127.0.0.1:8188.`**
+A `kind = "local"` host is already reachable; there is nothing between you and
+it. Nothing is wrong, and the URL is in the message.
+
+**`a tunnel called 'comfy-win' is already open (pid 4021), but it goes to
+comfy-win-2 in us-west1-b on port 8195, not to comfy-win in us-central1-a on port
+8190.`**
+A name is not a machine. A second host list can call a different box `comfy-win`
+too, and a tunnel recorded under that name may go anywhere. This used to be
+reported as "tunnel already open" with *your* host list's URL beside it, which is
+the wrong-machine failure wearing a success message. Close the one that is open —
+`comfy-qat host down comfy-win` — then open this one.
+
+**`something is already listening on 127.0.0.1:8190, and it is not a tunnel this
+tool opened. A tunnel started now could not bind that port, so
+http://127.0.0.1:8190 would answer for whatever is already there.`**
+The port is taken by something else — often a tunnel from an earlier session that
+outlived its pid file, or a local server. The fix line gives you
+`lsof -nP -iTCP:8190 -sTCP:LISTEN` to find it; the alternative is giving that host
+a different port in your host list.
+
+**``another `comfy-qat` is opening the tunnel to comfy-win right now.``**
+Two commands tried to open the same tunnel at once, which is ordinary on a machine
+running several agents. One of them wins; wait a moment and run yours again. A
+claim older than two minutes is treated as abandoned, so a killed command does not
+lock a host out.
+
+**`could not start the tunnel to comfy-win: ...`**
+The `gcloud` process would not launch at all. Check that gcloud is installed and
+on your `PATH` — `comfy-qat setup` checks this too.
+
+**`cannot write to ~/.config/comfy-qa-tools/tunnels: ...`**
+The tunnel records live beside your host list, and that directory could not be
+created. Check the permissions on `~/.config/comfy-qa-tools`.
+
+**`the tunnel to comfy-win started (pid 4021) but could not be recorded: ...
+Stop it by hand — nothing here can find it again.`**
+The rarest one, and the only one that leaves something behind. The tunnel is
+running but nothing on disk says so, so `host down` cannot find it. Kill the pid
+in the message, fix whatever made the directory unwritable, and open it again.
+
 ## Moving a box to a zone with capacity
 
 `host move` snapshots the boot disk, rebuilds the box elsewhere and leaves the
@@ -318,6 +442,19 @@ original stopped. Nothing is deleted, at any point, by anything here.
 
 **`comfy-win is local — there is nowhere to move it to.`**
 Only cloud hosts have a zone. A local install is where it is.
+
+**`--dry-run cannot work out which zone has capacity. The only way to ask is to
+try to start comfy-win, and if it starts it is billing — so a dry run that did it
+would be the most expensive command here. Say where you want it and the rest of
+the plan is printed without touching anything: comfy-qat host move comfy-win --to
+us-central1-b --dry-run.`**
+Nothing answers "where is there an L4 free". `move` finds out by trying to start
+the machine and reading the zone out of the refusal — and when there is no
+refusal, the box is up and billing. That is fine for a real move, which was going
+to start something anyway, and not fine at all for `--dry-run`, whose whole
+promise is that it changes nothing. So the two are refused together: give
+`--dry-run` a `--to` and it prints the full plan, contacting nothing that costs
+money.
 
 **`Google did not name a zone with capacity. Pick one with --to, e.g. --to
 us-central1-b`**
@@ -484,6 +621,33 @@ was there. Check the tunnel is still open, then run the stamp again.
 **`'127.0.0.1:8190' is not a URL this can ask: unknown url type`**
 The host's url is missing its scheme, or is not a url at all. Write it in full, as
 in `http://127.0.0.1:8188` — a bare `host:port` cannot be fetched.
+
+**`comfy-win is declared as Windows Server 2022, but http://127.0.0.1:8190
+answered as darwin. That port is not reaching comfy-win.`** — or the same about a
+card: **`comfy-win is declared with a L4, but http://127.0.0.1:8190 answered with
+mps (32GB). That port is not reaching comfy-win.`**
+The machine that answered contradicts the machine your host list declares, so the
+port is not reaching the box you named. Cards are compared as whole words, not as
+text: `A100-80GB` and `NVIDIA A100-SXM4-80GB` are Google's name and ComfyUI's
+name for one card and do not contradict, while `L4` against an `L40S` does. A
+declaration that is merely less specific than the answer — `A100` against an
+`A100-SXM4-80GB` — is accepted, so this will not catch a box that has the right
+card with the wrong amount of VRAM; that is a real thing to notice and not a
+reason to withhold an evidence line. The usual causes are a tunnel left open
+to a different machine, a port that your local ComfyUI is holding, or a host
+entry that was never repointed after a `host move`. `comfy-qat host list` shows
+what is tunnelled; `comfy-qat host down comfy-win` then `comfy-qat host open
+comfy-win` rebuilds the tunnel.
+
+**`No evidence line was printed, because this one would have named the wrong
+machine. Check the port in your host list and which tunnel is open, then stamp it
+again.`**
+Follows the message above. The stamp is refused rather than printed with a
+warning attached, and that is deliberate: this line exists to be copied into a
+bug report as proof of which machine produced a result, and a warning on stderr
+does not survive being copied. Printing the line at all is what would create the
+false evidence. `--json` is refused on the same contradiction, for the same
+reason.
 
 ## Checking environments
 

@@ -567,17 +567,36 @@ def test_move_that_fails_partway_says_nothing_was_removed(world):
 
 
 def test_move_with_no_zone_asks_google_by_trying_to_start(world):
-    """The stockout message is the only place Google says where there is room."""
+    """The stockout message is the only place Google says where there is room.
+
+    A real move pays for that answer by starting the box — which was going to
+    happen anyway. See the test below for why a dry run must not.
+    """
+    world.cloud(statuses=["TERMINATED"], describe=INSTANCE,
+                start=GcloudError("---", raw=STOCKOUT_OUTPUT))
+
+    result = run(world, "host", "move", BOX, "--yes")
+
+    no_traceback(result)
+    assert "us-central1-a has none free; us-central1-b does" in result.output
+
+
+def test_a_dry_run_with_no_zone_refuses_rather_than_starting_the_box(world):
+    """This test replaces one that asserted the opposite, and was a live blocker.
+
+    `move` learns which zone has capacity by starting the instance and reading
+    the stockout out of the error. Under `--dry-run` that means a flag whose
+    whole promise is "I will not do anything" boots a GPU box and bills for it.
+    Found by running the criteria against a real project.
+    """
     world.cloud(statuses=["TERMINATED"], describe=INSTANCE,
                 start=GcloudError("---", raw=STOCKOUT_OUTPUT))
 
     result = run(world, "host", "move", BOX, "--dry-run")
 
     no_traceback(result)
-    assert result.exit_code == 0
-    assert "us-central1-a has none free; us-central1-b does" in result.output
-    assert "create comfy-win-b in us-central1-b" in result.output
-    assert "nothing changed" in result.output
+    assert result.exit_code == 2, "nothing was changed, so it is a refusal"
+    assert "--to" in result.output, "name the form that works"
 
 
 # --------------------------------------------------------------- stockouts

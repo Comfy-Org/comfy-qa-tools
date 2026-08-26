@@ -43,7 +43,13 @@ PACKAGE = ROOT / "comfy_qa"
 
 # Every exception whose message is shown to a person rather than raised into a
 # traceback. Each takes that message as its first positional argument.
-ERROR_TYPES = ("ConfigError", "GcloudError", "LifecycleError", "ProbeError", "SetupStopped")
+#
+# `TunnelError` joined the list when `host open`, `up` and `go` started catching
+# it: until they did, it reached a terminal as a traceback rather than as a
+# message, so the page had nothing to say about it and this test had no reason to
+# ask. An error class becomes documentable the moment a command reports it.
+ERROR_TYPES = ("ConfigError", "GcloudError", "LifecycleError", "ProbeError",
+               "SetupStopped", "TunnelError")
 
 # Literal text that is deliberately *not* a troubleshooting entry. There are only
 # two kinds, and both have to be argued for in a comment before being added:
@@ -262,14 +268,37 @@ def _string_constants() -> list[tuple[str, str]]:
 
 # Three words is the depth of the deepest path we have (`auth quota request`);
 # past that it is prose, or an argument.
-_INVOCATION = re.compile(r"comfy-qat((?:\s+[a-z][a-z0-9-]*){1,3})")
+_INVOCATION = re.compile(r"comfy-qat((?:[ \t]+[a-z][a-z0-9-]*){1,3})")
+
+
+def _in_command_position(line: str, start: int) -> bool:
+    """Is this `comfy-qat` a command being offered, or the tool being talked about?
+
+    The tool's own name appears in prose as well as in fix lines — "you are not
+    the only comfy-qat running", "another comfy-qat is opening the tunnel" — and
+    read as an invocation those become `comfy-qat running` and `comfy-qat is
+    opening the`, two commands nobody ever suggested. What separates them is
+    position: an offered command starts a line, or follows a backtick or the
+    punctuation that introduces it (`Run: `, `e.g. `, `done:  `). Prose has an
+    ordinary word in front of it, and that is the whole test.
+    """
+    before = line[:start].rstrip()
+    return not before or not before[-1].isalnum()
 
 
 def _invocations() -> list[tuple[str, tuple[str, ...]]]:
+    """Every command a string in this package offers someone to run.
+
+    Line by line rather than over a whitespace-flattened string: a help table
+    puts one command per line, and flattening it makes the last word of one line
+    look like the word in front of the next command.
+    """
     calls = []
     for where, text in _string_constants():
-        for match in _INVOCATION.finditer(re.sub(r"\s+", " ", text)):
-            calls.append((where, tuple(match.group(1).split())))
+        for line in text.splitlines():
+            for match in _INVOCATION.finditer(line):
+                if _in_command_position(line, match.start()):
+                    calls.append((where, tuple(match.group(1).split())))
     return calls
 
 

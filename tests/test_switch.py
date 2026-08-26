@@ -139,7 +139,7 @@ def tunnels(*open_for: str):
     sets `alive` describes a stale pid file, which is the opposite of what every
     caller here is asking for.
     """
-    def status(name, directory=None):
+    def status(name, directory=None, **_):
         up = name in open_for
         return TunnelState(host=name, pid=99 if up else None, alive=up,
                            known=up, verified=up)
@@ -163,7 +163,10 @@ def cli(tmp_path, monkeypatch):
         monkeypatch.setattr(tunnel_module, "status", tunnels(*open_tunnels))
         monkeypatch.setattr(lifecycle, "open_tunnel", lambda host, directory=None, **kwargs: (
             opened.append(host.name)
-            or TunnelState(host=host.name, pid=99, alive=True)))
+            or TunnelState(host=host.name, pid=99, alive=True, known=True,
+                           verified=True, port=host.port,
+                           instance=host.gce_instance, zone=host.gce_zone,
+                           project=host.gce_project)))
         monkeypatch.setattr(lifecycle, "close_tunnel", lambda name, directory=None: (
             closed.append(name) or name in open_tunnels))
         monkeypatch.setattr(lifecycle, "probe",

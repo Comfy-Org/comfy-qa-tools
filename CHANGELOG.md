@@ -56,6 +56,52 @@ build now has a version worth quoting.
 
 ### Fixes worth knowing
 
+- **`host move --dry-run` started a GPU instance.** Nothing answers "where is
+  there an L4 free", so `move` finds out by trying to start the box and reading
+  the suggested zone out of the refusal — and `--dry-run` was not consulted until
+  well after that had happened. The one command that promises to change nothing
+  was the one that could quietly cost the most. `--dry-run` now needs a `--to`,
+  says so, and prints the whole plan without contacting anything billable.
+- `host stamp` gave a cloud box the local machine's advice: "start ComfyUI on
+  that machine, or check the port in your host list", when the real reasons
+  nothing answered were no tunnel and a stopped instance. A `gce` host with no
+  tunnel open is now pointed at `host open` and `host go`, and told the box may
+  simply be stopped. With a tunnel up the probe's own advice is kept, because
+  then it knows more than the host list does.
+- One exit code for the whole `host` group: **2 means nothing was changed**, **1
+  means the work started and failed** — and a `to fix:` line is never dropped.
+  `move` used to exit 1 with no fix where `auth quota list` and `host discover`
+  exited 2 with one, on the same gcloud error.
+- The host list enforced that every host had its own port, and never that every
+  host was its own machine. Two entries could name one GCE instance — two ports,
+  two tunnels, one box, and a matrix recording "reproduced on comfy-win, not on
+  comfy-win-b" about the same machine. Refused when the file is read, along with
+  two names that differ only in case, a cloud box called `local`, and a `local`
+  host carrying `gce_*` fields — that last one because `down` decides what to
+  stop from `kind`, so a mistyped cloud box read as a successful `host down`
+  while the GPU billed all night. Host names must now be typeable: not blank,
+  not padded, not a path, and not something argument parsing reads as an option.
+- `load` promised a message and gave a stack trace instead for a `--config`
+  pointed at the folder rather than the file in it, a host list with the wrong
+  owner, and one that is not UTF-8. `host init` did the same for a folder it
+  could not write to.
+- `open` reported "tunnel already open" from the name alone, so a tunnel opened
+  for a different box that happened to share a name was claimed as this one, with
+  this host list's URL beside it. The question is now asked where it can be
+  answered — against the recorded instance, zone, project and port.
+- `open`, `up` and `go` did not catch `TunnelError`, so a port already held
+  produced a traceback rather than the message that was written for it.
+- `stamp` printed a clean evidence line for whatever answered. A host declared
+  Windows/L4 answering `darwin`/`mps` is now refused rather than warned about:
+  the line exists to be pasted into a bug report as proof of which machine ran
+  something, and a warning on stderr does not survive being copied. The card half
+  of that check compared the declared `gpu` to the answering device as a
+  substring, and the two names for one card do not contain each other:
+  `A100-80GB` is not inside `NVIDIA A100-SXM4-80GB`. Three of the six cards
+  `host discover` can write therefore contradicted themselves, which under a
+  refusal costs a tester the command on a correct machine, over a string nobody
+  typed by hand. Cards are compared as whole words now, which also stops an
+  `L40S` passing as an `L4`.
 - A tunnel was trusted on the strength of a process id alone. Pids are recycled,
   so a stale pid file read as "tunnel already open" and `down` would SIGTERM
   whatever now owned that number. The record now names the instance, zone, port
@@ -73,8 +119,7 @@ build now has a version worth quoting.
 - `stamp` accepted any JSON as ComfyUI, and followed redirects, so a health
   endpoint stamped as a machine and a 302 could report the local Mac under a
   cloud box's name. Both are refused; a hostile field can no longer forge parts
-  of the evidence line. `stamp.mismatch()` can now compare the machine that
-  answered against the one your host list declared; nothing calls it yet.
+  of the evidence line.
 - `go` swallowed the real failure and then tried SSH against a stopped box. (#16)
 - Capacity stockouts were reported as generic start failures; they are now named,
   and the zone Google suggests is repeated back. (#17, #18)

@@ -29,7 +29,7 @@ from .config import (
     load,
     resolve,
 )
-from .stamp import ProbeError, fetch
+from .stamp import ProbeError, fetch, mismatch
 
 app = typer.Typer(
     help="Operate the machines you test on — local installs and cloud GPU boxes.",
@@ -43,9 +43,13 @@ STARTER = f"""\
 # means there is no invisible default, which is how you end up reading results
 # from the wrong machine.
 #
-# Rules the tool enforces:
+# Rules the tool enforces, all of them when this file is read:
 #   - every host needs its own port
 #   - a cloud host may never use {COMFYUI_DEFAULT_PORT}; that is the local ComfyUI's
+#   - no two hosts may be the same cloud box, or differ only in case
+#   - 'local' is this machine, so a cloud box may not take the name
+#   - a local host may not carry gce_instance / gce_zone / gce_project, or
+#     `host down` would leave a real instance running and billing
 
 [hosts.local]
 kind = "local"
@@ -134,8 +138,17 @@ def init_cmd(
     if path.exists() and not force:
         typer.echo(f"{path} already exists. Use --force to overwrite it.", err=True)
         raise typer.Exit(code=2)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(STARTER, encoding="utf-8")
+    # A folder you cannot write to, and `--force` aimed at a directory, both
+    # arrive here as an OSError. This is the command someone runs first, so a
+    # traceback is the first thing the tool would ever show them.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(STARTER, encoding="utf-8")
+    except OSError as exc:
+        typer.echo(
+            f"could not write a host list to {path}: {exc}. Give `--config` a path you "
+            "can write to — the file itself, not the folder it goes in.", err=True)
+        raise typer.Exit(code=2)
     typer.echo(f"wrote {path}")
     typer.echo("Edit it to add your cloud boxes, then run `comfy-qat host list`.")
 
@@ -163,10 +176,7 @@ def discover_cmd(
             raise typer.Exit(code=2)
         instances = gc.list_instances(project)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=2)
+        _refused(exc)
 
     found = [parse_instance(instance, project) for instance in instances]
     if not found:
@@ -222,13 +232,41 @@ def _host(name: str, config: Optional[Path]) -> Host:
     return _lookup(name, config)[1]
 
 
+def _reportable() -> tuple[type, ...]:
+    """The failures this tool answers with a message rather than a traceback.
+
+    `TunnelError` is not a `LifecycleError` and cannot become one — `lifecycle`
+    imports `tunnel`, so the dependency only runs one way — but it was given the
+    same shape on purpose: a message, a `fix`, and a `kind`. Every handler here
+    reads exactly those three, so naming both types is the whole of the work.
+    Anything reaching a person through `bring_up` or `serve` can raise either.
+    """
+    from .lifecycle import LifecycleError
+    from .tunnel import TunnelError
+
+    return (LifecycleError, TunnelError)
+
+
+def _refused(exc, code: int = 2) -> None:
+    """A gcloud refusal, reported the way every other command in this group does.
+
+    One shape for the whole `host` group, because a tester reads exit codes across
+    commands: **2 means nothing was changed** — a refusal, a precondition, a bad
+    argument — and **1 means the work started and failed.** `move` used to exit 1
+    with no `to fix:` line where `auth quota list` and `host discover` exited 2
+    with one, on the same gcloud error.
+    """
+    typer.echo(str(exc), err=True)
+    if getattr(exc, "fix", None):
+        typer.echo(f"to fix: {exc.fix}", err=True)
+    raise typer.Exit(code=code)
+
+
 def _act(action, *args, **kwargs):
     """Run a lifecycle step, turning its failures into messages, never tracebacks."""
-    from .lifecycle import LifecycleError
-
     try:
         return action(*args, **kwargs)
-    except LifecycleError as exc:
+    except _reportable() as exc:
         typer.echo(f"\n{exc}", err=True)
         if exc.fix:
             typer.echo(f"to fix: {exc.fix}", err=True)
@@ -246,12 +284,12 @@ def up_cmd(
     booted and serves nothing looks like success and bills like success.
     """
     from .gcloud import Gcloud
-    from .lifecycle import LifecycleError, bring_up
+    from .lifecycle import bring_up
 
     hosts, host = _lookup(name, config)
     try:
         bring_up(Gcloud(), host, lambda line: typer.echo(f"  {line}"))
-    except LifecycleError as exc:
+    except _reportable() as exc:
         # A box that will not start ends the session unless you are told where
         # else you could work, and a GPU shortage is the usual reason.
         _failed(host, hosts, exc)
@@ -271,7 +309,12 @@ def open_cmd(
     Traffic goes over Identity-Aware Proxy, so no port is ever opened and no SSH
     key is needed — which matters, because ComfyUI has no authentication.
     """
-    from .tunnel import command as tunnel_command, open_tunnel, status as tunnel_status
+    from .tunnel import (
+        TunnelError,
+        command as tunnel_command,
+        open_tunnel,
+        status as tunnel_status,
+    )
 
     host = _host(name, config)
     if not host.is_remote:
@@ -282,13 +325,26 @@ def open_cmd(
         typer.echo(" ".join(tunnel_command(host)))
         return
 
-    existing = tunnel_status(host.name)
-    if existing.running:
-        typer.echo(f"tunnel already open (pid {existing.pid}): {host.url}")
-        return
+    # There used to be a `if tunnel_status(host.name).running: return` here, and
+    # it decided from the name alone. A name is not a machine: a second host list
+    # can call a different box `comfy-win` too, and that early return printed
+    # *this* host list's URL for *that* host list's tunnel. `open_tunnel` is the
+    # only thing that knows — it compares the recorded instance, zone, project and
+    # port against the host — so the question is asked there and nowhere else.
+    # Reuse is still reported as reuse: `open_tunnel` hands back the live state
+    # untouched when it really is the same machine.
+    before = tunnel_status(host.name)
+    try:
+        state = open_tunnel(host)
+    except TunnelError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=2)
 
-    state = open_tunnel(host)
-    typer.echo(f"tunnel open (pid {state.pid}): {host.url}")
+    reused = before.running and before.pid == state.pid
+    opened = "tunnel already open" if reused else "tunnel open"
+    typer.echo(f"{opened} (pid {state.pid}): {state.url or host.url}")
 
 
 @app.command("down")
@@ -389,11 +445,11 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None)
     Returns None when the box is up but ComfyUI is absent — the one failure the
     steps after this one exist to fix.
     """
-    from .lifecycle import COMFYUI_ABSENT, LifecycleError, bring_up
+    from .lifecycle import COMFYUI_ABSENT, bring_up
 
     try:
         return bring_up(gc, host, lambda line: typer.echo(f"  {line}"), comfy_timeout=15)
-    except LifecycleError as exc:
+    except _reportable() as exc:
         # Only "ComfyUI is not there yet" is worth continuing past. Anything else
         # (the box would not start, the tunnel failed) must be shown, not
         # swallowed — that once hid a failed start and then tried SSH against it.
@@ -409,7 +465,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     import webbrowser
 
     from .gcloud import GcloudError
-    from .lifecycle import LifecycleError, ensure_installed, serve, wait_for_ssh
+    from .lifecycle import ensure_installed, serve, wait_for_ssh
 
     say = lambda line: typer.echo(f"  {line}")
     browser = None if no_browser else (lambda url: webbrowser.open(url))
@@ -437,7 +493,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         ensure_installed(gc, host, say)
         typer.echo("")
         code = serve(gc, host, say, open_browser=browser)
-    except LifecycleError as exc:
+    except _reportable() as exc:
         typer.echo(f"\n{exc}", err=True)
         if exc.fix:
             typer.echo(f"to fix: {exc.fix}", err=True)
@@ -487,10 +543,9 @@ def switch_cmd(
     try:
         others = [] if keep_others else running_elsewhere(gc, hosts, host)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=1)
+        # Nothing has been started or stopped yet: this is only the survey of what
+        # is running elsewhere, so it is a refusal (2), not a failed switch (1).
+        _refused(exc)
 
     typer.echo("")
     typer.echo(f"  - go to {host.name} ({describe(host)}) on {host.url}")
@@ -513,6 +568,54 @@ def switch_cmd(
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
 
 
+def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
+    """Which zone Google says has capacity — found the only way there is.
+
+    Nothing answers "where is there an L4 free". The only way to find out is to
+    try to start the machine and read the zone out of the refusal, which means
+    that when it is *not* refused the box is up and billing.
+
+    That is why this cannot be part of a dry run, and why the guard lives here
+    rather than at the call site: `--dry-run` used to be consulted long after
+    this had already started a GPU instance, so the one command that promises to
+    change nothing was the one that could quietly cost the most. Anything that
+    replaces this function inherits the guard with it.
+
+    Returns the zone to move to, or None when the machine started — in which case
+    there was never anything to move, and it has been reported.
+    """
+    from .gcloud import GcloudError
+    from .lifecycle import is_capacity_failure, suggested_zones
+
+    if dry_run:
+        typer.echo(
+            f"--dry-run cannot work out which zone has capacity. The only way to ask "
+            f"is to try to start {host.gce_instance}, and if it starts it is billing — "
+            f"so a dry run that did it would be the most expensive command here. Say "
+            f"where you want it and the rest of the plan is printed without touching "
+            f"anything: comfy-qat host move {host.name} --to us-central1-b --dry-run.",
+            err=True)
+        raise typer.Exit(code=2)
+
+    typer.echo("asking Google where there is capacity…")
+    try:
+        gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        if not is_capacity_failure(exc.raw):
+            _refused(exc)
+        zones = suggested_zones(exc.raw)
+        if not zones:
+            typer.echo("Google did not name a zone with capacity. Pick one with "
+                       "--to, e.g. --to us-central1-b", err=True)
+            raise typer.Exit(code=2)
+        typer.echo(f"  {host.gce_zone} has none free; {zones[0]} does")
+        return zones[0]
+
+    typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
+    typer.echo(f"  comfy-qat host go {host.name}")
+    return None
+
+
 @app.command("move")
 def move_cmd(
     name: Annotated[str, typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")],
@@ -530,7 +633,6 @@ def move_cmd(
     """
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
-    from .lifecycle import is_capacity_failure, suggested_zones
 
     host = _host(name, config)
     if not host.is_remote:
@@ -541,30 +643,15 @@ def move_cmd(
     target = to
 
     if target is None:
-        typer.echo("asking Google where there is capacity…")
-        try:
-            gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
-        except GcloudError as exc:
-            if not is_capacity_failure(exc.raw):
-                typer.echo(str(exc), err=True)
-                raise typer.Exit(code=1)
-            zones = suggested_zones(exc.raw)
-            if not zones:
-                typer.echo("Google did not name a zone with capacity. Pick one with "
-                           "--to, e.g. --to us-central1-b", err=True)
-                raise typer.Exit(code=1)
-            target = zones[0]
-            typer.echo(f"  {host.gce_zone} has none free; {target} does")
-        else:
-            typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
-            typer.echo(f"  comfy-qat host go {host.name}")
+        # Everything a dry run must not do lives inside this call, guard included.
+        target = _zone_with_capacity(gc, host, dry_run=dry_run)
+        if target is None:
             return
 
     try:
         instance = gc.describe_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=1)
+        _refused(exc)
 
     from .relocate import metadata_pairs, plan_move
 
@@ -616,6 +703,37 @@ def move_cmd(
                f"when you are happy with the new one.")
 
 
+def _probe_fix(host: Host) -> str | None:
+    """Advice for a machine that did not answer, told which machine it was.
+
+    `fetch` is handed a URL and nothing else, so its advice — "start ComfyUI on
+    that machine, or check the port in your host list" — is the local answer, and
+    for a cloud box it names neither of the two things that are actually wrong.
+    A `gce` host is reached through a tunnel, so nothing on 8190 usually means
+    there is no tunnel, or the instance is stopped, and the port in the host list
+    is fine.
+
+    Only claimed when there is really no tunnel. With one open the port is being
+    forwarded and the answer came from the far end, so `fetch` knows more about
+    what went wrong than this does. Returns None to leave its advice alone.
+    """
+    if not host.is_remote:
+        return None
+
+    from .tunnel import status as tunnel_status
+
+    if tunnel_status(host.name).running:
+        return None
+
+    return (
+        f"no tunnel to {host.name} is open, so nothing on this machine answers "
+        f"{host.url} — and {host.gce_instance} may simply be stopped. "
+        f"`comfy-qat host open {host.name}` tunnels to a box that is already "
+        f"running; `comfy-qat host go {host.name}` starts it and tunnels in one "
+        f"step. `comfy-qat host list --live` says which it is."
+    )
+
+
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
@@ -635,8 +753,23 @@ def stamp_cmd(
         stamp = fetch(host.url, host=host.name)
     except ProbeError as exc:
         typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
+        fix = _probe_fix(host) or exc.fix
+        if fix:
+            typer.echo(f"to fix: {fix}", err=True)
+        raise typer.Exit(code=1)
+
+    # Refused, not warned. This line exists to be copied — it is pasted into a
+    # bug report as the proof of which machine produced a result — and a warning
+    # on stderr does not survive being copied. Printing the line at all is what
+    # creates the artefact, so when the machine that answered contradicts the one
+    # declared, no line is printed and the contradiction is what you get instead.
+    problem = mismatch(host, stamp)
+    if problem is not None:
+        typer.echo(problem, err=True)
+        typer.echo(
+            "No evidence line was printed, because this one would have named the "
+            "wrong machine. Check the port in your host list and which tunnel is "
+            "open, then stamp it again.", err=True)
         raise typer.Exit(code=1)
 
     if as_json:
