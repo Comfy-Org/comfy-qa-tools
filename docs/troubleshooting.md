@@ -184,6 +184,43 @@ and this message blames ComfyUI. Run `comfy-qat auth status` before you go looki
 on the box — and see [session-expiry.md](session-expiry.md), because this is the
 shape that failure takes.
 
+**`could not tell whether comfy-win reached RUNNING: ...`**
+The box was asked to start and then gcloud stopped answering, so the tool does not
+know what happened — which is different from knowing it failed. **It may be running
+and billing.** The message carries gcloud's own reason. Check the instance in the
+console, then either try again or `comfy-qat host down comfy-win`.
+
+**`comfy-win did not reach RUNNING within 300s. It was asked to start, so it may be billing already.`**
+The start was accepted and the box never came up. Usually capacity or quota in that
+zone rather than a fault with the box. The important half is the second sentence:
+a start that never finished still creates an instance you can be charged for, so
+stop it rather than walking away.
+
+**`could not open the tunnel to comfy-win: ...`**
+gcloud could not start the Identity-Aware Proxy tunnel. The nested message says
+why — most often an expired session, a missing IAP permission, or something
+already holding the local port. **The box is running while this is true**, so the
+fix line ends with the command that stops it.
+
+**`the tunnel to comfy-win closed, so nothing is listening on http://127.0.0.1:8190 any more. ComfyUI was never reached.`**
+The tunnel opened and then died, which from the near end looks exactly like a box
+with no ComfyUI on it — silence on a port. Only one of those is fixed by going onto
+the machine, so they are now reported separately. Read what gcloud wrote in
+`~/.config/comfy-qa-tools/tunnels/<host>.log`; an expired session is the usual
+cause. Reopen with `comfy-qat host open <name>`, or stop paying for the box.
+
+**`gcloud is not signed in, so comfy-win cannot be reached: ... Waiting will not fix this, and the machine is running and billing.`**
+The credential died between starting the box and reaching it. The tool used to keep
+retrying for five minutes, which cannot succeed and costs money the whole time, so
+it now stops immediately and closes the tunnel behind it. `gcloud auth login`, then
+carry on — the box is still running. See [session-expiry.md](session-expiry.md).
+
+**`ComfyUI on comfy-win exited without ever answering on http://127.0.0.1:8190. The machine is up and billing.`**
+ComfyUI started and stopped without ever serving — a bad argument, the wrong
+directory, a missing requirement printed and gone. Its own log is above the error
+on your terminal; read that first. Note the exit code alone would have said
+success, which is the same lie as calling a booted VM "up".
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,

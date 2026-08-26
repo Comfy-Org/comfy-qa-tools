@@ -54,6 +54,44 @@ def said():
     return lines, lines.append
 
 
+@pytest.fixture(autouse=True)
+def never_a_real_tunnel(monkeypatch):
+    """No test here may start gcloud.
+
+    Every `bring_up` that gets as far as the tunnel used to run the real launcher,
+    which starts a `gcloud compute start-iap-tunnel` against a project that does
+    not exist — so a plain `pytest` left a handful of them behind, each retrying
+    for a minute.
+
+    The stand-in is a real, harmless process carrying a real tunnel's command
+    line, because everything downstream of the pid file is real: the liveness
+    check, the "is this still ours" check, and the SIGTERM that `down` sends. A
+    pid standing in for a tunnel has to be a pid it is safe to kill.
+    """
+    import subprocess
+    import sys
+
+    from comfy_qa import tunnel as tunnel_module
+
+    started = []
+
+    def launch(cmd, log):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)", *cmd],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        started.append(process)
+        return process.pid
+
+    monkeypatch.setattr(tunnel_module, "_spawn", launch)
+    yield
+    for process in started:
+        try:
+            process.kill()
+            process.wait(timeout=5)
+        except OSError:
+            pass
+
+
 def test_a_stopped_box_is_started_tunnelled_and_confirmed(tmp_path):
     lines, say = said()
     gc = gcloud(["TERMINATED", "RUNNING"])
@@ -306,3 +344,294 @@ def test_a_stockout_points_at_the_command_that_fixes_it(tmp_path):
     with pytest.raises(LifecycleError) as caught:
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
     assert "comfy-qat host move comfy-win --to us-central1-b" in caught.value.fix
+
+
+# --- what the end-to-end harness turned up --------------------------------
+#
+# Every test below is a defect that only showed itself once the whole path was
+# run against a real socket and a real tunnel process, rather than a stub.
+
+
+def test_a_half_open_tunnel_is_not_answering_rather_than_a_crash():
+    """An IAP tunnel to a box with nothing on 8188 accepts the connection and
+    then drops it. That arrives as ConnectionResetError, not as a probe failure,
+    and it used to come out of `host up` as a traceback."""
+    import socket
+    import threading
+
+    from comfy_qa.lifecycle import probe
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    port = listener.getsockname()[1]
+
+    def drop() -> None:
+        while True:
+            try:
+                connection, _ = listener.accept()
+            except OSError:
+                return
+            connection.close()
+
+    threading.Thread(target=drop, daemon=True).start()
+    try:
+        assert probe(Host(name="x", kind="local", port=port)) is None
+    finally:
+        listener.close()
+
+
+def test_the_local_start_command_names_the_port_that_host_actually_uses():
+    """It always said 8188, so a second local install was told to start on the
+    port the first one is already holding."""
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud([]), Host(name="other", kind="local", port=8199), say,
+                 probe_fn=lambda host: None)
+    assert "--port 8199" in caught.value.fix
+
+
+def test_a_gcloud_failure_while_waiting_for_the_box_is_a_message(tmp_path):
+    """describe is polled every five seconds, and any one of those calls can
+    fail. Uncaught, the boot wait ended as a GcloudError traceback."""
+    def runner(args, mode):
+        key = " ".join(args)
+        if key.startswith("compute instances describe"):
+            if runner.first:
+                runner.first = False
+                return {"status": "TERMINATED"}
+            raise GcloudError("Permission denied on compute.instances.get")
+        return ""
+    runner.first = True
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(Gcloud(runner=runner), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, boot_timeout=0)
+    assert "could not tell whether comfy-win reached RUNNING" in str(caught.value)
+    assert "Permission denied" in str(caught.value)
+
+
+def test_a_tunnel_that_cannot_be_opened_is_a_message(tmp_path, monkeypatch):
+    """gcloud missing made Popen raise FileNotFoundError in the middle of `up`."""
+    from comfy_qa import tunnel as tunnel_module
+
+    def refuse(cmd, log):
+        raise tunnel_module.TunnelError("gcloud is not installed or not on PATH.",
+                                        fix="install it")
+
+    monkeypatch.setattr(tunnel_module, "_spawn", refuse)
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: STAMP)
+    assert "could not open the tunnel to comfy-win" in str(caught.value)
+
+
+def test_a_tunnel_that_dies_is_named_as_the_tunnel(tmp_path, monkeypatch):
+    """Otherwise it reads as "ComfyUI is not answering", which sends someone onto
+    the box to fix something that was never broken."""
+    from comfy_qa import tunnel as tunnel_module
+    from comfy_qa.lifecycle import TUNNEL_DOWN
+
+    # A pid that is recorded and already gone, which is what gcloud leaves behind
+    # when the tunnel cannot be established: it exits in under a second.
+    monkeypatch.setattr(tunnel_module, "_spawn", lambda cmd, log: 999999)
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: None,
+                 comfy_timeout=60)
+    assert caught.value.kind == TUNNEL_DOWN
+    assert "the tunnel to comfy-win closed" in str(caught.value)
+    assert "ComfyUI is not answering" not in str(caught.value)
+    assert str(tunnel_module.log_file("comfy-win", tmp_path)) in caught.value.fix
+
+
+def test_a_launch_that_ends_badly_is_raised_not_returned():
+    """`go` printed "ComfyUI exited (3)" and then exited 0, so everything reading
+    the exit code — a script, CI — saw a success."""
+    from comfy_qa.lifecycle import serve
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        serve(Gcloud(runner=lambda args, mode: 3), WIN, say,
+              probe_fn=lambda host: STAMP, sleep=lambda _: None, timeout=0)
+    assert "NO_PYTHON" in str(caught.value)
+
+
+def test_a_launch_that_exits_cleanly_without_serving_is_still_a_failure():
+    """Exit 0 is not the same as having served."""
+    from comfy_qa.lifecycle import serve
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        serve(Gcloud(runner=lambda args, mode: 0), WIN, say,
+              probe_fn=lambda host: None, sleep=lambda _: None, timeout=0)
+    assert "without ever answering" in str(caught.value)
+
+
+def test_ctrl_c_on_the_box_is_not_reported_as_a_fault():
+    """130 is a person stopping ComfyUI, which is how you stop it."""
+    from comfy_qa.lifecycle import serve
+
+    _, say = said()
+    assert serve(Gcloud(runner=lambda args, mode: 130), WIN, say,
+                 probe_fn=lambda host: None, sleep=lambda _: None, timeout=0) == 130
+
+
+def test_the_browser_is_not_opened_after_a_launch_that_failed():
+    """The watcher outlived the launch, so a failed `go` still opened a tab onto
+    a URL that never answered."""
+    from comfy_qa.lifecycle import serve
+
+    opened = []
+    _, say = said()
+    with pytest.raises(LifecycleError):
+        serve(Gcloud(runner=lambda args, mode: 1), WIN, say,
+              open_browser=opened.append, probe_fn=lambda host: None,
+              sleep=lambda _: None, timeout=0)
+    assert opened == []
+
+
+def test_an_expired_credential_is_not_waited_out(tmp_path):
+    """gcloud only offers to reauthenticate when stdin and stderr are terminals,
+    and everything here captures output — so it does not ask, it fails, and it
+    will fail again in five minutes. Retrying it burns 300s of GPU time on
+    something that cannot succeed."""
+    from comfy_qa.lifecycle import wait_for_ssh
+
+    attempts = {"n": 0}
+
+    def refuse(args, mode):
+        attempts["n"] += 1
+        raise GcloudError(
+            "There was a problem refreshing your current auth tokens: "
+            "Reauthentication failed.", fix="gcloud auth login")
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        wait_for_ssh(Gcloud(runner=refuse), WIN, say, sleep=lambda _: None,
+                     tunnel_dir=tmp_path)
+    assert attempts["n"] == 1, "it must not retry a credential that cannot recover"
+    assert "not signed in" in str(caught.value)
+    assert "running and billing" in str(caught.value)
+    assert "gcloud auth login" in caught.value.fix
+
+
+def test_the_classified_kind_is_believed_when_gcloud_provides_one():
+    """`gcloud.classify` is the shared home for this; the text match is only a
+    fallback for errors that predate it."""
+    from comfy_qa.lifecycle import is_auth_failure
+
+    plain = GcloudError("something went wrong")
+    assert not is_auth_failure(plain)
+
+    # `is_auth` is derived from the classified kind, not set by hand — the two
+    # branches were written independently and met here.
+    classified = GcloudError("something went wrong", kind="reauth")
+    assert classified.is_auth
+    assert is_auth_failure(classified)
+
+
+def test_a_failure_after_the_tunnel_is_open_closes_it_again(tmp_path):
+    """A forgotten tunnel is a detached process holding a local port open onto a
+    machine you are still paying for."""
+    from comfy_qa import tunnel as tunnel_module
+    from comfy_qa.lifecycle import ensure_installed, wait_for_ssh
+
+    def refuse(args, mode):
+        raise GcloudError("failed to connect to backend")
+
+    for act in (
+        lambda: wait_for_ssh(Gcloud(runner=refuse), WIN, say, timeout=0,
+                             sleep=lambda _: None, tunnel_dir=tmp_path),
+        lambda: ensure_installed(Gcloud(runner=_installer("MISSING", exit_code=1)),
+                                 WIN, say, tunnel_dir=tmp_path),
+    ):
+        lines, say = said()
+        tunnel_module.open_tunnel(WIN, tmp_path)
+        assert tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+        with pytest.raises(LifecycleError):
+            act()
+
+        assert not tunnel_module.pid_file("comfy-win", tmp_path).exists()
+        assert any("tunnel closed" in line for line in lines)
+
+
+def _installer(answer: str, exit_code: int = 0):
+    def runner(args, mode):
+        return answer if mode == "output" else exit_code
+    return runner
+
+
+def test_an_install_that_reports_success_but_installed_nothing_is_caught():
+    """PowerShell carries on after a failed step, so the script can print
+    "install complete" and exit 0 having cloned nothing."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        ensure_installed(Gcloud(runner=_installer("MISSING")), WIN, say)
+    assert "did not finish" in str(caught.value)
+    assert "reported success" in str(caught.value)
+
+
+def test_a_successful_install_is_confirmed_on_the_box_not_assumed():
+    from comfy_qa.lifecycle import ensure_installed
+
+    answers = iter(["MISSING", "INSTALLED"])
+
+    def runner(args, mode):
+        return next(answers) if mode == "output" else 0
+
+    lines, say = said()
+    ensure_installed(Gcloud(runner=runner), WIN, say)
+    assert any("installing it" in line for line in lines)
+
+
+def test_every_failure_after_the_box_is_running_says_how_to_stop_paying(tmp_path):
+    """A message that explains the fault but not the bill leaves a GPU box on all
+    night. This is the rule, held across every post-start failure."""
+    from comfy_qa.lifecycle import ensure_installed, wait_for_ssh
+
+    def refuse(args, mode):
+        raise GcloudError("failed to connect to backend")
+
+    _, say = said()
+    failures = []
+
+    with pytest.raises(LifecycleError) as absent:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: None, comfy_timeout=0)
+    failures.append(absent.value)
+
+    with pytest.raises(LifecycleError) as ssh:
+        wait_for_ssh(Gcloud(runner=refuse), WIN, say, timeout=0, sleep=lambda _: None)
+    failures.append(ssh.value)
+
+    with pytest.raises(LifecycleError) as install:
+        ensure_installed(Gcloud(runner=_installer("MISSING", exit_code=1)), WIN, say)
+    failures.append(install.value)
+
+    with pytest.raises(LifecycleError) as boot:
+        bring_up(gcloud(["TERMINATED", "STAGING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, boot_timeout=0)
+    failures.append(boot.value)
+
+    from comfy_qa import tunnel as tunnel_module
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(tunnel_module, "_spawn", lambda cmd, log: 999999)
+    try:
+        with pytest.raises(LifecycleError) as gone:
+            bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path / "gone",
+                     sleep=lambda _: None, probe_fn=lambda host: None,
+                     comfy_timeout=0)
+        failures.append(gone.value)
+    finally:
+        monkeypatch.undo()
+
+    for failure in failures:
+        assert "comfy-qat host down comfy-win" in (failure.fix or ""), str(failure)
