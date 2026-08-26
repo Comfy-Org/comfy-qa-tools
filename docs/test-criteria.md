@@ -293,6 +293,63 @@ echo "=== H4 setup is safe to re-run"; qat setup --non-interactive 2>&1 | tail -
 
 ---
 
+## Phase J — switching machines *(offline parts free; E-J together bill)*
+
+The workflow this release exists for: you are testing on one box and you need the
+other OS, or the other card. Everything up to J4 is offline and costs nothing.
+
+```sh
+echo "=== J1 what have I got, and what is up"; qat host list
+echo "=== J2 name a machine by its OS"; qat host stamp windows; echo "exit $?"
+echo "=== J3 name a machine by its card"; qat host stamp l4; echo "exit $?"
+echo "=== J4 both halves"; qat host stamp windows/l4; echo "exit $?"
+echo "=== J5 the wrong separator"; qat host stamp windows-l4; echo "exit $?"
+echo "=== J6 something you do not have"; qat host stamp rtx4090; echo "exit $?"
+echo "=== J7 the plan, without doing it"; qat host switch windows --dry-run; echo "exit $?"
+```
+
+- [ ] **J1** — one line per machine with OS, card, URL and STATE. STATE says which
+      box is running and which is tunnelled, without asking Google.
+- [ ] **J2/J3/J4** — each resolves to exactly one machine and **prints what it
+      resolved to** before doing anything: `windows -> comfy-win (Windows Server
+      2022, L4)`. A silent resolution is a fail even if it picks correctly.
+- [ ] **J5** — says the separator is `/` and shows `windows/l4`. Exit 2.
+- [ ] **J6** — lists what is declared *and* the vocabulary it accepts. Exit 2.
+- [ ] **J7** — states what it would start and what it would stop, then stops.
+      Nothing is contacted.
+
+With two or more cloud boxes declared, the ambiguity case matters more than any
+of the above:
+
+- [ ] **J8** — with two Windows boxes, `host switch windows` refuses and names
+      both with their cards. **It must never pick one.** Guessing here is the
+      whole failure this tool exists to prevent.
+- [ ] **J9** — `host switch windows/l4` then resolves cleanly to the one you meant.
+
+The real switch, which bills:
+
+```sh
+echo "=== J10 switch"; qat host switch windows
+echo "=== J11 what is up now"; qat host list --live
+```
+
+- [ ] **J10** — starts the one you asked for, waits until ComfyUI answers, **then**
+      stops the one you were on, and says both. The order matters: if the target
+      cannot start you must still have the machine you were using.
+- [ ] **J11** — exactly one cloud box running, and it is the one you asked for.
+
+And the case that started all this — switching when the box you want cannot start:
+
+- [ ] **J12** — on a stockout, `switch` leaves the machine you were on untouched
+      and says so.
+- [ ] **J13** — it then lists where you *can* test, easiest first, same OS before
+      a different one, and marks any alternative in the same zone as likely to hit
+      the same shortage.
+- [ ] **J14** — only after that does it offer `host move`, and it says the zone
+      Google named is where there was capacity *when it asked* — not a promise.
+- [ ] **J15** — with one box and nowhere to go, it says that plainly and points at
+      `host discover` rather than leaving you at a dead end.
+
 ## Putting your machine back
 
 ```sh
@@ -314,5 +371,7 @@ Paste the whole terminal. For anything that failed, the useful facts are: the
 phase and check id, what it printed, and the exit code. A check that could not be
 run — no capacity, no second box — is "not run", not a pass.
 
-A release-1 pass needs: every box in phases A–D and G–H ticked, E3 and E4 ticked,
-and no unexplained traceback anywhere in the run.
+A release-1 pass needs: every box in phases A–D, G, H and I ticked; E3 and E4
+ticked; J1–J7 ticked; and no unexplained traceback anywhere in the run. J8–J15
+need a second cloud box or a real stockout — record them as "not run" rather than
+assumed, and say which.
