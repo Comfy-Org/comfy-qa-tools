@@ -145,3 +145,91 @@ def test_the_operating_system_axis_is_untouched():
     assert problem is not None
     assert "declared as Windows Server 2022" in problem
     assert "answered as darwin" in problem
+
+
+# --- the operating-system half, checked the same way --------------------------
+#
+# The card half was wrong because two systems wrote the two sides in vocabularies
+# that never agreed. The OS half has exactly the same shape, so it is worth
+# asking the same question of it rather than assuming the answer.
+
+# What `discover.operating_system()` writes, and every `os` a real ComfyUI puts
+# on `/system_stats` for that same machine. Newer builds report `sys.platform`,
+# older ones `os.name`, and Comfy Cloud sends an empty string — all three shapes
+# are in `tests/payloads.py`, captured from real servers.
+SAME_MACHINE = [
+    ("Windows Server 2025", "win32"),
+    ("Windows Server 2022", "win32"),
+    ("Windows Server 2022", "nt"),
+    ("Windows Server 2022", ""),
+    ("Ubuntu 24.04", "linux"),
+    ("Ubuntu 22.04", "linux"),
+    ("Ubuntu 22.04", "posix"),
+    ("Debian 12", "linux"),
+    ("Rocky Linux 9", "linux"),
+    ("macOS 15", "darwin"),
+    # `discover` falls back to the raw GCE licence name, or to "unknown", for an
+    # image it has no mapping for. Neither may be read as a family.
+    ("sles-15", "linux"),
+    ("unknown", "linux"),
+    ("unknown", ""),
+]
+
+
+@pytest.mark.parametrize("declared_os,answered_os", SAME_MACHINE,
+                         ids=[f"{d}-{a or 'empty'}" for d, a in SAME_MACHINE])
+def test_a_machine_is_never_contradicted_by_its_own_declaration(declared_os, answered_os):
+    """One machine describing itself twice, in the two vocabularies it has.
+
+    This is the card bug asked of the OS axis: none of these pairings is a
+    disagreement, so none of them may cost a tester the stamp.
+    """
+    problem = mismatch(declared("L4", os=declared_os),
+                       answered("cuda:0 NVIDIA L4 (22GB)", os=answered_os))
+    assert problem is None, f"refused a correct machine: {problem}"
+
+
+@pytest.mark.parametrize("declared_os,answered_os", [
+    ("Windows Server 2022", "darwin"),
+    ("Windows Server 2022", "linux"),
+    ("Ubuntu 22.04", "win32"),
+    ("Ubuntu 22.04", "darwin"),
+    ("macOS 15", "linux"),
+])
+def test_a_genuinely_different_operating_system_is_still_caught(declared_os, answered_os):
+    """Failing open must not mean failing silent: the real case still fires."""
+    problem = mismatch(declared("L4", os=declared_os),
+                       answered("cuda:0 NVIDIA L4 (22GB)", os=answered_os))
+    assert problem is not None
+    assert "is not reaching comfy-linux" in problem
+
+
+@pytest.mark.parametrize("answered_os", ["nt", "posix", "", "   ", None])
+def test_an_os_that_names_no_family_is_skipped_rather_than_guessed(answered_os):
+    """A known gap, and the right way round.
+
+    `nt` and `posix` name no family, so an older ComfyUI is never compared on
+    this axis at all. That loses a detection; reading them as a family would cost
+    a correct machine its stamp instead. Do not close it by adding `"nt"` to
+    `_OS_FAMILIES` — as a substring it reads `ubuntu` as Windows.
+    """
+    assert mismatch(declared("L4", os="Windows Server 2022"),
+                    answered("cuda:0 NVIDIA L4 (22GB)", os=answered_os)) is None
+
+
+def test_discover_writes_the_os_strings_these_cases_assume():
+    """Same guard the card cases have: fixtures that drift prove nothing."""
+    from comfy_qa.discover import operating_system
+
+    def wrote(licence):
+        return operating_system(
+            [{"boot": True, "licenses": [f"projects/p/global/licenses/{licence}"]}])
+
+    assert wrote("windows-server-2022-dc") == "Windows Server 2022"
+    assert wrote("ubuntu-2204-lts") == "Ubuntu 22.04"
+    assert wrote("debian-12") == "Debian 12"
+    assert wrote("rocky-linux-9") == "Rocky Linux 9"
+    # No mapping: the raw licence tail, which must name no family.
+    assert wrote("sles-15") == "sles-15"
+    # No disks to read at all.
+    assert operating_system([]) == "unknown"

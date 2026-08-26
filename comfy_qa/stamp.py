@@ -453,6 +453,25 @@ _OS_FAMILIES = {
 
 
 def _family(text: str | None) -> str | None:
+    """Which OS family a string names, or `None` when it names none of them.
+
+    `None` is the important return, and the reason this half does not have the
+    bug the card half had. The two sides are written by different systems here
+    too — `discover.operating_system()` writes `Windows Server 2022` or falls
+    back to a raw GCE licence name like `sles-15`, or to `unknown`; ComfyUI
+    reports `sys.platform` on newer builds (`win32`, `linux`, `darwin`) and
+    `os.name` on older ones (`nt`, `posix`), and Comfy Cloud sends `""`. But an
+    unrecognised string comes back `None` and the comparison is skipped, rather
+    than being read as a different family. Checked against every value both sides
+    actually produce: no pairing of a machine with its own declaration is
+    flagged.
+
+    The cost of that is a gap rather than a false alarm: `nt` and `posix` name no
+    family, so a stamp from an older ComfyUI is never compared at all. That is
+    the right way round while the caller refuses on a complaint. Do not close it
+    by adding `"nt"` to the table below — as a substring it reads `ubuntu` as
+    Windows, which is the false positive this comment exists to prevent.
+    """
     lowered = (text or "").lower()
     for family, words in _OS_FAMILIES.items():
         if any(word in lowered for word in words):
@@ -523,6 +542,12 @@ def mismatch(host, stamp: Stamp) -> str | None:
     wrong-machine failure, arriving as a line that otherwise looks like evidence.
     Returns None when there is nothing to compare, because `os` and `gpu` are
     optional for a local host.
+
+    Both halves fail open, deliberately. `host stamp` refuses to print an
+    evidence line when this returns a complaint, so a false positive is not a
+    warning someone can read past — it is the tool declining to describe a
+    machine that is fine, over a declaration `host discover` wrote rather than
+    anyone typed. Anything this cannot be sure of has to pass.
     """
     declared, answering = _family(getattr(host, "os", None)), _family(stamp.os)
     if declared and answering and declared != answering:
