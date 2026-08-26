@@ -9,6 +9,20 @@ than as a list of debts.
 Two groups. The first is tracebacks — `load` promises a message and gave a stack
 trace instead. The second is worse: host lists that loaded cleanly and then
 pointed a tester at a machine they did not mean to read.
+
+Each refusal below is asserted by its message, not merely by its type. `parse`
+has twenty-four paths that raise `ConfigError`, so `pytest.raises(ConfigError)`
+alone answers "something objected", which is a weaker question than the one being
+asked. These fixtures are each valid but for the one property under test, so
+today no neighbouring rule could satisfy them — but that is a property of the
+fixtures, not something the assertion checks, and the next rule added to `parse`
+could quietly start catching one of them first. Then the test passes, the rule it
+names is gone, and nothing says so.
+
+The rule, which cost a real finding to learn: **assert which failure, not merely
+that one happened, wherever more than one path can raise the same type.** It is
+one `caught.value` check at a place you already know two paths converge, and it
+is far cheaper than rediscovering it.
 """
 
 from __future__ import annotations
@@ -46,8 +60,9 @@ def test_a_host_list_that_is_a_directory_is_a_message(tmp_path):
     """`--config ~/.config/comfy-qa-tools` — the directory, not the file in it."""
     place = tmp_path / "hosts.toml"
     place.mkdir()
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         load(place)
+    assert "could not be read" in str(caught.value)
 
 
 def test_a_host_list_that_cannot_be_read_is_a_message(tmp_path):
@@ -55,8 +70,9 @@ def test_a_host_list_that_cannot_be_read_is_a_message(tmp_path):
     path = written(tmp_path, '[hosts.local]\nkind = "local"\n')
     os.chmod(path, 0o000)
     try:
-        with pytest.raises(ConfigError):
+        with pytest.raises(ConfigError) as caught:
             load(path)
+        assert "could not be read" in str(caught.value)
     finally:
         os.chmod(path, 0o600)
 
@@ -65,13 +81,15 @@ def test_a_host_list_that_is_not_text_is_a_message(tmp_path):
     """A truncated write, a copied binary, an editor that saved UTF-16."""
     path = tmp_path / "hosts.toml"
     path.write_bytes(b'[hosts.local]\nkind = "local"\nos = "\xff\xfe"\n')
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         load(path)
+    assert "is not UTF-8 text" in str(caught.value)
 
 
 def test_parsing_something_that_is_not_a_table_is_a_message():
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         parse([])
+    assert "expected a host list" in str(caught.value)
 
 
 # --- loads cleanly, points at the wrong machine -------------------------------
@@ -85,7 +103,7 @@ def test_two_hosts_cannot_be_the_same_cloud_box():
     a matrix records "reproduced on comfy-win, not on comfy-win-b", and the two
     were the same machine the whole time.
     """
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         parse({"hosts": {
             "comfy-win": {"kind": "gce", "port": 8190, "os": "Windows Server 2022",
                           "gpu": "L4", "gce_instance": "comfy-win",
@@ -94,6 +112,7 @@ def test_two_hosts_cannot_be_the_same_cloud_box():
                             "gpu": "L4", "gce_instance": "comfy-win",
                             "gce_zone": "us-central1-a", "gce_project": "proj"},
         }})
+    assert "are the same machine" in str(caught.value)
 
 
 def test_a_cloud_box_may_not_be_called_local():
@@ -103,23 +122,25 @@ def test_a_cloud_box_may_not_be_called_local():
     everyone that `local` is the Mac. Every rule in this file exists to remove
     invisible defaults; a cloud box wearing that name reinstates one.
     """
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         parse({"hosts": {"local": {
             "kind": "gce", "port": 8190, "os": "Ubuntu 22.04", "gpu": "L4",
             "gce_instance": "comfy-linux", "gce_zone": "us-central1-a",
             "gce_project": "proj"}}})
+    assert "the name 'local' is reserved" in str(caught.value)
 
 
 def test_two_hosts_cannot_differ_only_in_case():
     """`Comfy-Win` and `comfy-win` are two hosts on two ports, and which one you
     get depends on a shift key."""
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         parse({"hosts": {
             "comfy-win": {"kind": "gce", "port": 8190, "os": "o", "gpu": "L4",
                           "gce_instance": "a", "gce_zone": "z", "gce_project": "p"},
             "Comfy-Win": {"kind": "gce", "port": 8191, "os": "o", "gpu": "L4",
                           "gce_instance": "b", "gce_zone": "z", "gce_project": "p"},
         }})
+    assert "differ only in case" in str(caught.value)
 
 
 def test_a_local_host_cannot_carry_cloud_fields():
@@ -130,11 +151,12 @@ def test_a_local_host_cannot_carry_cloud_fields():
     — or edited down to one after a move — reads as a successful `host down`
     while the GPU keeps billing.
     """
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         parse({"hosts": {"local": {
             "kind": "local", "port": 8188, "os": "Ubuntu 22.04", "gpu": "L4",
             "gce_instance": "comfy-linux", "gce_zone": "us-central1-a",
             "gce_project": "proj"}}})
+    assert "kind 'local' cannot carry" in str(caught.value)
 
 
 @pytest.mark.parametrize("name", ["a/b", "../evil", "", "   ", " comfy-win ", "--config",
@@ -144,8 +166,9 @@ def test_a_host_name_has_to_be_something_a_person_can_type(name):
     (`tunnels/<name>.pid`). Names that are neither used to be accepted: one
     starting with `-` is read as an option, one with a separator escapes the
     tunnel directory, and one with padding cannot be typed at all."""
-    with pytest.raises(ConfigError):
+    with pytest.raises(ConfigError) as caught:
         parse({"hosts": {name: {"kind": "local", "port": 9001}}})
+    assert "cannot be used" in str(caught.value)
 
 
 # --- and the other half: none of those rules may refuse a good host list ------
