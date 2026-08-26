@@ -460,6 +460,61 @@ def _family(text: str | None) -> str | None:
     return None
 
 
+_TOKEN = re.compile(r"[a-z0-9]+")
+
+# Words that turn up in a declaration or in a device name but not in both, so
+# their absence proves nothing. `host discover` writes the declaration from
+# Google's own acceleratorType — `nvidia-h100-mega-80gb` becomes `H100-MEGA-80GB`
+# — and ComfyUI calls that same card `NVIDIA H100 80GB HBM3`. Neither vocabulary
+# is wrong; they simply do not overlap on these words.
+_CARD_NOISE = frozenset({
+    "nvidia", "tesla", "geforce", "rtx", "gtx", "graphics",
+    "mega", "vws", "sxm", "sxm4", "sxm5", "pcie", "nvl",
+    "hbm", "hbm2", "hbm2e", "hbm3", "hbm3e",
+})
+
+# A host that declares no card, or declares it has none, has nothing to compare.
+# `config` already treats those two the same way when selecting a host by card.
+_NO_CARD = frozenset({"", "none"})
+
+
+def _card_tokens(text: str | None) -> list[str]:
+    return [t for t in _TOKEN.findall((text or "").lower()) if t not in _CARD_NOISE]
+
+
+def _gpu_contradicts(declared: str | None, device_names: list[str]) -> bool:
+    """Can none of the cards that answered be the card that was declared?
+
+    Compared as whole tokens rather than as a substring. The substring test asked
+    whether the declared string appeared inside a device name, and the two names
+    for one card do not contain each other: `A100-80GB` is not inside
+    `NVIDIA A100-SXM4-80GB`, so a machine that *was* the declared card
+    contradicted itself. That was noise while this only decorated a line. It
+    blocks the stamp now, which means it costs a tester the command outright — on
+    a string `host discover` wrote and they never typed.
+
+    Whole tokens fix the error running the other way too: `"l4" in "nvidia l40s"`
+    was true, so an L40S passed as an L4.
+
+    A declaration is contradicted only when no answering card carries all of its
+    tokens. `A100` therefore accepts `A100-SXM4-80GB`: a narrower declaration
+    matching a fuller name is one card described in more detail, which is the
+    reading `config` already takes — "`a100` finds an `A100-80GB`, because nobody
+    types the full SKU". Being wrong about 40GB versus 80GB is worth noticing and
+    is not "that port is not reaching this machine", which is the only thing this
+    refusal is entitled to claim.
+    """
+    if (declared or "").strip().lower() in _NO_CARD:
+        return False
+    wanted = _card_tokens(declared)
+    if not wanted:
+        return False
+    return not any(
+        all(token in set(_card_tokens(name)) for token in wanted)
+        for name in device_names
+    )
+
+
 def mismatch(host, stamp: Stamp) -> str | None:
     """Does the machine that answered contradict the machine you declared?
 
@@ -476,9 +531,8 @@ def mismatch(host, stamp: Stamp) -> str | None:
             f"{stamp.os}. That port is not reaching {host.name}."
         )
 
-    gpu = (getattr(host, "gpu", None) or "").strip().lower()
     accelerators = [d for d in stamp.devices if not d.lower().startswith("cpu")]
-    if gpu and accelerators and not any(gpu in d.lower() for d in accelerators):
+    if accelerators and _gpu_contradicts(getattr(host, "gpu", None), accelerators):
         return (
             f"{host.name} is declared with a {host.gpu}, but {stamp.url} answered with "
             f"{', '.join(accelerators)}. That port is not reaching {host.name}."

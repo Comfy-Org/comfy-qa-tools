@@ -94,7 +94,14 @@ build now has a version worth quoting.
 - `stamp` printed a clean evidence line for whatever answered. A host declared
   Windows/L4 answering `darwin`/`mps` is now refused rather than warned about:
   the line exists to be pasted into a bug report as proof of which machine ran
-  something, and a warning on stderr does not survive being copied.
+  something, and a warning on stderr does not survive being copied. The card half
+  of that check compared the declared `gpu` to the answering device as a
+  substring, and the two names for one card do not contain each other:
+  `A100-80GB` is not inside `NVIDIA A100-SXM4-80GB`. Three of the six cards
+  `host discover` can write therefore contradicted themselves, which under a
+  refusal costs a tester the command on a correct machine, over a string nobody
+  typed by hand. Cards are compared as whole words now, which also stops an
+  `L40S` passing as an `L4`.
 - A tunnel was trusted on the strength of a process id alone. Pids are recycled,
   so a stale pid file read as "tunnel already open" and `down` would SIGTERM
   whatever now owned that number. The record now names the instance, zone, port

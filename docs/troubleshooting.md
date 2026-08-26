@@ -528,7 +528,13 @@ answered as darwin. That port is not reaching comfy-win.`** — or the same abou
 card: **`comfy-win is declared with a L4, but http://127.0.0.1:8190 answered with
 mps (32GB). That port is not reaching comfy-win.`**
 The machine that answered contradicts the machine your host list declares, so the
-port is not reaching the box you named. The usual causes are a tunnel left open
+port is not reaching the box you named. Cards are compared as whole words, not as
+text: `A100-80GB` and `NVIDIA A100-SXM4-80GB` are Google's name and ComfyUI's
+name for one card and do not contradict, while `L4` against an `L40S` does. A
+declaration that is merely less specific than the answer — `A100` against an
+`A100-SXM4-80GB` — is accepted, so this will not catch a box that has the right
+card with the wrong amount of VRAM; that is a real thing to notice and not a
+reason to withhold an evidence line. The usual causes are a tunnel left open
 to a different machine, a port that your local ComfyUI is holding, or a host
 entry that was never repointed after a `host move`. `comfy-qat host list` shows
 what is tunnelled; `comfy-qat host down comfy-win` then `comfy-qat host open
