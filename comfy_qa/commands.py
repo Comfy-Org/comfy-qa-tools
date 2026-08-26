@@ -76,7 +76,7 @@ def env_cmd(
         checked = [r for r in reports if r.kind == "cloud"]
         if len(checked) != 1:
             typer.echo("--expect needs exactly one cloud environment, "
-                       "e.g. `comfy qa env testcloud --expect <sha>`", err=True)
+                       "e.g. `comfy-qat env testcloud --expect <sha>`", err=True)
             raise typer.Exit(code=2)
         got = checked[0].sha or ""
         if not got.startswith(expect):
