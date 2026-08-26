@@ -35,6 +35,7 @@ see [`docs/test-criteria.md`](docs/test-criteria.md).
 | `auth quota list`, `auth quota request` | shipped |
 | `host init`, `list`, `discover` | shipped — offline, no cloud call |
 | `host up`, `open`, `down`, `go` | shipped — start, tunnel, stop |
+| `host switch` | shipped — stop the box you were on, go to the one you want |
 | `host move` | shipped — escape a zone with no GPU capacity |
 | `host stamp` | shipped — the evidence line |
 | `host create` | **not built.** Boxes are made in the console, then `host discover` |
@@ -117,9 +118,27 @@ comfy-qat guide           # the short version, in the terminal
 ## Everyday use
 
 ```sh
-comfy-qat host go comfy-win     # start it, tunnel in, run ComfyUI where you can watch
-comfy-qat host stamp comfy-win  # the line that says what produced your result
-comfy-qat host down comfy-win   # close the tunnel, stop the box, stop paying
+comfy-qat host go windows       # start it, tunnel in, run ComfyUI where you can watch
+comfy-qat host stamp windows    # the line that says what produced your result
+comfy-qat host down windows     # close the tunnel, stop the box, stop paying
+```
+
+`windows` there is not a special name — it is the machine described rather than
+named. Anywhere a host name goes you can say what you want instead: an operating
+system (`windows`, `linux`, `ubuntu`, `debian`, `macos`), a card (`l4`, `a100`),
+or both (`windows/l4`). Whatever it resolves to is printed, one host per line:
+
+```
+windows -> comfy-win (Windows Server 2022, L4)
+```
+
+If two machines fit, it refuses and lists them with their OS and card rather than
+picking one. Names always win over a description.
+
+Changing machine is one command, which stops the box you were on:
+
+```sh
+comfy-qat host switch linux     # start the Linux box, then stop the Windows one
 ```
 
 `go` is the one command worth memorising. It starts the instance, opens an
@@ -137,6 +156,10 @@ Every target is a **declared host**, local or cloud. Naming them all is the poin
 local stops being an invisible default, so picking the wrong one becomes something
 you do on purpose.
 
+`<host>` below is a name, or a description of the machine you want — `windows`,
+`l4`, `windows/l4`. A description that fits exactly one declared host is used and
+printed; one that fits two is refused with both named.
+
 | command | what it does |
 |---|---|
 | `comfy-qat --version` | what you are running — `comfy-qat 1.0.0 (0d27bd4)` from a checkout. Paste it with any result |
@@ -147,15 +170,16 @@ you do on purpose.
 | `comfy-qat auth quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
 | `comfy-qat auth quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
 | `comfy-qat host` | same as `list` — read-only is the safe default |
-| `comfy-qat host list` | show every declared machine and where it answers |
+| `comfy-qat host list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
 | `comfy-qat host init` | write a starter host list you can edit |
 | `comfy-qat host discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
-| `comfy-qat host up <name>` | start it and wait until ComfyUI actually answers |
-| `comfy-qat host open <name>` | tunnel to a box that is already running. `--dry-run` prints the command |
-| `comfy-qat host down <name>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
-| `comfy-qat host go <name>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
-| `comfy-qat host move <name>` | rebuild the box in a zone that has capacity, keeping its install. `--to`, `--dry-run`, `--yes` |
-| `comfy-qat host stamp <name>` | ask a machine what it is. `--json` |
+| `comfy-qat host up <host>` | start it and wait until ComfyUI actually answers |
+| `comfy-qat host open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
+| `comfy-qat host down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
+| `comfy-qat host go <host>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
+| `comfy-qat host switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
+| `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. `--to`, `--dry-run`, `--yes` |
+| `comfy-qat host stamp <host>` | ask a machine what it is. `--json` |
 | `comfy-qat env` | v0's build and feature-flag check for deployed environments |
 
 Every command takes `--config` to point at a host list somewhere other than the
@@ -199,10 +223,17 @@ Two rules are enforced offline, before anything else runs:
   would silently point you at the wrong machine, so it is refused, not warned about.
 - **No two hosts may share a port.** If two do, you cannot tell which one you reached.
 
-Unknown fields are rejected rather than ignored, so a typo'd `gce_zoen` fails loudly.
+Unknown fields are rejected rather than ignored, and the message names the typo and
+what it was probably meant to be:
 
-Switching OS means switching host: one box per OS, selected by name. Nothing is
-reimaged. Every field is documented in [`docs/hosts.md`](docs/hosts.md).
+```
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?).
+```
+
+Switching OS means switching host: one box per OS, and nothing is ever reimaged.
+`os` and `gpu` are what `windows`, `l4` and `windows/l4` match on, so with one box
+per OS you never have to remember what you called it. Every field is documented in
+[`docs/hosts.md`](docs/hosts.md).
 
 ## What it writes
 

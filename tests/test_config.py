@@ -72,6 +72,31 @@ def test_typos_are_rejected_not_ignored():
         parse({"hosts": {"local": {"kind": "local", "gce_zoen": "x"}}})
 
 
+def test_a_misspelt_field_is_named_before_the_ones_it_makes_look_missing():
+    """`gce_zoen` reported "kind 'gce' requires os, gpu, gce_instance, gce_zone,
+    gce_project" — five fields that are all present, and never the misspelt one
+    that is the actual cause."""
+    typo = {k: v for k, v in GCE.items() if k != "gce_zone"}
+    typo["gce_zoen"] = "us-central1-a"
+
+    with pytest.raises(ConfigError) as raised:
+        parse({"hosts": {"box": typo}})
+
+    message = str(raised.value)
+    assert "gce_zoen" in message
+    assert "did you mean 'gce_zone'" in message
+    assert "requires" not in message, "the typo is still buried under the missing list"
+
+
+def test_a_field_with_no_near_match_still_names_the_ones_that_exist():
+    with pytest.raises(ConfigError) as raised:
+        parse({"hosts": {"local": {"kind": "local", "colour": "red"}}})
+
+    message = str(raised.value)
+    assert "'colour'" in message
+    assert "Known fields:" in message and "gce_zone" in message
+
+
 def test_port_must_be_a_real_port():
     with pytest.raises(ConfigError, match="outside 1024-65535"):
         parse({"hosts": {"box": dict(GCE, port=80)}})

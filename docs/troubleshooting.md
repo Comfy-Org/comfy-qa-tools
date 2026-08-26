@@ -235,6 +235,67 @@ retry, or move by hand. Any half-made snapshot or disk is left behind for you to
 look at and is not cleaned up automatically; delete it in the console once you are
 done.
 
+## Naming the machine you want
+
+Every command that takes a machine accepts its name, an operating system, a card,
+or both as `os/card` — `host switch windows`, `host go l4`, `host up windows/l4`.
+These are the refusals, and each one is a refusal rather than a guess on purpose:
+a tool that picks for you is a tool that reads results from the wrong box.
+
+**`nothing declared matches 'windows/l4'. Declared: local (local install); comfy-linux (Ubuntu 22.04, A100). Create the box in the Google Cloud console, then `comfy-qat host discover` to add it to your host list.`**
+You described a machine you do not have. The message lists what you do have, with
+each one's OS and card, so you can see which half was wrong. If the box exists in
+Google Cloud but not in your host list, `comfy-qat host discover` adds it — nothing
+needs typing, Google already knows its zone, card and OS.
+
+**`'windows' matches 2 hosts: comfy-win (Windows Server 2022, L4), comfy-win-2 (Windows Server 2022, A100-80GB). Say which one: add the other half, e.g. `windows/l4`, or use the host's name.`**
+Two machines fit. Add the other half of the description — the card, here — or name
+the host outright. Nothing was started, stopped or contacted; this is decided
+offline, before any cloud call.
+
+**`'windows-l4' is two descriptions run together. The separator is '/': windows/l4`**
+A hyphen reads as part of a name, and host names contain hyphens, so the two
+cannot both be separators. Use `/`.
+
+**`unknown host 'rtx4090'. Declared: local, comfy-win. You can also describe the machine instead: an operating system (windows, linux, ubuntu, debian, macos, local), a card (a100, l4), or both, as os/card.`**
+Neither a declared name nor a description this tool understands. The second half of
+the message is the vocabulary: OS keywords, cards, or `os/card`.
+
+**`host 'comfy-win': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.`**
+A misspelt field in `hosts.toml`. This used to be reported as five *missing*
+fields that were all present, because the required-field check ran first and the
+typo was invisible to it — so the message described a file quite unlike the one in
+front of you. Unknown fields are now checked first and the suggestion is offered.
+
+## When the machine you want cannot start
+
+A GPU stockout is routine, is nothing to do with your account, and is the moment a
+tester usually gives up and opens the console. These lines are the tool trying to
+keep you testing instead.
+
+**`comfy-linux is untouched — you still have the machine you were on.`**
+(or `comfy-linux, comfy-win are untouched — you still have the machines you were on.`)
+Reassurance, printed when a `switch` fails: the target is brought up *before*
+anything is stopped, so a failed switch leaves you exactly where you started. You
+have lost nothing but the time.
+
+**`Where you can test instead, easiest first:`**
+The boxes that can run right now, same OS first, and a box in the same zone listed
+last and labelled — it may hit the same shortage. Pick one and carry on.
+
+**`No other machine is declared, so there is nowhere to switch to:`**
+You have one box and it cannot start. The line under it —
+`comfy-qat host discover   # declare a box you already have` — will pick up
+anything already in your project; otherwise your options are to wait for capacity
+or to move the box.
+
+**`If it has to be comfy-win:`**
+When only that machine will do — the install on it, the models on it — this is
+followed by the `host move` command for a zone Google says has capacity. Read
+[the move entries](#moving-a-box-to-a-zone-with-capacity) first: the suggested zone
+can be stale by the time you use it, and a move that fails late leaves a disk and a
+snapshot behind that you will pay for.
+
 ## Stamping a machine
 
 **`nothing answered at http://127.0.0.1:8190`**
