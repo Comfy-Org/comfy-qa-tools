@@ -165,7 +165,6 @@ def test_a_tunnel_that_dies_on_startup_never_gets_a_pid_file(tmp_path, real_spaw
     Recording that pid turned a credential failure into "the box is up but
     ComfyUI is not answering", with the machine left running and billing.
     """
-    import comfy_qa.tunnel as tunnel_module
 
     log = tmp_path / "comfy-win.log"
     dying = [sys.executable, "-c",

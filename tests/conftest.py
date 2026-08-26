@@ -37,10 +37,13 @@ def never_start_a_real_tunnel(monkeypatch, request):
         return
 
     def harmless(command, log, **kwargs):
-        # Carries no gcloud, reaches nothing, and stays alive long enough to be
-        # found, checked and killed exactly like a tunnel would be.
+        # Carries no gcloud and reaches nothing, but wears the real command line:
+        # a tunnel is recognised by `start-iap-tunnel` in its argv, so a stand-in
+        # that sleeps under a different name reads as somebody else's process and
+        # every tunnel looks closed. That failed only on the CI image that has
+        # gcloud, which is exactly the kind of difference this file exists to end.
         process = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)"],
+            [sys.executable, "-c", "import time; time.sleep(120)", *command],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
