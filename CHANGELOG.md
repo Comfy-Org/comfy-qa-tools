@@ -43,6 +43,11 @@ build now has a version worth quoting.
 - Capacity stockouts were reported as generic start failures; they are now named,
   and the zone Google suggests is repeated back. (#17, #18)
 - Quota parsing crashed on the shape Google actually returns. (#9)
+- An expired Google session was discovered after the box had started and was
+  already billing. Anything billable now proves the credential first, and a
+  reauth challenge is offered the terminal instead of failing against a pipe.
+  A dropped connection, a missing project and a denied permission had all been
+  reported as "your session expired"; each now says what it is. (#21)
 
 ### Saying what you ran
 
@@ -66,6 +71,9 @@ build now has a version worth quoting.
   in `troubleshooting.md`, enforced by a test. (#3, #7, #8)
 - The README and the docs are tested against the real command surface, so a
   feature cannot ship while the page still calls it "coming next".
+- `docs/session-expiry.md` — why the Google sign-in keeps expiring mid-pass, what
+  a tester does about it, and the ranked list of what would make it happen less,
+  including which options only a Workspace admin has. (#21)
 
 ## v0
 

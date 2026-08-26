@@ -178,6 +178,12 @@ is billing while this is true.** The error prints how to get onto it, which diff
 by OS: Windows needs a password reset and Remote Desktop over the tunnel, anything
 else takes SSH through IAP.
 
+It can also mean **the tunnel never opened.** The tunnel runs detached, so if your
+session expired between starting the box and opening the tunnel, the tunnel died
+and this message blames ComfyUI. Run `comfy-qat auth status` before you go looking
+on the box — and see [session-expiry.md](session-expiry.md), because this is the
+shape that failure takes.
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,
@@ -267,12 +273,36 @@ wrong SHA. Confirm the SHA in the frontend repo before assuming the deploy faile
 
 ## Google Cloud
 
+Sessions expiring mid-pass have their own page:
+[session-expiry.md](session-expiry.md).
+
 **`gcloud is not installed or not on PATH.`**
 Install the Google Cloud SDK: https://cloud.google.com/sdk/docs/install
 
 **`your gcloud session has expired`**
-Credentials time out. Run `gcloud auth login`. This is the most common failure and
-it looks alarming in raw gcloud output — it is routine.
+Google asked for a fresh proof of identity — a reauth challenge — and nothing could
+ask you for it. This is a Workspace session-length policy, not a fault in your
+account, and it is the most common failure this tool has. Run `gcloud auth login`,
+then carry on where you left off. If it keeps happening mid-pass,
+[session-expiry.md](session-expiry.md) explains why and what the org can change.
+
+**`gcloud could not refresh your sign-in`**
+The stored credential could not be exchanged for a token, and it is not a reauth
+challenge — usually a sign-in that was revoked, or an account removed from the
+project. `gcloud auth login` fixes it. If it fails again immediately, the account
+itself is the problem.
+
+**`could not reach Google Cloud`**
+gcloud never got to Google. This is a network failure wearing an authentication
+failure's clothing: gcloud reports a token refresh it could not complete, which
+used to be printed as an expired session. Signing in again will not help. Check
+your connection — including a VPN or proxy that may have dropped — and try again.
+
+**`Required 'compute.instances.start' permission for ...`**
+Your sign-in worked and Google refused the action: the account is missing an IAM
+role, not a credential. The message names the exact permission. `comfy-qat auth
+status` shows which account you are actually using — being signed in as the wrong
+one of two accounts is the usual cause.
 
 **`no active gcloud account`** / **`nobody signed in`**
 Run `gcloud auth login`.
