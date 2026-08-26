@@ -40,7 +40,8 @@ see [`docs/test-criteria.md`](docs/test-criteria.md).
 | `host create` | **not built.** Boxes are made in the console, then `host discover` |
 | `env` | carried over from v0, unchanged, awaiting its own release |
 
-Verified against `main` at `6d11e6d`, 227 tests passing on Python 3.11 and 3.12.
+Version **1.0.0**. Tests run on Python 3.11, 3.12 and 3.13, on Ubuntu and macOS,
+and CI installs the built wheel and runs the binary from outside the checkout.
 
 ---
 
@@ -138,6 +139,7 @@ you do on purpose.
 
 | command | what it does |
 |---|---|
+| `comfy-qat --version` | what you are running — `comfy-qat 1.0.0 (0d27bd4)` from a checkout. Paste it with any result |
 | `comfy-qat setup` | first run: sign-in, project, billing, quota, host list |
 | `comfy-qat guide` | the first-run instructions, in the terminal |
 | `comfy-qat auth status` | signed in? which project? billing? GPU quota? — `--json` too |

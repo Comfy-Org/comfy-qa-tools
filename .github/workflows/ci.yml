@@ -5,18 +5,98 @@ on:
     branches: [main]
   pull_request:
 
+# A push that supersedes an in-flight run should cancel it, not queue behind it.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: tests (py${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # 3.11 is the floor (tomllib); 3.12 is what the ComfyUI installs run.
-        python-version: ["3.11", "3.12"]
+        # 3.11 is the floor (tomllib); 3.12 is what the ComfyUI installs run;
+        # 3.13 is where users are heading, and typer supports it.
+        os: [ubuntu-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          # Every user of this tool is on a Mac. Paths, `sed` and process
+          # handling all differ there, and the suite touches all three.
+          - os: macos-latest
+            python-version: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install -e . pytest
       - run: pytest tests/ -q
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Deliberately unpinned: the selected rule sets (E/F/W) are stable, and a
+      # pin here is a dependency nobody would remember to bump. If a ruff release
+      # ever does break this, pin it then, with the version in the message.
+      - run: pip install ruff
+      - run: ruff check --output-format=github .
+
+  package:
+    # `pytest` passing proves the code works. It does not prove that `pip install`
+    # produces a working `comfy-qat` — that has its own ways to fail: a missing
+    # console script, a module the wheel forgot to ship, a docs file the help text
+    # depends on that only exists in the checkout.
+    name: install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: build a wheel and an sdist
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: show what the wheel actually ships
+        run: python -m zipfile -l dist/*.whl
+
+      - name: install it into a throwaway venv
+        run: |
+          python -m venv "$RUNNER_TEMP/throwaway"
+          "$RUNNER_TEMP/throwaway/bin/python" -m pip install --quiet .
+
+      - name: the console script exists and knows its own version
+        # Run from outside the checkout: anything that only works next to the
+        # source tree fails here, which is the point.
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/throwaway/bin/comfy-qat" --version
+          expected=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('$GITHUB_WORKSPACE/pyproject.toml').read_text())['project']['version'])")
+          got=$("$RUNNER_TEMP/throwaway/bin/comfy-qat" --version)
+          test "$got" = "comfy-qat $expected" || {
+            echo "--version said '$got', expected 'comfy-qat $expected'"; exit 1; }
+
+      - name: the help and the guide stand on their own
+        # `guide` and `--help` are the first thing a new tester reads. Neither may
+        # depend on a docs/ file, because the wheel does not ship one.
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/throwaway/bin/comfy-qat" --help
+          "$RUNNER_TEMP/throwaway/bin/comfy-qat" guide
+          "$RUNNER_TEMP/throwaway/bin/comfy-qat" host --help
+          "$RUNNER_TEMP/throwaway/bin/comfy-qat" auth --help

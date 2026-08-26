@@ -68,7 +68,8 @@ Now re-run **the preamble** so `qat` picks up the new install.
 ## Phase A — install and surface *(offline, no cloud, no cost)*
 
 ```sh
-echo "=== A1 version and clean import"; qat --help 2>&1 | head -20
+echo "=== A0 what am I testing"; qat --version
+echo "=== A1 clean import"; qat --help 2>&1 | head -20
 echo "=== A2 no stale binary"; which comfy-qa-cli; which "comfy-qa"; echo "exit $? (1 = clean)"
 echo "=== A3 host surface"; qat host --help 2>&1 | sed -n '/Commands/,$p'
 echo "=== A4 auth surface"; qat auth --help 2>&1 | sed -n '/Commands/,$p'
@@ -77,6 +78,10 @@ echo "=== A6 guide"; qat guide
 cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
 ```
 
+- [ ] **A0** — prints `comfy-qat <version> (<sha>)`. **Record this line — every
+      result in this run is a result about that build, and a report without it is
+      a report about nothing.** From an installed copy the sha is absent, which is
+      correct: a wheel is not a checkout.
 - [ ] **A1** — help prints; no traceback, no import error.
 - [ ] **A2** — neither older binary is on `PATH` from this project. Both `which` calls come back empty.
 - [ ] **A3** — `host` lists exactly: list, init, discover, up, open, down, go, move, stamp.
@@ -207,7 +212,17 @@ echo "=== F5 unknown host, lifecycle"; qat host down not-a-machine; echo "exit $
 - [ ] **F2** — serves without reinstalling.
 - [ ] **F3** — either "started, no move needed", or a numbered plan naming the snapshot, the new disk, the new instance and the target zone, then stops. **Nothing is created.**
 - [ ] **F4/F5** — names the host as unknown and lists what is declared. Exit 2, no traceback.
-- [ ] **F6** *(opportunistic)* — if a start ever fails on capacity, the message says it is a stockout, names a zone that has capacity, and does not blame quota or billing.
+- [ ] **F6** — a start that fails on capacity says it is a stockout, names a zone
+      that does have capacity, and does not blame quota or billing. *(Observed
+      live on 2026-08-26: `host up comfy-win` hit a real L4 stockout in
+      us-central1-a and reported it correctly, including the `host move` command.)*
+- [ ] **F7** — **the zone Google suggests can be stale by the time you use it.**
+      If the move then fails in the suggested zone, the tool must say what it
+      already created, what that costs, and what to do next — not leave you to
+      find a 300 GB disk with `gcloud` a week later.
+- [ ] **F8** — when the box you asked for cannot start, the tool offers the boxes
+      that can. Being told "no capacity" and nothing else is the moment a tester
+      gives up and goes back to the console.
 
 ## Phase G — stop paying *(do not skip)*
 
@@ -224,6 +239,43 @@ echo "=== G5 down again is harmless"; qat host down $BOX; echo "exit $?"
 - [ ] **G3** — nothing answered on that port. Exit 1.
 - [ ] **G4** — the instance shows TERMINATED. **If it does not, the tool has left you billing and that is a blocker.**
 - [ ] **G5** — does not fail on an already-stopped box.
+
+## Phase I — what did it leave behind? *(no cost to run, catches the costly)*
+
+The failure that motivated this phase happened on a real project: a `move` took a
+snapshot, created a 300 GB disk in the destination zone, then failed creating the
+instance. It left both artifacts behind, said nothing about them, and they billed
+for weeks. The tool told the user which zone had capacity and could not build
+there — so the expensive half of the work succeeded and the useful half did not.
+
+**Run this before the run and after it, and compare.** Anything that appears and
+is not attached to a machine you meant to keep is a leak.
+
+```sh
+P=$(gcloud config get-value project 2>/dev/null); echo "=== I0 project $P"
+echo "=== I1 instances"; gcloud compute instances list --project $P
+echo "=== I2 disks — USERS empty means nothing is attached"
+gcloud compute disks list --project $P --format="table(name,zone.basename(),sizeGb,type.basename(),users.basename())"
+echo "=== I3 snapshots"
+gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())"
+echo "=== I4 anything the host list names that no longer exists"
+qat host list
+```
+
+- [ ] **I1** — every instance is one you meant to have, and every one you are not
+      using right now reads TERMINATED.
+- [ ] **I2** — no disk with an empty USERS column, unless you deliberately keep a
+      detached one. A detached disk still bills at full size.
+- [ ] **I3** — no snapshot whose source disk no longer exists, and no snapshot
+      left over from a move that has since finished.
+- [ ] **I4** — the host list names no machine that is gone, and nothing exists in
+      the project that the host list does not know about.
+- [ ] **I5** — if a `move` ran during this session, the tool **told you** what it
+      created and what it left, in its own output. Finding a leak with `gcloud`
+      that the tool never mentioned is a defect in the tool, not a tidy-up job.
+
+The rule this phase enforces: **a command that spends money must account for what
+it spent it on.** Silence is the defect.
 
 ## Phase H — the promise the README makes
 
