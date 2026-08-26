@@ -32,7 +32,6 @@ from comfy_qa.relocate import (
     DELETE_SNAPSHOT,
     REGISTER,
     REUSE_DISK,
-    REUSE_INSTANCE,
     REUSE_SNAPSHOT,
     SNAPSHOT,
     MoveError,

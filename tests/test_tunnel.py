@@ -158,7 +158,7 @@ def test_the_tunnel_log_sits_beside_its_pid_file(tmp_path):
     assert log_file("comfy-win", tmp_path).suffix == ".log"
 
 
-def test_a_tunnel_that_dies_on_startup_never_gets_a_pid_file(tmp_path):
+def test_a_tunnel_that_dies_on_startup_never_gets_a_pid_file(tmp_path, real_spawn):
     """The failure this is written for. gcloud fails *immediately* far more often
     than it fails later — an expired credential is the common one — and because
     its output is captured it cannot prompt, so it exits rather than asking.
@@ -173,7 +173,7 @@ def test_a_tunnel_that_dies_on_startup_never_gets_a_pid_file(tmp_path):
              "your current auth tokens: Reauthentication failed.\\n'); sys.exit(1)"]
 
     with pytest.raises(TunnelError) as caught:
-        tunnel_module._spawn(dying, log, grace=5)
+        real_spawn(dying, log, grace=5)
 
     assert "closed as soon as it was opened" in str(caught.value)
     assert "Reauthentication failed" in str(caught.value), "gcloud's own words"
@@ -198,14 +198,14 @@ def test_a_tunnel_that_stays_up_is_handed_back(tmp_path):
         os.kill(pid, signal.SIGTERM)
 
 
-def test_a_missing_gcloud_is_a_message_not_a_traceback(tmp_path, monkeypatch):
+def test_a_missing_gcloud_is_a_message_not_a_traceback(tmp_path, monkeypatch, real_spawn):
     """Popen against a binary that is not there raises FileNotFoundError, which
     reached the user as a traceback from `host open`."""
     import comfy_qa.tunnel as tunnel_module
 
     monkeypatch.setattr(tunnel_module.shutil, "which", lambda name: None)
     with pytest.raises(TunnelError) as caught:
-        tunnel_module._spawn(command(WIN), tmp_path / "x.log")
+        real_spawn(command(WIN), tmp_path / "x.log")
     assert "gcloud is not installed" in str(caught.value)
     assert caught.value.fix
 

@@ -153,7 +153,7 @@ def cli(tmp_path, monkeypatch):
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: gc)
         monkeypatch.setattr(lifecycle, "tunnel_status", tunnels(*open_tunnels))
         monkeypatch.setattr(tunnel_module, "status", tunnels(*open_tunnels))
-        monkeypatch.setattr(lifecycle, "open_tunnel", lambda host, directory=None: (
+        monkeypatch.setattr(lifecycle, "open_tunnel", lambda host, directory=None, **kwargs: (
             opened.append(host.name)
             or TunnelState(host=host.name, pid=99, alive=True)))
         monkeypatch.setattr(lifecycle, "close_tunnel", lambda name, directory=None: (

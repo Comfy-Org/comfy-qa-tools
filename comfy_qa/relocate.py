@@ -253,7 +253,7 @@ class Plan:
             out.append(Action(
                 REUSE_INSTANCE,
                 f"{self.new_instance} already exists in {self.to_zone} — keep it, "
-                f"there is nothing left to create",
+                "there is nothing left to create",
             ))
         else:
             if found.reuse_disk:
@@ -299,7 +299,7 @@ class Plan:
                 DELETE_SNAPSHOT,
                 f"delete the snapshot {found.snapshot_name or self.snapshot} — the "
                 f"new disk is a full copy and {self.host.gce_instance} still has "
-                f"the original",
+                "the original",
             ))
 
         out.append(Action(REGISTER, f"add {self.new_instance} to your host list"))
@@ -387,14 +387,14 @@ def judge_disk(plan: Plan, source_disk: dict | None, snapshot: dict | None,
         return False, (
             f"{plan.new_disk} already exists in {plan.to_zone} and is attached to "
             f"{_tail(users[0])}. That is a disk in use, not a leftover from a "
-            f"half-finished move."
+            "half-finished move."
         ), ()
 
     source = _tail(disk.get("sourceSnapshot"))
     if not source:
         return False, (
             f"{plan.new_disk} already exists in {plan.to_zone}, but nothing records "
-            f"what it was made from, so it cannot be confirmed as a copy of "
+            "what it was made from, so it cannot be confirmed as a copy of "
             f"{plan.source_disk}."
         ), ()
     if not source.startswith(plan.snapshot_family):
@@ -410,7 +410,7 @@ def judge_disk(plan: Plan, source_disk: dict | None, snapshot: dict | None,
         return False, (
             f"{plan.new_disk} already exists in {plan.to_zone}, but it predates the "
             f"snapshot {snapshot.get('name')} it claims to come from, so it is a "
-            f"copy of something older."
+            "copy of something older."
         ), ()
 
     want = _size(source_disk, "sizeGb")
@@ -427,8 +427,8 @@ def judge_disk(plan: Plan, source_disk: dict | None, snapshot: dict | None,
     if wanted_type and got_type and wanted_type != got_type:
         notes.append(
             f"{plan.new_disk} is {got_type} but {plan.source_disk} is {wanted_type}, "
-            f"so the moved box will have a slower boot disk than the one it "
-            f"replaces. To get a matching disk instead, delete it and run this "
+            "so the moved box will have a slower boot disk than the one it "
+            "replaces. To get a matching disk instead, delete it and run this "
             f"again:\n        {delete_disk_command(plan)}"
         )
     return True, None, tuple(notes)
@@ -620,7 +620,7 @@ def leftovers(plan: Plan, found: Found) -> list[str]:
     if found.instance is not None:
         lines.append(
             f"{plan.new_instance} already exists in {plan.to_zone} — an earlier "
-            f"move got this far."
+            "move got this far."
         )
     return lines
 
@@ -761,12 +761,12 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
         return MoveError(
             f"{plan.to_zone} has no {plan.host.gpu or 'GPU'} capacity either, so "
             f"{plan.new_instance} could not be created. The zone Google named was "
-            f"free when it said so and is not now; that is normal and not a fault "
-            f"on your side.",
+            "free when it said so and is not now; that is normal and not a fault "
+            "on your side.",
             fix=(
-                f"try another zone — the snapshot is kept, so this repeats only the "
+                "try another zone — the snapshot is kept, so this repeats only the "
                 f"disk, not the 300 GB copy:\n        {retry}"
-                + (f"\n        or stop here and take the cost off the bill:\n        "
+                + ("\n        or stop here and take the cost off the bill:\n        "
                    + "\n        ".join(cleanup) if cleanup else "")
             ),
             left=left,
@@ -778,7 +778,7 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
         fix=(
             "run the same command again — it will find what already exists and "
             "carry on from there."
-            + (f"\n        to start over instead:\n        "
+            + ("\n        to start over instead:\n        "
                + "\n        ".join(cleanup) if cleanup else "")
         ),
         left=left,

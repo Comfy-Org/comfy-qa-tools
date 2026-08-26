@@ -225,7 +225,10 @@ def bring_up(
     sleep=None,
     now=None,
     probe_fn=None,
-
+    # The last seam without one. Without it, any test that reaches this function
+    # starts a real `gcloud compute start-iap-tunnel` — which passed on CI images
+    # that ship the SDK and failed on the ones that do not, in both directions.
+    launcher=None,
     boot_timeout: int = BOOT_TIMEOUT,
     comfy_timeout: int = COMFY_TIMEOUT,
 ) -> Ready:
@@ -323,7 +326,7 @@ def bring_up(
         if existing.stale:
             say("clearing a tunnel record whose process is gone")
         try:
-            open_tunnel(host, tunnel_dir)
+            open_tunnel(host, tunnel_dir, launcher=launcher)
         except TunnelError as exc:
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",
