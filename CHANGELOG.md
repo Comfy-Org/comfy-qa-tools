@@ -52,6 +52,29 @@ build now has a version worth quoting.
 
 ### Fixes worth knowing
 
+- The host list enforced that every host had its own port, and never that every
+  host was its own machine. Two entries could name one GCE instance — two ports,
+  two tunnels, one box, and a matrix recording "reproduced on comfy-win, not on
+  comfy-win-b" about the same machine. Refused when the file is read, along with
+  two names that differ only in case, a cloud box called `local`, and a `local`
+  host carrying `gce_*` fields — that last one because `down` decides what to
+  stop from `kind`, so a mistyped cloud box read as a successful `host down`
+  while the GPU billed all night. Host names must now be typeable: not blank,
+  not padded, not a path, and not something argument parsing reads as an option.
+- `load` promised a message and gave a stack trace instead for a `--config`
+  pointed at the folder rather than the file in it, a host list with the wrong
+  owner, and one that is not UTF-8. `host init` did the same for a folder it
+  could not write to.
+- `open` reported "tunnel already open" from the name alone, so a tunnel opened
+  for a different box that happened to share a name was claimed as this one, with
+  this host list's URL beside it. The question is now asked where it can be
+  answered — against the recorded instance, zone, project and port.
+- `open`, `up` and `go` did not catch `TunnelError`, so a port already held
+  produced a traceback rather than the message that was written for it.
+- `stamp` printed a clean evidence line for whatever answered. A host declared
+  Windows/L4 answering `darwin`/`mps` is now refused rather than warned about:
+  the line exists to be pasted into a bug report as proof of which machine ran
+  something, and a warning on stderr does not survive being copied.
 - A tunnel was trusted on the strength of a process id alone. Pids are recycled,
   so a stale pid file read as "tunnel already open" and `down` would SIGTERM
   whatever now owned that number. The record now names the instance, zone, port

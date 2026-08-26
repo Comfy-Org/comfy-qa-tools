@@ -131,10 +131,17 @@ def gcloud(statuses: dict[str, object], fail: Exception | None = None):
 
 
 def tunnels(*open_for: str):
-    """Stand in for the tunnel pid files, which live in the real config dir."""
-    def status(name, directory=None):
-        return TunnelState(host=name, pid=99 if name in open_for else None,
-                           alive=name in open_for)
+    """Stand in for the tunnel pid files, which live in the real config dir.
+
+    A live pid is no longer enough to count as a tunnel: the kernel hands pids
+    back out, so `running` also wants a record saying where this one goes
+    (`known`) and a start time that still matches (`verified`). A stub that sets
+    only `alive` describes a stale pid file, not an open tunnel.
+    """
+    def status(name, directory=None, **_):
+        if name not in open_for:
+            return TunnelState(host=name, pid=None, alive=False)
+        return TunnelState(host=name, pid=99, alive=True, known=True, verified=True)
     return status
 
 
@@ -155,7 +162,10 @@ def cli(tmp_path, monkeypatch):
         monkeypatch.setattr(tunnel_module, "status", tunnels(*open_tunnels))
         monkeypatch.setattr(lifecycle, "open_tunnel", lambda host, directory=None: (
             opened.append(host.name)
-            or TunnelState(host=host.name, pid=99, alive=True)))
+            or TunnelState(host=host.name, pid=99, alive=True, known=True,
+                           verified=True, port=host.port,
+                           instance=host.gce_instance, zone=host.gce_zone,
+                           project=host.gce_project)))
         monkeypatch.setattr(lifecycle, "close_tunnel", lambda name, directory=None: (
             closed.append(name) or name in open_tunnels))
         monkeypatch.setattr(lifecycle, "probe",

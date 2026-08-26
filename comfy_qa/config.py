@@ -61,6 +61,22 @@ _REQUIRED_FOR_GCE = ("os", "gpu", "gce_instance", "gce_zone", "gce_project")
 
 _KNOWN_FIELDS = frozenset({"kind", "port", *_REQUIRED_FOR_GCE})
 
+# The three fields that say which cloud box an entry is. They are what `up`,
+# `open`, `down` and `move` operate on, so an entry carrying them is a machine
+# that costs money whatever its `kind` says.
+_CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project")
+
+# The one name this tool reserves. The starter host list teaches it, every
+# example uses it, and `host stamp local` has exactly one obvious meaning.
+LOCAL_NAME = "local"
+
+# A host name is two things at once: an argument you type (`host stamp <name>`)
+# and part of a filename (`tunnels/<name>.pid`). Both want the same shape, and
+# TOML table keys are otherwise unrestricted — `""`, `"   "`, `"--config"`,
+# `"../evil"` and `"comfy\nwin"` are all valid keys and none of them is a name
+# anyone can use.
+_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
 
 def _named(field: str) -> str:
     """A rejected field, with the field it was probably meant to be."""
@@ -69,6 +85,18 @@ def _named(field: str) -> str:
 
 
 def _parse_host(name: str, raw: object) -> Host:
+    # Before anything about the machine: is this a name at all. Everything below
+    # reports errors under it, and a name that cannot be typed cannot be acted on
+    # even when the rest of the entry is perfect.
+    if not isinstance(name, str) or not _NAME.match(name):
+        raise ConfigError(
+            f"host name {name!r} cannot be used. A name has to start with a letter or "
+            "a digit and hold only letters, digits, dots, dashes and underscores — it "
+            "is typed as an argument and used as a filename, so a name that is blank, "
+            "padded, or starts with a dash is read as an option or cannot be typed at "
+            "all. Rename it, e.g. comfy-win."
+        )
+
     if not isinstance(raw, dict):
         raise ConfigError(f"host {name!r}: expected a table, got {type(raw).__name__}")
 
@@ -87,6 +115,28 @@ def _parse_host(name: str, raw: object) -> Host:
     if kind not in ("local", "gce"):
         raise ConfigError(
             f"host {name!r}: kind must be 'local' or 'gce', got {kind!r}"
+        )
+
+    if kind == "local":
+        # This one costs money. `host down` decides what to stop from `kind`
+        # alone: for a local host it reports "local ComfyUI left running" and
+        # returns without calling stop. A cloud box mistyped as local — or edited
+        # down to one after a move — therefore reads as a successful `host down`
+        # while the GPU keeps billing all night.
+        cloud = [key for key in _CLOUD_FIELDS if raw.get(key)]
+        if cloud:
+            raise ConfigError(
+                f"host {name!r}: kind 'local' cannot carry {', '.join(cloud)}. Stopping "
+                "a machine is decided from 'kind', so a cloud box declared local is "
+                "never stopped and keeps billing. Set kind = \"gce\" if it is a cloud "
+                "box, or delete those fields if it is not."
+            )
+    if kind == "gce" and name.lower() == LOCAL_NAME:
+        raise ConfigError(
+            f"host {name!r}: the name 'local' is reserved for the ComfyUI on this "
+            "computer, which is what every example and the starter host list means by "
+            "it. A cloud box wearing it puts an invisible default back. Rename the box, "
+            "e.g. comfy-win or comfy-linux."
         )
 
     port = raw.get("port", COMFYUI_DEFAULT_PORT if kind == "local" else None)
@@ -123,7 +173,19 @@ def _parse_host(name: str, raw: object) -> Host:
 
 
 def parse(data: dict) -> list[Host]:
-    """Validate an already-decoded hosts.toml. Raises ConfigError on any problem."""
+    """Validate an already-decoded hosts.toml. Raises ConfigError on any problem.
+
+    Three rules run across the whole list rather than one entry, and all three
+    are the same rule underneath: **one entry, one machine, one way to reach it.**
+    A host list that breaks any of them still loads, still lists, and still
+    stamps — and then a test matrix records "reproduced on A, not on B" about two
+    names for one box, or about whichever of two spellings a shift key produced.
+    """
+    if not isinstance(data, dict):
+        raise ConfigError(
+            f"expected a host list of [hosts.<name>] tables, got {type(data).__name__}"
+        )
+
     hosts_table = data.get("hosts")
     if not isinstance(hosts_table, dict) or not hosts_table:
         raise ConfigError("no [hosts.<name>] tables found")
@@ -141,6 +203,41 @@ def parse(data: dict) -> list[Host]:
             )
         seen[host.port] = host.name
 
+    # Two names that differ only in case are one machine typed two ways far more
+    # often than they are two machines. Lookup already falls back to a
+    # case-insensitive match, so with both declared which box you reach depends
+    # on a shift key.
+    folded: dict[str, str] = {}
+    for host in hosts:
+        clash = folded.get(host.name.lower())
+        if clash is not None:
+            raise ConfigError(
+                f"hosts {clash!r} and {host.name!r} differ only in case. Which machine "
+                "you reached would depend on a shift key, so they cannot both be "
+                "declared. Rename one of them, or delete it if they are the same box."
+            )
+        folded[host.name.lower()] = host.name
+
+    # The port rule says every host answers on its own port. It does not say
+    # every host is its own machine — and two entries for one instance is the
+    # wrong-machine failure this whole tool exists to prevent, arriving as a
+    # host list that validates.
+    boxes: dict[tuple[str, str, str], str] = {}
+    for host in hosts:
+        if not host.is_remote:
+            continue
+        box = (host.gce_project or "", host.gce_zone or "", host.gce_instance or "")
+        clash = boxes.get(box)
+        if clash is not None:
+            raise ConfigError(
+                f"hosts {clash!r} and {host.name!r} are the same machine: instance "
+                f"{host.gce_instance!r} in {host.gce_zone} ({host.gce_project}). Two "
+                "entries, two ports, two tunnels, one box — and a result recorded "
+                "against one of those names says nothing whatever about the other. "
+                "Delete one, or point it at a different instance."
+            )
+        boxes[box] = host.name
+
     return hosts
 
 
@@ -151,8 +248,28 @@ def load(path: Path | None = None) -> list[Host]:
         raise ConfigError(
             f"no host list at {path}. Run `comfy-qat host init` to write a starter one."
         )
+    # `exists()` is true of a directory, of a file owned by someone else, and of
+    # a file that is not text at all. Each of those reaches `read_text` and, until
+    # now, came back as a traceback from a function whose whole promise is a
+    # message — `--config` pointed at the folder rather than the file in it is
+    # enough to do it.
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(
+            f"{path} is not UTF-8 text, so it cannot be a host list. Check it was not "
+            "saved as UTF-16 by an editor, truncated by a half-finished write, or "
+            "overwritten with something binary."
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(
+            f"{path} could not be read: {exc}. Check that it is a file rather than a "
+            "directory, and that you own it — `--config` pointed at the folder instead "
+            "of the hosts.toml inside it looks exactly like this."
+        ) from exc
+
+    try:
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(f"{path} is not valid TOML: {exc}") from exc
     return parse(data)

@@ -29,7 +29,7 @@ from .config import (
     load,
     resolve,
 )
-from .stamp import ProbeError, fetch
+from .stamp import ProbeError, fetch, mismatch
 
 app = typer.Typer(
     help="Operate the machines you test on — local installs and cloud GPU boxes.",
@@ -43,9 +43,13 @@ STARTER = f"""\
 # means there is no invisible default, which is how you end up reading results
 # from the wrong machine.
 #
-# Rules the tool enforces:
+# Rules the tool enforces, all of them when this file is read:
 #   - every host needs its own port
 #   - a cloud host may never use {COMFYUI_DEFAULT_PORT}; that is the local ComfyUI's
+#   - no two hosts may be the same cloud box, or differ only in case
+#   - 'local' is this machine, so a cloud box may not take the name
+#   - a local host may not carry gce_instance / gce_zone / gce_project, or
+#     `host down` would leave a real instance running and billing
 
 [hosts.local]
 kind = "local"
@@ -134,8 +138,17 @@ def init_cmd(
     if path.exists() and not force:
         typer.echo(f"{path} already exists. Use --force to overwrite it.", err=True)
         raise typer.Exit(code=2)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(STARTER, encoding="utf-8")
+    # A folder you cannot write to, and `--force` aimed at a directory, both
+    # arrive here as an OSError. This is the command someone runs first, so a
+    # traceback is the first thing the tool would ever show them.
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(STARTER, encoding="utf-8")
+    except OSError as exc:
+        typer.echo(
+            f"could not write a host list to {path}: {exc}. Give `--config` a path you "
+            "can write to — the file itself, not the folder it goes in.", err=True)
+        raise typer.Exit(code=2)
     typer.echo(f"wrote {path}")
     typer.echo("Edit it to add your cloud boxes, then run `comfy-qat host list`.")
 
@@ -222,13 +235,26 @@ def _host(name: str, config: Optional[Path]) -> Host:
     return _lookup(name, config)[1]
 
 
+def _reportable() -> tuple[type, ...]:
+    """The failures this tool answers with a message rather than a traceback.
+
+    `TunnelError` is not a `LifecycleError` and cannot become one — `lifecycle`
+    imports `tunnel`, so the dependency only runs one way — but it was given the
+    same shape on purpose: a message, a `fix`, and a `kind`. Every handler here
+    reads exactly those three, so naming both types is the whole of the work.
+    Anything reaching a person through `bring_up` or `serve` can raise either.
+    """
+    from .lifecycle import LifecycleError
+    from .tunnel import TunnelError
+
+    return (LifecycleError, TunnelError)
+
+
 def _act(action, *args, **kwargs):
     """Run a lifecycle step, turning its failures into messages, never tracebacks."""
-    from .lifecycle import LifecycleError
-
     try:
         return action(*args, **kwargs)
-    except LifecycleError as exc:
+    except _reportable() as exc:
         typer.echo(f"\n{exc}", err=True)
         if exc.fix:
             typer.echo(f"to fix: {exc.fix}", err=True)
@@ -246,12 +272,12 @@ def up_cmd(
     booted and serves nothing looks like success and bills like success.
     """
     from .gcloud import Gcloud
-    from .lifecycle import LifecycleError, bring_up
+    from .lifecycle import bring_up
 
     hosts, host = _lookup(name, config)
     try:
         bring_up(Gcloud(), host, lambda line: typer.echo(f"  {line}"))
-    except LifecycleError as exc:
+    except _reportable() as exc:
         # A box that will not start ends the session unless you are told where
         # else you could work, and a GPU shortage is the usual reason.
         _failed(host, hosts, exc)
@@ -271,7 +297,12 @@ def open_cmd(
     Traffic goes over Identity-Aware Proxy, so no port is ever opened and no SSH
     key is needed — which matters, because ComfyUI has no authentication.
     """
-    from .tunnel import command as tunnel_command, open_tunnel, status as tunnel_status
+    from .tunnel import (
+        TunnelError,
+        command as tunnel_command,
+        open_tunnel,
+        status as tunnel_status,
+    )
 
     host = _host(name, config)
     if not host.is_remote:
@@ -282,13 +313,26 @@ def open_cmd(
         typer.echo(" ".join(tunnel_command(host)))
         return
 
-    existing = tunnel_status(host.name)
-    if existing.running:
-        typer.echo(f"tunnel already open (pid {existing.pid}): {host.url}")
-        return
+    # There used to be a `if tunnel_status(host.name).running: return` here, and
+    # it decided from the name alone. A name is not a machine: a second host list
+    # can call a different box `comfy-win` too, and that early return printed
+    # *this* host list's URL for *that* host list's tunnel. `open_tunnel` is the
+    # only thing that knows — it compares the recorded instance, zone, project and
+    # port against the host — so the question is asked there and nowhere else.
+    # Reuse is still reported as reuse: `open_tunnel` hands back the live state
+    # untouched when it really is the same machine.
+    before = tunnel_status(host.name)
+    try:
+        state = open_tunnel(host)
+    except TunnelError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=2)
 
-    state = open_tunnel(host)
-    typer.echo(f"tunnel open (pid {state.pid}): {host.url}")
+    reused = before.running and before.pid == state.pid
+    opened = "tunnel already open" if reused else "tunnel open"
+    typer.echo(f"{opened} (pid {state.pid}): {state.url or host.url}")
 
 
 @app.command("down")
@@ -389,11 +433,11 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None)
     Returns None when the box is up but ComfyUI is absent — the one failure the
     steps after this one exist to fix.
     """
-    from .lifecycle import COMFYUI_ABSENT, LifecycleError, bring_up
+    from .lifecycle import COMFYUI_ABSENT, bring_up
 
     try:
         return bring_up(gc, host, lambda line: typer.echo(f"  {line}"), comfy_timeout=15)
-    except LifecycleError as exc:
+    except _reportable() as exc:
         # Only "ComfyUI is not there yet" is worth continuing past. Anything else
         # (the box would not start, the tunnel failed) must be shown, not
         # swallowed — that once hid a failed start and then tried SSH against it.
@@ -409,7 +453,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     import webbrowser
 
     from .gcloud import GcloudError
-    from .lifecycle import LifecycleError, ensure_installed, serve, wait_for_ssh
+    from .lifecycle import ensure_installed, serve, wait_for_ssh
 
     say = lambda line: typer.echo(f"  {line}")
     browser = None if no_browser else (lambda url: webbrowser.open(url))
@@ -437,7 +481,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         ensure_installed(gc, host, say)
         typer.echo("")
         code = serve(gc, host, say, open_browser=browser)
-    except LifecycleError as exc:
+    except _reportable() as exc:
         typer.echo(f"\n{exc}", err=True)
         if exc.fix:
             typer.echo(f"to fix: {exc.fix}", err=True)
@@ -637,6 +681,20 @@ def stamp_cmd(
         typer.echo(str(exc), err=True)
         if exc.fix:
             typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=1)
+
+    # Refused, not warned. This line exists to be copied — it is pasted into a
+    # bug report as the proof of which machine produced a result — and a warning
+    # on stderr does not survive being copied. Printing the line at all is what
+    # creates the artefact, so when the machine that answered contradicts the one
+    # declared, no line is printed and the contradiction is what you get instead.
+    problem = mismatch(host, stamp)
+    if problem is not None:
+        typer.echo(problem, err=True)
+        typer.echo(
+            "No evidence line was printed, because this one would have named the "
+            "wrong machine. Check the port in your host list and which tunnel is "
+            "open, then stamp it again.", err=True)
         raise typer.Exit(code=1)
 
     if as_json:
