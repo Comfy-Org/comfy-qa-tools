@@ -113,6 +113,46 @@ with the box.
 gcloud refused. The most common cause is GPU quota — `comfy-qat auth quota` shows
 what you actually have.
 
+## Moving a box to another zone
+
+**`already on the project:`** followed by a disk or a snapshot
+An earlier `host move` did not finish, and what it created is still there and still
+billing. This is a report, not an error — the move carries on and reuses what it
+can. Each line is followed by the exact `gcloud ... delete` command that removes it,
+and `comfy-qat host move <name> --clean` removes them all and stops. Nothing is
+deleted for you.
+
+**`comfy-win-a-b already exists in us-central1-b, but ...`**
+A disk is sitting where the move wants to put one, and it could not be confirmed as
+a copy of this box's boot disk — it is attached to something, it came from a
+different snapshot, it is a different size, or it is older than the snapshot it
+claims to come from. Carrying on with it would boot the wrong machine and look like
+a move that worked, so the move stops. Check it is not something you want, then run
+the printed delete command and move again.
+
+**`us-central1-b does not offer g2-standard-8 at all`**
+The zone does not have that machine type, so the instance could never be created
+there. Nothing has been snapshotted. Pick a zone that does:
+`gcloud compute machine-types list --filter='name=g2-standard-8'`.
+
+**`us-central1-b has no L4 capacity either`**
+The move got as far as creating the machine and the destination zone was out of
+capacity by the time it got there. The zone Google names in a stockout message is
+where there was capacity when it answered, not a reservation, and it goes stale.
+The snapshot and the disk both exist and are billing; the error names them. Trying
+another zone reuses the snapshot, so it repeats only the disk, not the slow 300 GB
+copy. There is no way to check a zone's free capacity in advance — Google publishes
+no API for it — so this failure can only be reported well, not prevented.
+
+**`the move stopped at: ...`**
+Some other step failed. The error names what now exists because of the run, and the
+original box is untouched and still stopped in its old zone. Run the same command
+again: it looks at the project first and carries on from where it stopped.
+
+**`could not delete the snapshot ...`** after a move otherwise succeeded
+The new machine is up and in your host list; only the cleanup failed. The snapshot
+is still billing and the message repeats the command that removes it.
+
 ## Stamping a machine
 
 **`nothing answered at http://127.0.0.1:8190`**

@@ -152,7 +152,7 @@ you do on purpose.
 | `comfy-qat host open <name>` | tunnel to a box that is already running. `--dry-run` prints the command |
 | `comfy-qat host down <name>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
 | `comfy-qat host go <name>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
-| `comfy-qat host move <name>` | rebuild the box in a zone that has capacity, keeping its install. `--to`, `--dry-run`, `--yes` |
+| `comfy-qat host move <name>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
 | `comfy-qat host stamp <name>` | ask a machine what it is. `--json` |
 | `comfy-qat env` | v0's build and feature-flag check for deployed environments |
 

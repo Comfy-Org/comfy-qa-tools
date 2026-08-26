@@ -55,6 +55,13 @@ ERROR_PHRASES = [
     "did not finish",
     "capacity in",
     "NO_PYTHON",
+    # moving a box out of a zone with no capacity
+    "already on the project",
+    "already exists in",
+    "does not offer",
+    "capacity either",
+    "the move stopped at",
+    "could not delete the snapshot",
 ]
 
 

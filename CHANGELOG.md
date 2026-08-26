@@ -20,7 +20,10 @@ not write it ([`docs/test-criteria.md`](docs/test-criteria.md)).
   none, then serve it in the foreground with its startup log on your terminal. (#15)
 - `host move` — a GPU stockout cannot be fixed where you are. Snapshot the disk,
   rebuild the box in a zone that has capacity, keep the install, and never remove
-  the original. (#19)
+  the original. Reads the boot disk off the instance rather than guessing its name,
+  resumes a move that stopped part-way instead of colliding with what it left,
+  reports every leftover with its size and the command that removes it, and keeps
+  the new disk the same type as the one it copies. (#19)
 - `host stamp` — one pasteable line saying what a machine actually is, from
   ComfyUI's own `/system_stats`. `--json` uses ComfyUI's field names. (#6)
 
