@@ -559,8 +559,13 @@ def test_move_that_fails_partway_says_nothing_was_removed(world):
 
     no_traceback(result)
     assert result.exit_code == 1
-    assert "the move failed" in result.output
-    assert "nothing was removed" in result.output
+    assert "the move stopped at" in result.output
+    # "nothing was removed" was the old reassurance, and it was the incomplete
+    # one: true, and silent about the disk and snapshot the run had just created
+    # and left billing. The contract now is that a failure accounts for what it
+    # made, not only for what it spared.
+    assert "untouched" in result.output, "the original box is still there"
+    assert "billing" in result.output, "say what this run left running up a bill"
     assert f"{BOX} is untouched in us-central1-a" in result.output
     assert world.gc.did("snapshot_disk"), "the snapshot is where it got to"
     assert not world.gc.did("create_instance_from_disk")

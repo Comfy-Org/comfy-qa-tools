@@ -624,6 +624,8 @@ def move_cmd(
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before making changes.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
+    clean: Annotated[bool, typer.Option(
+        "--clean", help="Delete what an earlier, half-finished move left behind, and stop.")] = False,
 ) -> None:
     """Move a box to a zone that has capacity, keeping its ComfyUI install.
 
@@ -633,6 +635,9 @@ def move_cmd(
     """
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
+    from .relocate import (
+        MoveError, blocked, leftovers, prepare, remove_leftovers, run_move,
+    )
 
     host = _host(name, config)
     if not host.is_remote:
@@ -650,15 +655,41 @@ def move_cmd(
 
     try:
         instance = gc.describe_instance(host.gce_instance, host.gce_zone, host.gce_project)
+        plan, found = prepare(gc, host, instance, target)
     except GcloudError as exc:
         _refused(exc)
 
-    from .relocate import metadata_pairs, plan_move
+    # Whatever an earlier run left is billing right now, whether or not this one
+    # goes ahead — and an unattached disk looks like nothing at all in a console.
+    if found.anything():
+        typer.echo("\nalready on the project:")
+        for line in leftovers(plan, found):
+            typer.echo(f"  {line}")
 
-    plan = plan_move(host, instance, target)
+    if clean:
+        if not yes and not typer.confirm("\nDelete those?"):
+            typer.echo("nothing changed")
+            return
+        try:
+            removed = remove_leftovers(gc, plan, found, lambda line: typer.echo(f"  {line}"))
+        except GcloudError as exc:
+            typer.echo(f"\ncould not clean up: {exc}", err=True)
+            raise typer.Exit(code=1)
+        typer.echo(f"\nremoved {len(removed)}. Run the move again to rebuild.")
+        return
+
+    problem = blocked(plan, found)
+    if problem is not None:
+        typer.echo(f"\n{problem}", err=True)
+        if problem.fix:
+            typer.echo(f"to fix: {problem.fix}", err=True)
+        raise typer.Exit(code=1)
+
     typer.echo("")
-    for step in plan.steps():
+    for step in plan.steps(found):
         typer.echo(f"  - {step}")
+    for note in found.notes:
+        typer.echo(f"\nnote: {note}")
 
     if dry_run:
         typer.echo("\n--dry-run: nothing changed")
@@ -667,36 +698,39 @@ def move_cmd(
         typer.echo("nothing changed")
         return
 
-    disk = plan.new_disk.rsplit("-", 1)[0]
-    try:
-        typer.echo("  snapshotting the boot disk — this is the slow part")
-        gc.snapshot_disk(disk, host.gce_zone, host.gce_project, plan.snapshot)
-        typer.echo(f"  creating {plan.new_disk} in {target}")
-        gc.create_disk_from_snapshot(plan.new_disk, target, host.gce_project, plan.snapshot)
-        typer.echo(f"  creating {plan.new_instance}")
-        gc.create_instance_from_disk(
-            plan.new_instance, target, host.gce_project, plan.new_disk,
-            plan.machine_type, metadata_pairs(instance),
+    path = config or DEFAULT_CONFIG_PATH
+    ports: list[int] = []
+
+    def register(done) -> None:
+        """Write the moved box into the host list — the move's last real step."""
+        hosts = load(path)
+        port = next_ports(hosts, 1)[0]
+        moved = Discovered(
+            name=done.new_instance, os=host.os or "unknown", gpu=host.gpu or "",
+            gce_instance=done.new_instance, gce_zone=done.to_zone,
+            gce_project=host.gce_project, running=True,
         )
-    except GcloudError as exc:
-        typer.echo(f"\nthe move failed: {exc}", err=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(to_toml(moved, port))
+        ports.append(port)
+
+    typer.echo("")
+    try:
+        outcome = run_move(gc, plan, found, lambda line: typer.echo(f"  {line}"),
+                           register=register)
+    except MoveError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        for item in exc.left:
+            typer.echo(f"  this run left {item}, and it is billing", err=True)
         if exc.fix:
             typer.echo(f"to fix: {exc.fix}", err=True)
-        typer.echo(f"nothing was removed — {host.gce_instance} is untouched in "
-                   f"{host.gce_zone}.", err=True)
+        typer.echo(f"\n{host.gce_instance} is untouched in {host.gce_zone}.", err=True)
         raise typer.Exit(code=1)
 
-    path = config or DEFAULT_CONFIG_PATH
-    hosts = load(path)
-    port = next_ports(hosts, 1)[0]
-    moved = Discovered(
-        name=plan.new_instance, os=host.os or "unknown", gpu=host.gpu or "",
-        gce_instance=plan.new_instance, gce_zone=target,
-        gce_project=host.gce_project, running=True,
-    )
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(to_toml(moved, port))
+    for warning in outcome.warnings:
+        typer.echo(f"\nwarning: {warning}", err=True)
 
+    port = ports[0] if ports else host.port
     typer.echo(f"\n{plan.new_instance} is in {target}, on port {port}.")
     typer.echo(f"  comfy-qat host go {plan.new_instance}")
     typer.echo(f"\n{host.gce_instance} is still in {host.gce_zone}, stopped. Delete it "

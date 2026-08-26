@@ -543,6 +543,21 @@ followed by the `host move` command for a zone Google says has capacity. Read
 can be stale by the time you use it, and a move that fails late leaves a disk and a
 snapshot behind that you will pay for.
 
+**`could not clean up: ...`**
+`--clean` asked Google to delete a disk or a snapshot an earlier move left, and
+Google refused. The nested message says why — most often the disk is still
+attached to something, or your account lacks the delete permission. Nothing else
+was touched. Each leftover's own `gcloud ... delete` command is printed above the
+error, so you can run the one that failed yourself and see the full reason.
+
+**`this run left disk comfy-win-b in us-central1-b (300 GB), and it is billing`**
+Printed under a failed move, once per thing the run created before it stopped. A
+part-finished move is the expensive failure here: the snapshot and the disk are
+the slow, costly half and the instance is the useful half, so stopping in between
+leaves you paying for work you cannot use. Each line is followed by the exact
+delete command. Running the move again is the supported recovery — it finds what
+exists and carries on from there — so delete only if you have decided against it.
+
 **`already on the project:`** followed by a disk or a snapshot
 An earlier `host move` did not finish, and what it created is still there and still
 billing. This is a report, not an error — the move carries on and reuses what it

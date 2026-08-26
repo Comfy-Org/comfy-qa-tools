@@ -70,7 +70,16 @@ class FakeGcloud:
         snapshot=None,
         create_disk=None,
         create_instance=None,
+        disks=(),
+        snapshots=(),
+        instances=(),
     ) -> None:
+        # `relocate.survey` lists disks, snapshots and instances before touching
+        # anything — that read is what turns up the leftovers a half-finished
+        # move left billing. Empty by default: a clean project.
+        self.disks = list(disks)
+        self.snapshots = list(snapshots)
+        self.instances = list(instances)
         self.statuses = list(statuses)
         self.installed = installed
         self.start = start
@@ -138,9 +147,49 @@ class FakeGcloud:
             self.on_launch()
         return _resolve(self.launch_exit)
 
+    def list_instances(self, project: str) -> list[dict]:
+        self.calls.append(("list_instances", project))
+        return list(self.instances)
+
+    def run(self, args, **kwargs):
+        """The generic escape hatch `relocate` uses for the two list calls.
+
+        Only reads are answered here. Anything else is a call this fake was never
+        told to expect, and raising is the point — a test asserting `calls == []`
+        under `--dry-run` is how the "a dry run must not start a GPU box" rule is
+        held, and a fake that quietly returned None for everything would let that
+        regress silently.
+        """
+        self.calls.append(("run", tuple(args)))
+        joined = " ".join(str(part) for part in args)
+        if "disks list" in joined:
+            return list(self.disks)
+        if "snapshots list" in joined:
+            return list(self.snapshots)
+        if "machine-types list" in joined:
+            return [{"name": "g2-standard-8"}]
+        if "disks create" in joined:
+            # `relocate` builds this call itself so it can pass --type and keep
+            # the new disk the same kind as the one it copies; a pd-balanced
+            # original was silently becoming pd-standard. Recorded under the old
+            # verb so the assertions about what a move does still read.
+            self.calls.append(("create_disk_from_snapshot", args[3]))
+            _resolve(self.create_disk)
+            return []
+        if "snapshots delete" in joined:
+            self.calls.append(("delete_snapshot", args[3]))
+            return []
+        raise AssertionError(f"fake gcloud was not told to expect: {joined}")
+
     def describe_instance(self, name: str, zone: str, project: str) -> dict:
         self.calls.append(("describe_instance", name, zone, project))
         return _resolve(self.describe) or {}
+
+    def delete_snapshot(self, snapshot: str, project: str) -> None:
+        # A move deletes its own snapshot once the instance exists: the new disk
+        # is a full copy and the original box is still there, so keeping it is a
+        # third copy nobody reads and everybody pays for.
+        self.calls.append(("delete_snapshot", snapshot, project))
 
     def snapshot_disk(self, disk: str, zone: str, project: str, snapshot: str) -> None:
         self.calls.append(("snapshot_disk", disk, zone, project, snapshot))

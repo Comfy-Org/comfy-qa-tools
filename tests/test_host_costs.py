@@ -62,15 +62,45 @@ class Cloud:
     rather than quietly answering.
     """
 
-    def __init__(self, *, start=None):
+    def __init__(self, *, start=None, describe=None):
         self.calls: list[str] = []
         self._start = start
+        self._describe = describe
 
     def start_instance(self, instance, zone, project):
         self.calls.append("start_instance")
         if self._start is not None:
             raise self._start
         return ""
+
+    # The reads `relocate.survey` makes before anything is touched. They are
+    # answered rather than refused because they cost nothing and change nothing —
+    # which is the whole distinction this file is about. `start_instance` is the
+    # call that must not happen under --dry-run, and it is still recorded.
+    def describe_instance(self, instance, zone, project):
+        self.calls.append("describe_instance")
+        return self._describe or {
+            "name": instance,
+            "machineType": "zones/us-central1-a/machineTypes/g2-standard-8",
+            "disks": [{"boot": True, "source": f"…/disks/{instance}-a"}],
+        }
+
+    def list_instances(self, project):
+        self.calls.append("list_instances")
+        return []
+
+    def run(self, args, **kwargs):
+        self.calls.append("run")
+        joined = " ".join(str(part) for part in args)
+        if "disks list" in joined:
+            return [{"name": "comfy-win-a", "zone": ".../us-central1-a",
+                     "sizeGb": "300", "type": ".../pd-balanced",
+                     "users": [".../comfy-win"]}]
+        if "snapshots list" in joined:
+            return []
+        if "machine-types list" in joined:
+            return [{"name": "g2-standard-8"}]
+        raise AssertionError(f"gcloud run was not expected: {joined}")
 
     def __getattr__(self, name):
         def unexpected(*args, **kwargs):
@@ -153,7 +183,10 @@ def test_a_real_move_still_asks_google_where_there_is_capacity(cli):
 
     result = cli("move", "comfy-win", cloud=cloud)
 
-    assert cloud.calls == ["start_instance", "describe_instance"]
+    # The survey reads follow the probe: they cost nothing and change nothing,
+    # which is exactly the distinction this file exists to hold.
+    assert cloud.calls[0] == "start_instance"
+    assert "stop_instance" not in cloud.calls
     assert "us-central1-a has none free; us-central1-b does" in result.output
     # It asked, so it goes on to ask whether to do it — nothing was moved here.
     assert "Move comfy-win to us-central1-b?" in result.output
