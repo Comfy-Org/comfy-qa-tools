@@ -110,7 +110,7 @@ def test_empty_config_is_an_error_not_an_empty_list():
 def test_find_names_the_alternatives():
     hosts = parse({"hosts": {"local": {"kind": "local"}}})
     assert find(hosts, "local").name == "local"
-    with pytest.raises(ConfigError, match="Declared: local"):
+    with pytest.raises(ConfigError, match="declared:  local"):
         find(hosts, "nope")
 
 

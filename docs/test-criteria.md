@@ -349,15 +349,19 @@ echo "=== J6 something you do not have"; qat host stamp rtx4090; echo "exit $?"
 echo "=== J7 the plan, without doing it"; qat host switch windows --dry-run; echo "exit $?"
 ```
 
-- [ ] **J1** — one line per machine with OS, card, URL and STATE. STATE says which
-      box is running and which is tunnelled, without asking Google.
+- [ ] **J1** — one line per machine with OS, card, URL and STATE. Without `--live`
+      STATE reports **only what this machine knows** — whether a tunnel is open —
+      and says so under the table. A cloud box with no tunnel reads `not
+      tunnelled`, not a bare `-`: a running box and a stopped one must not look
+      identical. `--live` adds what Google says, one call per box.
 - [ ] **J2/J3/J4** — each resolves to exactly one machine and **prints what it
       resolved to** before doing anything: `windows -> comfy-win (Windows Server
       2022, L4)`. A silent resolution is a fail even if it picks correctly.
 - [ ] **J5** — says the separator is `/` and shows `windows/l4`. Exit 2.
 - [ ] **J6** — lists what is declared *and* the vocabulary it accepts. Exit 2.
 - [ ] **J7** — states what it would start and what it would stop, then stops.
-      Nothing is contacted.
+      Nothing is started or stopped. It may ask Google what is already running —
+      one `describe` per *other* cloud box — which is a read and is correct.
 
 With two or more cloud boxes declared, the ambiguity case matters more than any
 of the above:

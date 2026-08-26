@@ -504,9 +504,12 @@ offline, before any cloud call.
 A hyphen reads as part of a name, and host names contain hyphens, so the two
 cannot both be separators. Use `/`.
 
-**`unknown host 'rtx4090'. Declared: local, comfy-win. You can also describe the machine instead: an operating system (windows, linux, ubuntu, debian, macos, local), a card (a100, l4), or both, as os/card.`**
-Neither a declared name nor a description this tool understands. The second half of
-the message is the vocabulary: OS keywords, cards, or `os/card`.
+**`unknown host 'rtx4090'.`** / **`declared: local, comfy-win`** / **`or describe the machine: an operating system (windows, linux, ubuntu, debian, macos, local), a card (l4), or both as os/card`**
+Neither a declared name nor a description this tool understands. Three lines, on
+purpose: what went wrong, what you actually have, and the vocabulary you can use
+instead — an operating system, a card, or both as `os/card`. It used to be one
+240-character sentence carrying all three, which is the first message a new tester
+meets and took a second reading to untangle.
 
 **`host 'comfy-win': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.`**
 A misspelt field in `hosts.toml`. This used to be reported as five *missing*

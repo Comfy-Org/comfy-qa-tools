@@ -410,10 +410,15 @@ def resolve(hosts: list[Host], name: str) -> Resolution:
         )
 
     known = ", ".join(h.name for h in hosts) or "none declared"
+    # Three separate things — what went wrong, what exists, what the vocabulary
+    # is — and run together on one line they took a second reading to untangle.
+    # This is the first message a new tester meets, so it gets three lines.
     raise ConfigError(
-        f"unknown host {wanted!r}. Declared: {known}. You can also describe the "
-        f"machine instead: an operating system ({', '.join(OS_KEYWORDS)}), a card "
-        f"({_cards(hosts)}), or both, as os{SEPARATOR}card."
+        f"unknown host {wanted!r}.\n"
+        f"  declared:  {known}\n"
+        f"  or describe the machine: an operating system "
+        f"({', '.join(OS_KEYWORDS)}), a card ({_cards(hosts)}), "
+        f"or both as os{SEPARATOR}card"
     )
 
 

@@ -271,7 +271,7 @@ def test_an_unknown_selector_says_what_is_declared(cli):
 
     assert result.exit_code == 2
     assert "unknown host 'rtx4090'" in result.output
-    assert "Declared: local, comfy-win, comfy-linux" in result.output
+    assert "declared:  local, comfy-win, comfy-linux" in result.output
     assert result.calls == []
 
 
@@ -336,13 +336,38 @@ def test_switch_takes_a_description_just_like_go(cli):
 # reading a pid file is free. Asking Google costs a call per box, so it is asked
 # for rather than paid for on every list.
 
+def rows_of(output: str) -> dict[str, str]:
+    """The table, without the header or the footnote under it."""
+    return {line.split()[0]: line for line in output.splitlines()[1:]
+            if line.strip() and line.split()[0].islower() and " " in line}
+
+
 def test_the_state_column_shows_which_box_you_are_tunnelled_to(cli):
     result = cli("host", "list", open_tunnels=("comfy-linux",))
 
     assert result.exit_code == 0
-    rows = {line.split()[0]: line for line in result.output.splitlines()[1:]}
-    assert "tunnelled" in rows["comfy-linux"]
-    assert "tunnelled" not in rows["comfy-win"]
+    rows = rows_of(result.output)
+    # "not tunnelled" contains "tunnelled", so the box you are NOT on has to be
+    # checked for the whole phrase — the near-miss this assertion exists to catch.
+    assert rows["comfy-linux"].endswith("tunnelled")
+    assert not rows["comfy-linux"].endswith("not tunnelled")
+    assert rows["comfy-win"].endswith("not tunnelled")
+
+
+def test_a_cloud_box_with_no_tunnel_says_so_rather_than_a_bare_dash(cli):
+    """`-` was doing three jobs at once.
+
+    For a cloud box it meant "no tunnel"; for the local install it meant "the
+    idea does not apply"; and without --live it also stood in for "nobody asked
+    Google". A tester could not tell a running box from a stopped one, which is
+    the question the column exists to answer.
+    """
+    result = cli("host", "list")
+    rows = rows_of(result.output)
+
+    assert "not tunnelled" in rows["comfy-win"]
+    assert rows["local"].split()[-1] == "-", "a local install has no tunnel to have"
+    assert "--live to ask Google" in result.output, "name the question not asked"
 
 
 def test_listing_asks_google_nothing_by_default(cli):

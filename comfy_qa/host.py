@@ -99,6 +99,12 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
                     state, state.lower()))
             if tunnel_status(host.name).running:
                 parts.append("tunnelled")
+            elif not live:
+                # Without --live the instance state is unknown, not stopped, and
+                # a bare "-" said all three of "not running", "not known" and
+                # "does not apply" at once — so a running cloud box looked
+                # identical to one that is off. Say only what was actually read.
+                parts.append("not tunnelled")
         states[host.name] = ", ".join(parts) or "-"
     return states
 
@@ -124,6 +130,13 @@ def list_cmd(
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     for row in rows:
         typer.echo("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+
+    # Without --live the STATE column knows about tunnels and nothing else, so a
+    # cloud box that is running looks the same as one that is off. Say which
+    # question was not asked rather than letting the column imply an answer.
+    if any(host.is_remote for host in hosts) and not live:
+        typer.echo("\nSTATE is what this machine knows: whether a tunnel is open. "
+                   "Add --live to ask Google what is actually running.")
 
 
 @app.command("init")

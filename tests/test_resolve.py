@@ -141,7 +141,7 @@ def test_an_unknown_word_lists_the_names_the_systems_and_the_cards():
         resolve(hosts(), "nope")
     message = str(raised.value)
     assert "unknown host 'nope'" in message
-    assert "Declared: local, comfy-win, comfy-linux" in message
+    assert "declared:  local, comfy-win, comfy-linux" in message
     assert "windows" in message and "l4" in message
 
 
