@@ -536,11 +536,24 @@ def serve(
         # a URL that never answered.
         done.set()
 
-    def give_up(message: str) -> LifecycleError:
+    def give_up(message: str, *, egress: bool = False) -> LifecycleError:
         stand_down(host, tunnel_dir, say)
+        advice = how_to_get_in(host)
+        if egress and host.is_remote:
+            # Not guessable from the box: everything reaches it fine, so nobody
+            # thinks to check whether it can reach anything.
+            advice = (
+                "if pypi timed out, the box has no route out — IAP reaches it, "
+                "but an instance with no external address and no Cloud NAT "
+                "cannot reach the internet:\n        "
+                f"gcloud compute instances add-access-config {host.gce_instance} "
+                f"--zone={host.gce_zone} --project={host.gce_project}"
+                "\n        then run the same command again\n        "
+                + advice
+            )
         return LifecycleError(
             message,
-            fix=(how_to_get_in(host) + "\n        or stop paying for it:\n        "
+            fix=(advice + "\n        or stop paying for it:\n        "
                  + stop_paying(host)),
         )
 
@@ -562,12 +575,22 @@ def serve(
             say("that looks like a missing dependency rather than a broken "
                 "install — installing its requirements and trying once more")
             try:
-                gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                       repair_command(host), stream=True)
+                repaired = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                                  repair_command(host), stream=True)
             except GcloudError as exc:
                 raise give_up(
                     f"ComfyUI on {host.name} exited with {code}, and its "
                     f"requirements could not be installed either: {exc}") from exc
+            if repaired != 0:
+                # Relaunching after a failed repair prints the identical
+                # traceback a second time and teaches nothing. The usual cause
+                # is that the box has no way out: IAP gets you in, and an
+                # instance with no external address and no Cloud NAT cannot
+                # reach pypi at all.
+                raise give_up(
+                    f"ComfyUI on {host.name} is missing a dependency, and "
+                    f"installing its requirements failed (exit {repaired}). "
+                    f"Its log is above.", egress=True)
             return serve(
                 gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
                 sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,

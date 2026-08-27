@@ -373,11 +373,21 @@ installed once and the launch is retried once; a second failure is reported
 rather than looped on. A box with no route to the internet cannot do this — see
 below.
 
-**`ComfyUI on comfy-win-b exited with 1, and its requirements could not be installed either`**
-The repair itself failed. Most often the box has no outbound internet: a GCE
-instance with no external address and no Cloud NAT can be reached through IAP but
-cannot reach pypi. `gcloud compute instances add-access-config <name> --zone
-<zone>` gives it the same networking a normal instance has.
+**`ComfyUI on comfy-win-b is missing a dependency, and installing its requirements failed (exit 1)`**
+The repair itself failed, so the launch is not retried — a second identical
+traceback would teach nothing. Read pip's output above the error. If it timed out
+reaching pypi, the box has **no route out**: an instance with no external address
+and no Cloud NAT can be reached through IAP and cannot reach the internet, which
+is easy to miss because everything reaches *it* perfectly well. The fix line
+prints the command:
+
+```sh
+gcloud compute instances add-access-config <name> --zone <zone> --project <project>
+```
+
+A box created by `host move` copies the source instance's networking, so this
+only arises on a box built some other way — or one moved by a version of this
+tool older than 1.0.1.
 
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no

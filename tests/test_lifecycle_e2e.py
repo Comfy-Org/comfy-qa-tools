@@ -685,3 +685,24 @@ def test_the_repair_is_tried_once_and_not_in_a_loop(world):
     assert result.exit_code == 1
     assert result.output.count("installing its requirements") == 1
     assert world.gc.repairs == 1, "one repair, not a loop"
+
+
+def test_a_repair_that_fails_is_not_followed_by_the_same_traceback_again(world):
+    """Observed on a real box: pip could not reach pypi, and the tool relaunched
+    anyway and printed the identical ModuleNotFoundError a second time.
+
+    The second traceback teaches nothing. What the tester cannot guess is why pip
+    failed — everything reaches the box perfectly well, so nobody thinks to check
+    whether the box can reach anything.
+    """
+    world.cloud(statuses=["RUNNING"], installed=True,
+                launch_exit=[1, 0], repair_exit=1)
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert result.exit_code == 1
+    assert result.output.count("ModuleNotFoundError") == 0, "the fake prints none"
+    assert "installing its requirements failed" in result.output
+    assert "no route out" in result.output
+    assert "add-access-config" in result.output
+    assert world.gc.repairs == 1
