@@ -420,6 +420,79 @@ python -m pip install --force-reinstall --no-deps torch torchvision torchaudio -
 On **Linux** the PyPI wheel already carries CUDA, so no index is needed — which
 is the asymmetry that makes this easy to get wrong in either direction.
 
+**`something is already listening on comfy-win-b's ComfyUI port (python, pid 2380), so a second one cannot start`**
+Something on the box already holds port 8188. Usually it is a ComfyUI a previous
+run started and could not stop — a launch that dies after binding leaves the
+process behind. ComfyUI's own version of this message is "Port 8188 is already in
+use" plus a database lock error, neither of which names the process or says where
+it came from, which is why this is checked before launching rather than
+discovered afterwards.
+
+If it is a working ComfyUI, the tunnel already reaches it: open the URL. If it is
+not wanted, the fix line prints the command that stops it, and then the launch
+works.
+
+**`stopped the ComfyUI this run started on comfy-win-b (python, pid 2380)`**
+Not an error — the tidy-up after a failed launch. Only ever a process this run
+started, and only when it is still holding the port.
+
+**`could not stop the ComfyUI left on comfy-win-b (pid 2380) — it still holds the port`**
+The tidy-up failed, usually because the box became unreachable. The next launch
+will refuse with the message above and print the command to stop it by hand.
+
+**ComfyUI says `To see the GUI go to: http://127.0.0.1:8188` and nothing loads**
+That address is correct **on the box** and wrong on yours: 8188 on your machine is
+your own local ComfyUI, not the cloud one. Use the URL this tool printed —
+`http://127.0.0.1:<the host's port>`, 8191 in `host list`. It is now repeated just
+before the log starts, because ComfyUI's line is the last one you read.
+
+Related, and fixed: a remote ComfyUI used to be launched with `--listen 127.0.0.1`,
+which meant it served on the box's loopback only. An Identity-Aware Proxy tunnel
+arrives on the instance's network interface, never its loopback, so the box was
+serving and unreachable through the only route there is. Remote boxes now bind
+`0.0.0.0`, which is not an exposure — inbound traffic is whatever the GCE firewall
+allows, and the default rules do not include 8188.
+
+**`could not add the firewall rule (...) — if the browser cannot reach http://127.0.0.1:8191, this is why`**
+ComfyUI's port has to be allowed through two firewalls before a tunnel can reach
+it: the VPC firewall, and the operating system's own. Neither allows 8188 by
+default, so a brand-new box runs ComfyUI on its GPU and the browser says
+"refused" — with the instance up, the tunnel open and the process serving, so
+every layer looks healthy from where it stands.
+
+`host go` creates both rules on the first launch and recognises them by name
+afterwards. This message means the VPC rule could not be created — usually the
+account lacks `compute.firewalls.create`. Ask someone who has it for:
+
+```sh
+gcloud compute firewall-rules create comfy-qat-iap-comfyui --network=default \
+  --direction=INGRESS --action=allow --rules=tcp:8188 \
+  --source-ranges=35.235.240.0/20
+```
+
+That range is Google's Identity-Aware Proxy. It does **not** open ComfyUI to the
+internet: reaching the port still requires a tunnel authenticated as somebody
+with access to the project.
+
+**`opening ComfyUI's port to Google's tunnel range only (35.235.240.0/20)`**
+Not an error — the first launch on a project creating the rule above. It appears
+once.
+
+**`ComfyUI is not listening on the machine yet, so there is nothing to tunnel to — starting it first`**
+**`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`ComfyUI is not running on comfy-win-b yet.`**
+Not a broken tunnel — an ordering fact, and the one that made `host go` unable to
+work at all on a box that was not already serving.
+
+`gcloud compute start-iap-tunnel` tests the connection before it will serve, and
+refuses when the far port has no listener. So the tunnel cannot exist *before*
+ComfyUI is started, and `go` used to open it first: the tunnel refused, the run
+failed, and the launch it was about to do was the very thing that would have
+fixed it. Now the launch happens first and the tunnel is opened as soon as
+ComfyUI is listening, from the same watcher that waits for it to answer.
+
+You should not see this from `host go`. From `host open` it means exactly what it
+says: start ComfyUI on the machine first, or use `host go`, which does both.
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,

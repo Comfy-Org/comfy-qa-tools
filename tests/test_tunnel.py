@@ -211,3 +211,43 @@ def test_a_missing_gcloud_is_a_message_not_a_traceback(tmp_path, monkeypatch, re
 
 def test_closing_nothing_is_not_an_error(tmp_path):
     assert close_tunnel("comfy-win", tmp_path, killer=lambda pid, sig: None) is False
+
+
+def test_a_port_with_no_listener_is_named_as_that_and_not_as_a_broken_tunnel(tmp_path, real_spawn):
+    """The ordering defect that made `host go` impossible on a fresh box.
+
+    `gcloud compute start-iap-tunnel` tests the connection before it will serve
+    and refuses when the far port has no listener:
+
+        ERROR: (gcloud.compute.start-iap-tunnel) While checking if a connection
+        can be made: Error while connecting [4003: 'failed to connect to
+        backend']. (Failed to connect to port 8188)
+
+    `go` opened the tunnel *before* starting ComfyUI, so on any box that was not
+    already serving the tunnel refused — and the launch it was about to do was
+    the very thing that would have fixed it. Reported as a broken tunnel, that is
+    a dead end; reported as "nothing is listening yet", the caller can act.
+    """
+    from comfy_qa.tunnel import BACKEND_NOT_LISTENING
+
+    log = tmp_path / "comfy-win.log"
+    refusing = [sys.executable, "-c",
+                "import sys; sys.stderr.write(\"ERROR: While checking if a "
+                "connection can be made: Error while connecting [4003: 'failed "
+                "to connect to backend']. (Failed to connect to port 8188)\\n\"); "
+                "sys.exit(1)"]
+
+    with pytest.raises(TunnelError) as caught:
+        real_spawn(refusing, log, grace=5)
+
+    assert caught.value.kind == BACKEND_NOT_LISTENING
+    assert "nothing is listening" in str(caught.value)
+    assert not pid_file("comfy-win", tmp_path).exists(), "no corpse recorded"
+
+
+def test_the_grace_outlasts_gcloud_own_connection_test():
+    """1.5s was shorter than the test gcloud runs before serving, so a tunnel
+    that was about to refuse had its pid recorded as though it had opened."""
+    from comfy_qa.tunnel import SPAWN_GRACE
+
+    assert SPAWN_GRACE >= 5, "gcloud's own check takes seconds against Windows"

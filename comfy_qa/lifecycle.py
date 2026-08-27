@@ -22,6 +22,8 @@ from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .stamp import ProbeError, Stamp, fetch
 from .tunnel import (
+    BACKEND_NOT_LISTENING,
+    COMFYUI_PORT,
     TunnelError,
     close_tunnel,
     log_file,
@@ -328,6 +330,21 @@ def bring_up(
         try:
             open_tunnel(host, tunnel_dir, launcher=launcher)
         except TunnelError as exc:
+            if getattr(exc, "kind", "") == BACKEND_NOT_LISTENING:
+                # Not a failure to report — an order-of-operations fact. gcloud
+                # tests the connection before it will serve and refuses when the
+                # far port has no listener, so a tunnel cannot exist before
+                # ComfyUI is started. This used to be raised, which made `go`
+                # impossible on any box that was not already serving: it opened
+                # the tunnel first, the tunnel refused, and the launch it was
+                # about to do was the very thing that would have fixed it.
+                say("ComfyUI is not listening on the machine yet, so there is "
+                    "nothing to tunnel to — starting it first")
+                raise LifecycleError(
+                    f"ComfyUI is not running on {host.name} yet.",
+                    kind=COMFYUI_ABSENT,
+                    fix=f"comfy-qat host go {host.name}",
+                ) from exc
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",
                 kind=TUNNEL_DOWN,
@@ -337,11 +354,21 @@ def bring_up(
         say(f"tunnel open: {host.url}")
 
     stamp = None
+    cleared = False
     deadline = now() + comfy_timeout
     while True:
         stamp = probe_fn(host)
         if stamp is not None:
             break
+        # Silence here has three causes that look identical: nothing is running,
+        # the tunnel died, or a firewall two hops away is dropping it. The third
+        # is the one nobody guesses, so it is ruled out once — after a probe has
+        # failed, never before, because a box that already answers should not
+        # have its firewalls touched at all.
+        if not cleared:
+            cleared = True
+            _open_the_way(gc, host, say)
+            continue
         # A dead tunnel and an absent ComfyUI look identical from here — both are
         # silence on the port — and only one of them is fixed on the box.
         if not tunnel_status(host.name, tunnel_dir).running:
@@ -475,8 +502,129 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
 INTERRUPTED_EXIT = 130
 
 
+def _network_of(host: Host, rules: list[dict]) -> str:
+    """The network this project's rules are on. `default` unless told otherwise."""
+    for rule in rules:
+        network = (rule.get("network") or "").rsplit("/", 1)[-1]
+        if network:
+            return network
+    return "default"
+
+
+def _open_the_way(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
+    """Make sure the tunnel can actually reach ComfyUI, through both firewalls.
+
+    A tunnel that connects proves nothing. The port it forwards to sits behind
+    the VPC firewall and then behind the box's own, and neither allows 8188 by
+    default — so a brand-new machine runs ComfyUI on its GPU and the browser
+    says "refused". That cost an afternoon to trace, because every layer looked
+    healthy from where it stood: the instance was up, the tunnel was open, the
+    process was serving, and nothing joined those three facts together.
+
+    Expecting anyone to write a firewall rule by hand before their first launch
+    is not a setup step, it is a trap. Both rules are made once and recognised
+    by name afterwards, so this runs every launch and does nothing after the
+    first.
+
+    Neither opens anything to the internet. The VPC rule is scoped to Google's
+    IAP range, so reaching the port still requires a tunnel authenticated as
+    somebody with access to the project.
+    """
+    from .provision import FIREWALL_RULE, IAP_RANGE, firewall_command
+
+    if not host.is_remote:
+        return
+
+    project = host.gce_project or ""
+    try:
+        existing = gc.firewall_rules(project)
+    except GcloudError:
+        existing = None            # cannot tell; not a reason to stop
+
+    if existing is not None and not any(
+            rule.get("name") == FIREWALL_RULE for rule in existing):
+        say(f"opening ComfyUI's port to Google's tunnel range only ({IAP_RANGE})")
+        try:
+            gc.create_firewall_rule(
+                FIREWALL_RULE, project,
+                network=_network_of(host, existing),
+                rules=f"tcp:{COMFYUI_PORT}", source_ranges=IAP_RANGE,
+                description="comfy-qat: IAP TCP forwarding to ComfyUI. "
+                            "Not open to the internet.",
+            )
+        except GcloudError as exc:
+            # Someone may have created it a moment ago, or this account may not
+            # be allowed to. Say it, then let the launch have its chance.
+            say(f"could not add the firewall rule ({exc}) — if the browser "
+                f"cannot reach {host.url}, this is why")
+
+    # The second firewall, and the one nobody remembers: Windows blocks inbound
+    # TCP by default, so the VPC rule alone still leaves the port refused.
+    try:
+        gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                      firewall_command(host))
+    except GcloudError:
+        return
+
+
+def _port_holder(gc: Gcloud, host: Host) -> tuple[str, str] | None:
+    """Who, if anyone, already holds ComfyUI's port on the box.
+
+    Returns (pid, process name), or None when the port is free or the question
+    could not be asked — an unanswerable box is not a reason to refuse to launch.
+    """
+    from .provision import PORT_FREE, port_holder_command
+
+    try:
+        answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                               port_holder_command(host))
+    except GcloudError:
+        return None
+    # Whatever the box said, as text: this asks a question and the only wrong
+    # answer is one that stops a launch which would otherwise have worked.
+    answer = str(answer or "").strip()
+    if not answer or PORT_FREE in answer:
+        return None
+    # The command prints "<pid> <name>" or PORT_FREE, so anything else means the
+    # question was not answered — not that the port is held. Reading a stray
+    # number as a pid would refuse a launch that was going to work, which is a
+    # worse failure than the one this check exists to prevent.
+    parts = answer.split()
+    if len(parts) < 2 or not parts[0].isdigit():
+        return None
+    return parts[0], parts[1]
+
+
+def _stop_ours(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
+    """Stop the ComfyUI this run started, if it outlived the launch.
+
+    A launch that dies after binding the port leaves a process behind, and the
+    next launch fails with ComfyUI's own "Port 8188 is already in use" — which
+    names neither the process nor the tool that left it there. Watched that
+    happen three times on one box before anyone looked with `Get-NetTCPConnection`.
+
+    Best effort: the box may be unreachable by now, and a failure to tidy up is
+    not worth replacing the failure the caller is already reporting.
+    """
+    from .provision import stop_command
+
+    holder = _port_holder(gc, host)
+    if holder is None:
+        return
+    pid, name = holder
+    try:
+        gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+               stop_command(host, pid), stream=False)
+    except GcloudError:
+        say(f"could not stop the ComfyUI left on {host.name} (pid {pid}) — "
+            f"it still holds the port")
+        return
+    say(f"stopped the ComfyUI this run started on {host.name} ({name}, pid {pid})")
+
+
 def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
-             *, egress: bool = False) -> LifecycleError:
+             *, egress: bool = False,
+             stop_first: tuple[str, str] | None = None) -> LifecycleError:
     """Stop, close the tunnel, and say what to do — the one place that decides.
 
     Written once because it was written twice: the second copy grew the egress
@@ -485,6 +633,17 @@ def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
     """
     stand_down(host, tunnel_dir, say)
     advice = how_to_get_in(host)
+    if stop_first is not None and host.is_remote:
+        from .provision import stop_command
+
+        pid, _ = stop_first
+        advice = (
+            "if that is a ComfyUI you no longer want, stop it:\n        "
+            f"gcloud compute ssh {host.gce_instance} --zone={host.gce_zone} "
+            f"--project={host.gce_project} --tunnel-through-iap "
+            f"--command='{stop_command(host, pid)}'"
+            f"\n        then run the same command again\n        " + advice
+        )
     if egress and host.is_remote:
         # Not guessable from the box: everything reaches it fine, so nobody
         # thinks to check whether it can reach anything.
@@ -596,11 +755,28 @@ def serve(
 
     def watch() -> None:
         deadline = now() + timeout
+        announced = False
         while not done.is_set() and now() < deadline:
+            # The tunnel can only exist once ComfyUI is listening — gcloud tests
+            # the connection before it will serve — so it is opened here, while
+            # ComfyUI starts, rather than before the launch. That ordering is the
+            # difference between a box you can open in a browser and one that
+            # runs perfectly and is unreachable.
+            if host.is_remote and not tunnel_status(host.name, tunnel_dir).running:
+                try:
+                    open_tunnel(host, tunnel_dir)
+                except TunnelError:
+                    sleep(POLL_SECONDS)   # usually "not listening yet". Ask again.
+                    continue
+                if not announced:
+                    announced = True
+                    say(f"tunnel open: {host.url}")
+
             stamp = probe_fn(host)
             if stamp is not None:
                 answered.set()
                 say(f"ComfyUI answering: {stamp.line()}")
+                say(f"open {host.url}")
                 if open_browser is not None:
                     open_browser(host.url)
                 return
@@ -609,7 +785,31 @@ def serve(
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
 
+    def give_up(message: str, *, egress: bool = False,
+                stop_first: tuple[str, str] | None = None) -> LifecycleError:
+        return _give_up(host, tunnel_dir, say, message, egress=egress,
+                        stop_first=stop_first)
+
+    holder = _port_holder(gc, host)
+    if holder is not None:
+        pid, name = holder
+        # ComfyUI's own message for this is "Port 8188 is already in use" plus a
+        # database lock error, neither of which says what is holding it or that
+        # this tool is usually the one that left it there.
+        raise give_up(
+            f"something is already listening on {host.name}'s ComfyUI port "
+            f"({name}, pid {pid}), so a second one cannot start. If it is a "
+            f"ComfyUI, {host.url} already reaches it.",
+            stop_first=holder)
+
     say(f"starting ComfyUI on {host.name} — its log follows. Ctrl-C to stop it.")
+    if host.is_remote:
+        # ComfyUI will announce its own address a minute from now — "To see the
+        # GUI go to http://127.0.0.1:8188" — which is true on the box and wrong
+        # on this machine, where 8188 is the local install. It is the last line
+        # a tester reads, so say the right one alongside it.
+        say(f"when it says 127.0.0.1:{COMFYUI_PORT}, on this machine that is "
+            f"{host.url}")
     try:
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                       launch_command(host), stream=True)
@@ -617,9 +817,11 @@ def serve(
         # Otherwise the watcher outlives a failed launch and opens a browser onto
         # a URL that never answered.
         done.set()
-
-    def give_up(message: str, *, egress: bool = False) -> LifecycleError:
-        return _give_up(host, tunnel_dir, say, message, egress=egress)
+        # And otherwise the ComfyUI we started outlives us: a launch that dies
+        # after binding leaves a process holding port 8188 on the box, and every
+        # later launch fails with a port conflict that names neither the process
+        # nor the tool that left it. Only ever a process we started ourselves.
+        _stop_ours(gc, host, say)
 
     if code == NO_PYTHON_EXIT:
         raise give_up(

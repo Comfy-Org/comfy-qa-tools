@@ -42,6 +42,14 @@ def gcloud(statuses, **extra):
             if isinstance(extra.get("fail"), Exception):
                 raise extra["fail"]
             return ""
+        if key.startswith("compute firewall-rules list"):
+            # Already open, so nothing is created: a test about launching is not
+            # a test about firewalls, and the rule is asked for on every launch.
+            return [{"name": "comfy-qat-iap-comfyui", "network": ".../networks/default"}]
+        if key.startswith("compute firewall-rules create"):
+            return ""
+        if "NetFirewallRule" in key or "ufw" in key:
+            return "ALREADY"
         raise AssertionError(f"unexpected: {key}")
 
     gc = Gcloud(runner=runner)
@@ -629,3 +637,27 @@ def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_pa
     assert "names a cloud instance" in str(caught.value)
     assert "billing" in str(caught.value)
     assert "kind = 'gce'" in caught.value.fix
+
+
+def test_a_box_not_yet_serving_is_absent_comfyui_not_a_broken_tunnel(tmp_path):
+    """The classification that decides whether `go` can continue.
+
+    A tunnel that refuses because nothing is listening is the box saying "no
+    ComfyUI yet" — which is the one failure `go` is allowed to continue past,
+    because starting ComfyUI is exactly what it does next. Reported as a tunnel
+    failure it stops the run, and the run was one step from fixing it.
+    """
+    from comfy_qa.tunnel import BACKEND_NOT_LISTENING, TunnelError
+
+    def refuses(cmd, log, **kwargs):
+        raise TunnelError("nothing is listening on port 8188 of the machine yet",
+                          kind=BACKEND_NOT_LISTENING)
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, launcher=refuses, probe_fn=lambda host: None)
+
+    from comfy_qa.lifecycle import COMFYUI_ABSENT
+
+    assert caught.value.kind == COMFYUI_ABSENT, "go must be allowed to continue"

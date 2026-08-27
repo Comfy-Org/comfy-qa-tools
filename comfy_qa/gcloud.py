@@ -504,6 +504,20 @@ class Gcloud:
             args.append(f"--metadata={metadata}")
         self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
 
+    def firewall_rules(self, project: str) -> list[dict]:
+        return self.run(["compute", "firewall-rules", "list", f"--project={project}"]) or []
+
+    def create_firewall_rule(self, name: str, project: str, *, network: str,
+                             rules: str, source_ranges: str, description: str) -> None:
+        """Open one port to one source range. Never to the internet."""
+        self.run([
+            "compute", "firewall-rules", "create", name,
+            f"--project={project}", f"--network={network}",
+            "--direction=INGRESS", "--action=allow",
+            f"--rules={rules}", f"--source-ranges={source_ranges}",
+            f"--description={description}",
+        ], parse_json=False, timeout=120)
+
     def delete_snapshot(self, snapshot: str, project: str) -> None:
         self.run([
             "compute", "snapshots", "delete", snapshot,

@@ -71,7 +71,15 @@ TUNNEL_MARKER = "start-iap-tunnel"
 # failures that matter here are immediate — an expired credential, a port already
 # taken, no permission on the instance — and every one of them is over in under a
 # second. A healthy tunnel pays this once; it is establishing anyway.
-SPAWN_GRACE = 1.5
+# gcloud tests the connection before it will serve, and that test can take
+# several seconds against a Windows box. 1.5s was shorter than the test, so a
+# tunnel that was about to refuse got its pid recorded as if it had opened.
+SPAWN_GRACE = 8.0
+
+# gcloud will not open a tunnel to a port with no listener behind it. That is a
+# statement about the box, not a broken tunnel, and the caller can fix it by
+# starting ComfyUI and asking again.
+BACKEND_NOT_LISTENING = "backend-not-listening"
 
 # How long a claim on a host may be held before it is assumed abandoned — long
 # enough for gcloud to start, short enough that a killed command does not lock a
@@ -94,10 +102,14 @@ class TunnelError(Exception):
     imports this module, so the dependency only runs one way.
     """
 
-    def __init__(self, message: str, fix: str | None = None) -> None:
+    def __init__(self, message: str, fix: str | None = None,
+                 kind: str = "tunnel") -> None:
         super().__init__(message)
         self.fix = fix
-        self.kind = "tunnel"
+        # Most tunnel failures are the tunnel's fault and read the same. One is
+        # not: gcloud refusing because the far port has no listener is a fact
+        # about the box, and the caller can act on it.
+        self.kind = kind
 
 
 @dataclass
@@ -384,12 +396,30 @@ def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
         return process.pid  # still there, which is as much as can be known here
 
     said = last_words(log)
+    if _nothing_listening(said):
+        # Not a broken tunnel: gcloud tests the connection before it will serve,
+        # and refuses when the far port has no listener. So a tunnel cannot be
+        # opened to a box before ComfyUI is started on it — which is the order
+        # `go` used, making the whole flow impossible on a box that was not
+        # already serving. The caller starts ComfyUI and asks again.
+        raise TunnelError(
+            f"nothing is listening on port {COMFYUI_PORT} of the machine yet, so "
+            f"there is nothing to tunnel to.",
+            kind=BACKEND_NOT_LISTENING,
+            fix="start ComfyUI on the machine first, then open the tunnel.",
+        )
     raise TunnelError(
         f"the tunnel closed as soon as it was opened (gcloud exited "
         f"{process.returncode}). gcloud said:\n        {said or '(nothing in ' + str(log) + ')'}",
         fix=(f"read {log}. If it mentions credentials or reauthentication, your "
              f"session has expired:\n        gcloud auth login"),
     )
+
+
+def _nothing_listening(said: str) -> bool:
+    """Did gcloud refuse because the far end has no listener on that port?"""
+    lowered = (said or "").lower()
+    return "failed to connect to backend" in lowered or "4003" in lowered
 
 
 def _destination(host: Host) -> dict:
