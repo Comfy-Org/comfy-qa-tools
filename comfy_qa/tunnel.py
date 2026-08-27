@@ -365,7 +365,7 @@ def command(host: Host) -> list[str]:
         f"--project={host.gce_project}",
         "--tunnel-through-iap",
         "--", "-N",
-        f"-L", f"127.0.0.1:{host.port}:127.0.0.1:{COMFYUI_PORT}",
+        "-L", f"127.0.0.1:{host.port}:127.0.0.1:{COMFYUI_PORT}",
     ]
 
 
