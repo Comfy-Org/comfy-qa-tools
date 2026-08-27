@@ -24,6 +24,8 @@ success is claimed. Exit codes are the only thing the caller can trust.
 
 from __future__ import annotations
 
+import re
+
 from .config import Host
 from .tunnel import COMFYUI_PORT
 
@@ -70,17 +72,80 @@ def check_command(host: Host) -> str:
 
 
 # PyPI's Windows torch wheel is CPU-only; the CUDA build lives on PyTorch's own
-# index. On Linux the PyPI wheel already carries CUDA, so no index is needed.
+# index, and which index depends on the driver the box is running.
+#
+# This was pinned to cu128, which is how a real L4 ended up being told by ComfyUI
+# that it "needs pytorch with cu130 or higher to use optimized CUDA operations".
+# The install worked and the fast path stayed off — on a machine whose whole job
+# is measuring how fast things are. A pinned CUDA version is a number that is
+# wrong the moment the images move, so it is asked for instead.
+#
+# Newest first. A driver runs anything built for its own CUDA or older, so the
+# first entry a driver can support is the best one.
+TORCH_INDEXES = (
+    (130, "https://download.pytorch.org/whl/cu130"),
+    (128, "https://download.pytorch.org/whl/cu128"),
+    (126, "https://download.pytorch.org/whl/cu126"),
+    (124, "https://download.pytorch.org/whl/cu124"),
+    (121, "https://download.pytorch.org/whl/cu121"),
+    (118, "https://download.pytorch.org/whl/cu118"),
+)
+
+# When the box cannot be asked. Deliberately not the newest: an index the driver
+# is too old for fails the install outright, where an older one merely leaves
+# performance on the table.
 TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
 
+_CUDA_VERSION = re.compile(r"CUDA Version:\s*(\d+)\.(\d+)")
 
-def torch_install(python: str, host: Host) -> str:
+
+def cuda_command(host: Host) -> str:
+    """Ask the box which CUDA its driver supports.
+
+    `nvidia-smi` prints it in the header of its default output — there is no
+    query field for it, which is why this reads a line rather than asking for a
+    column.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NonInteractive -Command \""
+            "$smi = (& nvidia-smi 2>$null | Out-String); "
+            f"if (-not $smi) {{ Write-Output '{NO_NVIDIA}'; exit 0 }}; "
+            "$m = [regex]::Match($smi, 'CUDA Version:\\s*\\d+\\.\\d+'); "
+            f"if ($m.Success) {{ Write-Output $m.Value }} else {{ Write-Output '{NO_NVIDIA}' }}\""
+        )
+    return (
+        f"nvidia-smi 2>/dev/null | grep -o 'CUDA Version:[ ]*[0-9]*\\.[0-9]*' "
+        f"|| echo {NO_NVIDIA}"
+    )
+
+
+def torch_index_for(reported: str | None) -> str:
+    """The PyTorch index a box with this driver should install from.
+
+    Anything unreadable falls back to the documented default rather than
+    guessing high: an index the driver cannot run fails the install, where an
+    older one only costs speed.
+    """
+    match = _CUDA_VERSION.search(reported or "")
+    if not match:
+        return TORCH_INDEX
+    supported = int(match.group(1)) * 10 + int(match.group(2))
+    for version, index in TORCH_INDEXES:
+        if version <= supported:
+            return index
+    return TORCH_INDEX
+
+
+def torch_install(python: str, host: Host, index: str | None = None) -> str:
     """Install torch so that it can see the card the box was rented for."""
     if is_windows(host):
         return (f"{python} -m pip install torch torchvision torchaudio "
-                f"--index-url {TORCH_INDEX}")
+                f"--index-url {index or TORCH_INDEX}")
     return f"{python} -m pip install torch torchvision torchaudio"
 
+
+NO_NVIDIA = "NO_NVIDIA"
 
 # What `verify_command` can print. Anything else means the check itself failed,
 # which is not the same as the box being broken.
@@ -195,7 +260,8 @@ def stop_command(host: Host, pid: str) -> str:
     return f"kill {pid} 2>/dev/null || true"
 
 
-def repair_command(host: Host, *, force_torch: bool = False) -> str:
+def repair_command(host: Host, *, force_torch: bool = False,
+                   index: str | None = None) -> str:
     """Install the requirements of an existing checkout, without touching it.
 
     An install is not the same thing as a working install. `check_command` asks
@@ -219,6 +285,7 @@ def repair_command(host: Host, *, force_torch: bool = False) -> str:
     PyTorch's index does not carry all of them.
     """
     force = "--force-reinstall --no-deps " if force_torch else ""
+    index = index or TORCH_INDEX
     if is_windows(host):
         python = (
             "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
@@ -232,7 +299,7 @@ def repair_command(host: Host, *, force_torch: bool = False) -> str:
             + python
             + "Write-Output 'installing torch for this GPU (the slow part)'; "
             f"& $py -m pip install {force}torch torchvision torchaudio "
-            f"--index-url {TORCH_INDEX}; "
+            f"--index-url {index}; "
             "Write-Output 'installing the rest of the requirements'; "
             "& $py -m pip install -r requirements.txt\""
         )
@@ -244,8 +311,14 @@ def repair_command(host: Host, *, force_torch: bool = False) -> str:
     )
 
 
-def install_command(host: Host) -> str:
-    """Set ComfyUI up from nothing, printing progress as it goes."""
+def install_command(host: Host, index: str | None = None) -> str:
+    """Set ComfyUI up from nothing, printing progress as it goes.
+
+    `index` is the PyTorch index this box's driver supports; the caller asks the
+    box with `cuda_command` and passes the answer. Without one the documented
+    fallback is used, which installs and runs — just not always as fast as the
+    card could.
+    """
     if is_windows(host):
         # winget is present on Server 2022 images; git and python come from there.
         return (
@@ -267,7 +340,7 @@ def install_command(host: Host) -> str:
             "Write-Output 'installing torch (this is the slow part)'; "
             ".\\venv\\Scripts\\python.exe -m pip install --upgrade pip; "
             ".\\venv\\Scripts\\python.exe -m pip install torch torchvision torchaudio "
-            "--index-url https://download.pytorch.org/whl/cu128; "
+            f"--index-url {index or TORCH_INDEX}; "
             ".\\venv\\Scripts\\python.exe -m pip install -r requirements.txt; "
             f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
             "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; "

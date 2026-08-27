@@ -401,6 +401,15 @@ The install of the CUDA build failed. Read pip's output above. If it timed out
 reaching pypi, the box has no route out — see the entry below on
 `add-access-config`.
 
+**`installing torch from cu130, which is what this box's driver supports`**
+Not an error. The PyTorch index is chosen from the CUDA version the box's driver
+reports, rather than pinned. It used to be fixed at cu128, and a real L4 answered
+`You need pytorch with cu130 or higher to use optimized CUDA operations` — the
+install worked, the fast path stayed off, and nothing said so. On a machine whose
+job is measuring how fast things are, that is a wrong answer rather than a slow
+one. If the box cannot be asked, cu128 is used: an index the driver cannot run
+fails the install outright, where an older one only costs speed.
+
 **`AssertionError: Torch not compiled with CUDA enabled`** in the ComfyUI log
 Torch is installed and cannot see the card. On **Windows** this is almost always
 where it came from: PyPI's Windows torch wheel is CPU-only, and the CUDA build
@@ -637,10 +646,17 @@ each one's OS and card, so you can see which half was wrong. If the box exists i
 Google Cloud but not in your host list, `comfy-qat host discover` adds it — nothing
 needs typing, Google already knows its zone, card and OS.
 
-**`'windows' matches 2 hosts: comfy-win (Windows Server 2022, L4), comfy-win-2 (Windows Server 2022, A100-80GB). Say which one: add the other half, e.g. `windows/l4`, or use the host's name.`**
-Two machines fit. Add the other half of the description — the card, here — or name
-the host outright. Nothing was started, stopped or contacted; this is decided
-offline, before any cloud call.
+**`'windows' matches 2 hosts: ... Say which one: add the other half, e.g. `windows/l4`, or use the host's name.`**
+Two machines fit and the other axis separates them. Add the card, or name the
+host outright. Nothing was started, stopped or contacted; this is decided offline,
+before any cloud call.
+
+**`'windows/l4' matches 2 hosts: ... They are the same operating system and the same card, so only the name tells them apart: comfy-win, comfy-win-b.`**
+Two machines fit and **no description can separate them** — same OS, same card.
+The earlier version of this said "add the other half, e.g. `windows/l4`" to
+someone who had just typed `windows/l4`, which is advice to retype the failing
+command. When there is no half left to add, the names are the answer, so it lists
+them.
 
 **`'windows-l4' is two descriptions run together. The separator is '/': windows/l4`**
 A hyphen reads as part of a name, and host names contain hyphens, so the two

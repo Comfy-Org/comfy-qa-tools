@@ -453,7 +453,9 @@ def wait_for_ssh(
 def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                      *, tunnel_dir: Path | None = None) -> None:
     """Make sure ComfyUI exists on the box, installing it if it does not."""
-    from .provision import check_command, install_command, root_for
+    from .provision import (
+        check_command, cuda_command, install_command, root_for, torch_index_for,
+    )
 
     def give_up(message: str, *, egress: bool = False) -> LifecycleError:
         return _give_up(host, tunnel_dir, say, message, egress=egress)
@@ -474,8 +476,14 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     say("ComfyUI is not there — installing it. This takes a while; torch is the "
         "slow part.")
     try:
+        try:
+            reported = gc.ssh_output(host.gce_instance, host.gce_zone,
+                                     host.gce_project, cuda_command(host))
+        except GcloudError:
+            reported = None
         installed = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                           install_command(host), stream=True)
+                           install_command(host, torch_index_for(str(reported or ""))),
+                           stream=True)
     except GcloudError as exc:
         raise give_up(
             f"the ComfyUI install on {host.name} did not finish: {exc}") from exc
@@ -607,8 +615,8 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     alternative is a tester watching a 122 MB download fail at launch instead.
     """
     from .provision import (
-        NO_COMFYUI, NO_TORCH, READY, TORCH_NO_CUDA, repair_command, root_for,
-        verify_command,
+        NO_COMFYUI, NO_TORCH, READY, TORCH_NO_CUDA, cuda_command, repair_command,
+        root_for, torch_index_for, verify_command,
     )
 
     try:
@@ -638,9 +646,23 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     else:
         return
 
+    # Which CUDA the box's driver supports decides which torch to fetch. Pinning
+    # that number is how an L4 was told it "needs pytorch with cu130 or higher to
+    # use optimized CUDA operations" — installed, working, and quietly slower
+    # than the hardware allows.
+    try:
+        reported = gc.ssh_output(host.gce_instance, host.gce_zone,
+                                 host.gce_project, cuda_command(host))
+    except GcloudError:
+        reported = None
+    index = torch_index_for(str(reported or ""))
+    say(f"  installing torch from {index.rsplit('/', 1)[-1]}, "
+        f"which is what this box's driver supports")
+
     try:
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                      repair_command(host, force_torch=TORCH_NO_CUDA in state),
+                      repair_command(host, force_torch=TORCH_NO_CUDA in state,
+                                     index=index),
                       stream=True)
     except GcloudError as exc:
         raise give_up(f"could not install torch on {host.name}: {exc}", egress=True) from exc
