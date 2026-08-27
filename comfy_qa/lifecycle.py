@@ -22,6 +22,7 @@ from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .stamp import ProbeError, Stamp, fetch
 from .tunnel import (
+    BACKEND_NOT_LISTENING,
     COMFYUI_PORT,
     TunnelError,
     close_tunnel,
@@ -329,6 +330,21 @@ def bring_up(
         try:
             open_tunnel(host, tunnel_dir, launcher=launcher)
         except TunnelError as exc:
+            if getattr(exc, "kind", "") == BACKEND_NOT_LISTENING:
+                # Not a failure to report — an order-of-operations fact. gcloud
+                # tests the connection before it will serve and refuses when the
+                # far port has no listener, so a tunnel cannot exist before
+                # ComfyUI is started. This used to be raised, which made `go`
+                # impossible on any box that was not already serving: it opened
+                # the tunnel first, the tunnel refused, and the launch it was
+                # about to do was the very thing that would have fixed it.
+                say("ComfyUI is not listening on the machine yet, so there is "
+                    "nothing to tunnel to — starting it first")
+                raise LifecycleError(
+                    f"ComfyUI is not running on {host.name} yet.",
+                    kind=COMFYUI_ABSENT,
+                    fix=f"comfy-qat host go {host.name}",
+                ) from exc
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",
                 kind=TUNNEL_DOWN,
@@ -739,11 +755,28 @@ def serve(
 
     def watch() -> None:
         deadline = now() + timeout
+        announced = False
         while not done.is_set() and now() < deadline:
+            # The tunnel can only exist once ComfyUI is listening — gcloud tests
+            # the connection before it will serve — so it is opened here, while
+            # ComfyUI starts, rather than before the launch. That ordering is the
+            # difference between a box you can open in a browser and one that
+            # runs perfectly and is unreachable.
+            if host.is_remote and not tunnel_status(host.name, tunnel_dir).running:
+                try:
+                    open_tunnel(host, tunnel_dir)
+                except TunnelError:
+                    sleep(POLL_SECONDS)   # usually "not listening yet". Ask again.
+                    continue
+                if not announced:
+                    announced = True
+                    say(f"tunnel open: {host.url}")
+
             stamp = probe_fn(host)
             if stamp is not None:
                 answered.set()
                 say(f"ComfyUI answering: {stamp.line()}")
+                say(f"open {host.url}")
                 if open_browser is not None:
                     open_browser(host.url)
                 return

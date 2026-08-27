@@ -478,6 +478,21 @@ with access to the project.
 Not an error — the first launch on a project creating the rule above. It appears
 once.
 
+**`ComfyUI is not listening on the machine yet, so there is nothing to tunnel to — starting it first`**
+**`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`ComfyUI is not running on comfy-win-b yet.`**
+Not a broken tunnel — an ordering fact, and the one that made `host go` unable to
+work at all on a box that was not already serving.
+
+`gcloud compute start-iap-tunnel` tests the connection before it will serve, and
+refuses when the far port has no listener. So the tunnel cannot exist *before*
+ComfyUI is started, and `go` used to open it first: the tunnel refused, the run
+failed, and the launch it was about to do was the very thing that would have
+fixed it. Now the launch happens first and the tunnel is opened as soon as
+ComfyUI is listening, from the same watcher that waits for it to answer.
+
+You should not see this from `host go`. From `host open` it means exactly what it
+says: start ComfyUI on the machine first, or use `host go`, which does both.
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,
