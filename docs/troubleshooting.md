@@ -453,6 +453,31 @@ serving and unreachable through the only route there is. Remote boxes now bind
 `0.0.0.0`, which is not an exposure — inbound traffic is whatever the GCE firewall
 allows, and the default rules do not include 8188.
 
+**`could not add the firewall rule (...) — if the browser cannot reach http://127.0.0.1:8191, this is why`**
+ComfyUI's port has to be allowed through two firewalls before a tunnel can reach
+it: the VPC firewall, and the operating system's own. Neither allows 8188 by
+default, so a brand-new box runs ComfyUI on its GPU and the browser says
+"refused" — with the instance up, the tunnel open and the process serving, so
+every layer looks healthy from where it stands.
+
+`host go` creates both rules on the first launch and recognises them by name
+afterwards. This message means the VPC rule could not be created — usually the
+account lacks `compute.firewalls.create`. Ask someone who has it for:
+
+```sh
+gcloud compute firewall-rules create comfy-qat-iap-comfyui --network=default \
+  --direction=INGRESS --action=allow --rules=tcp:8188 \
+  --source-ranges=35.235.240.0/20
+```
+
+That range is Google's Identity-Aware Proxy. It does **not** open ComfyUI to the
+internet: reaching the port still requires a tunnel authenticated as somebody
+with access to the project.
+
+**`opening ComfyUI's port to Google's tunnel range only (35.235.240.0/20)`**
+Not an error — the first launch on a project creating the rule above. It appears
+once.
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,

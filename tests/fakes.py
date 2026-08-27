@@ -70,6 +70,10 @@ class FakeGcloud:
         # READY is the happy path; TORCH_NO_CUDA is a real L4 box that pip had
         # quietly given a CPU-only torch.
         verify: str = "READY",
+        # Already open by default: a test about launching is not a test about
+        # firewalls, and the rule is asked for on every launch.
+        firewall=({"name": "comfy-qat-iap-comfyui",
+                   "network": ".../networks/default"},),
         on_launch=None,
         describe=None,
         snapshot=None,
@@ -98,6 +102,8 @@ class FakeGcloud:
         self.repairs = 0
         self.repair_exit = repair_exit
         self.verify = verify
+        self.firewall = [dict(rule) for rule in firewall]
+        self.created_firewall = None
         self.on_launch = on_launch
         self.describe = describe or {}
         self.snapshot = snapshot
@@ -144,6 +150,8 @@ class FakeGcloud:
             return "INSTALLED" if self.installed else "MISSING"
         if "TORCH_NO_CUDA" in remote:  # the verify script
             return self.verify
+        if "NetFirewallRule" in remote or "ufw" in remote:
+            return "ALREADY"
         return ""
 
     def ssh(self, instance: str, zone: str, project: str, remote: str,
@@ -163,6 +171,15 @@ class FakeGcloud:
         if isinstance(self.launch_exit, list):
             return self.launch_exit.pop(0) if self.launch_exit else 0
         return _resolve(self.launch_exit)
+
+    def firewall_rules(self, project: str) -> list[dict]:
+        self.calls.append(("firewall_rules", project))
+        return list(self.firewall)
+
+    def create_firewall_rule(self, name: str, project: str, **kwargs) -> None:
+        self.calls.append(("create_firewall_rule", name, project))
+        self.firewall.append({"name": name, "network": ".../networks/default"})
+        self.created_firewall = kwargs
 
     def list_instances(self, project: str) -> list[dict]:
         self.calls.append(("list_instances", project))

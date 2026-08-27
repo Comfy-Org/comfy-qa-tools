@@ -123,6 +123,14 @@ def gcloud(statuses: dict[str, object], fail: Exception | None = None):
             return ""
         if key.startswith("compute instances stop"):
             return ""
+        if key.startswith("compute firewall-rules list"):
+            # Already open, so nothing is created: a test about launching is not
+            # a test about firewalls, and the rule is asked for on every launch.
+            return [{"name": "comfy-qat-iap-comfyui", "network": ".../networks/default"}]
+        if key.startswith("compute firewall-rules create"):
+            return ""
+        if "NetFirewallRule" in key or "ufw" in key:
+            return "ALREADY"
         raise AssertionError(f"unexpected: {key}")
 
     gc = gcloud_module.Gcloud(runner=runner)

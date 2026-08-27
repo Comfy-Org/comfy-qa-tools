@@ -338,11 +338,21 @@ def bring_up(
         say(f"tunnel open: {host.url}")
 
     stamp = None
+    cleared = False
     deadline = now() + comfy_timeout
     while True:
         stamp = probe_fn(host)
         if stamp is not None:
             break
+        # Silence here has three causes that look identical: nothing is running,
+        # the tunnel died, or a firewall two hops away is dropping it. The third
+        # is the one nobody guesses, so it is ruled out once — after a probe has
+        # failed, never before, because a box that already answers should not
+        # have its firewalls touched at all.
+        if not cleared:
+            cleared = True
+            _open_the_way(gc, host, say)
+            continue
         # A dead tunnel and an absent ComfyUI look identical from here — both are
         # silence on the port — and only one of them is fixed on the box.
         if not tunnel_status(host.name, tunnel_dir).running:
@@ -474,6 +484,71 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
 
 # 130 is a program stopped with Ctrl-C. That is a person finishing, not a fault.
 INTERRUPTED_EXIT = 130
+
+
+def _network_of(host: Host, rules: list[dict]) -> str:
+    """The network this project's rules are on. `default` unless told otherwise."""
+    for rule in rules:
+        network = (rule.get("network") or "").rsplit("/", 1)[-1]
+        if network:
+            return network
+    return "default"
+
+
+def _open_the_way(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
+    """Make sure the tunnel can actually reach ComfyUI, through both firewalls.
+
+    A tunnel that connects proves nothing. The port it forwards to sits behind
+    the VPC firewall and then behind the box's own, and neither allows 8188 by
+    default — so a brand-new machine runs ComfyUI on its GPU and the browser
+    says "refused". That cost an afternoon to trace, because every layer looked
+    healthy from where it stood: the instance was up, the tunnel was open, the
+    process was serving, and nothing joined those three facts together.
+
+    Expecting anyone to write a firewall rule by hand before their first launch
+    is not a setup step, it is a trap. Both rules are made once and recognised
+    by name afterwards, so this runs every launch and does nothing after the
+    first.
+
+    Neither opens anything to the internet. The VPC rule is scoped to Google's
+    IAP range, so reaching the port still requires a tunnel authenticated as
+    somebody with access to the project.
+    """
+    from .provision import FIREWALL_RULE, IAP_RANGE, firewall_command
+
+    if not host.is_remote:
+        return
+
+    project = host.gce_project or ""
+    try:
+        existing = gc.firewall_rules(project)
+    except GcloudError:
+        existing = None            # cannot tell; not a reason to stop
+
+    if existing is not None and not any(
+            rule.get("name") == FIREWALL_RULE for rule in existing):
+        say(f"opening ComfyUI's port to Google's tunnel range only ({IAP_RANGE})")
+        try:
+            gc.create_firewall_rule(
+                FIREWALL_RULE, project,
+                network=_network_of(host, existing),
+                rules=f"tcp:{COMFYUI_PORT}", source_ranges=IAP_RANGE,
+                description="comfy-qat: IAP TCP forwarding to ComfyUI. "
+                            "Not open to the internet.",
+            )
+        except GcloudError as exc:
+            # Someone may have created it a moment ago, or this account may not
+            # be allowed to. Say it, then let the launch have its chance.
+            say(f"could not add the firewall rule ({exc}) — if the browser "
+                f"cannot reach {host.url}, this is why")
+
+    # The second firewall, and the one nobody remembers: Windows blocks inbound
+    # TCP by default, so the VPC rule alone still leaves the port refused.
+    try:
+        gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                      firewall_command(host))
+    except GcloudError:
+        return
 
 
 def _port_holder(gc: Gcloud, host: Host) -> tuple[str, str] | None:

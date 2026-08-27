@@ -370,7 +370,10 @@ def test_go_when_the_credential_dies_mid_flow_stops_immediately(world):
     assert "not signed in" in result.output
     assert "gcloud auth login" in result.output
     assert "Reauthentication failed" in result.output, "gcloud's own words survive"
-    assert world.gc.count("ssh_output") == 1, "an expired credential is not waited out"
+    # One retry, not a five-minute wait. The firewall check also asks the box a
+    # question before the probe gives up, so count the SSH that matters: the one
+    # that tried and found the credential dead.
+    assert world.gc.count("ssh_output") <= 2, "an expired credential is not waited out"
     assert not world.pid_file().exists(), "the tunnel is closed on the way out"
     nothing_left_running(world, result)
 
@@ -788,3 +791,36 @@ def test_the_url_that_is_right_for_this_machine_is_said_before_the_log(world):
 
     assert "on this machine that is" in result.output
     assert world.url in result.output
+
+
+def test_a_first_launch_opens_the_port_through_both_firewalls(world):
+    """The defect this exists for: a box serving ComfyUI on its GPU, a tunnel
+    open, and a browser saying "refused" — because 8188 is allowed through
+    neither the VPC firewall nor the box's own, and nothing joins those facts up.
+
+    Expecting a tester to write a firewall rule before their first launch is not
+    a setup step, it is a trap.
+    """
+    # Not answering — which is what a first launch looks like, and the state in
+    # which the firewalls are the likeliest cause.
+    world.cloud(statuses=["RUNNING"], installed=True, firewall=())
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert world.gc.did("create_firewall_rule"), "the VPC rule"
+    assert world.gc.created_firewall["source_ranges"] == "35.235.240.0/20", (
+        "scoped to Google's tunnel range — never the internet"
+    )
+    assert "NetFirewallRule" in world.gc.remote_commands_joined(), "the box's own"
+    assert "tunnel range only" in result.output
+
+
+def test_a_box_that_already_answers_has_its_firewalls_left_alone(world):
+    """Cheap and correct: if ComfyUI is answering, nothing needs opening."""
+    world.comfy.mode = "serving"
+    world.cloud(statuses=["RUNNING"], installed=True, firewall=())
+
+    run(world, "host", "go", BOX, "--no-browser")
+
+    assert not world.gc.did("create_firewall_rule")
+    assert not world.gc.did("firewall_rules"), "not even asked"

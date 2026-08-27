@@ -38,6 +38,14 @@ PYTHON_SERIES = "3.12"
 # What ComfyUI listens on, on the box. The tunnel's far end is always this.
 COMFYUI_PORT = 8188
 
+# Google's Identity-Aware Proxy forwards from this range and only this range.
+# A rule scoped to it is not an opening to the internet: reaching the port still
+# requires a tunnel authenticated as someone with access to the project.
+IAP_RANGE = "35.235.240.0/20"
+
+# One name, so the rule is recognised on the next run rather than duplicated.
+FIREWALL_RULE = "comfy-qat-iap-comfyui"
+
 # The launch script's own word for "nothing here can run ComfyUI". Reserved, so
 # the caller can recognise it rather than reporting a generic non-zero exit.
 NO_PYTHON_EXIT = 3
@@ -127,6 +135,33 @@ def verify_command(host: Host) -> str:
 
 # What `port_holder_command` prints when nothing is listening on ComfyUI's port.
 PORT_FREE = "PORT_FREE"
+
+
+def firewall_command(host: Host) -> str:
+    """Let ComfyUI's port through the operating system's own firewall.
+
+    The second of two firewalls, and the one nobody remembers: Windows Server
+    blocks inbound TCP by default, so a ComfyUI bound to 0.0.0.0 with a VPC rule
+    in front of it still refuses the connection. Idempotent — the rule is created
+    only if it is not already there, so this runs on every launch and does
+    nothing on all but the first.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NonInteractive -Command \""
+            f"if (-not (Get-NetFirewallRule -DisplayName '{FIREWALL_RULE}' "
+            "-ErrorAction SilentlyContinue)) { "
+            f"New-NetFirewallRule -DisplayName '{FIREWALL_RULE}' -Direction Inbound "
+            f"-Protocol TCP -LocalPort {COMFYUI_PORT} -Action Allow | Out-Null; "
+            "Write-Output 'OPENED' } else { Write-Output 'ALREADY' }\""
+        )
+    # Linux images here run no firewall by default; if ufw is present and active
+    # it is the one thing in the way, and if it is not this is a no-op.
+    return (
+        "if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q active; "
+        f"then sudo ufw allow {COMFYUI_PORT}/tcp >/dev/null 2>&1 && echo OPENED; "
+        "else echo ALREADY; fi"
+    )
 
 
 def port_holder_command(host: Host) -> str:
