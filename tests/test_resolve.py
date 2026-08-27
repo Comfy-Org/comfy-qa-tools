@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from comfy_qa.config import ConfigError, find, parse, resolve
+from comfy_qa.config import ConfigError, Host, find, parse, resolve
 
 WIN = {
     "kind": "gce", "os": "Windows Server 2022", "gpu": "L4",
@@ -149,3 +149,37 @@ def test_find_still_hands_back_just_the_machine():
     """Everything that took a name keeps working, unchanged."""
     assert find(hosts(), "comfy-win").port == 8190
     assert find(hosts(), "windows").port == 8190
+
+
+def test_two_identical_boxes_are_told_apart_by_name_not_by_advice():
+    """From a live host list with two Windows L4 boxes.
+
+    `host stamp windows/l4` answered "add the other half, e.g. `windows/l4`" —
+    advice to retype the command that had just failed. Adding a half cannot
+    separate two machines that are the same on both axes, so the names are the
+    only answer there is.
+    """
+    hosts = [
+        Host(name="comfy-win", kind="gce", os="Windows Server 2022", gpu="L4", port=8190),
+        Host(name="comfy-win-b", kind="gce", os="Windows Server 2022", gpu="L4", port=8191),
+    ]
+
+    for selector in ("windows", "l4", "windows/l4"):
+        with pytest.raises(ConfigError) as caught:
+            resolve(hosts, selector)
+        message = str(caught.value)
+        assert "same operating system and the same card" in message, selector
+        assert "comfy-win, comfy-win-b" in message, "name them"
+        assert "add the other half" not in message, "there is no other half"
+
+
+def test_the_narrowing_advice_survives_where_it_actually_helps():
+    """Two Windows boxes with different cards: `windows/l4` does separate them."""
+    hosts = [
+        Host(name="win-l4", kind="gce", os="Windows Server 2022", gpu="L4", port=8190),
+        Host(name="win-a100", kind="gce", os="Windows Server 2022", gpu="A100", port=8191),
+    ]
+
+    with pytest.raises(ConfigError, match="add the other half"):
+        resolve(hosts, "windows")
+    assert resolve(hosts, "windows/l4").host.name == "win-l4"

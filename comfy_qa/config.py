@@ -394,10 +394,27 @@ def resolve(hosts: list[Host], name: str) -> Resolution:
                 "`comfy-qat host discover` to add it to your host list."
             )
         listed = ", ".join(f"{h.name} ({describe(h)})" for h in candidates)
+        # "Add the other half" is only advice when there is another half to add.
+        # Told `windows/l4` against two Windows L4 boxes, the old message said
+        # "add the other half, e.g. `windows/l4`" — telling a tester to type the
+        # thing they had just typed. When both axes are already given, or when
+        # adding one would not separate these machines anyway, the only answer
+        # left is the name.
+        narrower = _selector_for(candidates[0])
+        can_narrow = (
+            len(parts) < 2
+            and narrower != selector
+            and len({_selector_for(host) for host in candidates}) > 1
+        )
+        if can_narrow:
+            raise ConfigError(
+                f"{selector!r} matches {len(candidates)} hosts: {listed}. Say which "
+                f"one: add the other half, e.g. `{narrower}`, or use the host's name."
+            )
         raise ConfigError(
-            f"{selector!r} matches {len(candidates)} hosts: {listed}. Say which one: "
-            f"add the other half, e.g. `{_selector_for(candidates[0])}`, or use the "
-            "host's name."
+            f"{selector!r} matches {len(candidates)} hosts: {listed}. They are the "
+            f"same operating system and the same card, so only the name tells them "
+            f"apart: {', '.join(host.name for host in candidates)}."
         )
 
     run_together = [part for part in _WRONG_SEPARATORS.split(lowered) if part]

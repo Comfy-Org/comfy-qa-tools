@@ -234,3 +234,35 @@ def test_a_plain_repair_does_not_force_anything():
 
     host = Host(name="w", kind="gce", os="Windows Server 2022", gpu="L4", port=8190)
     assert "--force-reinstall" not in repair_command(host)
+
+
+@pytest.mark.parametrize("reported,expected", [
+    ("CUDA Version: 13.0", "cu130"),
+    ("CUDA Version: 12.8", "cu128"),
+    ("CUDA Version: 12.4", "cu124"),
+    ("CUDA Version: 11.8", "cu118"),
+    ("NO_NVIDIA", "cu128"),
+    ("", "cu128"),
+    (None, "cu128"),
+])
+def test_the_torch_index_follows_the_driver_on_the_box(reported, expected):
+    """The pinned index was a number that went stale on a real machine.
+
+    An L4 running a newer driver was given cu128 and ComfyUI answered "You need
+    pytorch with cu130 or higher to use optimized CUDA operations" — installed,
+    working, and quietly slower than the card allows, on a box whose entire job
+    is measuring how fast things are.
+
+    Unreadable answers fall back rather than guessing high: an index the driver
+    cannot run fails the install outright, where an older one only costs speed.
+    """
+    from comfy_qa.provision import torch_index_for
+
+    assert torch_index_for(reported).endswith(expected)
+
+
+def test_a_newer_driver_than_we_know_about_gets_the_newest_we_have():
+    """CUDA is backwards compatible, so the newest index we know is right."""
+    from comfy_qa.provision import torch_index_for
+
+    assert torch_index_for("CUDA Version: 14.2").endswith("cu130")

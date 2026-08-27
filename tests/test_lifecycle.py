@@ -563,7 +563,13 @@ def test_a_successful_install_is_confirmed_on_the_box_not_assumed():
     answers = iter(["MISSING", "INSTALLED"])
 
     def runner(args, mode):
-        return next(answers) if mode == "output" else 0
+        if mode != "output":
+            return 0
+        # The install asks the box which CUDA its driver supports, so that the
+        # torch it fetches matches the card rather than a pinned number.
+        if "nvidia-smi" in " ".join(args):
+            return "CUDA Version: 13.0"
+        return next(answers)
 
     lines, say = said()
     ensure_installed(Gcloud(runner=runner), WIN, say)
