@@ -64,7 +64,8 @@ class FakeGcloud:
         ssh_ready: bool | int | BaseException = True,
         install_exit: int = 0,
         install_works: bool = True,
-        launch_exit: int = 0,
+        launch_exit: int | list[int] = 0,
+        repair_exit: int = 0,
         on_launch=None,
         describe=None,
         snapshot=None,
@@ -87,7 +88,11 @@ class FakeGcloud:
         self.ssh_ready = ssh_ready
         self.install_exit = install_exit
         self.install_works = install_works
-        self.launch_exit = launch_exit
+        # A list means "this, then that" — a launch that fails, is repaired,
+        # and succeeds needs two different answers from one fake.
+        self.launch_exit = list(launch_exit) if isinstance(launch_exit, list) else launch_exit
+        self.repairs = 0
+        self.repair_exit = repair_exit
         self.on_launch = on_launch
         self.describe = describe or {}
         self.snapshot = snapshot
@@ -142,9 +147,14 @@ class FakeGcloud:
             if self.install_exit == 0 and self.install_works:
                 self.installed = True
             return _resolve(self.install_exit)
+        if "pip install -r requirements.txt" in remote:  # the repair
+            self.repairs += 1
+            return self.repair_exit
         # the launch script
         if self.on_launch is not None:
             self.on_launch()
+        if isinstance(self.launch_exit, list):
+            return self.launch_exit.pop(0) if self.launch_exit else 0
         return _resolve(self.launch_exit)
 
     def list_instances(self, project: str) -> list[dict]:
@@ -201,11 +211,19 @@ class FakeGcloud:
         _resolve(self.create_disk)
 
     def create_instance_from_disk(self, name: str, zone: str, project: str, disk: str,
-                                  machine_type: str, metadata: str | None = None) -> None:
+                                  machine_type: str, metadata: str | None = None,
+                                  **network) -> None:
+        # `network` carries external_ip / network / subnet — recorded, because a
+        # moved box with no egress cannot install anything, and a test that
+        # ignored these would not notice that regression.
         self.calls.append(("create_instance_from_disk", name, zone, project, disk))
+        self.created_with = network
         _resolve(self.create_instance)
 
     # --- what a test asks it ---------------------------------------------
+
+    def remote_commands_joined(self) -> str:
+        return "\n".join(self.remote)
 
     def did(self, verb: str) -> bool:
         return any(call[0] == verb for call in self.calls)

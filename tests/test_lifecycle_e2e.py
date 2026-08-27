@@ -656,3 +656,32 @@ def test_a_zone_is_never_a_word_from_the_sentence():
         "Consider trying your request in the same zone",
     ]:
         assert lifecycle.suggested_zones(text) == []
+
+
+def test_a_launch_that_dies_on_a_missing_dependency_repairs_itself_once(world):
+    """From a real box on 2026-08-27.
+
+    `host go` said "ComfyUI is already installed" and then handed over
+    `ModuleNotFoundError: No module named 'sqlalchemy'`. Both statements were
+    true: main.py was there, and the snapshot predated the dependency. Being
+    accurate about a box you cannot use is not the same as being useful.
+    """
+    world.cloud(statuses=["RUNNING"], installed=True, launch_exit=[1, 0])
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    told = result.output
+    assert "installing its requirements" in told
+    assert "pip install -r requirements.txt" in world.gc.remote_commands_joined()
+    assert world.gc.repairs == 1, "repaired exactly once"
+
+
+def test_the_repair_is_tried_once_and_not_in_a_loop(world):
+    """A box that fails for some other reason must not reinstall forever."""
+    world.cloud(statuses=["RUNNING"], installed=True, launch_exit=[1, 1])
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert result.exit_code == 1
+    assert result.output.count("installing its requirements") == 1
+    assert world.gc.repairs == 1, "one repair, not a loop"

@@ -711,3 +711,58 @@ def test_looking_at_the_project_changes_nothing_on_it():
     survey(gc, plan)
     assert (cloud.disks, cloud.snapshots, cloud.instances) == before
     assert all("list" in call for call in cloud.calls)
+
+
+SSD_QUOTA_REFUSAL = (
+    "ERROR: (gcloud.compute.disks.create) Could not fetch resource:\n"
+    " - Quota 'SSD_TOTAL_GB' exceeded.  Limit: 500.0 in region us-central1.\n"
+)
+
+
+def test_a_disk_type_that_will_not_fit_falls_back_rather_than_failing():
+    """From a real move on 2026-08-27.
+
+    Matching the source disk's type is right, and it turned a working move into
+    a failed one: pd-balanced counts against SSD_TOTAL_GB, and a 300 GB copy of
+    a 300 GB disk needs 600 under an allowance of 500. The move died at its most
+    expensive step, having already paid for the snapshot. A finished move on a
+    slower disk beats no move.
+    """
+    from comfy_qa.gcloud import QUOTA, GcloudError
+    from comfy_qa.relocate import _create_disk
+
+    attempts = []
+
+    class Cloud:
+        def run(self, args, **kwargs):
+            attempts.append(" ".join(args))
+            if "--type=pd-balanced" in args:
+                raise GcloudError("Quota 'SSD_TOTAL_GB' exceeded", kind=QUOTA,
+                                  raw=SSD_QUOTA_REFUSAL)
+            return []
+
+    said = []
+    plan = plan_move(WIN, INSTANCE, "us-central1-b", source_disk=SOURCE)
+    assert plan.disk_type == "pd-balanced", "the fixture must be the interesting case"
+    _create_disk(Cloud(), plan, "snap", said.append)
+
+    assert len(attempts) == 2, "it asked for the matching type first"
+    assert "--type=pd-standard" in attempts[1]
+    told = " ".join(said)
+    assert "SSD allowance" in told and "more slowly" in told
+    assert "SSD_TOTAL_GB" in told, "name the thing to raise"
+
+
+def test_a_failure_that_is_not_about_the_allowance_still_stops_the_move():
+    """The fallback is for one specific refusal. Anything else is a real failure
+    and quietly downgrading the disk would hide it."""
+    from comfy_qa.gcloud import DENIED, GcloudError
+    from comfy_qa.relocate import _create_disk
+
+    class Cloud:
+        def run(self, args, **kwargs):
+            raise GcloudError("permission denied", kind=DENIED, raw="")
+
+    with pytest.raises(GcloudError, match="permission denied"):
+        plan = plan_move(WIN, INSTANCE, "us-central1-b", source_disk=SOURCE)
+        _create_disk(Cloud(), plan, "snap", lambda line: None)

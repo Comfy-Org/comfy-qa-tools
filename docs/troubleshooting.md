@@ -351,6 +351,34 @@ directory, a missing requirement printed and gone. Its own log is above the erro
 on your terminal; read that first. Note the exit code alone would have said
 success, which is the same lie as calling a booted VM "up".
 
+**`Quota 'SSD_TOTAL_GB' exceeded.  Limit: 500.0 in region us-central1.`**
+A disk you asked for does not fit under the project's SSD allowance. pd-balanced,
+pd-ssd and hyperdisk all count against it; pd-standard does not. A move copies a
+300 GB balanced disk into a second 300 GB balanced disk, which needs 600 GB under
+an allowance that starts at 500 — so the move used to die at its most expensive
+step, having already paid for the snapshot. It now takes pd-standard instead and
+says so, along with what to raise if you want the faster disk. Raise it at
+https://console.cloud.google.com/iam-admin/quotas
+
+**`no room under this project's SSD allowance for a pd-balanced disk — using pd-standard instead`**
+Not an error. The move finished, on a slower boot disk than the original, which
+matters if you are comparing load times between machines. To get a matching disk:
+raise `SSD_TOTAL_GB`, delete the new disk, and run the move again.
+
+**`that looks like a missing dependency rather than a broken install — installing its requirements and trying once more`**
+ComfyUI is on the box and would not start. The usual cause is a machine built
+from a disk or snapshot taken before a dependency was added — `main.py` is
+present, so the install check passes, and the import fails. The requirements are
+installed once and the launch is retried once; a second failure is reported
+rather than looped on. A box with no route to the internet cannot do this — see
+below.
+
+**`ComfyUI on comfy-win-b exited with 1, and its requirements could not be installed either`**
+The repair itself failed. Most often the box has no outbound internet: a GCE
+instance with no external address and no Cloud NAT can be reached through IAP but
+cannot reach pypi. `gcloud compute instances add-access-config <name> --zone
+<zone>` gives it the same networking a normal instance has.
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,

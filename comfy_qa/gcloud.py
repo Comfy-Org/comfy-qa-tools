@@ -50,6 +50,7 @@ NO_PROJECT = "no-project"    # signed in, but no project chosen
 DENIED = "denied"            # signed in and reached Google, and refused
 NETWORK = "network"          # never reached Google
 TIMEOUT = "timeout"          # reached Google, or did not, but ran out of clock
+QUOTA = "quota"              # reached Google, allowed, and over an allowance
 NO_GCLOUD = "no-gcloud"      # the binary is not here
 UNKNOWN = "unknown"
 
@@ -87,6 +88,15 @@ _SIGNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "required property [project] is not currently set",
         "the project property is set to the empty string",
     )),
+    # Before DENIED: a quota refusal reads like a permission problem and is not
+    # one — the account is allowed, the project is simply at its limit, and
+    # "check which account you are using" sends the reader nowhere.
+    (QUOTA, (
+        "quota exceeded",
+        "quota '",
+        "exceeded.  limit:",
+        "exceeded quota",
+    )),
     (DENIED, (
         "permission denied",
         "does not have permission",
@@ -107,6 +117,10 @@ _ADVICE: dict[str, tuple[str | None, str | None]] = {
     NO_PROJECT: ("no project set", "gcloud config set project <your-project-id>"),
     NETWORK: ("could not reach Google Cloud", "check your network, then try again"),
     DENIED: (None, "comfy-qat auth status — check which account you are using"),
+    # gcloud's own sentence names the metric, the limit and the region, which is
+    # everything needed; only the fix is worth adding.
+    QUOTA: (None, "raise the limit at https://console.cloud.google.com/iam-admin/quotas "
+                  "or ask for less"),
 }
 
 
@@ -463,7 +477,8 @@ class Gcloud:
 
     def create_instance_from_disk(
         self, name: str, zone: str, project: str, disk: str, machine_type: str,
-        metadata: str | None = None,
+        metadata: str | None = None, *, external_ip: bool = False,
+        network: str | None = None, subnet: str | None = None,
     ) -> None:
         self._ready_for(project)
         args = [
@@ -471,10 +486,20 @@ class Gcloud:
             f"--zone={zone}", f"--project={project}",
             f"--machine-type={machine_type}",
             f"--disk=name={disk},boot=yes,auto-delete=no",
-            # No public IP: IAP does not need one, and it is one less way to
-            # expose a ComfyUI that has no authentication.
-            "--no-address",
         ]
+        # `--no-address` used to be hardcoded here, reasoning that IAP does not
+        # need a public IP. True for reaching the box; nothing about the box
+        # reaching pypi. With no Cloud NAT on the project that left a machine
+        # with no egress at all, so a moved box could never install or update
+        # anything. The caller passes what the source instance actually has.
+        # Omitting the flag is how you ask GCE for the ephemeral address it
+        # gives by default; there is no affirmative flag to pass.
+        if not external_ip:
+            args.append("--no-address")
+        if network:
+            args.append(f"--network={network}")
+        if subnet:
+            args.append(f"--subnet={subnet}")
         if metadata:
             args.append(f"--metadata={metadata}")
         self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
@@ -555,6 +580,19 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
     # Drop the "(gcloud.billing.projects.describe)" breadcrumb; the caller knows.
     message = re.sub(r"^\(gcloud\.[^)]*\)\s*", "", message)
 
+    # gcloud ends a summary with a colon and puts the reason underneath:
+    #
+    #   ERROR: (gcloud.compute.disks.create) Could not fetch resource:
+    #    - Quota 'SSD_TOTAL_GB' exceeded.  Limit: 500.0 in region us-central1.
+    #
+    # Reporting only the first line gave "Could not fetch resource:" and nothing
+    # else — a message that names no cause and suggests no action. It cost a
+    # round of live testing to find out it meant a disk quota.
+    if message.endswith(":"):
+        detail = _detail_after(lines, message)
+        if detail:
+            message = f"{message.rstrip(':')}: {detail}"
+
     if _is_separator(message):
         message = localized_message(text) or next(
             (line for line in lines if not _is_separator(line) and not line.startswith("ERROR:")),
@@ -566,6 +604,29 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
         message = plainer
 
     return message, fix, text
+
+
+def _detail_after(lines: list[str], summary: str) -> str:
+    """The explanation gcloud printed under a summary line ending in a colon.
+
+    Stops at the pointers gcloud appends — "Try your request in another zone",
+    a documentation URL — because those are advice, not the cause, and the fix
+    line is where advice belongs.
+    """
+    try:
+        start = next(i for i, line in enumerate(lines) if line.endswith(summary))
+    except StopIteration:
+        return ""
+
+    detail = []
+    for line in lines[start + 1:]:
+        low = line.lower()
+        if low.startswith(("try ", "see ", "http", "for more", "if you would like")):
+            break
+        detail.append(line.lstrip("- ").strip())
+        if len(detail) >= 3:  # enough to name a cause; the rest is in `raw`
+            break
+    return " ".join(part for part in detail if part)
 
 
 def quota_request_command(
