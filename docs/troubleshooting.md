@@ -429,7 +429,14 @@ python -m pip install --force-reinstall --no-deps torch torchvision torchaudio -
 On **Linux** the PyPI wheel already carries CUDA, so no index is needed — which
 is the asymmetry that makes this easy to get wrong in either direction.
 
-**`something is already listening on comfy-win-b's ComfyUI port (python, pid 2380), so a second one cannot start`**
+**`ComfyUI is already running on comfy-win (python, pid 2804) — using it rather than starting a second one`**
+Not an error. Something already holds the port and it answers as ComfyUI, so it
+is what you wanted: the URL is printed and nothing is launched. This used to be
+reported as a collision — the run said "ComfyUI answering", printed the URL, then
+closed its own tunnel and failed. A held port only matters when what holds it is
+not the thing you asked for.
+
+**`something is already listening on comfy-win-b's ComfyUI port (python, pid 2380), and it is not answering as ComfyUI, so a second one cannot start`**
 Something on the box already holds port 8188. Usually it is a ComfyUI a previous
 run started and could not stop — a launch that dies after binding leaves the
 process behind. ComfyUI's own version of this message is "Port 8188 is already in

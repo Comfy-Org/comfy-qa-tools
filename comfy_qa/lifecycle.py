@@ -745,13 +745,28 @@ def serve(
     holder = _port_holder(gc, host)
     if holder is not None:
         pid, name = holder
+        # A held port is only a problem when what holds it is not the thing you
+        # wanted. Watched this refuse a ComfyUI that was answering perfectly:
+        # the run printed "ComfyUI answering: ... NVIDIA L4", printed the URL,
+        # and then tore down its own tunnel and called it a collision. If it
+        # serves, it is not in the way — it is the answer.
+        serving = probe_fn(host)
+        if serving is not None:
+            say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
+                f"— using it rather than starting a second one")
+            say(f"ComfyUI answering: {serving.line()}")
+            say(f"open {host.url}")
+            if open_browser is not None:
+                open_browser(host.url)
+            return 0
+
         # ComfyUI's own message for this is "Port 8188 is already in use" plus a
         # database lock error, neither of which says what is holding it or that
         # this tool is usually the one that left it there.
         raise give_up(
             f"something is already listening on {host.name}'s ComfyUI port "
-            f"({name}, pid {pid}), so a second one cannot start. If it is a "
-            f"ComfyUI, {host.url} already reaches it.",
+            f"({name}, pid {pid}), and it is not answering as ComfyUI, so a "
+            f"second one cannot start.",
             stop_first=holder)
 
     say(f"starting ComfyUI on {host.name} — its log follows. Ctrl-C to stop it.")

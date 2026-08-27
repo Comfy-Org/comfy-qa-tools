@@ -796,3 +796,17 @@ def test_the_url_that_is_right_for_this_machine_is_said_before_the_log(world):
     assert world.url in result.output
 
 
+
+
+def test_a_port_held_by_something_that_is_not_comfyui_still_refuses(world):
+    """The check still earns its place: an orphan holding 8188 is why every
+    later launch died with ComfyUI's own unhelpful "Port 8188 is already in
+    use"."""
+    world.comfy.mode = "reset"
+    world.cloud(statuses=["RUNNING"], installed=True, port_holder="2804 python")
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert result.exit_code == 1
+    assert "not answering as ComfyUI" in result.output
+    assert "Stop-Process" in result.output, "name the way to clear it"

@@ -70,6 +70,9 @@ class FakeGcloud:
         # READY is the happy path; TORCH_NO_CUDA is a real L4 box that pip had
         # quietly given a CPU-only torch.
         verify: str = "READY",
+        # "<pid> <name>", as the box's own port check prints it. Empty means the
+        # port is free, which is the ordinary case.
+        port_holder: str = "",
         # Already open by default: a test about launching is not a test about
         # firewalls, and the rule is asked for on every launch.
         firewall=({"name": "comfy-qat-iap-comfyui",
@@ -102,6 +105,7 @@ class FakeGcloud:
         self.repairs = 0
         self.repair_exit = repair_exit
         self.verify = verify
+        self.port_holder = port_holder
         self.firewall = [dict(rule) for rule in firewall]
         self.created_firewall = None
         self.on_launch = on_launch
@@ -152,6 +156,8 @@ class FakeGcloud:
             return self.verify
         if "NetFirewallRule" in remote or "ufw" in remote:
             return "ALREADY"
+        if "NetTCPConnection" in remote or "sport = :" in remote:
+            return self.port_holder or "PORT_FREE"
         return ""
 
     def ssh(self, instance: str, zone: str, project: str, remote: str,
