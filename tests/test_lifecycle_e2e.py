@@ -762,3 +762,14 @@ def test_the_two_checks_disagreeing_is_reported_not_crashed(world):
     assert result.exit_code == 1
     assert "has no ComfyUI in" in result.output
     assert "C:\\ComfyUI" in result.output, "name the place it looked"
+
+
+def test_the_cpu_torch_repair_forces_the_reinstall(world):
+    """Detection without an effective repair is worse than no detection: it
+    reports the problem as handled and changes nothing."""
+    world.cloud(statuses=["RUNNING"], installed=True, verify="TORCH_NO_CUDA")
+
+    run(world, "host", "go", BOX, "--no-browser")
+
+    sent = world.gc.remote_commands_joined()
+    assert "--force-reinstall" in sent

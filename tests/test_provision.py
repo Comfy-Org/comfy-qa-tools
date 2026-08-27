@@ -187,3 +187,33 @@ def test_the_installer_and_the_repair_agree_about_torch():
         installs = "download.pytorch.org/whl/cu128" in install_command(host)
         repairs = "download.pytorch.org/whl/cu128" in repair_command(host)
         assert installs == repairs, f"{os_name}: one uses the CUDA index and the other does not"
+
+
+def test_replacing_a_wrong_torch_has_to_force_the_reinstall():
+    """Watched pip refuse to do this on a real box.
+
+    Pointing pip at the CUDA index is not enough when a same-version CPU wheel
+    is already installed: pip matches on version, not on which index a wheel
+    came from, so it printed `Requirement already satisfied: torch (2.13.0)`
+    and the box stayed CPU-only. The detection was right and the repair was a
+    no-op, which is the worst combination — it looks handled.
+    """
+    from comfy_qa.provision import repair_command
+
+    host = Host(name="w", kind="gce", os="Windows Server 2022", gpu="L4", port=8190)
+    forced = repair_command(host, force_torch=True)
+
+    assert "--force-reinstall" in forced
+    assert "--no-deps" in forced, (
+        "the dependencies are already right, and PyTorch's index does not carry "
+        "all of them"
+    )
+    assert "download.pytorch.org/whl/cu128" in forced
+
+
+def test_a_plain_repair_does_not_force_anything():
+    """A missing module is not a reason to redownload 2.5 GB of torch."""
+    from comfy_qa.provision import repair_command
+
+    host = Host(name="w", kind="gce", os="Windows Server 2022", gpu="L4", port=8190)
+    assert "--force-reinstall" not in repair_command(host)

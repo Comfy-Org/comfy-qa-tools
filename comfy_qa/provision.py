@@ -122,7 +122,7 @@ def verify_command(host: Host) -> str:
     )
 
 
-def repair_command(host: Host) -> str:
+def repair_command(host: Host, *, force_torch: bool = False) -> str:
     """Install the requirements of an existing checkout, without touching it.
 
     An install is not the same thing as a working install. `check_command` asks
@@ -136,7 +136,16 @@ def repair_command(host: Host) -> str:
     says plain `torch` — so on the same real box, pip fetched PyPI's CPU wheel
     and ComfyUI then died with "Torch not compiled with CUDA enabled". A repair
     that turns a GPU box into a CPU box is worse than the failure it fixes.
+
+    `force_torch` is for when the wrong torch is already there. Pointing pip at
+    the CUDA index is not enough on its own: pip matches on version, not on
+    where a wheel came from, so `2.13.0` from PyPI satisfies a request for
+    `2.13.0` from download.pytorch.org and it reports "Requirement already
+    satisfied" while the box stays CPU-only. Watched it do exactly that. The
+    reinstall is `--no-deps` because the dependencies are already correct and
+    PyTorch's index does not carry all of them.
     """
+    force = "--force-reinstall --no-deps " if force_torch else ""
     if is_windows(host):
         python = (
             "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
@@ -149,14 +158,15 @@ def repair_command(host: Host) -> str:
             f"Set-Location '{WINDOWS_ROOT}'; "
             + python
             + "Write-Output 'installing torch for this GPU (the slow part)'; "
-            f"& $py -m pip install torch torchvision torchaudio --index-url {TORCH_INDEX}; "
+            f"& $py -m pip install {force}torch torchvision torchaudio "
+            f"--index-url {TORCH_INDEX}; "
             "Write-Output 'installing the rest of the requirements'; "
             "& $py -m pip install -r requirements.txt\""
         )
     return (
         f"cd {LINUX_ROOT} && "
         "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi && "
-        "$PY -m pip install torch torchvision torchaudio && "
+        f"$PY -m pip install {force}torch torchvision torchaudio && "
         "$PY -m pip install -r requirements.txt"
     )
 

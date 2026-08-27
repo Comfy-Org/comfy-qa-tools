@@ -408,10 +408,13 @@ lives on PyTorch's own index. `pip install -r requirements.txt` says plain
 `torch`, so it fetches the CPU one and ComfyUI dies on a box rented for its GPU.
 Both `host go`'s install and its repair pull torch from
 `https://download.pytorch.org/whl/cu128` first for exactly this reason. If you
-installed by hand, reinstall it the same way:
+installed by hand, reinstall it the same way — and note `--force-reinstall`,
+which is not optional: pip matches on version, not on which index a wheel came
+from, so without it a same-version CPU torch satisfies the request and pip
+reports "Requirement already satisfied" while the box stays CPU-only.
 
 ```sh
-python -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+python -m pip install --force-reinstall --no-deps torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 ```
 
 On **Linux** the PyPI wheel already carries CUDA, so no index is needed — which

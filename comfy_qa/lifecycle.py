@@ -551,7 +551,8 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
 
     try:
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                      repair_command(host), stream=True)
+                      repair_command(host, force_torch=TORCH_NO_CUDA in state),
+                      stream=True)
     except GcloudError as exc:
         raise give_up(f"could not install torch on {host.name}: {exc}", egress=True) from exc
     if code != 0:
