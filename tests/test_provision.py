@@ -71,26 +71,26 @@ def test_the_interpreter_is_pinned_below_3_13():
 
 
 @pytest.mark.parametrize("host", ALL)
-def test_a_remote_box_binds_where_the_tunnel_can_reach_it(host):
-    """This test asserted the opposite, and the opposite was a real defect.
+def test_every_box_binds_loopback(host):
+    """This assertion has now been written three ways, and the reason is that it
+    depends entirely on how the tunnel forwards — which is the thing that was
+    wrong, not the binding.
 
-    "ComfyUI has no authentication, so bind loopback and let the tunnel be the
-    only way in" is the wrong way round: an Identity-Aware Proxy tunnel arrives
-    on the instance's network interface, never its loopback. Bound to 127.0.0.1
-    the box served happily and nothing on the near end of the tunnel could reach
-    it — observed on a real L4, which printed "To see the GUI go to
-    http://127.0.0.1:8188" while every probe timed out.
-
-    It is not an exposure: inbound traffic is whatever the GCE firewall allows,
-    and the default rules do not include 8188.
+    With `start-iap-tunnel` the far end is a port on the instance's network
+    interface, so loopback is unreachable and 0.0.0.0 plus two firewall rules is
+    the only way. With `ssh -L` the far address is resolved on the box, so
+    loopback is exactly right: nothing is exposed on any interface, no firewall
+    rule exists to get wrong, and the URL ComfyUI prints is true where it is
+    printed. Proven against a real box: loopback bind, ssh forward, HTTP 200.
     """
     command = launch_command(host)
-    assert "--listen 0.0.0.0" in command
+    assert "--listen 127.0.0.1" in command
+    assert "0.0.0.0" not in command
     assert "--port 8188" in command
 
 
-def test_a_local_box_still_binds_loopback():
-    """No tunnel is involved, so the original reasoning holds here."""
+def test_a_local_box_binds_loopback_too():
+    """No tunnel involved at all here, and the same answer."""
     local = Host(name="local", kind="local", port=8188)
     assert "--listen 127.0.0.1" in launch_command(local)
     assert "0.0.0.0" not in launch_command(local)

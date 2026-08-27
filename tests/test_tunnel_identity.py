@@ -255,7 +255,7 @@ def test_the_suite_never_starts_a_real_tunnel(tmp_path, never_start_a_real_tunne
     open_tunnel(WIN, tmp_path, port_busy=lambda port: False)
 
     assert len(never_start_a_real_tunnel) == 1
-    assert never_start_a_real_tunnel[0][:3] == ["gcloud", "compute", "start-iap-tunnel"]
+    assert never_start_a_real_tunnel[0][:3] == ["gcloud", "compute", "ssh"]
 
 
 def test_two_processes_cannot_both_launch_a_tunnel_to_one_host(tmp_path):

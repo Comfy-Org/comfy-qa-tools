@@ -65,7 +65,11 @@ TUNNEL_DIR = DEFAULT_CONFIG_PATH.parent / "tunnels"
 # What a real tunnel's command line always contains. Used to tell our own process
 # from whatever else has since been given that pid, when there is no record of
 # what we started to compare against.
+# `gcloud compute ssh --tunnel-through-iap` runs ssh with a ProxyCommand that
+# still says `start-iap-tunnel`, so either marker identifies one of ours. The
+# forward itself is the surer sign, and it is what the command line now carries.
 TUNNEL_MARKER = "start-iap-tunnel"
+TUNNEL_MARKERS = ("start-iap-tunnel", "--tunnel-through-iap", "127.0.0.1:")
 
 # How long a freshly started tunnel is watched before its pid is believed. The
 # failures that matter here are immediate — an expired credential, a port already
@@ -248,7 +252,7 @@ def _could_be_ours(identity: str) -> bool:
     edited by hand. Nothing said means the lookup failed, so the pid is trusted;
     anything said has to carry a tunnel's command line.
     """
-    return not identity or TUNNEL_MARKER in identity
+    return not identity or any(mark in identity for mark in TUNNEL_MARKERS)
 
 
 def _port_busy(port: int, host: str = "127.0.0.1") -> bool:
@@ -330,17 +334,38 @@ def status(host: str, directory: Path | None = None, *, identify=None) -> Tunnel
 
 
 def command(host: Host) -> list[str]:
-    """The gcloud invocation. Pure, so it can be shown by --dry-run."""
+    """The gcloud invocation. Pure, so it can be shown by --dry-run.
+
+    SSH local forwarding, not `start-iap-tunnel`, and the difference is the whole
+    reason a cloud box was unreachable for a day:
+
+      * `start-iap-tunnel` forwards to a **port on the instance**, reached over
+        its network interface. So ComfyUI had to bind 0.0.0.0, and the port had
+        to be allowed through the VPC firewall *and* the box's own firewall —
+        three things to get right, none of them obvious, and the failure of any
+        one of them looks identical to "ComfyUI is not running".
+      * `ssh -L` forwards through the SSH session, and the far address is
+        resolved **on the box**. So ComfyUI binds 127.0.0.1 as it prefers,
+        nothing is exposed on any interface, and no firewall rule is needed at
+        all: port 22 is already open, which is how this tool has been running
+        commands on the box the whole time.
+
+    The near end is pinned to `127.0.0.1` rather than left as `localhost`.
+    `localhost` resolves to `::1` first on macOS, so ssh bound IPv6 only and
+    every probe of `http://127.0.0.1:<port>` was refused while the forward sat
+    there working perfectly over IPv6. Verified both ways on a real box.
+    """
     if not host.is_remote:
         raise TunnelError(
             f"{host.name} is local — there is nothing to tunnel. It is at {host.url}.",
         )
     return [
-        "gcloud", "compute", "start-iap-tunnel",
-        host.gce_instance or host.name, str(COMFYUI_PORT),
-        f"--local-host-port=localhost:{host.port}",
+        "gcloud", "compute", "ssh", host.gce_instance or host.name,
         f"--zone={host.gce_zone}",
         f"--project={host.gce_project}",
+        "--tunnel-through-iap",
+        "--", "-N",
+        "-L", f"127.0.0.1:{host.port}:127.0.0.1:{COMFYUI_PORT}",
     ]
 
 
