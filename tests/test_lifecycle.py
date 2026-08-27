@@ -667,3 +667,32 @@ def test_a_box_not_yet_serving_is_absent_comfyui_not_a_broken_tunnel(tmp_path):
     from comfy_qa.lifecycle import COMFYUI_ABSENT
 
     assert caught.value.kind == COMFYUI_ABSENT, "go must be allowed to continue"
+
+
+def test_a_port_held_by_a_working_comfyui_is_used_not_refused(tmp_path):
+    """Watched this refuse a ComfyUI that was answering perfectly.
+
+    The box was silent when `bring_up` probed it and answering by the time
+    `serve` ran — a slow starter, or one somebody else had already launched. The
+    run printed "ComfyUI answering: comfy-win · ... NVIDIA L4 (22GB)", printed
+    the URL, then tore down its own tunnel and called it a port collision.
+
+    A held port is only a problem when what holds it is not the thing you wanted.
+    """
+    from comfy_qa.lifecycle import serve
+
+    def runner(args, mode):
+        joined = " ".join(args)
+        if mode == "output":
+            return "2804 python" if "NetTCPConnection" in joined else "READY"
+        return 0
+
+    lines, say = said()
+    code = serve(Gcloud(runner=runner), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: STAMP, timeout=0)
+
+    told = " ".join(lines)
+    assert code == 0
+    assert "using it rather than starting a second one" in told
+    assert "tunnel closed" not in told, "it tore down a working tunnel"
+    assert not any("starting ComfyUI on" in line for line in lines), "no second one"
