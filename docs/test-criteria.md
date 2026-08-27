@@ -230,7 +230,10 @@ echo "=== E6 open twice does not stack"; qat host open $BOX
 ```
 
 - [ ] **E1** — reports every box already present; adds nothing; writes nothing.
-- [ ] **E2** — prints a `gcloud compute start-iap-tunnel` line using the port from your host list, and does not run it.
+- [ ] **E2** — prints a `gcloud compute ssh ... -N -L 127.0.0.1:<your port>:127.0.0.1:8188`
+      line and does not run it. Both ends say `127.0.0.1` and not `localhost`:
+      macOS resolves that name to `::1` first, and ssh then binds IPv6 only while
+      every attempt on `127.0.0.1` is refused.
 - [ ] **E3** — says what it is doing at each step: starting, tunnelling, checking for ComfyUI, installing if absent, serving. The ComfyUI startup log appears on the terminal. A browser opens on the local URL and ComfyUI loads.
 - [ ] **E4** — the stamp names the **cloud** box's GPU and OS, not your laptop's. This is the single most important check in the run.
 - [ ] **E5** — a `.pid` and a `.log` for that host.

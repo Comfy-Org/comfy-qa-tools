@@ -319,8 +319,10 @@ def open_cmd(
 ) -> None:
     """Open a tunnel to a machine that is already running.
 
-    Traffic goes over Identity-Aware Proxy, so no port is ever opened and no SSH
-    key is needed — which matters, because ComfyUI has no authentication.
+    An `ssh -L` forward carried over Identity-Aware Proxy: no port is opened on
+    the instance and no public route to it exists, which matters because ComfyUI
+    has no authentication. It does use gcloud's own SSH key, and it forwards to
+    the box's loopback — where ComfyUI listens, and where nothing else can reach.
     """
     from .tunnel import (
         TunnelError,

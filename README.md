@@ -149,10 +149,13 @@ Changing machine is one command, which stops the box you were on:
 comfy-qat host switch linux     # start the Linux box, then stop the Windows one
 ```
 
-`go` is the one command worth memorising. It starts the instance, opens an
-Identity-Aware Proxy tunnel, installs ComfyUI if the box has none, and launches it
-in the foreground with its startup log on your terminal — exactly as a local
-`main.py` would print it. Ctrl-C stops ComfyUI and leaves the box running; `down`
+`go` is the one command worth memorising. It starts the instance, installs
+ComfyUI if the box has none — with a torch built for that box's CUDA — launches
+it in the foreground with its startup log on your terminal exactly as a local
+`main.py` would print it, and forwards a local port to it as soon as it is
+listening. The forward is an `ssh -L` over Identity-Aware Proxy: it reaches the
+box's own loopback, so nothing is exposed on any interface and no firewall rule
+is involved. Ctrl-C stops ComfyUI and leaves the box running; `down`
 is what stops the billing.
 
 [`docs/machines.md`](docs/machines.md) covers the whole loop, including what to do
