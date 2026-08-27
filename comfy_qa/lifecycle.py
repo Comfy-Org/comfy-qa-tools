@@ -22,6 +22,7 @@ from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .stamp import ProbeError, Stamp, fetch
 from .tunnel import (
+    COMFYUI_PORT,
     TunnelError,
     close_tunnel,
     log_file,
@@ -475,8 +476,64 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
 INTERRUPTED_EXIT = 130
 
 
+def _port_holder(gc: Gcloud, host: Host) -> tuple[str, str] | None:
+    """Who, if anyone, already holds ComfyUI's port on the box.
+
+    Returns (pid, process name), or None when the port is free or the question
+    could not be asked — an unanswerable box is not a reason to refuse to launch.
+    """
+    from .provision import PORT_FREE, port_holder_command
+
+    try:
+        answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                               port_holder_command(host))
+    except GcloudError:
+        return None
+    # Whatever the box said, as text: this asks a question and the only wrong
+    # answer is one that stops a launch which would otherwise have worked.
+    answer = str(answer or "").strip()
+    if not answer or PORT_FREE in answer:
+        return None
+    # The command prints "<pid> <name>" or PORT_FREE, so anything else means the
+    # question was not answered — not that the port is held. Reading a stray
+    # number as a pid would refuse a launch that was going to work, which is a
+    # worse failure than the one this check exists to prevent.
+    parts = answer.split()
+    if len(parts) < 2 or not parts[0].isdigit():
+        return None
+    return parts[0], parts[1]
+
+
+def _stop_ours(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
+    """Stop the ComfyUI this run started, if it outlived the launch.
+
+    A launch that dies after binding the port leaves a process behind, and the
+    next launch fails with ComfyUI's own "Port 8188 is already in use" — which
+    names neither the process nor the tool that left it there. Watched that
+    happen three times on one box before anyone looked with `Get-NetTCPConnection`.
+
+    Best effort: the box may be unreachable by now, and a failure to tidy up is
+    not worth replacing the failure the caller is already reporting.
+    """
+    from .provision import stop_command
+
+    holder = _port_holder(gc, host)
+    if holder is None:
+        return
+    pid, name = holder
+    try:
+        gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+               stop_command(host, pid), stream=False)
+    except GcloudError:
+        say(f"could not stop the ComfyUI left on {host.name} (pid {pid}) — "
+            f"it still holds the port")
+        return
+    say(f"stopped the ComfyUI this run started on {host.name} ({name}, pid {pid})")
+
+
 def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
-             *, egress: bool = False) -> LifecycleError:
+             *, egress: bool = False,
+             stop_first: tuple[str, str] | None = None) -> LifecycleError:
     """Stop, close the tunnel, and say what to do — the one place that decides.
 
     Written once because it was written twice: the second copy grew the egress
@@ -485,6 +542,17 @@ def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
     """
     stand_down(host, tunnel_dir, say)
     advice = how_to_get_in(host)
+    if stop_first is not None and host.is_remote:
+        from .provision import stop_command
+
+        pid, _ = stop_first
+        advice = (
+            "if that is a ComfyUI you no longer want, stop it:\n        "
+            f"gcloud compute ssh {host.gce_instance} --zone={host.gce_zone} "
+            f"--project={host.gce_project} --tunnel-through-iap "
+            f"--command='{stop_command(host, pid)}'"
+            f"\n        then run the same command again\n        " + advice
+        )
     if egress and host.is_remote:
         # Not guessable from the box: everything reaches it fine, so nobody
         # thinks to check whether it can reach anything.
@@ -609,7 +677,31 @@ def serve(
     watcher = threading.Thread(target=watch, daemon=True)
     watcher.start()
 
+    def give_up(message: str, *, egress: bool = False,
+                stop_first: tuple[str, str] | None = None) -> LifecycleError:
+        return _give_up(host, tunnel_dir, say, message, egress=egress,
+                        stop_first=stop_first)
+
+    holder = _port_holder(gc, host)
+    if holder is not None:
+        pid, name = holder
+        # ComfyUI's own message for this is "Port 8188 is already in use" plus a
+        # database lock error, neither of which says what is holding it or that
+        # this tool is usually the one that left it there.
+        raise give_up(
+            f"something is already listening on {host.name}'s ComfyUI port "
+            f"({name}, pid {pid}), so a second one cannot start. If it is a "
+            f"ComfyUI, {host.url} already reaches it.",
+            stop_first=holder)
+
     say(f"starting ComfyUI on {host.name} — its log follows. Ctrl-C to stop it.")
+    if host.is_remote:
+        # ComfyUI will announce its own address a minute from now — "To see the
+        # GUI go to http://127.0.0.1:8188" — which is true on the box and wrong
+        # on this machine, where 8188 is the local install. It is the last line
+        # a tester reads, so say the right one alongside it.
+        say(f"when it says 127.0.0.1:{COMFYUI_PORT}, on this machine that is "
+            f"{host.url}")
     try:
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                       launch_command(host), stream=True)
@@ -617,9 +709,11 @@ def serve(
         # Otherwise the watcher outlives a failed launch and opens a browser onto
         # a URL that never answered.
         done.set()
-
-    def give_up(message: str, *, egress: bool = False) -> LifecycleError:
-        return _give_up(host, tunnel_dir, say, message, egress=egress)
+        # And otherwise the ComfyUI we started outlives us: a launch that dies
+        # after binding leaves a process holding port 8188 on the box, and every
+        # later launch fails with a port conflict that names neither the process
+        # nor the tool that left it. Only ever a process we started ourselves.
+        _stop_ours(gc, host, say)
 
     if code == NO_PYTHON_EXIT:
         raise give_up(

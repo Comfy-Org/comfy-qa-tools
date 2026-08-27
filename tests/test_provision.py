@@ -71,12 +71,29 @@ def test_the_interpreter_is_pinned_below_3_13():
 
 
 @pytest.mark.parametrize("host", ALL)
-def test_launch_binds_to_loopback_only(host):
-    """ComfyUI has no authentication. The tunnel is the only way in, by design."""
+def test_a_remote_box_binds_where_the_tunnel_can_reach_it(host):
+    """This test asserted the opposite, and the opposite was a real defect.
+
+    "ComfyUI has no authentication, so bind loopback and let the tunnel be the
+    only way in" is the wrong way round: an Identity-Aware Proxy tunnel arrives
+    on the instance's network interface, never its loopback. Bound to 127.0.0.1
+    the box served happily and nothing on the near end of the tunnel could reach
+    it — observed on a real L4, which printed "To see the GUI go to
+    http://127.0.0.1:8188" while every probe timed out.
+
+    It is not an exposure: inbound traffic is whatever the GCE firewall allows,
+    and the default rules do not include 8188.
+    """
     command = launch_command(host)
-    assert "--listen 127.0.0.1" in command
-    assert "0.0.0.0" not in command
+    assert "--listen 0.0.0.0" in command
     assert "--port 8188" in command
+
+
+def test_a_local_box_still_binds_loopback():
+    """No tunnel is involved, so the original reasoning holds here."""
+    local = Host(name="local", kind="local", port=8188)
+    assert "--listen 127.0.0.1" in launch_command(local)
+    assert "0.0.0.0" not in launch_command(local)
 
 
 @pytest.mark.parametrize("host", ALL)

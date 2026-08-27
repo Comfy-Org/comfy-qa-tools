@@ -189,7 +189,9 @@ def test_go_on_a_stopped_box_starts_tunnels_installs_and_serves(world):
     assert f"tunnel open: {world.url}" in result.output
     assert "ComfyUI is not there — installing it" in result.output
     assert any("clone" in remote for remote in world.gc.remote), "it must install"
-    assert any("--listen 127.0.0.1" in remote for remote in world.gc.remote)
+    # 0.0.0.0, not loopback: an IAP tunnel arrives on the instance's network
+    # interface, so a ComfyUI bound to 127.0.0.1 serves and is unreachable.
+    assert any("--listen 0.0.0.0" in remote for remote in world.gc.remote)
     assert world.opened == [world.url], "the browser opens on the machine you asked for"
     assert not world.gc.did("stop_instance"), "`go` never stops the box"
 
@@ -773,3 +775,16 @@ def test_the_cpu_torch_repair_forces_the_reinstall(world):
 
     sent = world.gc.remote_commands_joined()
     assert "--force-reinstall" in sent
+
+
+def test_the_url_that_is_right_for_this_machine_is_said_before_the_log(world):
+    """ComfyUI announces its own address — `http://127.0.0.1:8188` — which is
+    correct on the box and is the tester's own machine here, where 8188 is the
+    local install. It is the last line they read before opening a browser, and
+    it sends them to the wrong machine. Observed exactly that."""
+    world.cloud(statuses=["RUNNING"], installed=True)
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert "on this machine that is" in result.output
+    assert world.url in result.output

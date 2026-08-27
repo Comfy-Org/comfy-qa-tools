@@ -35,6 +35,9 @@ LINUX_ROOT = "/opt/comfyui"
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
 
+# What ComfyUI listens on, on the box. The tunnel's far end is always this.
+COMFYUI_PORT = 8188
+
 # The launch script's own word for "nothing here can run ComfyUI". Reserved, so
 # the caller can recognise it rather than reporting a generic non-zero exit.
 NO_PYTHON_EXIT = 3
@@ -120,6 +123,44 @@ def verify_command(host: Host) -> str:
         f"sys.stdout.write('{READY}' if torch.cuda.is_available() else '{TORCH_NO_CUDA}')\" "
         f"2>/dev/null || echo {NO_TORCH}"
     )
+
+
+# What `port_holder_command` prints when nothing is listening on ComfyUI's port.
+PORT_FREE = "PORT_FREE"
+
+
+def port_holder_command(host: Host) -> str:
+    """Ask what, if anything, is already listening on ComfyUI's port on the box.
+
+    A port conflict on the far side of a tunnel is the wrong-machine failure one
+    hop further out than usual: ComfyUI prints "Port 8188 is already in use" and
+    a database lock error, neither of which says that the thing holding it is a
+    ComfyUI this tool started and failed to stop.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NonInteractive -Command \""
+            f"$c = Get-NetTCPConnection -LocalPort {COMFYUI_PORT} -State Listen "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1; "
+            f"if (-not $c) {{ Write-Output '{PORT_FREE}'; exit 0 }}; "
+            "$p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; "
+            "Write-Output ($c.OwningProcess.ToString() + ' ' + "
+            "$(if ($p) { $p.ProcessName } else { 'unknown' }))\""
+        )
+    return (
+        f"pid=$(ss -lptnH 'sport = :{COMFYUI_PORT}' 2>/dev/null | "
+        "grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2); "
+        f"if [ -z \"$pid\" ]; then echo {PORT_FREE}; "
+        "else echo \"$pid $(ps -p $pid -o comm= 2>/dev/null || echo unknown)\"; fi"
+    )
+
+
+def stop_command(host: Host, pid: str) -> str:
+    """Stop a process on the box by pid. Used only on one this tool started."""
+    if is_windows(host):
+        return ("powershell -NonInteractive -Command "
+                f"\"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue\"")
+    return f"kill {pid} 2>/dev/null || true"
 
 
 def repair_command(host: Host, *, force_torch: bool = False) -> str:
@@ -232,9 +273,22 @@ def launch_command(host: Host) -> str:
 
     The interpreter is discovered on the box rather than assumed: a ComfyUI
     install may carry a venv, the Windows portable bundle's embedded Python, or
-    neither. It binds to 127.0.0.1 — the tunnel is the only way in, because
-    ComfyUI has no authentication.
+    neither.
+
+    **A remote box binds 0.0.0.0, not 127.0.0.1.** This was the opposite for a
+    long time, reasoned as "the tunnel is the only way in, so bind loopback" —
+    which is backwards. An Identity-Aware Proxy tunnel arrives on the instance's
+    network interface, not its loopback, so a ComfyUI bound to 127.0.0.1 is
+    serving perfectly and unreachable through the only route this tool has.
+    Watched it happen: the box printed "To see the GUI go to
+    http://127.0.0.1:8188" and every probe of the tunnel timed out.
+
+    That is not an exposure. The instance takes no inbound traffic that the GCE
+    firewall does not allow, and the default rules cover SSH, RDP and internal
+    traffic — not 8188. A local host still binds loopback, where the reasoning
+    does hold.
     """
+    listen = "127.0.0.1" if host.kind == "local" else "0.0.0.0"
     if is_windows(host):
         candidates = "; ".join(
             f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS
@@ -247,7 +301,7 @@ def launch_command(host: Host) -> str:
             "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
             f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
             "Write-Output ('using ' + $py); "
-            f"& $py main.py --listen 127.0.0.1 --port {COMFYUI_PORT}\""
+            f"& $py main.py --listen {listen} --port {COMFYUI_PORT}\""
         )
     candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
     return (
@@ -256,5 +310,5 @@ def launch_command(host: Host) -> str:
         "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
         f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
         "echo \"using $py\"; "
-        f"\"$py\" main.py --listen 127.0.0.1 --port {COMFYUI_PORT}"
+        f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
     )
