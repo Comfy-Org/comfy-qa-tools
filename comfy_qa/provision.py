@@ -35,9 +35,6 @@ LINUX_ROOT = "/opt/comfyui"
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
 
-# What ComfyUI listens on, on the box. The tunnel's far end is always this.
-COMFYUI_PORT = 8188
-
 # Google's Identity-Aware Proxy forwards from this range and only this range.
 # A rule scoped to it is not an opening to the internet: reaching the port still
 # requires a tunnel authenticated as someone with access to the project.
