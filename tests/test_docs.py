@@ -437,3 +437,37 @@ def test_the_test_criteria_are_actually_pasteable():
     # `python` is not on PATH on a stock macOS; the venv's interpreter is.
     for line in text.splitlines():
         assert not line.strip().startswith("python "), f"bare python in {line!r}"
+
+
+def test_nothing_claims_the_tunnel_needs_no_ssh_key():
+    """`tunnel.py` opened with "no SSH keys" for a day after it started using one.
+
+    Nothing caught it: the derived docs test checks the errors this tool prints,
+    and this was a claim about how the tool works — the kind of confidently wrong
+    sentence that sends the next reader down a path that does not exist. The
+    forward is `gcloud compute ssh -L`, which uses gcloud's own
+    ~/.ssh/google_compute_engine.
+    """
+    prose = [ROOT / "README.md", ROOT / "comfy_qa" / "tunnel.py",
+             ROOT / "comfy_qa" / "host.py"] + list(DOCS.glob("*.md"))
+    for path in prose:
+        text = path.read_text()
+        for claim in ("no SSH key", "no SSH keys", "SSH-less"):
+            assert claim not in text, f"{path.name}: {claim!r} is no longer true"
+
+
+def test_the_documented_tunnel_command_is_the_one_the_tool_builds():
+    """Two places described a `start-iap-tunnel` that is no longer what runs."""
+    from comfy_qa.config import Host
+    from comfy_qa.tunnel import command
+
+    built = " ".join(command(Host(
+        name="box", kind="gce", os="Ubuntu 22.04", port=8190,
+        gce_instance="box", gce_zone="z", gce_project="p")))
+    assert "compute ssh" in built and "-L 127.0.0.1:8190:127.0.0.1:8188" in built
+
+    for path in (ROOT / "README.md", DOCS / "machines.md", DOCS / "test-criteria.md"):
+        text = path.read_text()
+        assert "start-iap-tunnel" not in text, (
+            f"{path.name} still describes the tunnel the tool stopped using"
+        )

@@ -1,9 +1,23 @@
-"""SSH-less tunnels to cloud boxes, via Identity-Aware Proxy.
+"""Tunnels to cloud boxes: SSH forwarding, carried over Identity-Aware Proxy.
 
-ComfyUI has no authentication, so a cloud box must never expose its port. IAP
-forwards a local port to the instance over Google's own path: no public IP, no
-firewall opening, and no SSH keys — which matters, because `gcloud compute ssh`
-is unreliable against Windows images.
+ComfyUI has no authentication, so a cloud box must never expose its port. Nothing
+here opens one: IAP carries the connection over Google's own path, with no public
+route to the instance, and the forward itself is an ordinary `ssh -L`.
+
+That last part matters more than it sounds, and this file claimed the opposite of
+it for a long time. A key *is* used — gcloud's own
+`~/.ssh/google_compute_engine` — and choosing SSH forwarding over raw IAP TCP
+forwarding is what makes a cloud box reachable at all:
+
+  * `gcloud compute start-iap-tunnel` forwards to a **port on the instance**,
+    reached over its network interface. ComfyUI then has to bind 0.0.0.0, and the
+    port has to be allowed through the VPC firewall *and* the box's own. Three
+    things to get right, none of them obvious, and any one of them wrong looks
+    exactly like "ComfyUI is not running".
+  * `ssh -L` resolves the far address **on the box**, so ComfyUI binds 127.0.0.1
+    as it prefers, nothing is exposed on any interface, and no firewall rule is
+    needed: port 22 is already open, which is how every other command in this
+    tool reaches the machine.
 
 This is the file that decides which machine a tester is actually talking to, so
 everything here is one rule said in different ways: never claim a tunnel is open

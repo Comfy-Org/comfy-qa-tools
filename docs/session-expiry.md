@@ -211,7 +211,7 @@ checklist next to the other pre-pass steps.
 
 ## The gap that is still open
 
-The IAP tunnel is started as a detached background process with its output
+The forward is started as a detached background process with its output
 redirected to a log file, and its exit status is not checked. If the session
 expires between starting the box and opening the tunnel, the tunnel process dies
 immediately of a reauth failure that nobody reads, a pid file is written for a

@@ -13,13 +13,23 @@ comfy-qat host go windows      # the same box, described rather than named
 That is the whole thing. In order, it:
 
 1. starts the instance if it is stopped, and waits for it to reach RUNNING;
-2. opens an Identity-Aware Proxy tunnel to it, so ComfyUI's port is reachable at
-   `http://127.0.0.1:<port>` without any port being opened to the internet;
-3. asks whether ComfyUI is already answering — if it is, you get the URL and the
+2. asks whether ComfyUI is already answering — if it is, you get the URL and the
    stamp immediately and nothing is installed or restarted;
-4. installs ComfyUI if the box has none, on a pinned Python 3.12;
-5. launches it in the foreground with its startup log on your terminal, and opens
-   a browser when it starts serving.
+3. installs ComfyUI if the box has none, on a pinned Python 3.12, with a torch
+   built for whatever CUDA that box's driver reports;
+4. launches it in the foreground with its startup log on your terminal;
+5. forwards a local port to it as soon as it is listening, and opens a browser
+   on `http://127.0.0.1:<port>`.
+
+The forward is an `ssh -L` carried over Identity-Aware Proxy. Two consequences
+worth knowing, because both were learned the hard way:
+
+- **It reaches the box's own loopback.** ComfyUI binds `127.0.0.1` there, nothing
+  is exposed on any interface, and no firewall rule is involved — port 22 is
+  already open, which is how every other command here reaches the machine.
+- **It can only be opened once ComfyUI is listening.** The connection is tested
+  before it will serve, so there is nothing to forward to until the launch has
+  happened. That is why the order above puts the launch before the forward.
 
 Ctrl-C stops ComfyUI. **It does not stop the box, and a stopped ComfyUI on a running
 box still bills.** `--no-browser` skips the browser, `--no-install` fails rather than
@@ -172,9 +182,15 @@ comfy-qat host open comfy-win    # tunnel only, to a box that is already running
 comfy-qat host stamp comfy-win   # what is it running, exactly?
 ```
 
-`host open --dry-run` prints the `gcloud compute start-iap-tunnel` command instead
-of running it, which is the thing to paste into a bug report when the tunnel itself
-is what misbehaved.
+`host open --dry-run` prints the `gcloud compute ssh ... -L` command instead of
+running it, which is the thing to paste into a bug report when the forward itself
+is what misbehaved. Note both ends are written `127.0.0.1` rather than
+`localhost`: on macOS that name resolves to `::1` first, and ssh then binds IPv6
+only while every attempt on `127.0.0.1` is refused.
+
+`host open` on a box where ComfyUI is not running yet will say so rather than
+appear to succeed — there is nothing to forward to. `host go` is the command that
+starts it and forwards in one step.
 
 A tunnel outlives the command that opened it, so its process id is recorded in
 `~/.config/comfy-qa-tools/tunnels/<host>.pid` and checked rather than assumed.
