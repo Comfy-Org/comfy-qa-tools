@@ -395,3 +395,44 @@ def test_can_prompt_mirrors_the_rule_gcloud_actually_uses(monkeypatch):
 
     monkeypatch.setattr(gc_mod.sys, "stderr", Stream(True))
     assert gc_mod.can_prompt() is True
+
+
+REAL_QUOTA_REFUSAL = """\
+ERROR: (gcloud.compute.disks.create) Could not fetch resource:
+ - Quota 'SSD_TOTAL_GB' exceeded.  Limit: 500.0 in region us-central1.
+    metric name = compute.googleapis.com/ssd_total_storage
+    limit name = SSD-TOTAL-GB-per-project-region
+    limit = 500.0
+    dimensions = region: us-central1
+Try your request in another zone, or view documentation on how to increase quotas: https://cloud.google.com/compute/quotas.
+"""
+
+
+def test_the_reason_under_a_trailing_colon_is_not_dropped():
+    """Captured verbatim from a real move on 2026-08-27.
+
+    The tool reported `the move stopped at: ... (Could not fetch resource:)` and
+    nothing else — no cause, no action, and no hint that the answer was four
+    lines further down. It took a hand-run gcloud to find out a 300 GB balanced
+    disk did not fit under a 500 GB SSD quota.
+    """
+    from comfy_qa.gcloud import explain_failure
+
+    message, fix, raw = explain_failure(REAL_QUOTA_REFUSAL, "", 1)
+
+    assert "SSD_TOTAL_GB" in message
+    assert "500" in message and "us-central1" in message
+    # The pointers gcloud appends are advice, and advice belongs in `fix`.
+    assert "cloud.google.com/compute/quotas" not in message
+    assert REAL_QUOTA_REFUSAL.strip() in raw.strip()
+
+
+def test_a_quota_refusal_is_not_reported_as_a_permission_problem():
+    """The account is allowed; the project is at its limit. "Check which account
+    you are using" sends the reader somewhere there is nothing to find."""
+    from comfy_qa.gcloud import QUOTA, classify, explain_failure
+
+    assert classify(REAL_QUOTA_REFUSAL) == QUOTA
+    _, fix, _ = explain_failure(REAL_QUOTA_REFUSAL, "", 1)
+    assert fix and "quotas" in fix
+    assert "which account" not in (fix or "")

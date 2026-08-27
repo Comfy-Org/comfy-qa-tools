@@ -61,6 +61,35 @@ def check_command(host: Host) -> str:
     )
 
 
+def repair_command(host: Host) -> str:
+    """Install the requirements of an existing checkout, without touching it.
+
+    An install is not the same thing as a working install. `check_command` asks
+    whether `main.py` is there, and a box moved from a snapshot taken before a
+    dependency was added has the file and cannot start — on 2026-08-27 a real
+    box died on `ModuleNotFoundError: No module named 'sqlalchemy'` after the
+    tool had just reported "ComfyUI is already installed".
+
+    Deliberately only `pip install -r requirements.txt`: it fixes the case that
+    happens and cannot rewrite anyone's checkout.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NonInteractive -Command \""
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
+            "{ '.\\venv\\Scripts\\python.exe' } "
+            "elseif (Test-Path '.\\python_embeded\\python.exe') "
+            "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
+            "& $py -m pip install -r requirements.txt\""
+        )
+    return (
+        f"cd {LINUX_ROOT} && "
+        "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi && "
+        "$PY -m pip install -r requirements.txt"
+    )
+
+
 def install_command(host: Host) -> str:
     """Set ComfyUI up from nothing, printing progress as it goes."""
     if is_windows(host):

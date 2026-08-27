@@ -490,6 +490,7 @@ def serve(
     now=None,
     timeout: int = COMFY_TIMEOUT,
     tunnel_dir: Path | None = None,
+    repair: bool = True,
 ) -> int:
     """Launch ComfyUI on the box with its log on this terminal.
 
@@ -548,6 +549,30 @@ def serve(
             f"there is no Python on {host.name} to run ComfyUI with (NO_PYTHON), so "
             "it could not be started.")
     if code not in (0, INTERRUPTED_EXIT):
+        # An install is not the same as a working install. `ensure_installed`
+        # asks whether main.py is on the box, so a machine built from a snapshot
+        # taken before a dependency was added reports "already installed" and
+        # then dies importing it — which is what happened on 2026-08-27, on
+        # `sqlalchemy`. Reporting that accurately is not the same as being
+        # usable, so try the one repair that fixes it, once, and say so.
+        if repair:
+            from .provision import repair_command
+
+            say("")
+            say("that looks like a missing dependency rather than a broken "
+                "install — installing its requirements and trying once more")
+            try:
+                gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                       repair_command(host), stream=True)
+            except GcloudError as exc:
+                raise give_up(
+                    f"ComfyUI on {host.name} exited with {code}, and its "
+                    f"requirements could not be installed either: {exc}") from exc
+            return serve(
+                gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
+                sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,
+                repair=False,
+            )
         raise give_up(f"ComfyUI on {host.name} exited with {code} instead of starting.")
 
     # Exit 0 is not the same as having served. A launch that ends immediately —

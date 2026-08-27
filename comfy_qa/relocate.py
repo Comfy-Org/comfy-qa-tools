@@ -43,7 +43,7 @@ from datetime import datetime
 from typing import Callable
 
 from .config import Host
-from .gcloud import Gcloud, GcloudError
+from .gcloud import QUOTA, Gcloud, GcloudError
 
 # The steps a move is made of. They are identifiers rather than free text so the
 # printed plan and the executed run come off one list: a preview assembled
@@ -148,6 +148,30 @@ def metadata_pairs(instance: dict) -> str | None:
     return ",".join(keep) or None
 
 
+def network_of(instance: dict) -> dict:
+    """The network the source instance is on, and whether it can reach out.
+
+    A moved box with no external address and no Cloud NAT has no route to the
+    internet at all. IAP covers getting *in*, which is what the no-address rule
+    was reasoning about; nothing covered getting *out*. So the box could not pip
+    install, could not download ComfyUI, could not fetch a model — `host go`
+    could never provision a box `host move` had made. It only looked fine
+    because the disk already carried an install.
+
+    A move is supposed to produce the same machine somewhere else, so the answer
+    is to copy what the source has rather than to impose a policy on the copy.
+    """
+    interfaces = instance.get("networkInterfaces") or []
+    if not interfaces:
+        return {}
+    first = interfaces[0]
+    return {
+        "network": _tail(first.get("network")) or None,
+        "subnet": _tail(first.get("subnetwork")) or None,
+        "external": bool(first.get("accessConfigs")),
+    }
+
+
 def suffix_for(zone: str) -> str:
     """`us-central1-b` -> `b`, so a moved box reads as where it went."""
     return zone.rsplit("-", 1)[-1] or zone
@@ -227,6 +251,12 @@ class Plan:
     machine_type: str
     disk_type: str | None = None
     metadata: str | None = None
+    # Copied from the source rather than decided here: a move is meant to
+    # produce the same machine somewhere else, and a box with no egress is not
+    # the same machine — it cannot install, update or download anything.
+    external_ip: bool = False
+    network: str | None = None
+    subnet: str | None = None
 
     @property
     def project(self) -> str:
@@ -333,6 +363,11 @@ def plan_move(host: Host, instance: dict, to_zone: str,
         machine_type=machine_type(instance),
         disk_type=_tail((source_disk or {}).get("type")) or None,
         metadata=metadata_pairs(instance),
+        **{k: v for k, v in (
+            ("external_ip", network_of(instance).get("external", False)),
+            ("network", network_of(instance).get("network")),
+            ("subnet", network_of(instance).get("subnet")),
+        )},
     )
 
 
@@ -669,21 +704,53 @@ def _state_after(plan: Plan, found: Found, done: list[str]) -> tuple[tuple[str, 
     return tuple(left), tuple(cleanup)
 
 
-def _create_disk(gc: Gcloud, plan: Plan, snapshot: str) -> None:
-    """Create the new disk, keeping the source disk's type.
+# The types that count against SSD_TOTAL_GB. pd-standard does not, which is why
+# it is the fallback when that allowance is full.
+_SSD_TYPES = ("pd-balanced", "pd-ssd", "pd-extreme", "hyperdisk-balanced")
+
+
+def _create_disk(gc: Gcloud, plan: Plan, snapshot: str,
+                 say: Callable[[str], None] | None = None) -> None:
+    """Create the new disk, keeping the source disk's type where that is allowed.
 
     `gcloud compute disks create` defaults to pd-standard when `--type` is left
-    off, so a pd-balanced boot disk comes out the other side of a move slower
-    than it went in, silently. It is one flag.
+    off, so a pd-balanced boot disk used to come out of a move slower than it
+    went in, silently. Passing the type fixed that and introduced a second
+    failure: pd-balanced counts against SSD_TOTAL_GB, and a 300 GB copy of a
+    300 GB disk needs 600 GB under an allowance that is 500 by default. The move
+    then died at its most expensive step, having already made the snapshot.
+
+    So: ask for the matching type, and if the only thing standing in the way is
+    that allowance, take the slower type rather than failing — and say so, with
+    the way to get the fast one. A finished move on a slower disk is worth more
+    than no move at all, and the difference is now the user's to decide rather
+    than something they discover.
     """
-    args = [
-        "compute", "disks", "create", plan.new_disk,
-        f"--zone={plan.to_zone}", f"--project={plan.project}",
-        f"--source-snapshot={snapshot}",
-    ]
-    if plan.disk_type:
-        args.append(f"--type={plan.disk_type}")
-    gc.run(args, parse_json=False, timeout=300)
+    def build(disk_type: str | None) -> list[str]:
+        args = [
+            "compute", "disks", "create", plan.new_disk,
+            f"--zone={plan.to_zone}", f"--project={plan.project}",
+            f"--source-snapshot={snapshot}",
+        ]
+        if disk_type:
+            args.append(f"--type={disk_type}")
+        return args
+
+    try:
+        gc.run(build(plan.disk_type), parse_json=False, timeout=300)
+        return
+    except GcloudError as exc:
+        fits = plan.disk_type in _SSD_TYPES and getattr(exc, "kind", "") == QUOTA
+        if not fits:
+            raise
+
+    if say:
+        say(f"no room under this project's SSD allowance for a "
+            f"{plan.disk_type} disk — using pd-standard instead")
+        say("  the box will boot and load models more slowly than the original")
+        say("  to get a matching disk: raise SSD_TOTAL_GB, delete "
+            f"{plan.new_disk}, and run this again")
+    gc.run(build("pd-standard"), parse_json=False, timeout=300)
 
 
 def run_move(
@@ -716,11 +783,13 @@ def run_move(
             if action.kind == SNAPSHOT:
                 gc.snapshot_disk(plan.source_disk, host.gce_zone, project, plan.snapshot)
             elif action.kind == CREATE_DISK:
-                _create_disk(gc, plan, snapshot_name)
+                _create_disk(gc, plan, snapshot_name, say)
             elif action.kind == CREATE_INSTANCE:
                 gc.create_instance_from_disk(
                     plan.new_instance, plan.to_zone, project, plan.new_disk,
                     plan.machine_type, plan.metadata,
+                    external_ip=plan.external_ip,
+                    network=plan.network, subnet=plan.subnet,
                 )
             elif action.kind == DELETE_SNAPSHOT:
                 gc.delete_snapshot(snapshot_name, project)
