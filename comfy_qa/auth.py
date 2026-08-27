@@ -17,7 +17,14 @@ from typing import Annotated, Callable, Optional
 
 import typer
 
-from .quota import available_gpus, readiness, resolve, summarise
+from .quota import (
+    GLOBAL_ALLOWANCE,
+    available_gpus,
+    matches,
+    readiness,
+    resolve,
+    summarise,
+)
 from .gcloud import (
     Gcloud,
     GcloudError,
@@ -29,8 +36,10 @@ app = typer.Typer(help="Google Cloud sign-in, billing and GPU quota.")
 quota_app = typer.Typer(help="GPU quota: what you have, and how to ask for more.")
 app.add_typer(quota_app, name="quota")
 
-# How long `request` will wait before handing you back. Approval can take days,
-# so waiting forever is not an option; the same command re-enters the wait.
+# How long `request` will wait before handing you back — for the whole command,
+# however many cards it asked for. Approval can take days, so waiting forever is
+# not an option; the same command re-enters the wait. Both are read at call time,
+# so a test can shorten them without a 30-minute suite.
 WAIT_TIMEOUT_SECONDS = 30 * 60
 POLL_SECONDS = 30
 
@@ -103,17 +112,40 @@ def run_checks(gc: Gcloud) -> list[Check]:
         results.append(Check("gpu quota", False, str(exc), exc.fix or "comfy-qat auth quota"))
         return results
 
-    granted = [q for q in quotas if _value_of(q) > 0]
-    if not granted:
+    # Read through the same filter the rest of the tool uses. Counting any quota
+    # with a non-zero value meant a project holding nothing but a committed or
+    # preemptible allowance passed this check — and then could not start a box.
+    # Setup was fixed for exactly this; status was reporting green beside it.
+    request_fix = "comfy-qat auth quota request --gpu <type> --region <region>"
+    usable = [row for row in readiness(quotas) if row.usable]
+    cards = [row for row in usable if row.gpu != GLOBAL_ALLOWANCE]
+    if not usable:
         results.append(Check(
             "gpu quota", False,
             "zero GPU quota on this project — no GPU instance can start",
-            "comfy-qat auth quota request --gpu <type> --region <region>",
+            request_fix,
         ))
         return results
+    if not cards:
+        # The project-wide ceiling is not a card. On its own it starts nothing.
+        results.append(Check(
+            "gpu quota", False,
+            "a project-wide allowance only, no specific card granted",
+            request_fix,
+        ))
+        return results
+    # Collapsed per card, not per region: Google meters some cards region by
+    # region, so the raw rows read `K80=1, K80=1, K80=1, K80=1` — four entries
+    # for one card nobody wants — while the L4 you would actually use fell off
+    # the end of a silent truncation at four. Say how many there are, and never
+    # cut without saying so.
+    summary = [card for card in summarise(cards) if card.usable]
+    shown = ", ".join(f"{card.gpu}={card.limit}" for card in summary[:4])
+    if len(summary) > 4:
+        shown += f" (+{len(summary) - 4} more)"
     results.append(Check(
         "gpu quota", True,
-        ", ".join(f"{q.get('quotaId')}={_value_of(q)}" for q in granted[:4]),
+        f"{shown} — {len(summary)} card(s) ready",
     ))
 
     return results
@@ -260,6 +292,11 @@ def quota_request_cmd(
         quotas = gc.gpu_quotas(project)
     except GcloudError as exc:
         typer.echo(str(exc), err=True)
+        # The exception carries the command that fixes it — dropping it left
+        # `no project set` with nowhere to go, while `quota list` said `comfy-qat
+        # setup` for the same failure.
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
         raise typer.Exit(code=2)
 
     wanted: list[tuple[str, str]] = []
@@ -272,9 +309,16 @@ def quota_request_cmd(
         resolved = resolve(name, quotas, region=region)
         if resolved is None:
             offer = ", ".join(available_gpus(quotas)) or "none"
+            # A card this project does have, just not where you asked, used to
+            # come back as "no quota for 'l4' … Available: L4" — which reads as
+            # a contradiction. Say where it is metered instead.
+            elsewhere = sorted({
+                row.region for row in readiness(quotas) if matches(name, row.quota_id)
+            }) if region else []
             typer.echo(
                 f"this project reports no quota for {name!r}"
                 + (f" in {region}" if region else "")
+                + (f". It is metered in {', '.join(elsewhere)}" if elsewhere else "")
                 + f". Available: {offer}", err=True,
             )
             raise typer.Exit(code=2)
@@ -297,18 +341,25 @@ def quota_request_cmd(
         typer.echo(f"requested {name} = {value}" + (f" in {region}" if region else ""))
         submitted.append((name, resolved))
 
-    if dry_run or not submitted:
+    if dry_run:
         return
+    if not submitted:
+        # Every request was refused. Exiting 0 told a script it had worked.
+        raise typer.Exit(code=2)
 
     typer.echo(f"track them: {console_quota_url(project)}")
     if not wait:
         return
 
-    outstanding = list(submitted)
+    # One window for the whole command, not one per card: waiting on l4,a100
+    # serially meant the documented half-hour became an hour, and the second
+    # card was not even polled until the first gave up.
+    deadline = time.monotonic() + WAIT_TIMEOUT_SECONDS
     still_waiting = []
-    for name, resolved in outstanding:
+    for name, resolved in submitted:
         granted = wait_for_quota(
             lambda rid=resolved: _current_value(gc, project, rid), wanted=value,
+            timeout=max(0.0, deadline - time.monotonic()), interval=POLL_SECONDS,
         )
         if granted:
             typer.echo(f"granted: {name}")
@@ -341,16 +392,23 @@ def wait_for_quota(
     poll: Callable[[], int],
     *,
     wanted: int,
-    timeout: int = WAIT_TIMEOUT_SECONDS,
-    interval: int = POLL_SECONDS,
-    sleep: Callable[[float], None] = time.sleep,
-    now: Callable[[], float] = time.monotonic,
+    timeout: float | None = None,
+    interval: float | None = None,
+    sleep: Callable[[float], None] | None = None,
+    now: Callable[[], float] | None = None,
 ) -> bool:
     """Poll until the quota reaches `wanted`, or the window closes.
 
-    Returns True if granted. The clock and sleep are injectable so tests do not
-    take half an hour.
+    Returns True if granted. Every default is resolved here rather than in the
+    signature: bound as defaults they were captured at import, so neither the
+    constants nor the clock could be replaced from outside, and driving the wait
+    through the command itself meant a test that really slept for half an hour.
     """
+    timeout = WAIT_TIMEOUT_SECONDS if timeout is None else timeout
+    interval = POLL_SECONDS if interval is None else interval
+    sleep = sleep or time.sleep
+    now = now or time.monotonic
+
     deadline = now() + timeout
     while True:
         try:

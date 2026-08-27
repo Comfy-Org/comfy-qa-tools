@@ -148,18 +148,27 @@ def ensure_gpu_quota(
         p.say("GPU quota: a project-wide allowance only, no specific card granted")
         return True
 
+    from .quota import available_gpus, resolve
+
+    # Naming the project when only one region was inspected claimed something
+    # about the other forty-two that had not been looked at.
+    where_checked = f" in {region}" if region else " on this project"
     p.say(
-        "GPU quota is zero on this project, so no GPU box can start. Requesting it "
+        f"GPU quota is zero{where_checked}, so no GPU box can start. Requesting it "
         "is free; approval can take days and a brand-new account is often refused "
         "until it has been billed once."
     )
     if not interactive:
-        p.say("skipping the request. Run: comfy-qat auth quota request --quota-id <id>")
+        # `--quota-id <id>` left a placeholder only another command could fill,
+        # while this one is holding the ids already.
+        offer = [name for name in available_gpus(quotas) if name != GLOBAL_ALLOWANCE]
+        card = offer[0].lower() if offer else "<card>"
+        hint = f"comfy-qat auth quota request --gpu {card}"
+        hint += f" --region {region}" if region else " --region <region>"
+        p.say(f"skipping the request. Run: {hint}")
         return False
     if not p.confirm("Request GPU quota now?"):
         return False
-
-    from .quota import available_gpus, resolve
 
     cards = available_gpus(quotas)
     if not cards:
@@ -170,7 +179,12 @@ def ensure_gpu_quota(
     if quota_id is None:
         p.say(f"could not resolve a quota id for {card}.")
         return False
-    where = region or p.ask("Which region? (e.g. us-central1)")
+    if card == GLOBAL_ALLOWANCE:
+        # The project-wide ceiling has no region dimension. Attaching one built a
+        # request Google rejects, from a menu this command offered.
+        where = None
+    else:
+        where = region or p.ask("Which region? (e.g. us-central1)")
 
     try:
         gc.run(quota_request_command(
@@ -211,7 +225,15 @@ def add_discovered_hosts(
 
     try:
         existing = load(path)
-    except ConfigError:
+    except ConfigError as exc:
+        if path.exists():
+            # Treating an unreadable host list as an empty one meant appending a
+            # second [hosts.<name>] table for a box already declared in it — and
+            # a duplicate table is not valid TOML. One fixable mistake in the
+            # file became a file nothing can load, on a re-run that was supposed
+            # to change nothing.
+            p.say(f"could not read your host list ({exc}), so nothing was added to it")
+            return 0
         existing = []
 
     additions = new_hosts(found, existing)

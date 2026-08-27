@@ -14,11 +14,18 @@ times in ways that all look like something else:
      breaks the parse tens of lines later. Everything here is ASCII only.
   3. `Split-Path` with an empty value prompts, which hangs a non-interactive SSH
      command forever. Nothing here prompts, and PowerShell runs -NonInteractive.
+
+Because 1 rules out `-ErrorActionPreference Stop`, PowerShell carries on after a
+failed step, and an install whose clone failed still ends by printing "install
+complete" and exiting 0. So each script checks its own work: the clone is
+verified before anything is installed into it, and main.py is verified before
+success is claimed. Exit codes are the only thing the caller can trust.
 """
 
 from __future__ import annotations
 
 from .config import Host
+from .tunnel import COMFYUI_PORT
 
 # Where ComfyUI lives on each kind of box. Windows matches the convention already
 # used on the other machines here.
@@ -27,6 +34,10 @@ LINUX_ROOT = "/opt/comfyui"
 
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
+
+# The launch script's own word for "nothing here can run ComfyUI". Reserved, so
+# the caller can recognise it rather than reporting a generic non-zero exit.
+NO_PYTHON_EXIT = 3
 
 
 def is_windows(host: Host) -> bool:
@@ -63,6 +74,11 @@ def install_command(host: Host) -> str:
             "--accept-source-agreements --accept-package-agreements; "
             f"Write-Output 'cloning ComfyUI into {WINDOWS_ROOT}'; "
             f"git clone https://github.com/comfyanonymous/ComfyUI.git '{WINDOWS_ROOT}'; "
+            # Without this the next line fails quietly and everything after it
+            # installs into whatever directory PowerShell happened to be in.
+            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            "{ Write-Output 'INSTALL_INCOMPLETE: the clone did not produce main.py'; "
+            "exit 1 }; "
             f"Set-Location '{WINDOWS_ROOT}'; "
             f"py -{PYTHON_SERIES} -m venv venv; "
             "Write-Output 'installing torch (this is the slow part)'; "
@@ -70,6 +86,8 @@ def install_command(host: Host) -> str:
             ".\\venv\\Scripts\\python.exe -m pip install torch torchvision torchaudio "
             "--index-url https://download.pytorch.org/whl/cu128; "
             ".\\venv\\Scripts\\python.exe -m pip install -r requirements.txt; "
+            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; "
             "Write-Output 'install complete'\""
         )
     return (
@@ -83,6 +101,7 @@ def install_command(host: Host) -> str:
         "./venv/bin/python -m pip install --upgrade pip; "
         "./venv/bin/python -m pip install torch torchvision torchaudio; "
         "./venv/bin/python -m pip install -r requirements.txt; "
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo INSTALL_INCOMPLETE; exit 1; fi; "
         "echo 'install complete'"
     )
 
@@ -116,16 +135,16 @@ def launch_command(host: Host) -> str:
             f"$candidates = @({candidates.replace('; ', ', ')}); "
             "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
             "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
-            "if (-not $py) { Write-Output 'NO_PYTHON'; exit 3 }; "
+            f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
             "Write-Output ('using ' + $py); "
-            "& $py main.py --listen 127.0.0.1 --port 8188\""
+            f"& $py main.py --listen 127.0.0.1 --port {COMFYUI_PORT}\""
         )
     candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
     return (
         f"cd {LINUX_ROOT}; "
         f"for p in {candidates} $(command -v python3); do "
         "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
-        "if [ -z \"$py\" ]; then echo NO_PYTHON; exit 3; fi; "
+        f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
         "echo \"using $py\"; "
-        "\"$py\" main.py --listen 127.0.0.1 --port 8188"
+        f"\"$py\" main.py --listen 127.0.0.1 --port {COMFYUI_PORT}"
     )

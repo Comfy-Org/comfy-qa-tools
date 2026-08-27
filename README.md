@@ -24,9 +24,10 @@ never collide on `PATH`.
 ## Status
 
 **Release 1 — `host` and `auth` — is code complete.** Every command below is
-implemented, tested and on `main`. What remains before it is called done is an
-end-to-end pass on a real Google Cloud project by someone who did not write it:
-see [`docs/test-criteria.md`](docs/test-criteria.md).
+implemented and tested. Phases A to D and I to J of
+[`docs/test-criteria.md`](docs/test-criteria.md) have been run against a real
+Google Cloud project by someone who did not write the tool; the phases that start
+a GPU box have not, and are recorded as not run rather than assumed.
 
 | area | state |
 |---|---|
@@ -35,12 +36,21 @@ see [`docs/test-criteria.md`](docs/test-criteria.md).
 | `auth quota list`, `auth quota request` | shipped |
 | `host init`, `list`, `discover` | shipped — offline, no cloud call |
 | `host up`, `open`, `down`, `go` | shipped — start, tunnel, stop |
+| `host switch` | shipped — stop the box you were on, go to the one you want |
 | `host move` | shipped — escape a zone with no GPU capacity |
 | `host stamp` | shipped — the evidence line |
 | `host create` | **not built.** Boxes are made in the console, then `host discover` |
 | `env` | carried over from v0, unchanged, awaiting its own release |
 
-Verified against `main` at `6d11e6d`, 227 tests passing on Python 3.11 and 3.12.
+Version **1.0.0**, 1049 tests. They run on Python 3.11, 3.12 and 3.13, on Ubuntu
+and macOS, and CI builds the wheel, installs it into a throwaway virtualenv and
+runs the binary from outside the checkout — because testing the source tree never
+proved the thing people actually install works.
+
+Three rules hold the docs to the code, each enforced by a test: every error the
+tool can print has an entry in [troubleshooting](docs/troubleshooting.md), every
+command in the binary appears in this README and every command in this README
+exists in the binary, and no test file may vanish from the suite unnoticed.
 
 ---
 
@@ -116,9 +126,27 @@ comfy-qat guide           # the short version, in the terminal
 ## Everyday use
 
 ```sh
-comfy-qat host go comfy-win     # start it, tunnel in, run ComfyUI where you can watch
-comfy-qat host stamp comfy-win  # the line that says what produced your result
-comfy-qat host down comfy-win   # close the tunnel, stop the box, stop paying
+comfy-qat host go windows       # start it, tunnel in, run ComfyUI where you can watch
+comfy-qat host stamp windows    # the line that says what produced your result
+comfy-qat host down windows     # close the tunnel, stop the box, stop paying
+```
+
+`windows` there is not a special name — it is the machine described rather than
+named. Anywhere a host name goes you can say what you want instead: an operating
+system (`windows`, `linux`, `ubuntu`, `debian`, `macos`), a card (`l4`, `a100`),
+or both (`windows/l4`). Whatever it resolves to is printed, one host per line:
+
+```
+windows -> comfy-win (Windows Server 2022, L4)
+```
+
+If two machines fit, it refuses and lists them with their OS and card rather than
+picking one. Names always win over a description.
+
+Changing machine is one command, which stops the box you were on:
+
+```sh
+comfy-qat host switch linux     # start the Linux box, then stop the Windows one
 ```
 
 `go` is the one command worth memorising. It starts the instance, opens an
@@ -136,8 +164,13 @@ Every target is a **declared host**, local or cloud. Naming them all is the poin
 local stops being an invisible default, so picking the wrong one becomes something
 you do on purpose.
 
+`<host>` below is a name, or a description of the machine you want — `windows`,
+`l4`, `windows/l4`. A description that fits exactly one declared host is used and
+printed; one that fits two is refused with both named.
+
 | command | what it does |
 |---|---|
+| `comfy-qat --version` | what you are running — `comfy-qat 1.0.0 (0d27bd4)` from a checkout. Paste it with any result |
 | `comfy-qat setup` | first run: sign-in, project, billing, quota, host list |
 | `comfy-qat guide` | the first-run instructions, in the terminal |
 | `comfy-qat auth status` | signed in? which project? billing? GPU quota? — `--json` too |
@@ -145,15 +178,17 @@ you do on purpose.
 | `comfy-qat auth quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
 | `comfy-qat auth quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
 | `comfy-qat host` | same as `list` — read-only is the safe default |
-| `comfy-qat host list` | show every declared machine and where it answers |
+| `comfy-qat host list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
 | `comfy-qat host init` | write a starter host list you can edit |
 | `comfy-qat host discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
-| `comfy-qat host up <name>` | start it and wait until ComfyUI actually answers |
-| `comfy-qat host open <name>` | tunnel to a box that is already running. `--dry-run` prints the command |
-| `comfy-qat host down <name>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
-| `comfy-qat host go <name>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
-| `comfy-qat host move <name>` | rebuild the box in a zone that has capacity, keeping its install. `--to`, `--dry-run`, `--yes` |
-| `comfy-qat host stamp <name>` | ask a machine what it is. `--json` |
+| `comfy-qat host up <host>` | start it and wait until ComfyUI actually answers |
+| `comfy-qat host open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
+| `comfy-qat host down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
+| `comfy-qat host go <host>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
+| `comfy-qat host switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
+| `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
+| `comfy-qat host stamp <host>` | ask a machine what it is. `--json` |
+
 | `comfy-qat env` | v0's build and feature-flag check for deployed environments |
 
 Every command takes `--config` to point at a host list somewhere other than the
@@ -197,20 +232,30 @@ Two rules are enforced offline, before anything else runs:
   would silently point you at the wrong machine, so it is refused, not warned about.
 - **No two hosts may share a port.** If two do, you cannot tell which one you reached.
 
-Unknown fields are rejected rather than ignored, so a typo'd `gce_zoen` fails loudly.
+Unknown fields are rejected rather than ignored, and the message names the typo and
+what it was probably meant to be:
 
-Switching OS means switching host: one box per OS, selected by name. Nothing is
-reimaged. Every field is documented in [`docs/hosts.md`](docs/hosts.md).
+```
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?).
+```
+
+Switching OS means switching host: one box per OS, and nothing is ever reimaged.
+`os` and `gpu` are what `windows`, `l4` and `windows/l4` match on, so with one box
+per OS you never have to remember what you called it. Every field is documented in
+[`docs/hosts.md`](docs/hosts.md).
 
 ## What it writes
 
 Everything lives under `~/.config/comfy-qa-tools/`:
 
 - `hosts.toml` — the host list, and the only file you would ever edit.
-- `tunnels/<host>.pid` and `tunnels/<host>.log` — written by `host open`, `up` and
-  `go`. A tunnel outlives the command that started it, so its process id is
-  recorded rather than assumed; the log is what gcloud said while opening it. Both
-  are removed by `host down`, and a stale pid file is recognised, not trusted.
+- `tunnels/<host>.pid`, `tunnels/<host>.json` and `tunnels/<host>.log` — written by
+  `host open`, `up` and `go`. A tunnel outlives the command that started it, so
+  what it is gets recorded rather than assumed: the pid, the moment that process
+  started, and which instance, zone and port it goes to. Pids are recycled, so the
+  number alone is not an identity and a record that no longer fits is treated as
+  stale rather than trusted. The log is what gcloud said while opening it. All
+  three are removed by `host down`.
 
 Signing in is gcloud's job, so credentials live in gcloud's own store
 (`~/.config/gcloud/`) and are refreshed by it. **This tool never sees, stores or

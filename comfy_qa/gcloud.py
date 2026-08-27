@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 
 COMPUTE_SERVICE = "compute.googleapis.com"
@@ -30,6 +31,116 @@ QUOTA_TIMEOUT = 240
 # Linux. gcloud blocks until the operation completes.
 INSTANCE_TIMEOUT = 300
 
+# Proving the credential is one small API call. It should never take long, and if
+# it does the network is the problem, which is worth knowing before a GPU starts.
+PREFLIGHT_TIMEOUT = 20
+
+
+# --- what kind of failure was that ------------------------------------------
+#
+# "Run `gcloud auth login`" is right for exactly two of these and misleading for
+# the rest. Telling a tester to sign in again when the real problem is a missing
+# project, a denied permission or a dropped Wi-Fi connection sends them to fix
+# something that was never broken.
+
+REAUTH = "reauth"            # Google asked for a fresh proof of identity
+CREDENTIALS = "credentials"  # the stored sign-in could not be refreshed at all
+NO_ACCOUNT = "no-account"    # nobody is signed in
+NO_PROJECT = "no-project"    # signed in, but no project chosen
+DENIED = "denied"            # signed in and reached Google, and refused
+NETWORK = "network"          # never reached Google
+TIMEOUT = "timeout"          # reached Google, or did not, but ran out of clock
+NO_GCLOUD = "no-gcloud"      # the binary is not here
+UNKNOWN = "unknown"
+
+# Ordered: the first match wins, so the specific signs come before the vague
+# ones. "reauthentication" is checked before anything else because gcloud wraps
+# it inside a generic "problem refreshing your current auth tokens" sentence that
+# also fronts network failures — matching the wrapper would mislabel both.
+_SIGNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (REAUTH, ("reauthentication", "reauth is required")),
+    # Before CREDENTIALS: gcloud reports a refresh that failed for want of a
+    # network with the same "problem refreshing your current auth tokens"
+    # wrapper as one that failed for want of a valid sign-in. Signing in again
+    # does not fix a dropped connection.
+    (NETWORK, (
+        "unable to reach",
+        "could not reach",
+        "temporary failure in name resolution",
+        "name or service not known",
+        "network is unreachable",
+        "failed to establish a new connection",
+        "connection aborted",
+        "connection reset by peer",
+        "certificate verify failed",
+    )),
+    (CREDENTIALS, (
+        "invalid_grant",
+        "token has been expired or revoked",
+        "refreshing your current auth tokens",
+    )),
+    (NO_ACCOUNT, (
+        "do not currently have an active account",
+        "does not have any valid credentials",
+    )),
+    (NO_PROJECT, (
+        "required property [project] is not currently set",
+        "the project property is set to the empty string",
+    )),
+    (DENIED, (
+        "permission denied",
+        "does not have permission",
+        "required 'compute.",
+        "insufficient authentication scopes",
+        "caller does not have permission",
+        "permission_denied",
+    )),
+)
+
+# What to say and what to do about it. A kind with no entry keeps gcloud's own
+# sentence, which for a denied permission names the exact role that is missing —
+# better than anything this tool could write.
+_ADVICE: dict[str, tuple[str | None, str | None]] = {
+    REAUTH: ("your gcloud session has expired", "gcloud auth login"),
+    CREDENTIALS: ("gcloud could not refresh your sign-in", "gcloud auth login"),
+    NO_ACCOUNT: ("no active gcloud account", "gcloud auth login"),
+    NO_PROJECT: ("no project set", "gcloud config set project <your-project-id>"),
+    NETWORK: ("could not reach Google Cloud", "check your network, then try again"),
+    DENIED: (None, "comfy-qat auth status — check which account you are using"),
+}
+
+
+def classify(text: str) -> str:
+    """Name the kind of failure in everything gcloud printed.
+
+    Reads the full output rather than the one-line summary, for the same reason
+    the stockout check does: gcloud's summary line is sometimes `---`.
+    """
+    lowered = (text or "").lower()
+    for kind, signs in _SIGNS:
+        if any(sign in lowered for sign in signs):
+            return kind
+    return UNKNOWN
+
+
+def can_prompt() -> bool:
+    """Could gcloud ask this terminal a question right now?
+
+    This mirrors gcloud's own rule, which is stricter than it looks: reauth is
+    only attempted when `console_io.CanPrompt()` is true, and that requires
+    *stderr* to be a terminal as well as stdin
+    (googlecloudsdk/core/console/console_io.py, `IsInteractive(error=True)`).
+
+    That single detail is why a session expiry is so much worse through this tool
+    than at a bare prompt. `Gcloud.run` captures stderr, so gcloud sees a pipe,
+    decides it cannot prompt, and turns a ten-second re-prompt into a hard
+    failure — even with a human sitting in front of the machine.
+    """
+    try:
+        return bool(sys.stdin.isatty() and sys.stderr.isatty())
+    except (AttributeError, ValueError):  # a closed or replaced stream
+        return False
+
 
 class GcloudError(Exception):
     """A gcloud call that failed.
@@ -37,12 +148,23 @@ class GcloudError(Exception):
     `fix` is a command the user can run. `raw` is everything gcloud printed —
     kept because the one-line summary is not always enough to classify a failure,
     and classifying on the summary meant a capacity stockout went unrecognised.
+    `kind` is that classification, so callers can tell an expired session from a
+    missing project without matching on prose.
     """
 
-    def __init__(self, message: str, fix: str | None = None, raw: str = "") -> None:
+    def __init__(
+        self, message: str, fix: str | None = None, raw: str = "",
+        kind: str = UNKNOWN,
+    ) -> None:
         super().__init__(message)
         self.fix = fix
         self.raw = raw or message
+        self.kind = kind
+
+    @property
+    def is_auth(self) -> bool:
+        """Would signing in again fix this?"""
+        return self.kind in (REAUTH, CREDENTIALS, NO_ACCOUNT)
 
 
 @dataclass
@@ -51,6 +173,11 @@ class Gcloud:
 
     timeout: int = DEFAULT_TIMEOUT
     runner: object = field(default=None, repr=False)
+
+    # Set once anything has actually reached Google with these credentials.
+    # A successful call is the best possible proof, so the preflight below
+    # costs nothing on the common path.
+    proven: bool = field(default=False, repr=False)
 
     def available(self) -> str | None:
         # An injected runner stands in for the binary, so tests exercise the
@@ -69,6 +196,7 @@ class Gcloud:
             raise GcloudError(
                 "gcloud is not installed or not on PATH.",
                 fix="https://cloud.google.com/sdk/docs/install",
+                kind=NO_GCLOUD,
             )
 
         cmd = [exe, *args]
@@ -81,11 +209,15 @@ class Gcloud:
             raise GcloudError(
                 f"gcloud timed out after {limit}s: {' '.join(args)}",
                 fix="check your network, then try again",
+                kind=TIMEOUT,
             ) from exc
 
         if proc.returncode != 0:
             message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
-            raise GcloudError(message, fix=fix, raw=raw)
+            raise GcloudError(message, fix=fix, raw=raw, kind=classify(raw))
+
+        if not _is_local_only(args):
+            self.proven = True
 
         out = proc.stdout.strip()
         if not parse_json:
@@ -112,8 +244,97 @@ class Gcloud:
             raise GcloudError(
                 "gcloud is not installed or not on PATH.",
                 fix="https://cloud.google.com/sdk/docs/install",
+                kind=NO_GCLOUD,
             )
         return subprocess.run([exe, *args]).returncode
+
+    # --- is this going to work before we spend money on it? ----------------
+
+    def preflight(self, project: str | None = None) -> None:
+        """Prove the credentials work, before starting something slow or billable.
+
+        Failing here costs a second. Failing fifteen minutes in costs a GPU box
+        that is already running, already billing, and has nothing to show for it
+        — and the message you get then describes the step that happened to be
+        holding the credential, not the credential.
+
+        Order matters: gcloud on PATH, somebody signed in, a project chosen, and
+        only then one small call to Google. The first three are local and free,
+        and each one distinguishes a failure the last one would blur together.
+        """
+        if self.proven:
+            return
+
+        if self.available() is None:
+            raise GcloudError(
+                "gcloud is not installed or not on PATH.",
+                fix="https://cloud.google.com/sdk/docs/install",
+                kind=NO_GCLOUD,
+            )
+
+        if not self.active_account():
+            raise GcloudError(
+                "no active gcloud account", fix="gcloud auth login", kind=NO_ACCOUNT,
+            )
+
+        project = project or self.current_project()
+        if not project:
+            raise GcloudError(
+                "no project set",
+                fix="gcloud config set project <your-project-id>",
+                kind=NO_PROJECT,
+            )
+
+        self._prove(project)
+
+    def _prove(self, project: str) -> None:
+        """One small call, purely to make gcloud refresh the token and be judged.
+
+        Any answer except an authentication failure counts as proof. A denied
+        permission in particular is a *pass*: to be refused, the credential had
+        to be accepted first. Treating it as a failure would block a tester whose
+        account simply cannot read project metadata, which is a worse bug than
+        the one this is preventing.
+        """
+        try:
+            self.run(["projects", "describe", project], timeout=PREFLIGHT_TIMEOUT)
+        except GcloudError as exc:
+            if exc.kind == DENIED:
+                self.proven = True
+                return
+            if exc.kind != REAUTH or not can_prompt():
+                raise
+            # Google is asking for a fresh proof of identity, and this terminal
+            # can answer it. gcloud will only ask when it owns stderr, which
+            # `run` does not give it — so hand the terminal over and let it.
+            self._rescue(project, exc)
+
+    def _rescue(self, project: str, failure: GcloudError) -> None:
+        """Let gcloud put its reauth prompt on the terminal, once.
+
+        This is the whole difference between a ten-second interruption and a dead
+        command: the challenge was always answerable, it just had nowhere to
+        appear. Nothing here signs anybody in — `gcloud auth login` stays the
+        tester's own command — and this only ever runs before the billable work,
+        never in the middle of it.
+        """
+        code = self.run_interactive(
+            ["projects", "describe", project, "--format=none"]
+        )
+        if code != 0:
+            raise failure
+        self.proven = True
+
+    def _ready_for(self, project: str | None) -> None:
+        """The gate the slow and billable calls go through.
+
+        A no-op when a runner is injected: that seam means there is no real
+        gcloud and no real credential, so there is nothing a preflight could
+        prove. The check belongs to the subprocess path only.
+        """
+        if self.runner is not None:
+            return
+        self.preflight(project)
 
     def list_projects(self) -> list[dict]:
         return self.run(["projects", "list"]) or []
@@ -164,6 +385,10 @@ class Gcloud:
         return info.get("status") or "UNKNOWN"
 
     def start_instance(self, name: str, zone: str, project: str) -> None:
+        # From here on the project is being charged. Everything below this line
+        # checks the credential first, and nothing above it needs to: a read that
+        # fails costs a second and says so.
+        self._ready_for(project)
         self.run([
             "compute", "instances", "start", name,
             f"--zone={zone}", f"--project={project}",
@@ -192,7 +417,7 @@ class Gcloud:
 
         exe = self.available()
         if exe is None:
-            raise GcloudError("gcloud is not installed or not on PATH.")
+            raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
         return subprocess.run([exe, *args]).returncode
 
     def ssh_output(self, instance: str, zone: str, project: str, remote: str) -> str:
@@ -207,7 +432,7 @@ class Gcloud:
 
         exe = self.available()
         if exe is None:
-            raise GcloudError("gcloud is not installed or not on PATH.")
+            raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
         proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=INSTANCE_TIMEOUT)
         if proc.returncode != 0:
             message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
@@ -221,6 +446,7 @@ class Gcloud:
         ]) or {}
 
     def snapshot_disk(self, disk: str, zone: str, project: str, snapshot: str) -> None:
+        self._ready_for(project)
         self.run([
             "compute", "disks", "snapshot", disk,
             f"--zone={zone}", f"--project={project}",
@@ -228,6 +454,7 @@ class Gcloud:
         ], parse_json=False, timeout=INSTANCE_TIMEOUT)
 
     def create_disk_from_snapshot(self, disk: str, zone: str, project: str, snapshot: str) -> None:
+        self._ready_for(project)
         self.run([
             "compute", "disks", "create", disk,
             f"--zone={zone}", f"--project={project}",
@@ -238,6 +465,7 @@ class Gcloud:
         self, name: str, zone: str, project: str, disk: str, machine_type: str,
         metadata: str | None = None,
     ) -> None:
+        self._ready_for(project)
         args = [
             "compute", "instances", "create", name,
             f"--zone={zone}", f"--project={project}",
@@ -261,6 +489,18 @@ class Gcloud:
         return self.run([
             "quotas", "preferences", "list", f"--project={project}",
         ]) or []
+
+
+# gcloud groups that answer from the local config and credential store without
+# calling Google. Succeeding at one of these proves a file was readable, not that
+# the credential still works — `gcloud auth list` prints a happy account list
+# with a session that expired hours ago. Misjudging in this direction is safe:
+# it costs one redundant preflight. Misjudging the other way is the bug.
+_LOCAL_ONLY_GROUPS = frozenset({"config", "auth", "components", "topic", "version", "help"})
+
+
+def _is_local_only(args: list[str]) -> bool:
+    return bool(args) and args[0] in _LOCAL_ONLY_GROUPS
 
 
 def localized_message(text: str) -> str | None:
@@ -300,6 +540,10 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
     yields a fragment like "to select an already authenticated account to use."
     The ERROR: line is usually the one that matters — except on compute errors,
     where it is literally `---` and the real sentence is further down.
+
+    Where `classify` recognises the failure, its plainer sentence and its fix
+    replace gcloud's. Where it does not, gcloud's own words are kept: they are
+    usually specific and this tool has nothing better to say.
     """
     text = (stderr or stdout or "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -317,14 +561,9 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
             f"gcloud exited {returncode}",
         )
 
-    fix = None
-    lowered = text.lower()
-    if "reauthentication failed" in lowered or "refreshing your current auth tokens" in lowered:
-        message = "your gcloud session has expired"
-        fix = "gcloud auth login"
-    elif "do not currently have an active account" in lowered:
-        message = "no active gcloud account"
-        fix = "gcloud auth login"
+    plainer, fix = _ADVICE.get(classify(text), (None, None))
+    if plainer:
+        message = plainer
 
     return message, fix, text
 

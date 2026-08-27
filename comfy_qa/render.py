@@ -10,6 +10,16 @@ def _flags_on(r: EnvReport) -> list[str]:
     return sorted(k for k, v in r.flags.items() if v)
 
 
+def _known(value: str | None) -> str:
+    """What to print for a field the environment did not report.
+
+    A build older than `comfyui_version` leaves that field empty, and an
+    evidence block reading "ComfyUI None" has been pasted into a report as if
+    it meant something. Say unknown, and say it the same way everywhere.
+    """
+    return value if value else "unknown"
+
+
 def table(reports: list[EnvReport]) -> str:
     lines = []
     for r in reports:
@@ -18,7 +28,8 @@ def table(reports: list[EnvReport]) -> str:
         elif r.kind == "local":
             fe = r.frontend_installed or "?"
             warn = f"  << MISMATCH, core wants {r.frontend_required}" if r.frontend_mismatch else ""
-            lines.append(f"{r.name:<15} ComfyUI {r.comfyui_version}  frontend {fe}{warn}")
+            lines.append(
+                f"{r.name:<15} ComfyUI {_known(r.comfyui_version)}  frontend {fe}{warn}")
         else:
             when = r.commit_date or ""
             what = r.commit_subject or ""
@@ -30,12 +41,19 @@ def table(reports: list[EnvReport]) -> str:
     diff = flag_diff(reports)
     cloud_with_flags = [r for r in reports if r.kind == "cloud" and r.flags]
     if cloud_with_flags:
-        n = len(cloud_with_flags[0].flags)
+        # The union, not the first environment's count: when two environments
+        # disagree about which flags *exist*, quoting one of their totals
+        # understates what was actually compared.
+        n = len({k for r in cloud_with_flags for k in r.flags})
         if diff:
             out.append(f"{n} flags checked, {len(diff)} differ across environments:")
             for k, per in diff.items():
                 out.append("  " + f"{k:<38}" + "  ".join(
                     f"{env}={'ON' if val else 'OFF'}" for env, val in per.items()))
+        elif len(cloud_with_flags) < 2:
+            # Nothing was compared. "all identical across environments" off a
+            # single probe is a claim this run did not earn.
+            out.append(f"{n} flags checked, nothing to compare against")
         else:
             out.append(f"{n} flags checked, all identical across environments")
         out.append("")
@@ -85,12 +103,23 @@ def _flag_summary(r: EnvReport, baseline: EnvReport | None, only: list[str] | No
 
 def evidence(r: EnvReport, *, platform: str | None = None,
              baseline: EnvReport | None = None, only: list[str] | None = None) -> dict[str, str]:
-    """The three shapes the playbooks use. Same capture, three formats."""
-    if r.kind == "local":
-        build = f"ComfyUI {r.comfyui_version} · frontend {r.frontend_installed}"
+    """The three shapes the playbooks use. Same capture, three formats.
+
+    An environment that failed to answer gets an evidence block that says so.
+    The alternative — filling the build in as "None" and the flags as
+    "unknown" — produces something that looks exactly like a real capture and
+    gets pasted into a report as one.
+    """
+    if r.error:
+        build = version = f"NOT PROBED — {r.error}"
+        flags = "not probed"
+    elif r.kind == "local":
+        version = _known(r.comfyui_version)
+        build = f"ComfyUI {version} · frontend {_known(r.frontend_installed)}"
         flags = "n/a (local)"
     else:
-        build = f"build {r.short_sha}"
+        version = _known(r.short_sha)
+        build = f"build {version}"
         flags = _flag_summary(r, baseline, only)
 
     plat = f" · {platform}" if platform else ""
@@ -100,7 +129,7 @@ def evidence(r: EnvReport, *, platform: str | None = None,
         # 2. bug-tracker row fields
         "tracker": "\n".join([
             f"Environment: {r.name}",
-            f"Build: {r.short_sha or r.comfyui_version}",
+            f"Build: {version}",
             f"Flags: {flags}",
             f"Platform: {platform or '(fill in)'}",
         ]),

@@ -1,7 +1,11 @@
 [project]
 name = "comfy-qa-tools"
-version = "0.1.0"
+# The single source of truth for the version. `comfy-qat --version` reads it back
+# out of the installed metadata (or out of this file, in a checkout) — never
+# restate it in Python.
+version = "1.0.0"
 description = "QA tooling for testing Comfy — know what you are testing, and record it"
+readme = "README.md"
 requires-python = ">=3.11"  # tomllib
 dependencies = ["typer>=0.12.5"]
 
@@ -9,10 +13,42 @@ dependencies = ["typer>=0.12.5"]
 comfy-qat = "comfy_qa.cli:main"
 
 # Once comfy-cli ships a plugin entry-point group upstream, this is the only
-# change needed to become a true `comfy qa` subcommand:
+# change needed to become a true `comfy qa` subcommand. Still true as of
+# comfy-cli 1.15.0, which has no plugin group at all: it registers every
+# subcommand with a hard-coded `app.add_typer` in `comfy_cli/cmdline.py`, so
+# there is nothing for us to hook. `comfy_qa.cli:register` is the object that
+# would be handed over, and it takes the parent Typer app.
 # [project.entry-points."comfy_cli.commands"]
 # qa = "comfy_qa.cli:register"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+# Explicit, so a new top-level directory can never silently change what ships.
+[tool.setuptools]
+packages = ["comfy_qa"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# pycodestyle + pyflakes only. The tempting extras were each tried and rejected:
+#   I  (import sorting)  — reorders the import block in files three branches are
+#                          editing right now; a merge conflict for no defect.
+#   B  (bugbear)         — B904 fires on every `raise typer.Exit()` inside an
+#                          `except`, which is exactly how this tool turns a
+#                          gcloud failure into a message instead of a traceback.
+#   UP (pyupgrade)       — would rewrite the `Optional[...]` in Typer's
+#                          `Annotated` options, which is a runtime signature.
+select = ["E", "F", "W"]
+ignore = [
+    # Error strings here are written as prose for the person reading them, and
+    # test fixtures quote real gcloud output. Reflowing every long line across
+    # the repo is the mass reformat we said we would not do.
+    "E501",
+    # `say = lambda line: ...` builds a one-line adapter at the call site. Naming
+    # it with a `def` is noise, not clarity.
+    "E731",
+]

@@ -122,6 +122,25 @@ def _rows(quota: dict) -> Iterable[tuple[str, int, list[str]]]:
         yield where, limit, locations
 
 
+def _applies(where: str, locations: list[str], region: str | None) -> bool:
+    """Does a quota row cover `region`?
+
+    `all regions` is this module's label for "several places at once", not a
+    promise about every place. Reading it as "everywhere" meant
+    `quota list --region europe-west4` reported a grant the project does not
+    have there — it relabelled an all-regions row as the region asked about —
+    and `resolve` handed that region to a quota request Google would refuse.
+    A row covers a region when it names it, or when it is genuinely global.
+    """
+    if not region:
+        return True
+    if where in ("global", region):
+        return True
+    if "global" in locations:
+        return True
+    return region in locations
+
+
 def _pending_ids(preferences: list[dict]) -> set[str]:
     """Quota ids with a request asking for more than is currently granted."""
     pending = set()
@@ -151,7 +170,7 @@ def readiness(
         if gpu is None:
             continue
         for where, limit, locations in _rows(quota):
-            if region and where not in (region, "global", "all regions") and region not in locations:
+            if not _applies(where, locations, region):
                 continue
             if region and where == "all regions":
                 where = region
@@ -239,8 +258,7 @@ def resolve(gpu: str, quotas: list[dict], *, region: str | None = None) -> str |
         if not matches(gpu, quota_id):
             continue
         if region and not any(
-            where in (region, "all regions", "global") or region in locations
-            for where, _, locations in _rows(quota)
+            _applies(where, locations, region) for where, _, locations in _rows(quota)
         ):
             continue
         return quota_id

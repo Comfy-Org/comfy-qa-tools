@@ -109,3 +109,40 @@ def test_the_interpreter_is_found_not_assumed(host):
 def test_the_launch_reports_which_interpreter_it_chose(host):
     """Otherwise a wrong-Python failure looks like a ComfyUI failure."""
     assert "using" in launch_command(host)
+
+
+@pytest.mark.parametrize("host", ALL)
+def test_an_install_checks_its_own_work_before_claiming_success(host):
+    """The scripts cannot use `-ErrorActionPreference Stop` — it turns any native
+    stderr into a fatal error and hides the real message — so PowerShell carries
+    on after a failed step. A clone that failed still reached "install complete"
+    and exit 0, and the next thing anyone saw was a launch failure on a box that
+    had been reported as installed."""
+    command = install_command(host)
+    assert "INSTALL_INCOMPLETE" in command
+    if is_windows(host):
+        # Checked twice: once before anything is installed into the directory
+        # that was supposed to be cloned, once at the end.
+        assert command.count("INSTALL_INCOMPLETE") == 2
+        assert command.count("exit 1") == 2
+    else:
+        assert "exit 1" in command
+
+
+def test_the_launch_and_the_tunnel_agree_on_the_port():
+    """The tunnel forwards to ComfyUI's own port on the box. If the launch bound
+    somewhere else, the tunnel would open onto silence and everything downstream
+    would blame ComfyUI."""
+    from comfy_qa.tunnel import COMFYUI_PORT
+
+    for host in ALL:
+        assert f"--port {COMFYUI_PORT}" in launch_command(host)
+
+
+def test_the_no_python_exit_code_is_the_one_the_caller_looks_for():
+    """`go` turns this exact code into "there is no Python on that box". If the
+    two drifted, it would become a generic non-zero exit."""
+    from comfy_qa.provision import NO_PYTHON_EXIT
+
+    for host in ALL:
+        assert f"exit {NO_PYTHON_EXIT}" in launch_command(host)

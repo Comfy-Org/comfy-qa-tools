@@ -25,6 +25,25 @@ app = typer.Typer(
 app.add_typer(host.app, name="host")
 app.add_typer(auth.app, name="auth")
 
+
+def _version_callback(asked: bool) -> None:
+    """Eager, so `--version` answers before any argument is validated."""
+    if asked:
+        from . import version_string
+
+        typer.echo(version_string())
+        raise typer.Exit()
+
+
+@app.callback()
+def root(
+    version: Annotated[bool, typer.Option(
+        "--version", callback=_version_callback, is_eager=True,
+        help="Print the build — version, plus the commit in a checkout — and exit.")] = False,
+) -> None:
+    """QA tooling for testing Comfy: know which machine you are testing,
+    and stamp every result with it."""
+
 # v0's environment check, carried forward so it stays reachable under the new
 # binary. It is not part of release 1 and gets rewritten when its own release
 # comes round; until then, losing it would be a regression nobody asked for.
