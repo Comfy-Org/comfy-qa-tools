@@ -389,6 +389,22 @@ A box created by `host move` copies the source instance's networking, so this
 only arises on a box built some other way — or one moved by a version of this
 tool older than 1.0.1.
 
+**`AssertionError: Torch not compiled with CUDA enabled`** in the ComfyUI log
+Torch is installed and cannot see the card. On **Windows** this is almost always
+where it came from: PyPI's Windows torch wheel is CPU-only, and the CUDA build
+lives on PyTorch's own index. `pip install -r requirements.txt` says plain
+`torch`, so it fetches the CPU one and ComfyUI dies on a box rented for its GPU.
+Both `host go`'s install and its repair pull torch from
+`https://download.pytorch.org/whl/cu128` first for exactly this reason. If you
+installed by hand, reinstall it the same way:
+
+```sh
+python -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+On **Linux** the PyPI wheel already carries CUDA, so no index is needed — which
+is the asymmetry that makes this easy to get wrong in either direction.
+
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,

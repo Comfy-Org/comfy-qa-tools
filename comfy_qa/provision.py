@@ -61,6 +61,19 @@ def check_command(host: Host) -> str:
     )
 
 
+# PyPI's Windows torch wheel is CPU-only; the CUDA build lives on PyTorch's own
+# index. On Linux the PyPI wheel already carries CUDA, so no index is needed.
+TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
+
+
+def torch_install(python: str, host: Host) -> str:
+    """Install torch so that it can see the card the box was rented for."""
+    if is_windows(host):
+        return (f"{python} -m pip install torch torchvision torchaudio "
+                f"--index-url {TORCH_INDEX}")
+    return f"{python} -m pip install torch torchvision torchaudio"
+
+
 def repair_command(host: Host) -> str:
     """Install the requirements of an existing checkout, without touching it.
 
@@ -70,22 +83,32 @@ def repair_command(host: Host) -> str:
     box died on `ModuleNotFoundError: No module named 'sqlalchemy'` after the
     tool had just reported "ComfyUI is already installed".
 
-    Deliberately only `pip install -r requirements.txt`: it fixes the case that
-    happens and cannot rewrite anyone's checkout.
+    Torch is installed first, from PyTorch's index on Windows. The first version
+    of this ran `pip install -r requirements.txt` alone, and requirements.txt
+    says plain `torch` — so on the same real box, pip fetched PyPI's CPU wheel
+    and ComfyUI then died with "Torch not compiled with CUDA enabled". A repair
+    that turns a GPU box into a CPU box is worse than the failure it fixes.
     """
     if is_windows(host):
-        return (
-            "powershell -NonInteractive -Command \""
-            f"Set-Location '{WINDOWS_ROOT}'; "
+        python = (
             "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
             "{ '.\\venv\\Scripts\\python.exe' } "
             "elseif (Test-Path '.\\python_embeded\\python.exe') "
             "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
+        )
+        return (
+            "powershell -NonInteractive -Command \""
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            + python
+            + "Write-Output 'installing torch for this GPU (the slow part)'; "
+            f"& $py -m pip install torch torchvision torchaudio --index-url {TORCH_INDEX}; "
+            "Write-Output 'installing the rest of the requirements'; "
             "& $py -m pip install -r requirements.txt\""
         )
     return (
         f"cd {LINUX_ROOT} && "
         "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi && "
+        "$PY -m pip install torch torchvision torchaudio && "
         "$PY -m pip install -r requirements.txt"
     )
 
