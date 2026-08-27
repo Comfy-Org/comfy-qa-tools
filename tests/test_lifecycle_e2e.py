@@ -745,3 +745,20 @@ def test_a_box_that_cannot_be_asked_is_still_launched(world):
 
     assert world.gc.repairs == 0
     assert "starting ComfyUI" in result.output
+
+
+def test_the_two_checks_disagreeing_is_reported_not_crashed(world):
+    """The install check says main.py is there and the verify says it is not.
+
+    Only reachable if something changed the box between the two questions, which
+    is why no test covered it — and why the branch carried an undefined name
+    that ruff found and 1064 tests did not.
+    """
+    world.cloud(statuses=["RUNNING"], installed=True, verify="NO_COMFYUI")
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    no_traceback(result)
+    assert result.exit_code == 1
+    assert "has no ComfyUI in" in result.output
+    assert "C:\\ComfyUI" in result.output, "name the place it looked"

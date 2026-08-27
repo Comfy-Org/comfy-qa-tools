@@ -518,7 +518,8 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     alternative is a tester watching a 122 MB download fail at launch instead.
     """
     from .provision import (
-        NO_COMFYUI, NO_TORCH, READY, TORCH_NO_CUDA, repair_command, verify_command,
+        NO_COMFYUI, NO_TORCH, READY, TORCH_NO_CUDA, repair_command, root_for,
+        verify_command,
     )
 
     try:
@@ -533,8 +534,8 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
         return
     if NO_COMFYUI in state:
         raise give_up(
-            f"{host.name} has no ComfyUI in {host.gce_instance and root_for(host)}, "
-            "though the install check said it did.")
+            f"{host.name} has no ComfyUI in {root_for(host)}, though the install "
+            "check said it did.")
 
     if NO_TORCH in state:
         say("torch is not installed on this box — installing it before launching")
