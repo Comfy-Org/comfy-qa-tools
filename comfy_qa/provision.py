@@ -307,20 +307,16 @@ def launch_command(host: Host) -> str:
     install may carry a venv, the Windows portable bundle's embedded Python, or
     neither.
 
-    **A remote box binds 0.0.0.0, not 127.0.0.1.** This was the opposite for a
-    long time, reasoned as "the tunnel is the only way in, so bind loopback" —
-    which is backwards. An Identity-Aware Proxy tunnel arrives on the instance's
-    network interface, not its loopback, so a ComfyUI bound to 127.0.0.1 is
-    serving perfectly and unreachable through the only route this tool has.
-    Watched it happen: the box printed "To see the GUI go to
-    http://127.0.0.1:8188" and every probe of the tunnel timed out.
-
-    That is not an exposure. The instance takes no inbound traffic that the GCE
-    firewall does not allow, and the default rules cover SSH, RDP and internal
-    traffic — not 8188. A local host still binds loopback, where the reasoning
-    does hold.
+    **Loopback, everywhere.** This went back and forth and the answer depends
+    entirely on how the tunnel forwards. `start-iap-tunnel` reaches a port on
+    the instance's network interface, so loopback was unreachable and the box
+    had to bind 0.0.0.0 behind two firewall rules. The tunnel is `ssh -L` now,
+    which resolves the far address *on the box*, so loopback is exactly right:
+    nothing is exposed on any interface, no firewall rule is involved, and the
+    line ComfyUI prints — `To see the GUI go to http://127.0.0.1:8188` — is a
+    true statement about the machine it is printed on.
     """
-    listen = "127.0.0.1" if host.kind == "local" else "0.0.0.0"
+    listen = "127.0.0.1"
     if is_windows(host):
         candidates = "; ".join(
             f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS

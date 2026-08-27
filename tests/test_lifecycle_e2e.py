@@ -189,9 +189,9 @@ def test_go_on_a_stopped_box_starts_tunnels_installs_and_serves(world):
     assert f"tunnel open: {world.url}" in result.output
     assert "ComfyUI is not there — installing it" in result.output
     assert any("clone" in remote for remote in world.gc.remote), "it must install"
-    # 0.0.0.0, not loopback: an IAP tunnel arrives on the instance's network
-    # interface, so a ComfyUI bound to 127.0.0.1 serves and is unreachable.
-    assert any("--listen 0.0.0.0" in remote for remote in world.gc.remote)
+    # Loopback: the tunnel is `ssh -L`, which resolves the far address on the
+    # box, so nothing needs to be exposed on an interface to reach it.
+    assert any("--listen 127.0.0.1" in remote for remote in world.gc.remote)
     assert world.opened == [world.url], "the browser opens on the machine you asked for"
     assert not world.gc.did("stop_instance"), "`go` never stops the box"
 
@@ -460,8 +460,11 @@ def test_open_dry_run_shows_the_command_and_starts_nothing(world):
     result = run(world, "host", "open", BOX, "--dry-run")
 
     no_traceback(result)
-    assert "start-iap-tunnel" in result.output
-    assert f"--local-host-port=localhost:{world.comfy.port}" in result.output
+    assert "--tunnel-through-iap" in result.output
+    # 127.0.0.1 on both ends, not localhost: on macOS that name resolves to ::1
+    # first, and ssh then binds IPv6 only while every probe of 127.0.0.1 is
+    # refused. An hour was spent looking at the wrong end of that.
+    assert f"127.0.0.1:{world.comfy.port}:127.0.0.1:8188" in result.output
     assert world.processes == []
     assert not world.pid_file().exists()
 
@@ -793,34 +796,3 @@ def test_the_url_that_is_right_for_this_machine_is_said_before_the_log(world):
     assert world.url in result.output
 
 
-def test_a_first_launch_opens_the_port_through_both_firewalls(world):
-    """The defect this exists for: a box serving ComfyUI on its GPU, a tunnel
-    open, and a browser saying "refused" — because 8188 is allowed through
-    neither the VPC firewall nor the box's own, and nothing joins those facts up.
-
-    Expecting a tester to write a firewall rule before their first launch is not
-    a setup step, it is a trap.
-    """
-    # Not answering — which is what a first launch looks like, and the state in
-    # which the firewalls are the likeliest cause.
-    world.cloud(statuses=["RUNNING"], installed=True, firewall=())
-
-    result = run(world, "host", "go", BOX, "--no-browser")
-
-    assert world.gc.did("create_firewall_rule"), "the VPC rule"
-    assert world.gc.created_firewall["source_ranges"] == "35.235.240.0/20", (
-        "scoped to Google's tunnel range — never the internet"
-    )
-    assert "NetFirewallRule" in world.gc.remote_commands_joined(), "the box's own"
-    assert "tunnel range only" in result.output
-
-
-def test_a_box_that_already_answers_has_its_firewalls_left_alone(world):
-    """Cheap and correct: if ComfyUI is answering, nothing needs opening."""
-    world.comfy.mode = "serving"
-    world.cloud(statuses=["RUNNING"], installed=True, firewall=())
-
-    run(world, "host", "go", BOX, "--no-browser")
-
-    assert not world.gc.did("create_firewall_rule")
-    assert not world.gc.did("firewall_rules"), "not even asked"

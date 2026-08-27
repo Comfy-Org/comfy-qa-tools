@@ -29,14 +29,29 @@ WIN = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022", gp
            gce_instance="comfy-win", gce_zone="us-central1-a", gce_project="proj")
 
 
-def test_the_tunnel_never_opens_a_port_and_needs_no_ssh_key():
-    """ComfyUI has no authentication, so IAP is the only acceptable route."""
+def test_the_tunnel_forwards_through_ssh_to_the_box_own_loopback():
+    """The change that finally made a cloud box reachable.
+
+    `start-iap-tunnel` forwards to a port on the instance's network interface,
+    so ComfyUI had to bind 0.0.0.0 and the port had to be allowed through the
+    VPC firewall and the box's own — three things to get right, and any one of
+    them wrong looks exactly like "ComfyUI is not running". `ssh -L` resolves
+    the far address on the box, so loopback works and no firewall rule exists
+    to get wrong: port 22 is already open, which is how every other command
+    here already reaches the machine.
+
+    The near end is `127.0.0.1` and not `localhost` on purpose. `localhost`
+    resolves to `::1` first on macOS, so ssh bound IPv6 only and every probe of
+    `http://127.0.0.1:8190` was refused while the forward worked perfectly over
+    IPv6. That cost an hour of looking at the wrong end.
+    """
     args = command(WIN)
-    assert args[:4] == ["gcloud", "compute", "start-iap-tunnel", "comfy-win"]
-    assert "8188" in args, "the remote end is always ComfyUI's own port"
-    assert "--local-host-port=localhost:8190" in args
+    assert args[:4] == ["gcloud", "compute", "ssh", "comfy-win"]
+    assert "--tunnel-through-iap" in args, "still IAP underneath: no open port"
+    assert "127.0.0.1:8190:127.0.0.1:8188" in args
     assert "--zone=us-central1-a" in args
-    assert not any("firewall" in a or "--ssh" in a for a in args)
+    assert "-N" in args, "forward only; do not run a shell"
+    assert not any("firewall" in a for a in args)
 
 
 @pytest.fixture
