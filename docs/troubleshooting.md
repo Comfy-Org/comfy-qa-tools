@@ -373,11 +373,49 @@ installed once and the launch is retried once; a second failure is reported
 rather than looped on. A box with no route to the internet cannot do this — see
 below.
 
-**`ComfyUI on comfy-win-b exited with 1, and its requirements could not be installed either`**
-The repair itself failed. Most often the box has no outbound internet: a GCE
-instance with no external address and no Cloud NAT can be reached through IAP but
-cannot reach pypi. `gcloud compute instances add-access-config <name> --zone
-<zone>` gives it the same networking a normal instance has.
+**`ComfyUI on comfy-win-b is missing a dependency, and installing its requirements failed (exit 1)`**
+The repair itself failed, so the launch is not retried — a second identical
+traceback would teach nothing. Read pip's output above the error. If it timed out
+reaching pypi, the box has **no route out**: an instance with no external address
+and no Cloud NAT can be reached through IAP and cannot reach the internet, which
+is easy to miss because everything reaches *it* perfectly well. The fix line
+prints the command:
+
+```sh
+gcloud compute instances add-access-config <name> --zone <zone> --project <project>
+```
+
+A box created by `host move` copies the source instance's networking, so this
+only arises on a box built some other way — or one moved by a version of this
+tool older than 1.0.1.
+
+**`torch on comfy-win-b cannot see the L4 — it is a CPU-only build, so ComfyUI would start and refuse to run`**
+Not an error: the box was asked whether ComfyUI could start *before* launching it,
+the answer was no, and the CUDA build is being installed. This check exists
+because the alternative is finding out at launch, on a machine that has already
+booted, tunnelled and started billing. It runs on every `host go`, costs one SSH
+round trip, and does nothing when the answer is fine.
+
+**`torch could not be installed on comfy-win-b (exit 1), so ComfyUI cannot use its GPU`**
+The install of the CUDA build failed. Read pip's output above. If it timed out
+reaching pypi, the box has no route out — see the entry below on
+`add-access-config`.
+
+**`AssertionError: Torch not compiled with CUDA enabled`** in the ComfyUI log
+Torch is installed and cannot see the card. On **Windows** this is almost always
+where it came from: PyPI's Windows torch wheel is CPU-only, and the CUDA build
+lives on PyTorch's own index. `pip install -r requirements.txt` says plain
+`torch`, so it fetches the CPU one and ComfyUI dies on a box rented for its GPU.
+Both `host go`'s install and its repair pull torch from
+`https://download.pytorch.org/whl/cu128` first for exactly this reason. If you
+installed by hand, reinstall it the same way:
+
+```sh
+python -m pip install --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
+
+On **Linux** the PyPI wheel already carries CUDA, so no index is needed — which
+is the asymmetry that makes this easy to get wrong in either direction.
 
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no

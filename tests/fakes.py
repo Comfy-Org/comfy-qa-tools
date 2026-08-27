@@ -66,6 +66,10 @@ class FakeGcloud:
         install_works: bool = True,
         launch_exit: int | list[int] = 0,
         repair_exit: int = 0,
+        # What the box says when asked whether ComfyUI could actually start.
+        # READY is the happy path; TORCH_NO_CUDA is a real L4 box that pip had
+        # quietly given a CPU-only torch.
+        verify: str = "READY",
         on_launch=None,
         describe=None,
         snapshot=None,
@@ -93,6 +97,7 @@ class FakeGcloud:
         self.launch_exit = list(launch_exit) if isinstance(launch_exit, list) else launch_exit
         self.repairs = 0
         self.repair_exit = repair_exit
+        self.verify = verify
         self.on_launch = on_launch
         self.describe = describe or {}
         self.snapshot = snapshot
@@ -137,6 +142,8 @@ class FakeGcloud:
             return "ok"
         if "INSTALLED" in remote:  # the check script
             return "INSTALLED" if self.installed else "MISSING"
+        if "TORCH_NO_CUDA" in remote:  # the verify script
+            return self.verify
         return ""
 
     def ssh(self, instance: str, zone: str, project: str, remote: str,

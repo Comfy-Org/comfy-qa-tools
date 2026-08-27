@@ -685,3 +685,80 @@ def test_the_repair_is_tried_once_and_not_in_a_loop(world):
     assert result.exit_code == 1
     assert result.output.count("installing its requirements") == 1
     assert world.gc.repairs == 1, "one repair, not a loop"
+
+
+def test_a_repair_that_fails_is_not_followed_by_the_same_traceback_again(world):
+    """Observed on a real box: pip could not reach pypi, and the tool relaunched
+    anyway and printed the identical ModuleNotFoundError a second time.
+
+    The second traceback teaches nothing. What the tester cannot guess is why pip
+    failed — everything reaches the box perfectly well, so nobody thinks to check
+    whether the box can reach anything.
+    """
+    world.cloud(statuses=["RUNNING"], installed=True,
+                launch_exit=[1, 0], repair_exit=1)
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert result.exit_code == 1
+    assert result.output.count("ModuleNotFoundError") == 0, "the fake prints none"
+    assert "installing its requirements failed" in result.output
+    assert "no route out" in result.output
+    assert "add-access-config" in result.output
+    assert world.gc.repairs == 1
+
+
+def test_a_cpu_only_torch_is_found_before_the_launch_not_during_it(world):
+    """From a real L4 box on 2026-08-27.
+
+    `pip install -r requirements.txt` on Windows fetches PyPI's torch, which is
+    CPU-only, and ComfyUI then dies with "Torch not compiled with CUDA enabled"
+    — after the box has booted, tunnelled and started billing. Asking the box
+    first costs one SSH round trip and turns a launch failure into a fix.
+    """
+    world.cloud(statuses=["RUNNING"], installed=True, verify="TORCH_NO_CUDA")
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    told = result.output
+    assert "cannot see the" in told and "CPU-only build" in told
+    assert "download.pytorch.org/whl/cu128" in world.gc.remote_commands_joined()
+    assert world.gc.repairs == 1, "repaired once, before launching"
+
+
+def test_a_box_that_is_ready_is_not_reinstalled(world):
+    """The check must not become a reason to reinstall torch on every run."""
+    world.cloud(statuses=["RUNNING"], installed=True, verify="READY")
+
+    run(world, "host", "go", BOX, "--no-browser")
+
+    assert world.gc.repairs == 0
+    assert "download.pytorch.org" not in world.gc.remote_commands_joined()
+
+
+def test_a_box_that_cannot_be_asked_is_still_launched(world):
+    """The verification is a convenience, not a gate. A box that will not answer
+    the question is still worth trying — the launch says what happened."""
+    world.cloud(statuses=["RUNNING"], installed=True, verify="")
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    assert world.gc.repairs == 0
+    assert "starting ComfyUI" in result.output
+
+
+def test_the_two_checks_disagreeing_is_reported_not_crashed(world):
+    """The install check says main.py is there and the verify says it is not.
+
+    Only reachable if something changed the box between the two questions, which
+    is why no test covered it — and why the branch carried an undefined name
+    that ruff found and 1064 tests did not.
+    """
+    world.cloud(statuses=["RUNNING"], installed=True, verify="NO_COMFYUI")
+
+    result = run(world, "host", "go", BOX, "--no-browser")
+
+    no_traceback(result)
+    assert result.exit_code == 1
+    assert "has no ComfyUI in" in result.output
+    assert "C:\\ComfyUI" in result.output, "name the place it looked"

@@ -146,3 +146,44 @@ def test_the_no_python_exit_code_is_the_one_the_caller_looks_for():
 
     for host in ALL:
         assert f"exit {NO_PYTHON_EXIT}" in launch_command(host)
+
+
+def test_the_repair_installs_torch_where_it_can_see_the_gpu():
+    """From a real L4 box on 2026-08-27.
+
+    The first repair ran `pip install -r requirements.txt` alone. requirements
+    says plain `torch`, PyPI's Windows wheel is CPU-only, and ComfyUI then died
+    with "Torch not compiled with CUDA enabled" — on the box whose entire reason
+    for existing is the card. A repair that turns a GPU box into a CPU box is
+    worse than the failure it was fixing.
+    """
+    from comfy_qa.provision import repair_command
+
+    windows = repair_command(Host(name="w", kind="gce", os="Windows Server 2022",
+                                  gpu="L4", port=8190))
+    assert "download.pytorch.org/whl/cu128" in windows
+    assert windows.index("torch torchvision torchaudio") < windows.index("requirements.txt"), (
+        "torch first: installing requirements first pulls the CPU wheel and "
+        "the CUDA one then looks already satisfied"
+    )
+
+
+def test_linux_needs_no_index_because_its_pypi_wheel_carries_cuda():
+    """The asymmetry is easy to get wrong in both directions."""
+    from comfy_qa.provision import repair_command
+
+    linux = repair_command(Host(name="l", kind="gce", os="Ubuntu 22.04",
+                                gpu="L4", port=8191))
+    assert "download.pytorch.org" not in linux
+    assert "pip install torch torchvision torchaudio" in linux
+
+
+def test_the_installer_and_the_repair_agree_about_torch():
+    """They drifted once. The repair was written later and did not know."""
+    from comfy_qa.provision import install_command, repair_command
+
+    for os_name in ("Windows Server 2022", "Ubuntu 22.04"):
+        host = Host(name="h", kind="gce", os=os_name, gpu="L4", port=8190)
+        installs = "download.pytorch.org/whl/cu128" in install_command(host)
+        repairs = "download.pytorch.org/whl/cu128" in repair_command(host)
+        assert installs == repairs, f"{os_name}: one uses the CUDA index and the other does not"

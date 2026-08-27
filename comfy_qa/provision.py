@@ -61,6 +61,67 @@ def check_command(host: Host) -> str:
     )
 
 
+# PyPI's Windows torch wheel is CPU-only; the CUDA build lives on PyTorch's own
+# index. On Linux the PyPI wheel already carries CUDA, so no index is needed.
+TORCH_INDEX = "https://download.pytorch.org/whl/cu128"
+
+
+def torch_install(python: str, host: Host) -> str:
+    """Install torch so that it can see the card the box was rented for."""
+    if is_windows(host):
+        return (f"{python} -m pip install torch torchvision torchaudio "
+                f"--index-url {TORCH_INDEX}")
+    return f"{python} -m pip install torch torchvision torchaudio"
+
+
+# What `verify_command` can print. Anything else means the check itself failed,
+# which is not the same as the box being broken.
+READY = "READY"
+NO_COMFYUI = "NO_COMFYUI"
+NO_TORCH = "NO_TORCH"
+TORCH_NO_CUDA = "TORCH_NO_CUDA"
+
+
+def verify_command(host: Host) -> str:
+    """Ask the box whether ComfyUI could actually start, not whether it exists.
+
+    `check_command` answers "is main.py there", and a box can pass that and be
+    unusable in two ways this tool has now seen for real: a dependency added
+    after the disk was imaged, and a torch that cannot see the card. The second
+    is the dangerous one, because everything looks installed and the failure
+    only appears at launch, after the box has been running and billing.
+
+    Windows is checked on the version string rather than by importing torch:
+    a CUDA build reports `2.13.0+cu128` and the CPU build reports `2.13.0`, and
+    reading that costs nothing where `torch.cuda.is_available()` initialises a
+    context. On Linux the PyPI wheel carries CUDA and does not carry the `+cu`
+    marker, so there the question has to be asked directly.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NonInteractive -Command \""
+            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            f"{{ Write-Output '{NO_COMFYUI}'; exit 0 }}; "
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
+            "{ '.\\venv\\Scripts\\python.exe' } "
+            "elseif (Test-Path '.\\python_embeded\\python.exe') "
+            "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
+            "$v = (& $py -m pip show torch 2>$null | Select-String '^Version:'); "
+            f"if (-not $v) {{ Write-Output '{NO_TORCH}'; exit 0 }}; "
+            f"if ($v -match '\\+cu') {{ Write-Output '{READY}' }} "
+            f"else {{ Write-Output '{TORCH_NO_CUDA}' }}\""
+        )
+    return (
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo {NO_COMFYUI}; exit 0; fi; "
+        f"cd {LINUX_ROOT}; "
+        "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi; "
+        f"$PY -c \"import torch, sys; "
+        f"sys.stdout.write('{READY}' if torch.cuda.is_available() else '{TORCH_NO_CUDA}')\" "
+        f"2>/dev/null || echo {NO_TORCH}"
+    )
+
+
 def repair_command(host: Host) -> str:
     """Install the requirements of an existing checkout, without touching it.
 
@@ -70,22 +131,32 @@ def repair_command(host: Host) -> str:
     box died on `ModuleNotFoundError: No module named 'sqlalchemy'` after the
     tool had just reported "ComfyUI is already installed".
 
-    Deliberately only `pip install -r requirements.txt`: it fixes the case that
-    happens and cannot rewrite anyone's checkout.
+    Torch is installed first, from PyTorch's index on Windows. The first version
+    of this ran `pip install -r requirements.txt` alone, and requirements.txt
+    says plain `torch` — so on the same real box, pip fetched PyPI's CPU wheel
+    and ComfyUI then died with "Torch not compiled with CUDA enabled". A repair
+    that turns a GPU box into a CPU box is worse than the failure it fixes.
     """
     if is_windows(host):
-        return (
-            "powershell -NonInteractive -Command \""
-            f"Set-Location '{WINDOWS_ROOT}'; "
+        python = (
             "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
             "{ '.\\venv\\Scripts\\python.exe' } "
             "elseif (Test-Path '.\\python_embeded\\python.exe') "
             "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
+        )
+        return (
+            "powershell -NonInteractive -Command \""
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            + python
+            + "Write-Output 'installing torch for this GPU (the slow part)'; "
+            f"& $py -m pip install torch torchvision torchaudio --index-url {TORCH_INDEX}; "
+            "Write-Output 'installing the rest of the requirements'; "
             "& $py -m pip install -r requirements.txt\""
         )
     return (
         f"cd {LINUX_ROOT} && "
         "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi && "
+        "$PY -m pip install torch torchvision torchaudio && "
         "$PY -m pip install -r requirements.txt"
     )
 

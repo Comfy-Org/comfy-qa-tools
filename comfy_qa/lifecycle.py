@@ -433,13 +433,8 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     """Make sure ComfyUI exists on the box, installing it if it does not."""
     from .provision import check_command, install_command, root_for
 
-    def give_up(message: str) -> LifecycleError:
-        stand_down(host, tunnel_dir, say)
-        return LifecycleError(
-            message,
-            fix=(how_to_get_in(host) + "\n        or stop paying for it:\n        "
-                 + stop_paying(host)),
-        )
+    def give_up(message: str, *, egress: bool = False) -> LifecycleError:
+        return _give_up(host, tunnel_dir, say, message, egress=egress)
 
     def look() -> str:
         try:
@@ -451,6 +446,7 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     say(f"looking for ComfyUI in {root_for(host)}")
     if "INSTALLED" in look():
         say("ComfyUI is already installed")
+        _verify(gc, host, say, give_up)
         return
 
     say("ComfyUI is not there — installing it. This takes a while; torch is the "
@@ -477,6 +473,91 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
 
 # 130 is a program stopped with Ctrl-C. That is a person finishing, not a fault.
 INTERRUPTED_EXIT = 130
+
+
+def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
+             *, egress: bool = False) -> LifecycleError:
+    """Stop, close the tunnel, and say what to do — the one place that decides.
+
+    Written once because it was written twice: the second copy grew the egress
+    advice and the first did not, so the path that needed it most raised a
+    TypeError instead of printing it.
+    """
+    stand_down(host, tunnel_dir, say)
+    advice = how_to_get_in(host)
+    if egress and host.is_remote:
+        # Not guessable from the box: everything reaches it fine, so nobody
+        # thinks to check whether it can reach anything.
+        advice = (
+            "if pypi timed out, the box has no route out — IAP reaches it, "
+            "but an instance with no external address and no Cloud NAT "
+            "cannot reach the internet:\n        "
+            f"gcloud compute instances add-access-config {host.gce_instance} "
+            f"--zone={host.gce_zone} --project={host.gce_project}"
+            "\n        then run the same command again\n        "
+            + advice
+        )
+    return LifecycleError(
+        message,
+        fix=(advice + "\n        or stop paying for it:\n        "
+             + stop_paying(host)),
+    )
+
+
+def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None:
+    """Ask the box whether ComfyUI could start, and fix the one thing we can.
+
+    Installed is not the same as usable, and the gap costs money: a box that
+    cannot start has already booted, tunnelled and begun billing by the time
+    anyone finds out. Two real failures on one machine in one afternoon —
+    a dependency added after the disk was imaged, and a torch that could not see
+    the card — both of which `main.py exists` answered "yes" to.
+
+    A CPU-only torch on a GPU box is repaired here rather than reported, because
+    the repair is exactly the command the installer would have run and the
+    alternative is a tester watching a 122 MB download fail at launch instead.
+    """
+    from .provision import (
+        NO_COMFYUI, NO_TORCH, READY, TORCH_NO_CUDA, repair_command, root_for,
+        verify_command,
+    )
+
+    try:
+        state = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                              verify_command(host)).strip()
+    except GcloudError:
+        # The check is a convenience, not a gate. A box that cannot be asked is
+        # still worth trying to launch; the launch will say what happened.
+        return
+
+    if READY in state or not state:
+        return
+    if NO_COMFYUI in state:
+        raise give_up(
+            f"{host.name} has no ComfyUI in {root_for(host)}, though the install "
+            "check said it did.")
+
+    if NO_TORCH in state:
+        say("torch is not installed on this box — installing it before launching")
+    elif TORCH_NO_CUDA in state:
+        # The specific failure: PyPI's Windows torch wheel is CPU-only, so any
+        # `pip install -r requirements.txt` on Windows quietly produces a box
+        # that cannot use the card it is rented for.
+        say(f"torch on {host.name} cannot see the {host.gpu or 'GPU'} — it is a "
+            "CPU-only build, so ComfyUI would start and refuse to run")
+        say("  installing the CUDA build instead; this is the slow part")
+    else:
+        return
+
+    try:
+        code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                      repair_command(host), stream=True)
+    except GcloudError as exc:
+        raise give_up(f"could not install torch on {host.name}: {exc}", egress=True) from exc
+    if code != 0:
+        raise give_up(
+            f"torch could not be installed on {host.name} (exit {code}), so "
+            "ComfyUI cannot use its GPU. Its log is above.", egress=True)
 
 
 def serve(
@@ -536,13 +617,8 @@ def serve(
         # a URL that never answered.
         done.set()
 
-    def give_up(message: str) -> LifecycleError:
-        stand_down(host, tunnel_dir, say)
-        return LifecycleError(
-            message,
-            fix=(how_to_get_in(host) + "\n        or stop paying for it:\n        "
-                 + stop_paying(host)),
-        )
+    def give_up(message: str, *, egress: bool = False) -> LifecycleError:
+        return _give_up(host, tunnel_dir, say, message, egress=egress)
 
     if code == NO_PYTHON_EXIT:
         raise give_up(
@@ -562,12 +638,22 @@ def serve(
             say("that looks like a missing dependency rather than a broken "
                 "install — installing its requirements and trying once more")
             try:
-                gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                       repair_command(host), stream=True)
+                repaired = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                                  repair_command(host), stream=True)
             except GcloudError as exc:
                 raise give_up(
                     f"ComfyUI on {host.name} exited with {code}, and its "
                     f"requirements could not be installed either: {exc}") from exc
+            if repaired != 0:
+                # Relaunching after a failed repair prints the identical
+                # traceback a second time and teaches nothing. The usual cause
+                # is that the box has no way out: IAP gets you in, and an
+                # instance with no external address and no Cloud NAT cannot
+                # reach pypi at all.
+                raise give_up(
+                    f"ComfyUI on {host.name} is missing a dependency, and "
+                    f"installing its requirements failed (exit {repaired}). "
+                    f"Its log is above.", egress=True)
             return serve(
                 gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
                 sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,
