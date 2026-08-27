@@ -389,6 +389,18 @@ A box created by `host move` copies the source instance's networking, so this
 only arises on a box built some other way — or one moved by a version of this
 tool older than 1.0.1.
 
+**`torch on comfy-win-b cannot see the L4 — it is a CPU-only build, so ComfyUI would start and refuse to run`**
+Not an error: the box was asked whether ComfyUI could start *before* launching it,
+the answer was no, and the CUDA build is being installed. This check exists
+because the alternative is finding out at launch, on a machine that has already
+booted, tunnelled and started billing. It runs on every `host go`, costs one SSH
+round trip, and does nothing when the answer is fine.
+
+**`torch could not be installed on comfy-win-b (exit 1), so ComfyUI cannot use its GPU`**
+The install of the CUDA build failed. Read pip's output above. If it timed out
+reaching pypi, the box has no route out — see the entry below on
+`add-access-config`.
+
 **`AssertionError: Torch not compiled with CUDA enabled`** in the ComfyUI log
 Torch is installed and cannot see the card. On **Windows** this is almost always
 where it came from: PyPI's Windows torch wheel is CPU-only, and the CUDA build
