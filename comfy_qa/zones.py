@@ -59,6 +59,8 @@ to measuring the round trip that a `gcloud compute instances create` will make.
 from __future__ import annotations
 
 import json
+import math
+import os
 import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -85,6 +87,16 @@ UNREACHABLE = 9999.0
 CACHE_NAME = "zone-latency.json"
 CACHE_TTL = 7 * 24 * 60 * 60
 
+# What the numbers in the cache mean. Bump this whenever `ENDPOINT` changes, or
+# whenever anything else changes what a stored millisecond is a measurement *of*.
+#
+# This is not bookkeeping. The mistake in the docstring above — timing
+# `<region>-<service>.googleapis.com`, which is one anycast address for every
+# region — produces a file of four near-identical numbers that look exactly like
+# measurements and rank nothing. Cached, an unversioned file of them would have
+# outlived the fix by a week and made the ordering look like it was working.
+CACHE_VERSION = 1
+
 # How many regions get their zones looked up. Latency ranks every region the
 # project has quota in — forty-three of them on a live project — and asking
 # `machine-types list` about a hundred and thirty zones is slow for an answer
@@ -110,6 +122,7 @@ class Ordering:
     regions: tuple[str, ...]
     latency: dict[str, float] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
+    fall_through: bool = True
 
     def __bool__(self) -> bool:
         return bool(self.zones)
@@ -182,6 +195,10 @@ def _read_cache(path: Path, *, now: float) -> dict[str, float]:
         return {}
     if not isinstance(raw, dict):
         return {}
+    if raw.get("version") != CACHE_VERSION:
+        # Written by something that measured a different thing. A miss costs one
+        # round of probing; trusting it costs a week of a meaningless ordering.
+        return {}
     measured_at = raw.get("at")
     try:
         if now - float(measured_at) > CACHE_TTL:
@@ -194,22 +211,69 @@ def _read_cache(path: Path, *, now: float) -> dict[str, float]:
     kept = {}
     for region, score in entries.items():
         try:
-            kept[str(region)] = float(score)
+            value = float(score)
         except (TypeError, ValueError):
             continue
+        if not _is_a_round_trip(value):
+            continue
+        kept[str(region)] = value
     return kept
 
 
+def _is_a_round_trip(value: float) -> bool:
+    """Is this a number a connection could actually have taken?
+
+    Two things get in here that are not measurements. `json.loads` accepts a bare
+    `NaN`, and `float(nan)` is a perfectly good float — but NaN compares false
+    against everything, so a single one makes `sorted` return an order that
+    depends on the input order, and the one thing the ranking promises is that a
+    dry run and the run that follows it try the same zones.
+
+    And nothing connects in less than no time. A file that says a region does
+    puts that region first on every create from now on, and nothing else in this
+    tool would ever question it.
+    """
+    if not math.isfinite(value):
+        return False
+    return 0.0 <= value <= UNREACHABLE
+
+
+def _worth_keeping(scores: dict[str, float]) -> dict[str, float]:
+    """The measurements, without the failures to measure.
+
+    `UNREACHABLE` is "could not say", and caching it says it for a week. One
+    create run behind a dropped VPN would otherwise write it for every region and
+    keep it until the TTL expired, leaving the ordering this module exists to
+    provide as alphabetical — silently, and long after the network came back.
+    """
+    return {region: score for region, score in scores.items()
+            if _is_a_round_trip(score) and score < UNREACHABLE}
+
+
 def _write_cache(path: Path, scores: dict[str, float], *, now: float) -> None:
+    body = json.dumps(
+        {"version": CACHE_VERSION, "at": now, "regions": _worth_keeping(scores)},
+        indent=2, sort_keys=True,
+    )
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps({"at": now, "regions": scores}, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
+        # Written beside and renamed over, because two `create`s at once is the
+        # ordinary case here — one Linux box, one Windows box, two terminals. A
+        # half-written file is only a cache miss, but a cache that misses forever
+        # is a minute added to every create from now on. `os.replace` is atomic
+        # on the same filesystem, and the temp name carries the pid so the two
+        # runs do not collide on that either.
+        temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(body, encoding="utf-8")
+        os.replace(temporary, path)
     except OSError:
         # Not being able to cache a measurement is not a reason to fail a create.
-        pass
+        # Take the half-written file with us, though: a `.tmp` left beside the
+        # host list is the kind of thing somebody later has to decide about.
+        try:
+            temporary.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
 
 
 def latencies(

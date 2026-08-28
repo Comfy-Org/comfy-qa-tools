@@ -342,3 +342,63 @@ def test_a_gcloud_refusal_while_reading_is_a_refusal_not_a_failed_create(cli):
     assert result.exit_code == 2
     assert "gcloud auth login" in result.output
     assert billable(result) == []
+
+
+# --- the money boundary, end to end ---------------------------------------
+#
+# The unit-level versions of these live in tests/test_create_hostile.py. They are
+# repeated here through the real CLI because the thing being asserted is a
+# property of the whole command — that no combination of flags reaches
+# `create_instance_from_image` — and a unit test of `build` cannot see the flags.
+
+
+def test_an_explicit_zone_that_stocks_out_does_not_move_to_the_zone_google_names(cli):
+    """The most expensive bug this command has had. `--zone` means this zone or
+    nothing; the refusal for that zone names another one, and the box used to be
+    created there — billing, and in the one place the caller ruled out."""
+    result = cli("--os", "linux", "--gpu", "l4", "--zone", "europe-west4-a", "--yes",
+                 gc=FakeGcloud(refuse={"europe-west4-a": STOCKOUT}))
+    assert result.exit_code == 1
+    assert result.gc.created[1] == "europe-west4-a"
+    assert len([call for call in result.gc.calls if call in BILLABLE]) == 1
+    assert result.hosts == HOSTS
+
+
+def test_a_dry_run_makes_no_billable_call_even_with_yes_alongside_it(cli):
+    """`--yes` answers a prompt a dry run never reaches. Together they must still
+    be a dry run, because the person who typed both meant the safer one."""
+    result = cli("--os", "linux", "--gpu", "l4", "--dry-run", "--yes")
+    assert result.exit_code == 0
+    assert billable(result) == []
+    assert result.hosts == HOSTS
+
+
+def test_a_dry_run_makes_no_billable_call_when_every_zone_would_refuse(cli):
+    """A dry run must not discover capacity by trying for it — the mistake `move`
+    made, where `--dry-run` was consulted after a GPU instance had been started."""
+    result = cli("--os", "linux", "--gpu", "l4", "--dry-run",
+                 gc=FakeGcloud(refuse={zone: STOCKOUT for zone in ZONES}))
+    assert billable(result) == []
+
+
+def test_a_disk_size_nobody_meant_to_type_is_refused_before_any_create(cli):
+    result = cli("--os", "linux", "--gpu", "l4", "--disk", "20000", "--yes")
+    assert result.exit_code == 2
+    assert "larger than anything this tool creates" in result.output
+    assert billable(result) == []
+
+
+def test_a_name_google_would_refuse_never_reaches_a_create(cli):
+    result = cli("--os", "linux", "--gpu", "l4", "--name", "9lives", "--yes")
+    assert result.exit_code == 2
+    assert "not a name Google will accept" in result.output
+    assert billable(result) == []
+
+
+def test_an_explicit_zone_in_a_region_with_no_quota_is_refused(cli):
+    """`--region me-west1` was already refused with the reason. `--zone me-west1-a`
+    meant the same thing and used to be found out by gcloud instead."""
+    result = cli("--os", "linux", "--gpu", "l4", "--zone", "me-west1-a", "--yes")
+    assert result.exit_code == 2
+    assert "no L4 quota in me-west1" in result.output
+    assert billable(result) == []

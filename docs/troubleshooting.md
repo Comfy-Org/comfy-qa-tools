@@ -247,6 +247,18 @@ The Windows Server image alone does not fit below 50 GB. The default is 200,
 which is room for a few checkpoints; `--disk 500` if you are testing something
 large.
 
+**`a 20000 GB disk is larger than anything this tool creates. The disk bills by the gigabyte provisioned, from the moment the box exists and whether or not anything is written to it, so a typo here is expensive and silent. Ask for at most 4000, or make a disk that size deliberately in the console.`**
+`--disk` has no unit, so `20000` for `2000` is one keystroke and eighteen extra
+terabytes — provisioned, billed, and not obviously wrong in any output. There is
+a ceiling for the same reason there is a floor. If you genuinely want more than
+4 TB, make that disk in the console where the price is on the screen.
+
+**`'café' is not a name Google will accept. An instance name is a lowercase letter, then up to 62 more of a-z, 0-9 and -, ending in a letter or a digit.`**
+Checked here rather than left to `gcloud`, because by the time gcloud sees the
+name this command has spent a minute reading quota, opened four latency probes
+and asked you to confirm. Note that Python considers `é` and `ボ` alphanumeric
+and Google does not, so a name can look clean and still be refused.
+
 ### The quota gate
 
 Both allowances are read before anything is created, and printed either way:
@@ -327,6 +339,11 @@ no fall-through; drop it and a working zone is chosen for you.
 `--region` narrows the choice without naming a zone, and it can narrow it to
 nothing. Ask for the card in that region, or drop `--region`.
 
+**`this project has no L4 quota in me-west1, so nothing can start in me-west1-a. Nothing was created.`**
+The same gate, reached through `--zone` instead of `--region`. A zone in a region
+you hold no grant in cannot start the box, and this is a cheaper way to find that
+out than a create that fails a minute later.
+
 ### While it is being created
 
 Capacity is the one thing that cannot be checked in advance — Google publishes no
@@ -345,11 +362,26 @@ Not failures. A stockout in one zone is routine and says nothing about your
 account; a zone Google itself names in the refusal is moved to the front of what
 is left, because that answer is fresher than anything measured beforehand.
 
+**`Google suggests us-central1-c, which is outside the regions this is allowed to use — not trying it`**
+Also not a failure. Google's suggestion is only ever taken inside the ordering
+that was already chosen: inside `--region` when you gave one, inside the regions
+this project holds quota in when you did not, and not at all when you gave
+`--zone`, which means that zone or nothing. A suggestion outside those is a box
+somewhere you did not choose, so it is reported and skipped rather than followed.
+
 **`every zone tried is out of L4 capacity: europe-west4-a, europe-west4-b, europe-west1-b. Nothing was created and nothing is billing.`**
 The card is short everywhere you are allowed to use it. Nothing was made, so
 there is nothing to clean up and nothing to stop. Wait and run the same command
 again — stockouts usually clear in minutes to hours — or use a card you also have
 quota for.
+
+**`stopped after 6 zones, all out of L4 capacity: europe-west4-a, europe-west4-b, europe-west1-b, europe-west1-c, us-central1-a, us-central1-b. Nothing was created and nothing is billing — this is a cap, not the whole world, so there may be room somewhere untried.`**
+Different from the message above, and the difference matters. That one means
+everywhere you may use the card is short. This one means the tool stopped
+counting: every refusal can name another zone, so the queue refills as fast as it
+drains, and each attempt is a real create that takes most of a minute to fail. Six
+is the cap. There may well be capacity in a zone it never reached — name one with
+`--zone`, or run it again.
 
 **`Google refused to create comfy-linux in us-central1-a: ...`**
 Not a capacity problem: Google refused for some other reason, and its own sentence
