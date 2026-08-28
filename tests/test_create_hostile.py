@@ -68,6 +68,15 @@ PROJECT = "stately-timing-504610-p1"
 REGIONS = ["europe-west4", "us-central1"]
 ZONES = [f"{region}-{letter}" for region in REGIONS for letter in "abc"]
 
+# The zone every `--zone` test names. `f` on purpose: it is the odd zone in
+# us-central1 on the live project, which makes it the right one for a test about
+# naming one zone deliberately — and it is not in ZONES, so nothing else picks it.
+ZONE_OVERRIDE = "us-central1-f"
+
+# What the fake says Google offers the card in. Wider than ZONES, because a
+# `--zone` override is checked against the card and ZONE_OVERRIDE is not ranked.
+OFFERED = [*ZONES, ZONE_OVERRIDE]
+
 QUOTAS = [
     {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
      "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": REGIONS}]},
@@ -106,7 +115,14 @@ class Cloud:
         return [{"name": name, "zone": zone} for zone in zone_list]
 
     def accelerator_types(self, project, name):
-        return [{"name": name, "zone": zone} for zone in ZONES]
+        # `--zone` checks the card as well as the machine type, so this has to
+        # answer about every zone a `--zone` test names — not just the ranked
+        # ZONES. The `--zone` tests all use `us-central1-f`, which is on purpose
+        # (it is the odd zone in us-central1 on the live project) and is not in
+        # ZONES; answering only for ZONES turns those tests into
+        # "us-central1-f has never offered nvidia-l4", which reads as a bug in
+        # `create.py` and sends you hunting in the wrong file.
+        return [{"name": name, "zone": zone} for zone in OFFERED]
 
     @property
     def zones_created_in(self) -> list[str]:

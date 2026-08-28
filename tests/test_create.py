@@ -491,6 +491,12 @@ class Cloud:
     def machine_types(self, project, zone_list, name):
         return [{"name": name, "zone": zone} for zone in zone_list]
 
+    def accelerator_types(self, project, name):
+        # `--zone` checks the card as well as the machine type, so a fake that
+        # only answers about machine types answers half the question.
+        return [{"name": name, "zone": zone} for zone in
+                (f"us-central1-{letter}" for letter in "abcdef")]
+
 
 def order(*zones_):
     return Ordering(zones=tuple(zones_), regions=tuple(dict.fromkeys(

@@ -391,7 +391,7 @@ def test_a_disk_size_nobody_meant_to_type_is_refused_before_any_create(cli):
 def test_a_name_google_would_refuse_never_reaches_a_create(cli):
     result = cli("--os", "linux", "--gpu", "l4", "--name", "9lives", "--yes")
     assert result.exit_code == 2
-    assert "not a name Google will accept" in result.output
+    assert "is not a name Compute Engine will take" in result.output
     assert billable(result) == []
 
 
