@@ -73,8 +73,8 @@ to a log file, so a reauth failure there is completely silent. See
 
 ## What the tool does about it now
 
-**It checks before it spends money.** Anything that starts billing — `host up`,
-`host go` on a stopped box, `host move` — proves the credential works before the
+**It checks before it spends money.** Anything that starts billing — `up`,
+`go` on a stopped box, `create`, `move` — proves the credential works before the
 first billable call. Failing at the start costs a second. Failing halfway leaves
 a GPU box running, billing, and an error about whatever step happened to be
 holding the credential. A call that has already reached Google counts as proof,
@@ -97,17 +97,17 @@ sending a tester to reauthenticate when their Wi-Fi dropped wastes the reauth
 
 ```sh
 gcloud auth login
-comfy-qat auth status
+comfy-qat status
 ```
 
 Then re-run whatever you were doing. If a box was left running, stop paying for
 it first:
 
 ```sh
-comfy-qat host down <name>
+comfy-qat down <name>
 ```
 
-`auth status` is the quick way to tell an expired session from anything else: it
+`status` is the quick way to tell an expired session from anything else: it
 checks gcloud, account, project, billing and GPU quota in that order and stops
 at the first thing that is actually wrong.
 
@@ -185,7 +185,7 @@ error. For a tester, this is most of the pain.
 Free, needs nobody's permission, and genuinely helps:
 
 ```sh
-gcloud auth login && comfy-qat auth status
+gcloud auth login && comfy-qat status
 ```
 
 A fresh session at the top of a test pass means the clock starts when you do,
@@ -222,10 +222,10 @@ sends a tester to look for a broken ComfyUI install that is fine.
 On this machine, 131 gcloud invocations logged that exact failure without one of
 them reaching a person.
 
-The box is left running and billing. `comfy-qat host down <name>` stops it.
+The box is left running and billing. `comfy-qat down <name>` stops it.
 
 The fix is on the tunnel: after starting it, confirm the process is still alive
 a moment later and read its log if it is not, so a credential failure is
 reported as a credential failure. Until that lands, treat "tunnelled but ComfyUI
 is not answering" as *possibly* an expired session, and check with
-`comfy-qat auth status` before going onto the box.
+`comfy-qat status` before going onto the box.

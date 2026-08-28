@@ -1,7 +1,7 @@
 # The host list
 
 Every machine you test on is declared in `~/.config/comfy-qa-tools/hosts.toml`.
-`comfy-qat host init` writes a starter one.
+`comfy-qat init` writes a starter one.
 
 ```toml
 [hosts.local]
@@ -18,10 +18,17 @@ gce_project  = "your-project-id"
 port         = 8190
 ```
 
-Most of it is filled in for you. `comfy-qat setup` and `comfy-qat host discover`
+Most of it is filled in for you. `comfy-qat setup` and `comfy-qat discover`
 read your Compute Engine instances and write an entry for each one, assigning a free
 local port. Matching is on the GCE instance name, so renaming a host in this file
 does not make it come back as a duplicate.
+
+`comfy-qat create` adds its own entry the moment the box exists, on the next free
+port, so a machine you just made is usable without a `discover` in between. It
+re-reads this file immediately before choosing that port rather than reusing what
+it read minutes earlier: creating a box takes minutes, and a `discover` in another
+terminal meanwhile would have taken the port it was about to hand out. Two hosts on
+one port is the failure you cannot diagnose from the outside.
 
 ## Fields
 
@@ -29,7 +36,7 @@ does not make it come back as a duplicate.
 |---|---|---|
 | `kind` | all | `local` for a ComfyUI on this machine, `gce` for a Google Cloud box |
 | `port` | all | where ComfyUI is reached **on your machine**. For `local`, the port it actually serves on. For `gce`, the near end of the tunnel. Defaults to 8188 for `local` |
-| `os` | gce | what the box runs, e.g. `Ubuntu 22.04`. Shown in `host list`, and matched by `windows`, `linux`, `ubuntu`, `debian` |
+| `os` | gce | what the box runs, e.g. `Ubuntu 22.04`. Shown in `list`, and matched by `windows`, `linux`, `ubuntu`, `debian` |
 | `gpu` | gce | the card, e.g. `L4`. Matters as much as the OS — not every GPU can run every model. Matched by `l4`, `a100` |
 | `gce_instance` | gce | the instance name in Google Cloud |
 | `gce_zone` | gce | the zone it lives in, e.g. `us-central1-a` |
@@ -46,7 +53,7 @@ Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.
 ```
 
 `os` and `gpu` are not only labels. They are what you can select a host by:
-`comfy-qat host go windows`, `host go l4`, `host go windows/l4`. A description is
+`comfy-qat go windows`, `go l4`, `go windows/l4`. A description is
 used only when exactly one declared host fits it, and the host it picked is
 printed. See [the everyday loop](machines.md) for the full table.
 
@@ -71,7 +78,7 @@ which defeats the purpose of naming them.
 project/zone/instance are two ports and two tunnels onto one machine, so
 "reproduced on comfy-win, not on comfy-win-b" says nothing at all. The same
 instance name in a *different* zone is a different box and is fine — that is what
-`host move` leaves behind.
+`move` leaves behind.
 
 **No two hosts may differ only in case.** `comfy-win` and `Comfy-Win` is one
 machine typed two ways far more often than it is two machines, and lookup already
@@ -79,11 +86,11 @@ falls back to a case-insensitive match, so with both declared which one you get
 depends on a shift key.
 
 **`local` is reserved for the machine you are sitting at.** A `kind = "gce"` host
-may not take the name. `host stamp local` has one obvious meaning and every
+may not take the name. `stamp local` has one obvious meaning and every
 example relies on it.
 
 **A `local` host may not carry `gce_instance`, `gce_zone` or `gce_project`.**
-This is the rule that costs money when it is missing: `host down` decides what to
+This is the rule that costs money when it is missing: `down` decides what to
 stop from `kind`, so a cloud box declared `local` reads as a successful `down`
 while the GPU keeps billing. `os` and `gpu` are not cloud fields — a local host is
 welcome to declare both.
@@ -100,7 +107,7 @@ swapping a running box's OS would destroy its ComfyUI install and take tens of
 minutes. Keeping one box per OS and stopping the idle one costs only disk.
 
 ```sh
-comfy-qat host switch windows
+comfy-qat switch windows
 ```
 
 Name them after whatever actually distinguishes them — `win-l4`, `linux-a100` —

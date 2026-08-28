@@ -9,10 +9,10 @@ Before there is a loop, there is a machine. One command, and the card is the onl
 real decision:
 
 ```sh
-comfy-qat host create --os linux --gpu t4
-comfy-qat host create --os windows --gpu l4
-comfy-qat host create --os linux --gpu t4 --name box-2 --disk 500
-comfy-qat host create --os linux --gpu t4 --dry-run
+comfy-qat create --os linux --gpu t4
+comfy-qat create --os windows --gpu l4
+comfy-qat create --os linux --gpu t4 --name box-2 --disk 500
+comfy-qat create --os linux --gpu t4 --dry-run
 ```
 
 **You do not type a machine type.** It follows from the card, and this is the
@@ -59,7 +59,7 @@ zone order — 4 to try, quota first, then what is offered, then measured latenc
 `--dry-run` prints exactly that — the plan, the quota it read and the zone order
 it would try — and creates nothing.
 
-The finished box is added to your host list on a free port, so `host go` works on
+The finished box is added to your host list on a free port, so `go` works on
 it immediately. **The NVIDIA driver is not in either base image**, and a box
 without it runs ComfyUI on the CPU while looking perfectly healthy: Linux boxes
 install it from a startup script on first boot, Windows boxes are handed the two
@@ -70,8 +70,8 @@ deliberately manual.
 ## One command: `go`
 
 ```sh
-comfy-qat host go comfy-win
-comfy-qat host go windows      # the same box, described rather than named
+comfy-qat go comfy-win
+comfy-qat go windows      # the same box, described rather than named
 ```
 
 That is the whole thing. In order, it:
@@ -114,20 +114,22 @@ was streamed back over SSH — which meant one machine per terminal, and Ctrl-C
 stopped ComfyUI. Now it runs there and you get your prompt back:
 
 ```sh
-comfy-qat host go windows       # detached: starts it, forwards, prints the URL
-comfy-qat host go linux         # and now both, in one terminal, in two tabs
-comfy-qat host list             # both tunnelled
+comfy-qat go windows       # detached: starts it, forwards, prints the URL
+comfy-qat go linux         # and now both, in one terminal, in two tabs
+comfy-qat list             # both tunnelled
 ```
 
-`down` each one when you are finished with it. **A box left running bills whether
-or not anything is pointed at it**, and two of them bill twice — which is the cost
-of this convenience and worth saying plainly.
+`down` each one when you are finished with it, or `down --all` to stop the lot.
+**A box left running bills whether or not anything is pointed at it**, and two of
+them bill twice — which is the cost of this convenience and worth saying plainly.
+Two machines up at once used to be impossible; now it is ordinary, and the thing
+that used to stop you overspending — the terminal being busy — is gone with it.
 
 ### Watching the log
 
 ```sh
-comfy-qat host logs linux            # follow it, as it is written
-comfy-qat host logs linux --tail 50  # the last 50 lines, then stop
+comfy-qat logs linux            # follow it, as it is written
+comfy-qat logs linux --tail 50  # the last 50 lines, then stop
 ```
 
 It reads a file on the box — `/opt/comfyui/comfyui.log`, or
@@ -140,14 +142,14 @@ Three answers rather than a wait, when there is no log to read:
 
 | state | what it says |
 |---|---|
-| the box is stopped | it has no ComfyUI and no log; `host go` starts both |
+| the box is stopped | it has no ComfyUI and no log; `go` starts both |
 | the box is up, nothing launched | there is no log file, and **the machine is billing** |
 | `local` | your own ComfyUI's log is in the terminal you started it in |
 
 ### The old behaviour, when you want it
 
 ```sh
-comfy-qat host go linux --follow
+comfy-qat go linux --follow
 ```
 
 Streams ComfyUI's startup log onto this terminal exactly as a local `main.py`
@@ -158,10 +160,10 @@ launch and want to watch it happen.
 ### A new window instead
 
 ```sh
-comfy-qat host go linux --new-window
+comfy-qat go linux --new-window
 ```
 
-Opens a new **macOS Terminal** window and runs `host go <name> --follow` in it,
+Opens a new **macOS Terminal** window and runs `go <name> --follow` in it,
 leaving this terminal free. That is the only thing it supports: anywhere else it
 says so and starts nothing, printing the exact command to paste into a window you
 open yourself. A window that silently does not appear, on a command that starts a
@@ -172,8 +174,8 @@ GPU box, is a machine you are paying for and cannot see.
 One box per OS, and switching between them is one command:
 
 ```sh
-comfy-qat host switch linux
-comfy-qat host switch windows
+comfy-qat switch linux
+comfy-qat switch windows
 ```
 
 `switch` is `go` with the step people forget on the front. It starts the machine
@@ -233,7 +235,7 @@ up reading a result from the wrong one.
 ## Which boxes do I have, and which are up?
 
 ```sh
-comfy-qat host list
+comfy-qat list
 ```
 
 ```
@@ -251,7 +253,7 @@ Whether the instances are *running* is a question only Google can answer, and it
 is one call per box, so it is asked for rather than paid for every time:
 
 ```sh
-comfy-qat host list --live
+comfy-qat list --live
 ```
 
 ```
@@ -285,20 +287,33 @@ labelled, since it may well hit the same shortage. `move` is second because
 rebuilding a box takes minutes and switching takes one command — see "when a zone
 has no GPUs left" below for what it actually does.
 
-`host up` prints the same advice. It belongs to the failure, not to one command.
+`up` prints the same advice. It belongs to the failure, not to one command.
+
+That block is copied verbatim from a real run, which is why the commands in it
+still read `comfy-qat host switch` and `comfy-qat host move`: several of the
+tool's own messages have not caught up with the verbs moving to the top level.
+Both spellings work, and the short one is the one to learn.
 
 ## When you are done
 
 ```sh
-comfy-qat host down comfy-win
+comfy-qat down comfy-win
+comfy-qat down --all       # every cloud box you have declared, in one go
 ```
+
+`--all` exists because the question at the end of a session is never "is
+comfy-win stopped", it is **"am I still paying for anything"** — and answering
+that by naming each box in turn is how one gets missed, which matters more now
+that having two up at once is normal. It takes no name, and one box refusing to
+stop does not leave the rest running: it stops the others, then names what did
+not stop and what to do about it.
 
 Closes the tunnel and stops the instance — and with it the ComfyUI running on it,
 which needs no separate step: nothing survives the machine going away. A stopped
 box costs only its disk — cents
 per day — which is why the pattern here is one box per OS, stopped when idle, rather
 than deleting and rebuilding. `--keep-running` closes only the tunnel and leaves the
-machine on — and, deliberately, the ComfyUI on it, which the next `host go` finds
+machine on — and, deliberately, the ComfyUI on it, which the next `go` finds
 and uses rather than starting a second one. Occasionally what you want, never what
 you want overnight.
 
@@ -309,20 +324,20 @@ See [cost.md](cost.md) for the one rule.
 `go` is `up` + install + serve. When you want the steps on their own:
 
 ```sh
-comfy-qat host up comfy-win      # start it, tunnel in, wait for ComfyUI to answer
-comfy-qat host open comfy-win    # tunnel only, to a box that is already running
-comfy-qat host logs comfy-win    # what the ComfyUI on it is saying
-comfy-qat host stamp comfy-win   # what is it running, exactly?
+comfy-qat up comfy-win      # start it, tunnel in, wait for ComfyUI to answer
+comfy-qat open comfy-win    # tunnel only, to a box that is already running
+comfy-qat logs comfy-win    # what the ComfyUI on it is saying
+comfy-qat stamp comfy-win   # what is it running, exactly?
 ```
 
-`host open --dry-run` prints the `gcloud compute ssh ... -L` command instead of
+`open --dry-run` prints the `gcloud compute ssh ... -L` command instead of
 running it, which is the thing to paste into a bug report when the forward itself
 is what misbehaved. Note both ends are written `127.0.0.1` rather than
 `localhost`: on macOS that name resolves to `::1` first, and ssh then binds IPv6
 only while every attempt on `127.0.0.1` is refused.
 
-`host open` on a box where ComfyUI is not running yet will say so rather than
-appear to succeed — there is nothing to forward to. `host go` is the command that
+`open` on a box where ComfyUI is not running yet will say so rather than
+appear to succeed — there is nothing to forward to. `go` is the command that
 starts it and forwards in one step.
 
 A tunnel outlives the command that opened it, so its process id is recorded in
@@ -333,7 +348,7 @@ stack a second one on the same port, which is a failure you would never diagnose
 ## Stamp the result
 
 ```sh
-comfy-qat host stamp comfy-win
+comfy-qat stamp comfy-win
 ```
 
 ```
@@ -352,7 +367,7 @@ billing. Google simply has no L4 free in that zone right now, and retrying there
 will not change it.
 
 ```sh
-comfy-qat host move comfy-win
+comfy-qat move comfy-win
 ```
 
 Asks Google where there *is* capacity, then rebuilds the box in that zone with its
@@ -389,5 +404,5 @@ than stored. That is deliberate: both a local ComfyUI and a tunnel to a cloud bo
 answer on `127.0.0.1` and look identical in a browser. The port rules in [hosts.md](hosts.md) exist for the same reason —
 8188 belongs to the local install and no cloud host may take it.
 
-If a result surprises you, `host stamp <name>` is the fastest way to find out you
+If a result surprises you, `stamp <name>` is the fastest way to find out you
 were looking at the other machine.
