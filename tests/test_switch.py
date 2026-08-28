@@ -438,3 +438,44 @@ def test_a_machine_in_the_zone_that_just_refused_is_offered_last():
     ranked = alternatives([same_zone, other_zone, WIN], WIN)
 
     assert [host.name for host in ranked] == ["win-away", "win-same"]
+
+
+def test_the_ceiling_makes_it_stop_first(cli, monkeypatch):
+    """Normally the target comes up before anything stops, so a failure leaves
+    you where you were. That is backwards when the ceiling is the reason: with
+    GPUS_ALL_REGIONS at 1 and a GPU box running, the target cannot start until
+    the other stops. Watched it fail with "Quota 'NVIDIA_L4_GPUS' exceeded.
+    Limit: 1.0" — arithmetic that was knowable beforehand.
+    """
+    from comfy_qa import host as host_module
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
+                        lambda gc, host, others: 1)
+    result = cli("host", "switch", "comfy-win", "--no-browser",
+                 statuses={"comfy-win": ["TERMINATED", "RUNNING"],
+                           "comfy-linux": "RUNNING"},
+                 open_tunnels=("comfy-linux",), serving=("comfy-win",))
+
+    assert "allows 1 GPU machine at a time" in result.output
+    stopped = result.output.index("comfy-linux stopped")
+    started = result.output.index("comfy-win is running")
+    assert stopped < started, "the other one has to go first, or neither can run"
+
+
+def test_not_knowing_never_reorders_a_switch():
+    """Stopping first is the destructive order. It is only correct when the
+    arithmetic is certain, so every uncertain answer keeps the safe order."""
+    from comfy_qa.config import Host
+    from comfy_qa.host import _blocked_by_the_ceiling
+
+    win = Host(name="w", kind="gce", os="Windows Server 2022", gpu="L4", port=8190,
+               gce_instance="w", gce_zone="z", gce_project="p")
+    other = Host(name="o", kind="gce", os="Ubuntu 22.04", gpu="L4", port=8191,
+                 gce_instance="o", gce_zone="z", gce_project="p")
+
+    class Refuses:
+        def gpu_quotas(self, project):
+            raise RuntimeError("cannot tell")
+
+    assert _blocked_by_the_ceiling(Refuses(), win, [other]) is None
+    assert _blocked_by_the_ceiling(Refuses(), win, []) is None

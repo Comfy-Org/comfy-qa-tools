@@ -820,12 +820,50 @@ def switch_cmd(
         return
 
     typer.echo("")
+
+    # Normally the target comes up before anything is stopped, so a failure
+    # leaves you on the machine you had. That is exactly backwards when the
+    # ceiling is the reason you are switching: with GPUS_ALL_REGIONS at 1 and a
+    # GPU box running, the target *cannot* start until the other one stops.
+    # Watched that happen — the switch started the target, was refused with
+    # "Quota 'NVIDIA_L4_GPUS' exceeded. Limit: 1.0", and reported it as a
+    # failure. It was arithmetic, and it was knowable beforehand.
+    first = _blocked_by_the_ceiling(gc, host, [other for other, _why in others])
+    if first:
+        typer.echo(f"  your quota allows {first} GPU machine at a time, so "
+                   f"{host.name} cannot start until the other one stops")
+        for other, _why in others:
+            _act(put_away, gc, other, lambda line: typer.echo(f"  {line}"))
+        others = []
+
     ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
 
     for other, _why in others:
         _act(put_away, gc, other, lambda line: typer.echo(f"  {line}"))
 
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
+
+
+def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
+    """Would the project-wide GPU ceiling refuse this machine while those run?
+
+    Returns the ceiling when it is the thing in the way, and None otherwise —
+    including whenever the answer cannot be established. Not knowing must never
+    reorder a switch: stopping first is the destructive order, and it is only
+    correct when the arithmetic is certain.
+    """
+    if not others or not host.is_remote or not host.gpu:
+        return None
+    try:
+        from .quota import global_allowance
+
+        ceiling = global_allowance(gc.gpu_quotas(host.gce_project or ""))
+    except Exception:
+        return None
+    if ceiling is None or ceiling < 0:      # -1 is Google's "unlimited"
+        return None
+    running = sum(1 for other in others if other.is_remote and other.gpu)
+    return ceiling if running >= ceiling else None
 
 
 def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
