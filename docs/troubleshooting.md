@@ -434,10 +434,18 @@ Not a capacity problem: Google refused for some other reason, and its own senten
 is quoted. Anything after this point could in principle have left something
 half-made, so the fix line prints the command that lists the project's instances.
 
-**`comfy-linux exists in us-central1-a and is billing, but it could not be written to ~/.config/comfy-qa-tools/hosts.toml: ... Add it by hand, or run `comfy-qat discover`. To stop it now: gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
-The machine was created and the host list was not. The box is real and billing, so
-the message leads with that: either adopt it with `host discover`, or stop it with
-the command given. It is the one message here printed after money is being spent.
+**`comfy-linux exists in us-central1-a and is billing. To stop it now: gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
+(printed on two lines, the command on its own)
+**`It could not be written to ~/.config/comfy-qa-tools/hosts.toml: ... Add it by hand, or run `comfy-qat discover` to adopt it.`**
+The machine was created and the host list was not. It is the one message in this
+command printed after money is being spent, and the order of it is deliberate:
+the box is real, it is billing, and **your host list has no record of it, so
+`comfy-qat down` cannot reach it**. The raw `gcloud ... stop` is the only
+thing that works, so it leads, on its own line, ahead of both the adoption path
+and the interpolated write error — which can be long enough on its own to push a
+command at the end of a paragraph out of sight. Adopting it with
+`comfy-qat discover` is the other way out, and is second because it leaves
+the box running.
 
 ### The NVIDIA driver
 
