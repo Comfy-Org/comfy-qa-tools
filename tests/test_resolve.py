@@ -183,3 +183,36 @@ def test_the_narrowing_advice_survives_where_it_actually_helps():
     with pytest.raises(ConfigError, match="add the other half"):
         resolve(hosts, "windows")
     assert resolve(hosts, "windows/l4").host.name == "win-l4"
+
+
+def _run(*args):
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    return CliRunner().invoke(app, list(args))
+
+
+def test_the_flags_say_the_same_thing_as_the_positional():
+    """`go windows/l4` is what anyone types by hand; `--os`/`--gpu` are for a
+    script, or for when a machine's name could be mistaken for a description."""
+    assert _run("stamp", "--os", "windows").output == _run("stamp", "windows").output
+    assert _run("stamp", "--gpu", "l4").output == _run("stamp", "l4").output
+    assert (_run("stamp", "--os", "windows", "--gpu", "l4").output
+            == _run("stamp", "windows/l4").output)
+
+
+def test_saying_it_twice_is_an_error_not_a_precedence_rule():
+    """Someone who typed `go windows --os linux` has made a mistake, and picking
+    a winner would carry that mistake out on a machine."""
+    result = _run("stamp", "windows", "--os", "linux")
+
+    assert result.exit_code != 0
+    assert "not both" in result.output
+
+
+def test_saying_it_not_at_all_names_every_way_of_saying_it():
+    result = _run("stamp")
+
+    assert result.exit_code != 0
+    assert "os/card" in result.output and "--os" in result.output

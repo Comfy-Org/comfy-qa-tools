@@ -22,6 +22,7 @@ import typer
 
 from .config import (
     COMFYUI_DEFAULT_PORT,
+    SEPARATOR,
     DEFAULT_CONFIG_PATH,
     ConfigError,
     Host,
@@ -363,6 +364,32 @@ def create_cmd(
         typer.echo(line)
 
 
+def _selector(name: str | None, os_: str | None, gpu: str | None) -> str:
+    """One selector, from a positional or from `--os` / `--gpu`.
+
+    `go windows/l4` is shorter and is what anyone types by hand; the flags are
+    for a script, or for when a machine's name could be mistaken for a
+    description. One flag each rather than `--windows` and `--gpu-l4`: two
+    booleans can contradict each other, and a flag per card is a namespace that
+    grows every time Google ships one.
+
+    Giving both is an error rather than a precedence rule. Someone who typed
+    `go windows --os linux` has made a mistake, and picking a winner would carry
+    that mistake out on a machine.
+    """
+    described = SEPARATOR.join(part for part in (os_, gpu) if part)
+    if name and described:
+        raise typer.BadParameter(
+            f"say the machine once: {name!r} as an argument, or --os/--gpu, not both."
+        )
+    if not name and not described:
+        raise typer.BadParameter(
+            "which machine? A name, an operating system, a card, or both as "
+            "os/card — or --os and --gpu."
+        )
+    return name or described
+
+
 def _lookup(name: str, config: Optional[Path]) -> tuple[list[Host], Host]:
     """The whole host list, and the one machine the argument meant.
 
@@ -428,8 +455,12 @@ def _act(action, *args, **kwargs):
 
 @app.command("up")
 def up_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Start a machine and wait until ComfyUI actually answers.
 
@@ -439,7 +470,7 @@ def up_cmd(
     from .gcloud import Gcloud
     from .lifecycle import bring_up
 
-    hosts, host = _lookup(name, config)
+    hosts, host = _lookup(_selector(name, os_, gpu), config)
     try:
         bring_up(Gcloud(), host, lambda line: typer.echo(f"  {line}"))
     except _reportable() as exc:
@@ -452,8 +483,12 @@ def up_cmd(
 
 @app.command("open")
 def open_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the tunnel command instead of running it.")] = False,
 ) -> None:
@@ -471,7 +506,7 @@ def open_cmd(
         status as tunnel_status,
     )
 
-    host = _host(name, config)
+    host = _host(_selector(name, os_, gpu), config)
     if not host.is_remote:
         typer.echo(f"{host.name} is local — nothing to tunnel. It is at {host.url}.")
         return
@@ -569,8 +604,12 @@ def down_cmd(
 
 @app.command("go")
 def go_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     no_browser: Annotated[bool, typer.Option(
         "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
     no_install: Annotated[bool, typer.Option(
@@ -591,7 +630,7 @@ def go_cmd(
     from .gcloud import Gcloud
     from .lifecycle import in_a_new_window
 
-    hosts, host = _lookup(name, config)
+    hosts, host = _lookup(_selector(name, os_, gpu), config)
     if new_window:
         # Before anything is started: a hand-off that fails must not leave a box
         # running behind a window that never opened.
@@ -609,8 +648,12 @@ def go_cmd(
 
 @app.command("logs")
 def logs_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     tail: Annotated[Optional[int], typer.Option(
         "--tail", help="Print this many lines and stop. Add --follow to keep reading.")] = None,
     follow: Annotated[Optional[bool], typer.Option(
@@ -627,7 +670,7 @@ def logs_cmd(
     from .gcloud import Gcloud
     from .lifecycle import read_logs
 
-    host = _host(name, config)
+    host = _host(_selector(name, os_, gpu), config)
     try:
         _act(read_logs, Gcloud(), host, lambda line: typer.echo(f"  {line}"),
              tail=200 if tail is None else tail,
@@ -779,9 +822,13 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
 
 @app.command("switch")
 def switch_cmd(
-    name: Annotated[str, typer.Argument(
+    name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     keep_others: Annotated[bool, typer.Option(
         "--keep-others", help="Leave the other machines running. They keep billing.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
@@ -804,7 +851,7 @@ def switch_cmd(
     from .gcloud import Gcloud, GcloudError
     from .lifecycle import put_away, running_elsewhere
 
-    hosts, host = _lookup(name, config)
+    hosts, host = _lookup(_selector(name, os_, gpu), config)
     gc = Gcloud()
 
     try:
@@ -923,10 +970,14 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
 
 @app.command("move")
 def move_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")],
+    name: Annotated[Optional[str], typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")] = None,
     to: Annotated[Optional[str], typer.Option(
         "--to", help="Zone to move it to. Default: whichever one Google says has capacity.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before making changes.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
     clean: Annotated[bool, typer.Option(
@@ -944,7 +995,7 @@ def move_cmd(
         MoveError, blocked, leftovers, prepare, remove_leftovers, run_move,
     )
 
-    host = _host(name, config)
+    host = _host(_selector(name, os_, gpu), config)
     if not host.is_remote:
         typer.echo(f"{host.name} is local — there is nowhere to move it to.", err=True)
         raise typer.Exit(code=2)
@@ -1075,8 +1126,12 @@ def _probe_fix(host: Host) -> str | None:
 
 @app.command("stamp")
 def stamp_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     as_json: Annotated[bool, typer.Option(
         "--json", help="Machine-readable, for pasting into a report or a test.")] = False,
 ) -> None:
@@ -1086,7 +1141,7 @@ def stamp_cmd(
     a hand-written bug report usually does not either — which is how "cannot
     reproduce" happens between two machines that were never the same.
     """
-    host = _host(name, config)
+    host = _host(_selector(name, os_, gpu), config)
 
     try:
         stamp = fetch(host.url, host=host.name)
