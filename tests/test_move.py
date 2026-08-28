@@ -619,7 +619,7 @@ def test_a_stockout_in_the_destination_names_another_zone_and_keeps_the_snapshot
     message = str(caught.value)
     assert "no L4 capacity either" in message
     assert "not a fault on your side" in message
-    assert "comfy-qat host move comfy-win --to us-central1-c" in caught.value.fix
+    assert "comfy-qat move comfy-win --to us-central1-c" in caught.value.fix
     assert "the snapshot is kept" in caught.value.fix
     assert cloud.find_snapshot("comfy-win-a-move"), (
         "the expensive half survives, so another zone costs only a disk"

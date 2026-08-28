@@ -296,11 +296,11 @@ def test_a_gcloud_refusal_during_move_exits_2_with_its_fix(cli):
     """
     result = cli("move", "comfy-win", cloud=Cloud(start=GcloudError(
         "your Google session has expired", raw="ERROR: reauthentication required",
-        fix="comfy-qat auth login")))
+        fix="comfy-qat login")))
 
     assert result.exit_code == 2
     assert "your Google session has expired" in result.output
-    assert "to fix: comfy-qat auth login" in result.output
+    assert "to fix: comfy-qat login" in result.output
 
 
 def test_no_zone_suggested_is_also_a_refusal(cli):

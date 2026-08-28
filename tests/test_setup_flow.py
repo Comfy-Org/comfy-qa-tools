@@ -278,7 +278,7 @@ def test_quota_that_cannot_be_read_is_reported_and_stepped_over(hosts):
 
     assert result.exit_code == 0, "quota can take days; it never strands anyone"
     assert "could not read GPU quota" in result.output
-    assert "comfy-qat auth quota" in result.output
+    assert "comfy-qat quota" in result.output
     assert hosts.exists()
 
 
@@ -335,7 +335,7 @@ def test_no_terminal_names_a_card_it_can_see_rather_than_a_placeholder_id(hosts)
     result = run(cloud, "--non-interactive", "--region", "us-central1")
 
     assert result.exit_code == 0
-    assert "comfy-qat auth quota request --gpu l4 --region us-central1" in result.output
+    assert "comfy-qat quota request --gpu l4 --region us-central1" in result.output
     assert cloud.requests == [], "--non-interactive asks Google for nothing"
 
 
@@ -383,7 +383,7 @@ def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
     assert "no cloud boxes on this project yet" in result.output
     assert "Ready — 1 machine(s), 0 in the cloud." in result.output
     assert "Add one by hand" in result.output
-    assert "comfy-qat host discover" in result.output
+    assert "comfy-qat discover" in result.output
 
 
 def test_discovery_failing_still_finishes_and_says_so(hosts):

@@ -246,7 +246,7 @@ def test_login_hands_over_the_commands_and_signs_nobody_in(monkeypatch):
     assert result.exit_code == 0
     assert "gcloud auth login" in result.output
     assert "gcloud config set project" in result.output
-    assert "comfy-qat auth status" in result.output
+    assert "comfy-qat status" in result.output
 
 
 # --- quota list --------------------------------------------------------------
@@ -309,7 +309,7 @@ def test_nothing_usable_prints_the_command_that_fixes_it():
     result = run(FakeCloud(quotas=[T4, A100]), "quota", "list")
 
     assert "Nothing is usable yet" in result.output
-    assert "comfy-qat auth quota request --gpu" in result.output
+    assert "comfy-qat quota request --gpu" in result.output
 
 
 def test_a_pending_request_is_shown_as_pending_not_missing():
@@ -411,7 +411,7 @@ def test_still_pending_is_exit_75_and_says_how_to_pick_it_up_again():
     assert result.exit_code == 75
     assert "still pending: t4, a100" in result.output
     assert "Approval can take days" in result.output
-    assert "comfy-qat auth quota" in result.output
+    assert "comfy-qat quota" in result.output
 
 
 def test_only_the_cards_still_waiting_are_named():

@@ -207,7 +207,7 @@ def test_the_target_is_stopped_and_startable(cli):
     assert "http://127.0.0.1:8190" in result.output
     assert any("comfy-linux" in call for call in stops(result)), "the old box was left billing"
     assert "comfy-linux stopped" in result.output
-    assert "comfy-qat host down comfy-win" in result.output
+    assert "comfy-qat down comfy-win" in result.output
 
 
 def test_the_target_is_already_serving(cli):
@@ -237,9 +237,9 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
     assert "not a fault on your side" in result.output
     assert "comfy-linux is untouched" in result.output
     assert "Where you can test instead" in result.output
-    assert "comfy-qat host switch comfy-linux   # Ubuntu 22.04, A100" in result.output
+    assert "comfy-qat switch comfy-linux   # Ubuntu 22.04, A100" in result.output
     assert "If it has to be comfy-win:" in result.output
-    assert "comfy-qat host move comfy-win --to us-central1-b" in result.output
+    assert "comfy-qat move comfy-win --to us-central1-b" in result.output
     assert stops(result) == [], "the machine you were working on was stopped anyway"
 
 
@@ -249,7 +249,7 @@ def test_up_gives_the_same_advice_as_switch_does(cli):
 
     assert result.exit_code == 1
     assert "no L4 capacity in us-central1-a" in result.output
-    assert "comfy-qat host switch comfy-linux" in result.output
+    assert "comfy-qat switch comfy-linux" in result.output
 
 
 def test_the_target_cannot_start_and_there_is_nowhere_else(cli):
@@ -259,8 +259,8 @@ def test_the_target_cannot_start_and_there_is_nowhere_else(cli):
     assert result.exit_code == 1
     assert "no L4 capacity in us-central1-a" in result.output
     assert "No other machine is declared" in result.output
-    assert "comfy-qat host discover" in result.output
-    assert "comfy-qat host move comfy-win --to us-central1-b" in result.output
+    assert "comfy-qat discover" in result.output
+    assert "comfy-qat move comfy-win --to us-central1-b" in result.output
 
 
 def test_an_ambiguous_selector_refuses_before_anything_is_touched(cli):

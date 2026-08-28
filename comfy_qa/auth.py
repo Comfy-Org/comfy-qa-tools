@@ -109,14 +109,14 @@ def run_checks(gc: Gcloud) -> list[Check]:
     try:
         quotas = gc.gpu_quotas(project)
     except GcloudError as exc:
-        results.append(Check("gpu quota", False, str(exc), exc.fix or "comfy-qat auth quota"))
+        results.append(Check("gpu quota", False, str(exc), exc.fix or "comfy-qat quota"))
         return results
 
     # Read through the same filter the rest of the tool uses. Counting any quota
     # with a non-zero value meant a project holding nothing but a committed or
     # preemptible allowance passed this check — and then could not start a box.
     # Setup was fixed for exactly this; status was reporting green beside it.
-    request_fix = "comfy-qat auth quota request --gpu <type> --region <region>"
+    request_fix = "comfy-qat quota request --gpu <type> --region <region>"
     usable = [row for row in readiness(quotas) if row.usable]
     cards = [row for row in usable if row.gpu != GLOBAL_ALLOWANCE]
     if not usable:
@@ -193,7 +193,7 @@ def login_cmd() -> None:
     `gcloud auth login` opens a browser and is interactive, so it is handed over
     rather than driven. Running it yourself also leaves you the repro trail.
     """
-    typer.echo("Run these, then `comfy-qat auth status`:\n")
+    typer.echo("Run these, then `comfy-qat status`:\n")
     typer.echo("  gcloud auth login")
     typer.echo("  gcloud config set project <your-project-id>")
 
@@ -260,7 +260,7 @@ def quota_list_cmd(
 
     if not any(c.usable for c in cards):
         typer.echo("\nNothing is usable yet. Ask for one or more cards:")
-        typer.echo("  comfy-qat auth quota request --gpu l4,a100 --region us-central1")
+        typer.echo("  comfy-qat quota request --gpu l4,a100 --region us-central1")
 
 
 @quota_app.command("request")
@@ -369,7 +369,7 @@ def quota_request_cmd(
     if still_waiting:
         typer.echo(
             f"still pending: {', '.join(still_waiting)}. Approval can take days — "
-            "run `comfy-qat auth quota` to check, or this command again to keep waiting."
+            "run `comfy-qat quota` to check, or this command again to keep waiting."
         )
         raise typer.Exit(code=75)  # EX_TEMPFAIL: not an error, not done either
 

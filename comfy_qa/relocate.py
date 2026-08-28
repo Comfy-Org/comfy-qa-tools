@@ -823,9 +823,9 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
         # hint, not a reservation, and it goes stale — this is that failure.
         elsewhere = [z for z in suggested_zones(exc.raw or "") if z != plan.to_zone]
         retry = (
-            f"comfy-qat host move {plan.host.name} --to {elsewhere[0]}"
+            f"comfy-qat move {plan.host.name} --to {elsewhere[0]}"
             if elsewhere else
-            f"comfy-qat host move {plan.host.name} --to <another zone>"
+            f"comfy-qat move {plan.host.name} --to <another zone>"
         )
         return MoveError(
             f"{plan.to_zone} has no {plan.host.gpu or 'GPU'} capacity either, so "

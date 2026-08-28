@@ -38,7 +38,7 @@ app = typer.Typer(
 )
 
 STARTER = f"""\
-# comfy-qat host list.
+# comfy-qat list.
 #
 # Every machine you test on is declared here, local or cloud. Naming them all
 # means there is no invisible default, which is how you end up reading results
@@ -164,7 +164,7 @@ def init_cmd(
             "can write to — the file itself, not the folder it goes in.", err=True)
         raise typer.Exit(code=2)
     typer.echo(f"wrote {path}")
-    typer.echo("Edit it to add your cloud boxes, then run `comfy-qat host list`.")
+    typer.echo("Edit it to add your cloud boxes, then run `comfy-qat list`.")
 
 
 @app.command("discover")
@@ -346,7 +346,7 @@ def create_cmd(
     except OSError as exc:
         typer.echo(f"\n{blueprint.name} exists in {made_in} and is billing, but it "
                    f"could not be written to {path}: {exc}. Add it by hand, or run "
-                   f"`comfy-qat host discover`. To stop it now: gcloud compute "
+                   f"`comfy-qat discover`. To stop it now: gcloud compute "
                    f"instances stop {blueprint.name} --zone={made_in} "
                    f"--project={project}", err=True)
         raise typer.Exit(code=1)
@@ -627,7 +627,7 @@ def logs_cmd(
              follow=(tail is None) if follow is None else follow)
     except KeyboardInterrupt:
         typer.echo(f"\nstopped reading. ComfyUI is still running on {host.name}, "
-                   f"and so is the machine — `comfy-qat host down {host.name}` to "
+                   f"and so is the machine — `comfy-qat down {host.name}` to "
                    f"stop paying for it.")
 
 
@@ -652,7 +652,7 @@ def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
 
     options = alternatives(hosts, host)[:3]
     if options:
-        commands = [f"comfy-qat host switch {other.name}" for other in options]
+        commands = [f"comfy-qat switch {other.name}" for other in options]
         width = max(len(command) for command in commands)
         typer.echo("\nWhere you can test instead, easiest first:", err=True)
         for other, command in zip(options, commands):
@@ -663,7 +663,7 @@ def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
     else:
         typer.echo("\nNo other machine is declared, so there is nowhere to switch to:",
                    err=True)
-        typer.echo("  comfy-qat host discover   # declare a box you already have",
+        typer.echo("  comfy-qat discover   # declare a box you already have",
                    err=True)
 
     if exc.fix:
@@ -725,7 +725,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         typer.echo(ready.stamp.line())
         if browser:
             browser(host.url)
-        typer.echo(f"\nWhen you are done:  comfy-qat host down {host.name}")
+        typer.echo(f"\nWhen you are done:  comfy-qat down {host.name}")
         return
 
     if not host.is_remote:
@@ -754,19 +754,19 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         raise typer.Exit(code=1)
     except KeyboardInterrupt:
         typer.echo(f"\nstopped. The machine is still running — "
-                   f"`comfy-qat host down {host.name}` to stop paying.")
+                   f"`comfy-qat down {host.name}` to stop paying.")
         return
 
     if follow:
         typer.echo(f"\nComfyUI exited ({code}). "
-                   f"`comfy-qat host down {host.name}` to stop the machine.")
+                   f"`comfy-qat down {host.name}` to stop the machine.")
         return
 
     # The URL is last on purpose. ComfyUI announces its own address — correct on
     # the box, wrong here — and whatever is said after it is what gets opened.
     typer.echo(f"\nComfyUI is running on {host.name} and this terminal is free.")
-    typer.echo(f"  comfy-qat host logs {host.name}   # follow its log, on the box")
-    typer.echo(f"  comfy-qat host down {host.name}   # close the tunnel, stop the box")
+    typer.echo(f"  comfy-qat logs {host.name}   # follow its log, on the box")
+    typer.echo(f"  comfy-qat down {host.name}   # close the tunnel, stop the box")
     typer.echo(f"\nOpen {host.url} in your browser.")
 
 
@@ -891,7 +891,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
             f"is to try to start {host.gce_instance}, and if it starts it is billing — "
             f"so a dry run that did it would be the most expensive command here. Say "
             f"where you want it and the rest of the plan is printed without touching "
-            f"anything: comfy-qat host move {host.name} --to us-central1-b --dry-run.",
+            f"anything: comfy-qat move {host.name} --to us-central1-b --dry-run.",
             err=True)
         raise typer.Exit(code=2)
 
@@ -910,7 +910,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
         return zones[0]
 
     typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
-    typer.echo(f"  comfy-qat host go {host.name}")
+    typer.echo(f"  comfy-qat go {host.name}")
     return None
 
 
@@ -1030,7 +1030,7 @@ def move_cmd(
 
     port = ports[0] if ports else host.port
     typer.echo(f"\n{plan.new_instance} is in {target}, on port {port}.")
-    typer.echo(f"  comfy-qat host go {plan.new_instance}")
+    typer.echo(f"  comfy-qat go {plan.new_instance}")
     typer.echo(f"\n{host.gce_instance} is still in {host.gce_zone}, stopped. Delete it "
                f"when you are happy with the new one.")
 
@@ -1060,9 +1060,9 @@ def _probe_fix(host: Host) -> str | None:
     return (
         f"no tunnel to {host.name} is open, so nothing on this machine answers "
         f"{host.url} — and {host.gce_instance} may simply be stopped. "
-        f"`comfy-qat host open {host.name}` tunnels to a box that is already "
-        f"running; `comfy-qat host go {host.name}` starts it and tunnels in one "
-        f"step. `comfy-qat host list --live` says which it is."
+        f"`comfy-qat open {host.name}` tunnels to a box that is already "
+        f"running; `comfy-qat go {host.name}` starts it and tunnels in one "
+        f"step. `comfy-qat list --live` says which it is."
     )
 
 

@@ -380,7 +380,7 @@ def test_guide_leads_with_the_single_setup_command():
 def test_getting_started_leads_with_setup_not_a_command_list():
     text = (DOCS / "getting-started.md").read_text()
     assert "comfy-qat setup" in text
-    assert text.index("comfy-qat setup") < text.index("comfy-qat host list")
+    assert text.index("comfy-qat setup") < text.index("comfy-qat list")
 
 
 def test_the_module_entry_point_exposes_the_current_surface():

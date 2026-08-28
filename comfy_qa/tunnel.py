@@ -545,7 +545,7 @@ def open_tunnel(
             f"a tunnel called {host.name!r} is already open (pid {existing.pid}), but it "
             f"goes to {existing.instance} in {existing.zone} on port {existing.port}, "
             f"not to {host.gce_instance} in {host.gce_zone} on port {host.port}.",
-            fix=f"comfy-qat host down {host.name}, then open this one",
+            fix=f"comfy-qat down {host.name}, then open this one",
         )
 
     try:

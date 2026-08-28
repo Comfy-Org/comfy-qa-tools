@@ -163,7 +163,7 @@ def test_go_detaches_and_hands_the_terminal_back(world):
     assert result.exit_code == 0, result.output
     assert "stays running on the box after this command returns" in result.output
     assert "this terminal is free" in result.output
-    assert f"comfy-qat host logs {BOX}" in result.output
+    assert f"comfy-qat logs {BOX}" in result.output
     assert world.opened == [world.url]
 
 
@@ -204,7 +204,7 @@ def test_go_still_does_not_return_until_comfyui_answers(world):
     assert result.exit_code == 1, "exiting 0 here is how a dead box looks healthy"
     assert "without ever answering" in result.output
     assert "billing" in result.output
-    assert f"comfy-qat host logs {BOX}" in result.output, "the log is on the box now"
+    assert f"comfy-qat logs {BOX}" in result.output, "the log is on the box now"
     assert world.opened == [], "no browser onto a URL that never answered"
     assert not world.pid_file().exists(), "the tunnel is closed on the way out"
 
@@ -319,7 +319,7 @@ def test_logs_on_a_stopped_box_answers_rather_than_waiting(world):
     no_traceback(result)
     assert result.exit_code == 1
     assert "no ComfyUI and no log to follow" in result.output
-    assert f"comfy-qat host go {BOX}" in result.output
+    assert f"comfy-qat go {BOX}" in result.output
     assert not world.gc.did("ssh"), "nothing was run on a box that is off"
 
 
@@ -334,7 +334,7 @@ def test_logs_with_nothing_ever_launched_says_the_box_is_still_billing(world):
     assert result.exit_code == 1
     assert "nothing has started ComfyUI there" in result.output
     assert "running and billing" in result.output
-    assert f"comfy-qat host down {BOX}" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
 
 
 def test_logs_on_the_local_machine_says_where_its_log_really_is(world):

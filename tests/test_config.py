@@ -115,7 +115,7 @@ def test_find_names_the_alternatives():
 
 
 def test_bare_host_accepts_config_like_every_other_command(tmp_path):
-    """`comfy-qat host --config x` was a usage error while `host list --config x` worked.
+    """`comfy-qat --config x` was a usage error while `host list --config x` worked.
 
     Found by running the end-to-end criteria rather than reasoning about them:
     the default command is the one people reach for first, so it is the worst

@@ -135,8 +135,8 @@ def test_started_is_not_serving(host, tmp_path):
 
     assert "without ever answering" in str(caught.value)
     assert "billing" in str(caught.value)
-    assert f"comfy-qat host down {host.name}" in caught.value.fix
-    assert f"comfy-qat host logs {host.name}" in caught.value.fix
+    assert f"comfy-qat down {host.name}" in caught.value.fix
+    assert f"comfy-qat logs {host.name}" in caught.value.fix
 
 
 def test_the_detached_launch_is_the_one_that_runs_not_the_foreground_one(tmp_path):
@@ -364,7 +364,7 @@ def test_logs_on_a_stopped_box_says_so_rather_than_hanging():
         read_logs(box(status="TERMINATED"), WIN, say)
 
     assert "is not running, so it has no ComfyUI and no log to follow" in str(caught.value)
-    assert "comfy-qat host go comfy-win" in caught.value.fix
+    assert "comfy-qat go comfy-win" in caught.value.fix
 
 
 def test_logs_with_no_log_file_says_nothing_started_comfyui_there():
@@ -376,7 +376,7 @@ def test_logs_with_no_log_file_says_nothing_started_comfyui_there():
     said_it = str(caught.value)
     assert WINDOWS_LOG in said_it
     assert "The machine is running and billing" in said_it, "it is on, and it is on you"
-    assert "comfy-qat host down comfy-win" in caught.value.fix
+    assert "comfy-qat down comfy-win" in caught.value.fix
 
 
 def test_logs_on_the_local_machine_refuses_and_says_where_its_log_is():
@@ -400,7 +400,7 @@ def test_a_box_that_will_not_run_the_read_is_reported_with_the_way_in():
         read_logs(Gcloud(runner=runner), WIN, say)
 
     assert "could not read the ComfyUI log on comfy-win" in str(caught.value)
-    assert "comfy-qat host down comfy-win" in caught.value.fix
+    assert "comfy-qat down comfy-win" in caught.value.fix
 
 
 # --- the commands that run on the box --------------------------------------

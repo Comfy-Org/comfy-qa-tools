@@ -419,7 +419,7 @@ def test_a_gpu_box_already_running_on_the_ceiling_is_a_box_to_stop_not_a_quota_t
     check = check_quota(CARDS["l4"], LIVE, [instance("comfy-win")])
     problem = check.problem()
     assert "comfy-win is already running on it" in str(problem)
-    assert "comfy-qat host down comfy-win" in problem.fix
+    assert "comfy-qat down comfy-win" in problem.fix
 
 
 def test_a_stopped_box_does_not_hold_the_ceiling():

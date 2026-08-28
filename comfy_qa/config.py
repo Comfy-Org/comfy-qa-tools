@@ -246,7 +246,7 @@ def load(path: Path | None = None) -> list[Host]:
     path = path or DEFAULT_CONFIG_PATH
     if not path.exists():
         raise ConfigError(
-            f"no host list at {path}. Run `comfy-qat host init` to write a starter one."
+            f"no host list at {path}. Run `comfy-qat init` to write a starter one."
         )
     # `exists()` is true of a directory, of a file owned by someone else, and of
     # a file that is not text at all. Each of those reaches `read_text` and, until
@@ -391,7 +391,7 @@ def resolve(hosts: list[Host], name: str) -> Resolution:
             raise ConfigError(
                 f"nothing declared matches {selector!r}. Declared: {_inventory(hosts)}. "
                 "Create the box in the Google Cloud console, then "
-                "`comfy-qat host discover` to add it to your host list."
+                "`comfy-qat discover` to add it to your host list."
             )
         listed = ", ".join(f"{h.name} ({describe(h)})" for h in candidates)
         # "Add the other half" is only advice when there is another half to add.

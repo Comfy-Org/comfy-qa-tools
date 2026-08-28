@@ -116,7 +116,7 @@ def test_two_hosts_cannot_be_the_same_cloud_box():
 
 
 def test_a_cloud_box_may_not_be_called_local():
-    """`comfy-qat host stamp local` has one obvious meaning: this machine.
+    """`comfy-qat stamp local` has one obvious meaning: this machine.
 
     Nothing stops a `gce` host taking the name, and the starter file teaches
     everyone that `local` is the Mac. Every rule in this file exists to remove

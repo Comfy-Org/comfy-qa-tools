@@ -84,8 +84,8 @@ yours, and says what it is doing at each step.
 
 Afterwards:
 
-  comfy-qat host list      see your machines
-  comfy-qat auth status    re-check readiness at any time
+  comfy-qat list      see your machines
+  comfy-qat status    re-check readiness at any time
 
 Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
   getting-started.md   this, with the reasoning
@@ -142,11 +142,11 @@ def setup_cmd(
 
     remote = [host for host in hosts if host.is_remote]
     typer.echo(f"\nReady — {len(hosts)} machine(s), {len(remote)} in the cloud.")
-    typer.echo("  comfy-qat host list        see them")
-    typer.echo("  comfy-qat host stamp local what a machine is, exactly")
+    typer.echo("  comfy-qat list        see them")
+    typer.echo("  comfy-qat stamp local what a machine is, exactly")
     if not remote:
         typer.echo(f"\nNo cloud boxes found. Add one by hand in {path}, or create one in")
-        typer.echo("Google Cloud and run `comfy-qat host discover`.")
+        typer.echo("Google Cloud and run `comfy-qat discover`.")
 
 
 def _choose(question: str, options: list[str]) -> str:

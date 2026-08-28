@@ -322,7 +322,7 @@ def test_a_stockout_points_at_the_command_that_fixes_it(tmp_path):
     gc = gcloud(["TERMINATED"], fail=GcloudError("---", raw=STOCKOUT_OUTPUT))
     with pytest.raises(LifecycleError) as caught:
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
-    assert "comfy-qat host move comfy-win --to us-central1-b" in caught.value.fix
+    assert "comfy-qat move comfy-win --to us-central1-b" in caught.value.fix
 
 
 # --- what the end-to-end harness turned up --------------------------------
@@ -619,7 +619,7 @@ def test_every_failure_after_the_box_is_running_says_how_to_stop_paying(tmp_path
         monkeypatch.undo()
 
     for failure in failures:
-        assert "comfy-qat host down comfy-win" in (failure.fix or ""), str(failure)
+        assert "comfy-qat down comfy-win" in (failure.fix or ""), str(failure)
 
 
 def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):

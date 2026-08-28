@@ -180,7 +180,7 @@ def stop_paying(host: Host) -> str:
     The machine is on and billing by the time most of these can happen, and a
     message that does not say so is how a box runs all night.
     """
-    return f"comfy-qat host down {host.name}   # closes the tunnel and stops the box"
+    return f"comfy-qat down {host.name}   # closes the tunnel and stops the box"
 
 
 def is_auth_failure(exc: GcloudError) -> bool:
@@ -289,12 +289,12 @@ def bring_up(
                 if elsewhere:
                     advice = (
                         f"Google says {', '.join(elsewhere)} has capacity right now.\n"
-                        f"        comfy-qat host move {host.name} --to {elsewhere[0]}"
+                        f"        comfy-qat move {host.name} --to {elsewhere[0]}"
                     )
                 else:
                     advice = (
                         "wait and try later, or move the box to another zone:\n"
-                        f"        comfy-qat host move {host.name}"
+                        f"        comfy-qat move {host.name}"
                     )
                 raise LifecycleError(
                     f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
@@ -357,7 +357,7 @@ def bring_up(
                 raise LifecycleError(
                     f"ComfyUI is not running on {host.name} yet.",
                     kind=COMFYUI_ABSENT,
-                    fix=f"comfy-qat host go {host.name}",
+                    fix=f"comfy-qat go {host.name}",
                 ) from exc
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",
@@ -386,7 +386,7 @@ def bring_up(
                 f"{host.url} any more. ComfyUI was never reached.",
                 kind=TUNNEL_DOWN,
                 fix=(f"read what gcloud said in {log_file(host.name, tunnel_dir)}, "
-                     f"then:\n        comfy-qat host open {host.name}"
+                     f"then:\n        comfy-qat open {host.name}"
                      "\n        or stop paying for it:\n        "
                      + stop_paying(host)),
             )
@@ -1028,7 +1028,7 @@ def start_detached(
 
     say(f"starting ComfyUI on {host.name} — it stays running on the box after "
         f"this command returns")
-    say(f"its log is {log_for(host)} on the box: comfy-qat host logs {host.name}")
+    say(f"its log is {log_for(host)} on the box: comfy-qat logs {host.name}")
     if host.is_remote:
         # ComfyUI announces its own address — "To see the GUI go to
         # http://127.0.0.1:8188" — which is true on the box and wrong here, where
@@ -1122,7 +1122,7 @@ def _never_answered(gc: Gcloud, host: Host, say: Callable[[str], None], *,
         "The machine is up and billing.",
         kind=COMFYUI_ABSENT,
         fix=(f"read its whole log on the box:\n        "
-             f"comfy-qat host logs {host.name} --tail 100"
+             f"comfy-qat logs {host.name} --tail 100"
              "\n        or get onto the machine:\n        "
              + how_to_get_in(host)
              + "\n        or stop paying for it:\n        "
@@ -1167,7 +1167,7 @@ def read_logs(
         raise LifecycleError(
             f"{host.name} is not running, so it has no ComfyUI and no log to "
             f"follow. Whatever it was writing stopped when the machine did.",
-            fix=f"comfy-qat host go {host.name}   # start the box and ComfyUI on it",
+            fix=f"comfy-qat go {host.name}   # start the box and ComfyUI on it",
         )
 
     try:
@@ -1184,7 +1184,7 @@ def read_logs(
         raise LifecycleError(
             f"there is no ComfyUI log at {log_for(host)} on {host.name}, so nothing "
             f"has started ComfyUI there. The machine is running and billing.",
-            fix=(f"comfy-qat host go {host.name}   # start it, and this will have "
+            fix=(f"comfy-qat go {host.name}   # start it, and this will have "
                  "something to read\n        or stop paying for it:\n        "
                  + stop_paying(host)),
         )
@@ -1357,14 +1357,14 @@ def put_away(
                 f"({', '.join(named)}). Refusing to report it as stopped: if that "
                 f"machine is running, it is billing.",
                 fix=(f"fix the entry in your host list — a cloud box is "
-                     f"kind = 'gce' — then:\n        comfy-qat host down {host.name}"),
+                     f"kind = 'gce' — then:\n        comfy-qat down {host.name}"),
             )
         say("local ComfyUI left running — this tool did not start it")
         return
 
     if keep_running:
         say(f"{host.name} left running — it is still billing")
-        say(f"any ComfyUI on it is still running too: comfy-qat host logs {host.name}")
+        say(f"any ComfyUI on it is still running too: comfy-qat logs {host.name}")
         return
 
     try:

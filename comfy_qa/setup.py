@@ -129,7 +129,7 @@ def ensure_gpu_quota(
         # Quota is explicitly allowed to fail: it can take days to change and is
         # never a reason to strand someone mid-setup. The first live run crashed
         # here with a traceback, which is the opposite of that intent.
-        p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat auth quota")
+        p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat quota")
         return False
 
     # Read through the same filter the rest of the tool uses. Reporting raw ids
@@ -163,7 +163,7 @@ def ensure_gpu_quota(
         # while this one is holding the ids already.
         offer = [name for name in available_gpus(quotas) if name != GLOBAL_ALLOWANCE]
         card = offer[0].lower() if offer else "<card>"
-        hint = f"comfy-qat auth quota request --gpu {card}"
+        hint = f"comfy-qat quota request --gpu {card}"
         hint += f" --region {region}" if region else " --region <region>"
         p.say(f"skipping the request. Run: {hint}")
         return False

@@ -1,6 +1,6 @@
 """The whole cloud lifecycle, driven through the real CLI.
 
-Everything here runs `comfy-qat host ...` as a person would: the real Typer app,
+Everything here runs `comfy-qat ...` as a person would: the real Typer app,
 the real argument parsing, the real config loading, the real tunnel bookkeeping
 with real processes and real pid files, and a real HTTP request to a real server
 for every readiness probe. Only two things are stood in for — Google Cloud, which
@@ -149,7 +149,7 @@ def nothing_left_running(world: World, result) -> None:
     tell which box answered.
     """
     if world.pid_file().exists():
-        assert f"comfy-qat host down {BOX}" in result.output, (
+        assert f"comfy-qat down {BOX}" in result.output, (
             "a tunnel was left open without saying so, or how to close it"
         )
     assert not world.gc.did("stop_instance"), "nothing here stops the box on its own"
@@ -211,7 +211,7 @@ def test_go_on_a_box_that_is_already_serving_changes_nothing(world):
     assert world.url in result.output
     assert "ComfyUI 0.3.44" in result.output, "the stamp is the evidence line"
     assert "cuda:0 NVIDIA L4" in result.output
-    assert f"comfy-qat host down {BOX}" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
 
 
 def test_go_when_the_box_never_reaches_running_says_so_and_stops(world):
@@ -222,7 +222,7 @@ def test_go_when_the_box_never_reaches_running_says_so_and_stops(world):
     no_traceback(result)
     assert result.exit_code == 1
     assert "did not reach RUNNING" in result.output
-    assert f"comfy-qat host down {BOX}" in result.output, "it is billing by now"
+    assert f"comfy-qat down {BOX}" in result.output, "it is billing by now"
     nothing_left_running(world, result)
     assert not world.gc.did("ssh"), "no SSH against a box that never came up"
     assert not world.pid_file().exists(), "and no tunnel to a box that never came up"
@@ -241,7 +241,7 @@ def test_go_when_the_tunnel_dies_blames_the_tunnel_not_comfyui(world, monkeypatc
     assert f"the tunnel to {BOX} closed" in result.output
     assert "ComfyUI is not answering" not in result.output, "wrong culprit"
     assert str(tunnel.log_file(BOX, world.tunnel_dir)) in result.output
-    assert f"comfy-qat host open {BOX}" in result.output
+    assert f"comfy-qat open {BOX}" in result.output
     nothing_left_running(world, result)
     assert not world.gc.did("ssh"), "it must not go on to install over a dead tunnel"
 
@@ -285,7 +285,7 @@ def test_go_when_the_install_exits_non_zero_stops_before_launching(world):
     assert result.exit_code == 1
     assert "did not finish" in result.output
     assert "exit 1" in result.output
-    assert f"comfy-qat host down {BOX}" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
     assert not any("--listen" in remote for remote in world.gc.remote), (
         "there is nothing to launch after a failed install"
     )
@@ -319,7 +319,7 @@ def test_go_when_comfyui_never_answers_after_being_launched(world):
     assert result.exit_code == 1, "exiting 0 here is how a dead box looks healthy"
     assert "without ever answering" in result.output
     assert world.url in result.output
-    assert f"comfy-qat host down {BOX}" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
     assert world.opened == [], "no browser onto a URL that never answered"
     assert not world.pid_file().exists(), "the tunnel is closed on the way out"
     nothing_left_running(world, result)
@@ -345,7 +345,7 @@ def test_go_when_the_box_never_accepts_commands(world):
     no_traceback(result)
     assert result.exit_code == 1
     assert "not accepting commands" in result.output
-    assert f"comfy-qat host down {BOX}" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
     assert not world.pid_file().exists(), "the tunnel is closed on the way out"
     nothing_left_running(world, result)
 
@@ -387,7 +387,7 @@ def test_go_on_a_stockout_names_the_zone_and_the_way_out(world):
     no_traceback(result)
     assert result.exit_code == 1
     assert "no L4 capacity in us-central1-a" in result.output
-    assert f"comfy-qat host move {BOX} --to us-central1-b" in result.output
+    assert f"comfy-qat move {BOX} --to us-central1-b" in result.output
     nothing_left_running(world, result)
     assert not world.pid_file().exists(), "no tunnel to a box that never started"
 
@@ -512,7 +512,7 @@ def test_up_reports_a_box_that_boots_but_serves_nothing_as_a_failure(world):
     assert result.exit_code == 1
     assert "ComfyUI is not answering" in result.output
     assert "billing" in result.output
-    assert f"comfy-qat host down {BOX}" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
     assert world.pid_file().exists(), "`up` leaves the tunnel for you to retry on"
     nothing_left_running(world, result)
 
@@ -555,7 +555,7 @@ def test_move_does_nothing_when_the_box_simply_starts(world):
     no_traceback(result)
     assert result.exit_code == 0
     assert "no move needed" in result.output
-    assert f"comfy-qat host go {BOX}" in result.output
+    assert f"comfy-qat go {BOX}" in result.output
     assert not world.gc.did("snapshot_disk")
 
 

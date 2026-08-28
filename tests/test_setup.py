@@ -184,7 +184,7 @@ def test_a_quota_read_that_fails_does_not_take_setup_down(tmp_path):
 
     assert path.exists(), "setup must still finish"
     assert any("could not read GPU quota" in line for line in p.said)
-    assert any("comfy-qat auth quota" in line for line in p.said)
+    assert any("comfy-qat quota" in line for line in p.said)
 
 
 COMFY_WIN = {

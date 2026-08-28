@@ -1,4 +1,4 @@
-"""`comfy-qat host create`, through the real CLI.
+"""`comfy-qat create`, through the real CLI.
 
 The rule this file exists to hold: **a dry run makes no billable call.** `move`
 had the same promise and broke it — its `--dry-run` was consulted long after it
@@ -212,8 +212,8 @@ def test_a_windows_box_carries_the_ssh_metadata_and_is_told_about_the_driver(cli
 
 def test_the_finish_says_how_to_use_it_and_how_to_stop_paying(cli):
     result = cli("--os", "linux", "--gpu", "l4", "--yes")
-    assert "comfy-qat host go comfy-linux" in result.stdout
-    assert "comfy-qat host down comfy-linux" in result.stdout
+    assert "comfy-qat go comfy-linux" in result.stdout
+    assert "comfy-qat down comfy-linux" in result.stdout
 
 
 def test_without_yes_it_asks_and_a_no_creates_nothing(cli):
@@ -280,7 +280,7 @@ def test_a_gpu_box_already_running_on_the_ceiling_refuses_with_the_box_to_stop(c
     result = cli("--os", "linux", "--gpu", "l4", "--yes",
                  gc=FakeGcloud(instances=running))
     assert result.exit_code == 2
-    assert "comfy-qat host down comfy-win" in result.output
+    assert "comfy-qat down comfy-win" in result.output
     assert billable(result) == []
 
 

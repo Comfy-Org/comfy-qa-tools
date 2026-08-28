@@ -21,7 +21,7 @@ installed is confusing for more than one reason.
 
 ## Host list
 
-**no host list at ~/.config/comfy-qa-tools/hosts.toml. Run `comfy-qat host init`
+**no host list at ~/.config/comfy-qa-tools/hosts.toml. Run `comfy-qat init`
 to write a starter one.**
 You have not set one up yet. `comfy-qat setup` writes one too, along with
 everything else a first run needs.
@@ -29,7 +29,7 @@ everything else a first run needs.
 **`~/.config/comfy-qa-tools/hosts.toml already exists. Use --force to overwrite
 it.`**
 `host init` will not write over a host list you have edited. If you really do want
-the starter file back, `comfy-qat host init --force` — and copy your cloud hosts
+the starter file back, `comfy-qat init --force` — and copy your cloud hosts
 out first, because they are not merged back in.
 
 **`no [hosts.<name>] tables found`**
@@ -118,7 +118,7 @@ handed one.
 which is what every example and the starter host list means by it. A cloud box
 wearing it puts an invisible default back. Rename the box, e.g. comfy-win or
 comfy-linux.`**
-`comfy-qat host stamp local` has one obvious meaning, and the starter host list
+`comfy-qat stamp local` has one obvious meaning, and the starter host list
 teaches it. A `gce` host holding that name reinstates exactly the invisible
 default the rest of this file exists to remove.
 
@@ -149,7 +149,7 @@ back.
 list. Check it was not saved as UTF-16 by an editor, truncated by a half-finished
 write, or overwritten with something binary.`**
 The file is not text this tool can decode. Open it and look — if it is
-unrecognisable, `comfy-qat host init --force` writes a fresh starter one, and you
+unrecognisable, `comfy-qat init --force` writes a fresh starter one, and you
 will have to re-add your cloud hosts.
 
 **`could not write a host list to /somewhere/hosts.toml: [Errno 13] Permission
@@ -187,7 +187,7 @@ Name it: `comfy-qat setup --project <id>`.
 Only you can attach billing. The error prints the direct link; do that, then run
 setup again.
 
-**`could not read GPU quota (...). Check later: comfy-qat auth quota`**
+**`could not read GPU quota (...). Check later: comfy-qat quota`**
 Setup carries on regardless — quota can take days to change and is never a reason
 to strand you mid-setup. This is a warning, not a stop; setup still writes your
 host list. Check quota afterwards with the command it names.
@@ -200,7 +200,7 @@ see [cost.md](cost.md) and ask again later.
 
 **`could not list cloud boxes (...). Add them by hand if needed.`**
 Discovery failed, so nothing was added. Setup finishes anyway; add hosts by hand
-from [hosts.md](hosts.md), or run `comfy-qat host discover` later.
+from [hosts.md](hosts.md), or run `comfy-qat discover` later.
 
 **`could not read your host list (...), so nothing was added to it`**
 Discovery found cloud boxes but your `hosts.toml` will not parse, so setup left it
@@ -209,7 +209,7 @@ deliberate: appending to a broken list would add a second `[hosts.<name>]` table
 for a box already declared, and a duplicate table is not valid TOML — one fixable
 mistake would become a file nothing can load, on the one command that promises to
 change nothing. The message carries the parse error; fix that in the file, then run
-`comfy-qat host discover`.
+`comfy-qat discover`.
 
 ## Creating a box
 
@@ -226,7 +226,7 @@ most common way a create by hand fails. You never pass a machine type here.
 
 **`no card called 'rtx4090'. This tool can create: a100, a100-80gb, h100, k80, l4, p100, p4, t4, v100.`**
 A card this tool has no machine-type mapping for. The list is what it can order,
-not what your project is allowed — `comfy-qat auth quota list` is the second half
+not what your project is allowed — `comfy-qat quota list` is the second half
 of the answer.
 
 **`no operating system called 'freebsd'. Say --os linux or --os windows.`**
@@ -262,7 +262,7 @@ The card has never been granted. Ask for it and wait — Google's answer is
 typically minutes to a couple of days:
 
 ```sh
-comfy-qat auth quota request --gpu l4 --region us-central1
+comfy-qat quota request --gpu l4 --region us-central1
 ```
 
 **`H100-80GB needs 8 of this project's GPU allowance and the grant is 1. Nothing was created.`**
@@ -276,7 +276,7 @@ means nothing if this is 0. Raising it is a separate request from asking for a
 card, made in the console.
 
 **`GPUS_ALL_REGIONS is 1 and comfy-win is already running on it, so a new GPU box cannot start until that one stops. Nothing was created.`**
-Not a quota you need to raise — a box you need to stop. `comfy-qat host down
+Not a quota you need to raise — a box you need to stop. `comfy-qat down
 comfy-win` frees the allowance, and the create then goes through. This is checked
 before anything is made rather than being discovered as a refusal afterwards.
 
@@ -356,7 +356,7 @@ Not a capacity problem: Google refused for some other reason, and its own senten
 is quoted. Anything after this point could in principle have left something
 half-made, so the fix line prints the command that lists the project's instances.
 
-**`comfy-linux exists in us-central1-a and is billing, but it could not be written to ~/.config/comfy-qa-tools/hosts.toml: ... Add it by hand, or run `comfy-qat host discover`. To stop it now: gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
+**`comfy-linux exists in us-central1-a and is billing, but it could not be written to ~/.config/comfy-qa-tools/hosts.toml: ... Add it by hand, or run `comfy-qat discover`. To stop it now: gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
 The machine was created and the host list was not. The box is real and billing, so
 the message leads with that: either adopt it with `host discover`, or stop it with
 the command given. It is the one message here printed after money is being spent.
@@ -390,7 +390,7 @@ Compute Engine does have a `windows-startup-script-url` metadata key, and pointi
 it at that script would probably work. "Probably" is how a box gets created,
 billed, and found running on its CPU an hour later, so it is left as a deliberate
 seam rather than a guess: run the two commands once, by hand, and
-`comfy-qat host stamp <name>` will show a `cuda:0` device instead of a CPU one.
+`comfy-qat stamp <name>` will show a `cuda:0` device instead of a CPU one.
 
 ## Starting and stopping
 
@@ -435,7 +435,7 @@ else takes SSH through IAP.
 
 It can also mean **the tunnel never opened.** The tunnel runs detached, so if your
 session expired between starting the box and opening the tunnel, the tunnel died
-and this message blames ComfyUI. Run `comfy-qat auth status` before you go looking
+and this message blames ComfyUI. Run `comfy-qat status` before you go looking
 on the box — and see [session-expiry.md](session-expiry.md), because this is the
 shape that failure takes.
 
@@ -443,7 +443,7 @@ shape that failure takes.
 The box was asked to start and then gcloud stopped answering, so the tool does not
 know what happened — which is different from knowing it failed. **It may be running
 and billing.** The message carries gcloud's own reason. Check the instance in the
-console, then either try again or `comfy-qat host down comfy-win`.
+console, then either try again or `comfy-qat down comfy-win`.
 
 **`comfy-win did not reach RUNNING within 300s. It was asked to start, so it may be billing already.`**
 The start was accepted and the box never came up. Usually capacity or quota in that
@@ -494,7 +494,7 @@ comfy-win-2 in us-west1-b on port 8195, not to comfy-win in us-central1-a on por
 The name is not the machine. A second host list — `--config other.toml`, or an
 edited one — can call a different instance `comfy-win`, and a tunnel is only reused
 when the instance, the zone, the project and the port all match what you asked for.
-`comfy-qat host down comfy-win`, then open this one.
+`comfy-qat down comfy-win`, then open this one.
 
 **"another `comfy-qat` is opening the tunnel to comfy-win right now."**
 Two terminals opening at once would each start gcloud: one binds the port, the
@@ -518,7 +518,7 @@ The tunnel opened and then died, which from the near end looks exactly like a bo
 with no ComfyUI on it — silence on a port. Only one of those is fixed by going onto
 the machine, so they are now reported separately. Read what gcloud wrote in
 `~/.config/comfy-qa-tools/tunnels/<host>.log`; an expired session is the usual
-cause. Reopen with `comfy-qat host open <name>`, or stop paying for the box.
+cause. Reopen with `comfy-qat open <name>`, or stop paying for the box.
 
 **`gcloud is not signed in, so comfy-win cannot be reached: ... Waiting will not fix this, and the machine is running and billing.`**
 The credential died between starting the box and reaching it. The tool used to keep
@@ -652,7 +652,7 @@ while ComfyUI failed to import something.
 **`starting ComfyUI on comfy-win — it stays running on the box after this command returns`**
 Not an error. Ctrl-C during this stops *waiting*, not ComfyUI — which is the
 point, and the difference from `--follow`. If you meant to stop it, stop the box:
-`comfy-qat host down comfy-win`.
+`comfy-qat down comfy-win`.
 
 **`ComfyUI is running on comfy-win and this terminal is free.`**
 Not an error, and the last thing `go` says before the URL. The box is up, the
@@ -668,7 +668,7 @@ an immediate answer. The end of its log is printed underneath, read off the box.
 Not an error — the lines under it are. A detached launch's startup log is no
 longer on your terminal, so when one never answers, the end of the log is fetched
 from the box and quoted rather than left there for you to go and find. For all of
-it: `comfy-qat host logs comfy-win --tail 100`.
+it: `comfy-qat logs comfy-win --tail 100`.
 
 **`ComfyUI on comfy-win could not be launched (exit 1).`**
 The launch *command* failed, as opposed to ComfyUI failing after it started. On
@@ -687,7 +687,7 @@ reaching pypi, the box has no route out — see `add-access-config` above.
 **`comfy-win is not running, so it has no ComfyUI and no log to follow. Whatever it was writing stopped when the machine did.`**
 from `host logs`. The instance is stopped, so there is nothing to read and
 nothing to wait for — and a command that hung here would be silently waiting on a
-box you may still be paying for. `comfy-qat host go comfy-win` starts the box and
+box you may still be paying for. `comfy-qat go comfy-win` starts the box and
 ComfyUI on it.
 
 **`there is no ComfyUI log at C:\ComfyUI\comfyui.log on comfy-win, so nothing has started ComfyUI there. The machine is running and billing.`**
@@ -702,7 +702,7 @@ stops it, and the box carries on billing either way.
 
 **`stopped. The machine is still running`**
 Ctrl-C out of `host go --follow`. ComfyUI is stopped; the box is not, and a
-stopped ComfyUI on a running box still bills. `comfy-qat host down <name>`.
+stopped ComfyUI on a running box still bills. `comfy-qat down <name>`.
 
 **`could not read the ComfyUI log on comfy-win: ...`**
 The box would not run the command that reads the log. Usually the same causes as
@@ -793,7 +793,7 @@ this usually means capacity or a quota problem in that zone rather than a fault
 with the box.
 
 **`could not start comfy-win: ...`**
-gcloud refused. The most common cause is GPU quota — `comfy-qat auth quota` shows
+gcloud refused. The most common cause is GPU quota — `comfy-qat quota` shows
 what you actually have.
 
 **`comfy-win says kind = 'local' but names a cloud instance (comfy-win, us-central1-a, a-project). Refusing to report it as stopped: if that machine is running, it is billing.`**
@@ -850,7 +850,7 @@ A name is not a machine. A second host list can call a different box `comfy-win`
 too, and a tunnel recorded under that name may go anywhere. This used to be
 reported as "tunnel already open" with *your* host list's URL beside it, which is
 the wrong-machine failure wearing a success message. Close the one that is open —
-`comfy-qat host down comfy-win` — then open this one.
+`comfy-qat down comfy-win` — then open this one.
 
 **`something is already listening on 127.0.0.1:8190, and it is not a tunnel this
 tool opened. A tunnel started now could not bind that port, so
@@ -891,7 +891,7 @@ Only cloud hosts have a zone. A local install is where it is.
 **`--dry-run cannot work out which zone has capacity. The only way to ask is to
 try to start comfy-win, and if it starts it is billing — so a dry run that did it
 would be the most expensive command here. Say where you want it and the rest of
-the plan is printed without touching anything: comfy-qat host move comfy-win --to
+the plan is printed without touching anything: comfy-qat move comfy-win --to
 us-central1-b --dry-run.`**
 Nothing answers "where is there an L4 free". `move` finds out by trying to start
 the machine and reading the zone out of the refusal — and when there is no
@@ -934,10 +934,10 @@ or both as `os/card` — `host switch windows`, `host go l4`, `host up windows/l
 These are the refusals, and each one is a refusal rather than a guess on purpose:
 a tool that picks for you is a tool that reads results from the wrong box.
 
-**`nothing declared matches 'windows/l4'. Declared: local (local install); comfy-linux (Ubuntu 22.04, A100). Create the box in the Google Cloud console, then `comfy-qat host discover` to add it to your host list.`**
+**`nothing declared matches 'windows/l4'. Declared: local (local install); comfy-linux (Ubuntu 22.04, A100). Create the box in the Google Cloud console, then `comfy-qat discover` to add it to your host list.`**
 You described a machine you do not have. The message lists what you do have, with
 each one's OS and card, so you can see which half was wrong. If the box exists in
-Google Cloud but not in your host list, `comfy-qat host discover` adds it — nothing
+Google Cloud but not in your host list, `comfy-qat discover` adds it — nothing
 needs typing, Google already knows its zone, card and OS.
 
 **`'windows' matches 2 hosts: ... Say which one: add the other half, e.g. `windows/l4`, or use the host's name.`**
@@ -987,7 +987,7 @@ last and labelled — it may hit the same shortage. Pick one and carry on.
 
 **`No other machine is declared, so there is nowhere to switch to:`**
 You have one box and it cannot start. The line under it —
-`comfy-qat host discover   # declare a box you already have` — will pick up
+`comfy-qat discover   # declare a box you already have` — will pick up
 anything already in your project; otherwise your options are to wait for capacity
 or to move the box.
 
@@ -1017,7 +1017,7 @@ exists and carries on from there — so delete only if you have decided against 
 An earlier `host move` did not finish, and what it created is still there and still
 billing. This is a report, not an error — the move carries on and reuses what it
 can. Each line is followed by the exact `gcloud ... delete` command that removes it,
-and `comfy-qat host move <name> --clean` removes them all and stops. Nothing is
+and `comfy-qat move <name> --clean` removes them all and stops. Nothing is
 deleted for you.
 
 **`comfy-win-a-b already exists in us-central1-b, but ...`**
@@ -1105,8 +1105,8 @@ declaration that is merely less specific than the answer — `A100` against an
 card with the wrong amount of VRAM; that is a real thing to notice and not a
 reason to withhold an evidence line. The usual causes are a tunnel left open
 to a different machine, a port that your local ComfyUI is holding, or a host
-entry that was never repointed after a `host move`. `comfy-qat host list` shows
-what is tunnelled; `comfy-qat host down comfy-win` then `comfy-qat host open
+entry that was never repointed after a `host move`. `comfy-qat list` shows
+what is tunnelled; `comfy-qat down comfy-win` then `comfy-qat open
 comfy-win` rebuilds the tunnel.
 
 **`No evidence line was printed, because this one would have named the wrong
@@ -1210,7 +1210,7 @@ slow. Try again.
 **`zero GPU quota on this project — no GPU instance can start`**
 A new project has no GPU quota at all. See [cost.md](cost.md), then:
 ```sh
-comfy-qat auth quota request --gpu l4 --region us-central1
+comfy-qat quota request --gpu l4 --region us-central1
 ```
 `--quota-id <id>` takes a raw Google quota id instead, if you would rather name one
 exactly.
@@ -1224,7 +1224,7 @@ you — asking for the wrong one wastes days of approval time.
 It is not permission to run any particular card, and on its own it starts nothing —
 which is why this reads as a failure rather than a pass. Ask for an actual card:
 ```sh
-comfy-qat auth quota request --gpu l4 --region us-central1
+comfy-qat quota request --gpu l4 --region us-central1
 ```
 
 **`this project reports no quota for 'l4' in europe-west4. It is metered in us-central1. Available: L4`**
@@ -1236,7 +1236,7 @@ the missing half.
 
 **`this project reports no quota for 'h100'. Available: A100, L4, T4`**
 You asked for a card Google does not offer this project, or not in that region.
-The message lists what is available. `comfy-qat auth quota` shows the same thing
+The message lists what is available. `comfy-qat quota` shows the same thing
 with current limits.
 
 **`request for l4 failed: ...`**
@@ -1247,5 +1247,5 @@ has been billed at least once. Retrying will not change that.
 **`still pending: l4, a100`** (exit code 75)
 Not an error. The requests went in but have not been approved within the wait window.
 Approval can take days. Run the same command again to keep waiting, or
-`comfy-qat auth quota` to check. The console link printed with the request shows the
+`comfy-qat quota` to check. The console link printed with the request shows the
 same thing.
