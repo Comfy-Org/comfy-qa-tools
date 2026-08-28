@@ -456,6 +456,98 @@ started, and only when it is still holding the port.
 The tidy-up failed, usually because the box became unreachable. The next launch
 will refuse with the message above and print the command to stop it by hand.
 
+## ComfyUI running on the box, and its log
+
+`host go` launches ComfyUI **on the machine** and hands the prompt back, so two
+boxes can be up at once — Windows in one browser tab, Linux in another. Its
+output goes to a file on the box: `C:\ComfyUI\comfyui.log` on Windows,
+`/opt/comfyui/comfyui.log` on Linux. `host logs <name>` reads it.
+
+Detaching moved where the log goes and nothing else. `go` still does not return
+until ComfyUI has answered on the tunnel, because "started" is not "serving" and
+a launch that came back on the box's say-so would leave a GPU machine billing
+while ComfyUI failed to import something.
+
+**`starting ComfyUI on comfy-win — it stays running on the box after this command returns`**
+Not an error. Ctrl-C during this stops *waiting*, not ComfyUI — which is the
+point, and the difference from `--follow`. If you meant to stop it, stop the box:
+`comfy-qat host down comfy-win`.
+
+**`ComfyUI is running on comfy-win and this terminal is free.`**
+Not an error, and the last thing `go` says before the URL. The box is up, the
+tunnel is open, ComfyUI answered, and nothing is holding this shell. It is still
+billing until `host down`.
+
+**`ComfyUI is no longer running on comfy-win — it stopped before it ever answered`**
+The box was asked, while waiting, whether ComfyUI was still there, and it was
+not. This turns a three-minute wait for something that died in four seconds into
+an immediate answer. The end of its log is printed underneath, read off the box.
+
+**`the last of its log on comfy-win:`**
+Not an error — the lines under it are. A detached launch's startup log is no
+longer on your terminal, so when one never answers, the end of the log is fetched
+from the box and quoted rather than left there for you to go and find. For all of
+it: `comfy-qat host logs comfy-win --tail 100`.
+
+**`ComfyUI on comfy-win could not be launched (exit 1).`**
+The launch *command* failed, as opposed to ComfyUI failing after it started. On
+Linux this is close to impossible — the detached form exits as soon as the
+process is spawned — so in practice it means the box refused to run the script at
+all. The requirements are installed and it is tried once more; a second failure is
+reported rather than looped on.
+
+**`ComfyUI on comfy-win would not start, and its requirements could not be installed either: ...`**
+The same repair `--follow` does on a non-zero exit, reached the other way: a
+detached ComfyUI that dies on a missing import exits *after* the launcher has
+returned 0, so the evidence is in the log on the box rather than in an exit code.
+The repair itself then failed. gcloud's reason is quoted; if it timed out
+reaching pypi, the box has no route out — see `add-access-config` above.
+
+**`comfy-win is not running, so it has no ComfyUI and no log to follow. Whatever it was writing stopped when the machine did.`**
+from `host logs`. The instance is stopped, so there is nothing to read and
+nothing to wait for — and a command that hung here would be silently waiting on a
+box you may still be paying for. `comfy-qat host go comfy-win` starts the box and
+ComfyUI on it.
+
+**`there is no ComfyUI log at C:\ComfyUI\comfyui.log on comfy-win, so nothing has started ComfyUI there. The machine is running and billing.`**
+The box is up and no ComfyUI has ever been launched on it by this tool. That is a
+different fact from "the box is off", and it has a different fix: `comfy-qat host
+go comfy-win`. The second sentence is the one that matters — the machine is on.
+
+**`stopped reading. ComfyUI is still running on comfy-win, and so is the machine`**
+Not an error — what Ctrl-C out of `host logs` says. It ends the reading and
+nothing else. `go --follow` is the other one: there Ctrl-C reaches ComfyUI and
+stops it, and the box carries on billing either way.
+
+**`stopped. The machine is still running`**
+Ctrl-C out of `host go --follow`. ComfyUI is stopped; the box is not, and a
+stopped ComfyUI on a running box still bills. `comfy-qat host down <name>`.
+
+**`could not read the ComfyUI log on comfy-win: ...`**
+The box would not run the command that reads the log. Usually the same causes as
+any other SSH failure here: an expired session, a missing IAP permission, or a
+box that has stopped accepting commands. The fix line prints the way onto the
+machine, and the way to stop paying for it.
+
+**`local is this machine, and this tool did not start its ComfyUI, so there is no log of its own to follow.`**
+`host logs local` has nothing to show. Your local ComfyUI was started by you, in
+a terminal, and its log is in that terminal — nothing here detached it or
+captured it. The fix line prints the command that starts one.
+
+**`--new-window can only open a macOS Terminal window, and this is not a Mac with osascript on it. Nothing was started.`**
+`--new-window` is a small convenience with exactly one implementation: macOS
+Terminal, driven by `osascript`. Anywhere else it refuses rather than
+half-working — a window that silently does not appear, on a command whose job is
+to start a GPU box, is a machine you are paying for and cannot see. **Nothing was
+started**, so nothing is billing. The fix line prints the exact command to paste
+into a window you open yourself.
+
+**`could not open a new Terminal window: ...`**
+The same convenience, failing on the machine that can do it — usually Terminal
+being denied automation permission (System Settings > Privacy & Security >
+Automation). Nothing was started here either. The fix line prints the command;
+run it in a window of your own.
+
 **ComfyUI says `To see the GUI go to: http://127.0.0.1:8188` and nothing loads**
 That address is correct **on the box** and wrong on yours: 8188 on your machine is
 your own local ComfyUI, not the cloud one. Use the URL this tool printed —

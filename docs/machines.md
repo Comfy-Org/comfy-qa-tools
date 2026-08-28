@@ -17,9 +17,11 @@ That is the whole thing. In order, it:
    stamp immediately and nothing is installed or restarted;
 3. installs ComfyUI if the box has none, on a pinned Python 3.12, with a torch
    built for whatever CUDA that box's driver reports;
-4. launches it in the foreground with its startup log on your terminal;
-5. forwards a local port to it as soon as it is listening, and opens a browser
-   on `http://127.0.0.1:<port>`.
+4. launches it **on the box**, detached, with its output going to a log file
+   there;
+5. forwards a local port to it as soon as it is listening, waits until ComfyUI
+   really answers, opens a browser on `http://127.0.0.1:<port>` — and gives you
+   the prompt back.
 
 The forward is an `ssh -L` carried over Identity-Aware Proxy. Two consequences
 worth knowing, because both were learned the hard way:
@@ -31,13 +33,75 @@ worth knowing, because both were learned the hard way:
   before it will serve, so there is nothing to forward to until the launch has
   happened. That is why the order above puts the launch before the forward.
 
-Ctrl-C stops ComfyUI. **It does not stop the box, and a stopped ComfyUI on a running
-box still bills.** `--no-browser` skips the browser, `--no-install` fails rather than
-installing on a box that has none.
-
 Why "up" means *ComfyUI answers* and not *the VM booted*: a machine that has booted
 and serves nothing looks exactly like success and bills exactly like success. The
-only honest test is asking ComfyUI itself.
+only honest test is asking ComfyUI itself. Detaching does not soften that. A
+launch that returned as soon as the box said "started" would be the same lie one
+level down, so `go` still does not return until ComfyUI has answered on the
+tunnel.
+
+`--no-browser` skips the browser; `--no-install` fails rather than installing on a
+box that has none.
+
+## Two machines at once
+
+ComfyUI runs on the box. The terminal used to be occupied only because its log
+was streamed back over SSH — which meant one machine per terminal, and Ctrl-C
+stopped ComfyUI. Now it runs there and you get your prompt back:
+
+```sh
+comfy-qat host go windows       # detached: starts it, forwards, prints the URL
+comfy-qat host go linux         # and now both, in one terminal, in two tabs
+comfy-qat host list             # both tunnelled
+```
+
+`down` each one when you are finished with it. **A box left running bills whether
+or not anything is pointed at it**, and two of them bill twice — which is the cost
+of this convenience and worth saying plainly.
+
+### Watching the log
+
+```sh
+comfy-qat host logs linux            # follow it, as it is written
+comfy-qat host logs linux --tail 50  # the last 50 lines, then stop
+```
+
+It reads a file on the box — `/opt/comfyui/comfyui.log`, or
+`C:\ComfyUI\comfyui.log` on Windows — and touches nothing else. **Ctrl-C ends
+the reading and stops nothing**, which is the whole difference between this and
+`--follow` below. Each launch truncates the file, so what you are reading is this
+ComfyUI and not yesterday's traceback above it.
+
+Three answers rather than a wait, when there is no log to read:
+
+| state | what it says |
+|---|---|
+| the box is stopped | it has no ComfyUI and no log; `host go` starts both |
+| the box is up, nothing launched | there is no log file, and **the machine is billing** |
+| `local` | your own ComfyUI's log is in the terminal you started it in |
+
+### The old behaviour, when you want it
+
+```sh
+comfy-qat host go linux --follow
+```
+
+Streams ComfyUI's startup log onto this terminal exactly as a local `main.py`
+would print it, and **Ctrl-C stops ComfyUI** — it does not stop the box, and a
+stopped ComfyUI on a running box still bills. Use it when you are debugging a
+launch and want to watch it happen.
+
+### A new window instead
+
+```sh
+comfy-qat host go linux --new-window
+```
+
+Opens a new **macOS Terminal** window and runs `host go <name> --follow` in it,
+leaving this terminal free. That is the only thing it supports: anywhere else it
+says so and starts nothing, printing the exact command to paste into a window you
+open yourself. A window that silently does not appear, on a command that starts a
+GPU box, is a machine you are paying for and cannot see.
 
 ## Changing machine: Windows to Linux and back
 
@@ -165,10 +229,14 @@ has no GPUs left" below for what it actually does.
 comfy-qat host down comfy-win
 ```
 
-Closes the tunnel and stops the instance. A stopped box costs only its disk — cents
+Closes the tunnel and stops the instance — and with it the ComfyUI running on it,
+which needs no separate step: nothing survives the machine going away. A stopped
+box costs only its disk — cents
 per day — which is why the pattern here is one box per OS, stopped when idle, rather
 than deleting and rebuilding. `--keep-running` closes only the tunnel and leaves the
-machine on, which is occasionally what you want and never what you want overnight.
+machine on — and, deliberately, the ComfyUI on it, which the next `host go` finds
+and uses rather than starting a second one. Occasionally what you want, never what
+you want overnight.
 
 See [cost.md](cost.md) for the one rule.
 
@@ -179,6 +247,7 @@ See [cost.md](cost.md) for the one rule.
 ```sh
 comfy-qat host up comfy-win      # start it, tunnel in, wait for ComfyUI to answer
 comfy-qat host open comfy-win    # tunnel only, to a box that is already running
+comfy-qat host logs comfy-win    # what the ComfyUI on it is saying
 comfy-qat host stamp comfy-win   # what is it running, exactly?
 ```
 

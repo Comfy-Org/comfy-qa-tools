@@ -38,6 +38,8 @@ REQUIRED = {
     "test_auth_flow",
     "test_config",
     "test_config_hostile",
+    "test_detached",
+    "test_detached_e2e",
     "test_discover",
     "test_docs",
     "test_env",

@@ -36,6 +36,7 @@ a GPU box have not, and are recorded as not run rather than assumed.
 | `auth quota list`, `auth quota request` | shipped |
 | `host init`, `list`, `discover` | shipped — offline, no cloud call |
 | `host up`, `open`, `down`, `go` | shipped — start, tunnel, stop |
+| `host logs` | shipped — read a detached ComfyUI's log on the box |
 | `host switch` | shipped — stop the box you were on, go to the one you want |
 | `host move` | shipped — escape a zone with no GPU capacity |
 | `host stamp` | shipped — the evidence line |
@@ -126,7 +127,8 @@ comfy-qat guide           # the short version, in the terminal
 ## Everyday use
 
 ```sh
-comfy-qat host go windows       # start it, tunnel in, run ComfyUI where you can watch
+comfy-qat host go windows       # start it, tunnel in, leave ComfyUI running on the box
+comfy-qat host logs windows     # what that ComfyUI is saying, whenever you want it
 comfy-qat host stamp windows    # the line that says what produced your result
 comfy-qat host down windows     # close the tunnel, stop the box, stop paying
 ```
@@ -187,7 +189,8 @@ printed; one that fits two is refused with both named.
 | `comfy-qat host up <host>` | start it and wait until ComfyUI actually answers |
 | `comfy-qat host open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
 | `comfy-qat host down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
-| `comfy-qat host go <host>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
+| `comfy-qat host go <host>` | up + install if needed + launch ComfyUI on the box and hand the prompt back. `--follow` streams its log here instead, `--new-window` opens a macOS Terminal window, `--no-browser`, `--no-install` |
+| `comfy-qat host logs <host>` | read the ComfyUI log on a box. Follows by default; `--tail N` prints that many lines and stops |
 | `comfy-qat host switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
 | `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
 | `comfy-qat host stamp <host>` | ask a machine what it is. `--json` |
