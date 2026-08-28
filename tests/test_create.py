@@ -491,6 +491,20 @@ class Cloud:
     def machine_types(self, project, zone_list, name):
         return [{"name": name, "zone": zone} for zone in zone_list]
 
+    def accelerator_types(self, project, name):
+        """Answered even though this file's own `order_zones` never asks.
+
+        A `--zone` override has two halves to check, not one: a zone can offer
+        `n1-standard-8` — nearly every zone does — and have no T4 in it at all,
+        so checking only the machine type passes a zone where the card has never
+        existed. A fake that answers only about machine types cannot tell the
+        difference, and a create.py that closes that hole would fail here with an
+        AttributeError rather than with a result. Answering both halves keeps
+        this file honest against either version.
+        """
+        return [{"name": name, "zone": zone} for zone in
+                (f"{region}-{letter}" for region in L4_REGIONS for letter in "abcf")]
+
 
 def order(*zones_):
     return Ordering(zones=tuple(zones_), regions=tuple(dict.fromkeys(
