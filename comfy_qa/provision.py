@@ -49,6 +49,27 @@ FIREWALL_RULE = "comfy-qat-iap-comfyui"
 # the caller can recognise it rather than reporting a generic non-zero exit.
 NO_PYTHON_EXIT = 3
 
+# `logs_command`'s word for "this box has no ComfyUI log". Reserved for the same
+# reason: "the file is not there" and "the box would not answer" are different
+# facts with different fixes, and a generic non-zero exit cannot tell them apart.
+NO_LOG_EXIT = 4
+
+# Where a detached ComfyUI's output goes, on the box. A launch nobody is watching
+# has to write its log somewhere or the whole point of detaching is lost: the
+# terminal is free and the startup log is gone with it.
+WINDOWS_LOG = rf"{WINDOWS_ROOT}\comfyui.log"
+LINUX_LOG = f"{LINUX_ROOT}/comfyui.log"
+
+# What a detached launch prints once ComfyUI is running on the box and this
+# command is free to return. It is not "serving" — nothing has been asked yet —
+# and the caller is expected to go on and prove that separately.
+STARTED = "STARTED"
+
+# What `alive_command` prints. GONE is the useful one: it turns a three-minute
+# wait for something that died in four seconds into an immediate answer.
+ALIVE = "ALIVE"
+GONE = "GONE"
+
 
 def is_windows(host: Host) -> bool:
     return "windows" in (host.os or "").lower()
@@ -56,6 +77,16 @@ def is_windows(host: Host) -> bool:
 
 def root_for(host: Host) -> str:
     return WINDOWS_ROOT if is_windows(host) else LINUX_ROOT
+
+
+def log_for(host: Host) -> str:
+    """Where this box's detached ComfyUI writes its log, in the box's own terms.
+
+    Named in messages rather than kept private, because "read the log" is not an
+    instruction anyone can follow without the path — and the path is on a machine
+    they would have to tunnel into to look.
+    """
+    return WINDOWS_LOG if is_windows(host) else LINUX_LOG
 
 
 def check_command(host: Host) -> str:
@@ -412,4 +443,119 @@ def launch_command(host: Host) -> str:
         f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
         "echo \"using $py\"; "
         f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
+    )
+
+
+def launch_detached_command(host: Host) -> str:
+    """Start ComfyUI on the box and come straight back, with its log on the box.
+
+    The same interpreter search as `launch_command`, and the same loopback bind
+    for the same reason — the forward is an `ssh -L`, so `127.0.0.1` on the box
+    is exactly where the tunnel arrives. Only two things differ, and both follow
+    from nobody watching:
+
+      * **Its output goes to a file on the box**, not down the SSH channel. A
+        detached launch whose log went nowhere would trade a blocked terminal for
+        a ComfyUI you cannot debug, which is the worse of the two.
+      * **The file is truncated, not appended to.** `host logs` is asked about
+        *this* ComfyUI, and yesterday's traceback sitting above today's startup is
+        how you spend twenty minutes fixing something that is already fixed.
+
+    Windows detaches with `Start-Process`, which cannot merge stdout and stderr
+    into one file — it refuses the same path twice. So it starts a hidden
+    PowerShell that redirects all of its own streams with `*>`, which can. That
+    nesting is also why the inner command quotes the interpreter with
+    `[char]34`: the outer command is already inside double quotes by the time it
+    reaches the box, and a literal `"` here would end it. Rule 3 at the top of
+    this file applies with full force — nothing below prompts, so nothing below
+    can hang a non-interactive SSH command forever.
+
+    Prints `using <interpreter>` and then STARTED. STARTED means the process was
+    launched, never that it is serving: proving that is the caller's job, and
+    conflating them is exactly the "a booted VM is up" mistake one level down.
+    """
+    listen = "127.0.0.1"
+    if is_windows(host):
+        candidates = ", ".join(f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS)
+        return (
+            "powershell -NonInteractive -Command \""
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            f"$candidates = @({candidates}); "
+            "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
+            "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
+            f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
+            "Write-Output ('using ' + $py); "
+            "$q = [char]34; "
+            "$inner = '& ' + $q + $py + $q + "
+            f"' main.py --listen {listen} --port {COMFYUI_PORT} *> ' + $q + "
+            f"'{WINDOWS_LOG}' + $q; "
+            "Start-Process -FilePath 'powershell' "
+            "-ArgumentList '-NonInteractive', '-Command', $inner "
+            f"-WorkingDirectory '{WINDOWS_ROOT}' -WindowStyle Hidden; "
+            f"Write-Output '{STARTED}'\""
+        )
+    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
+    return (
+        f"cd {LINUX_ROOT}; "
+        f"for p in {candidates} $(command -v python3); do "
+        "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
+        f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
+        "echo \"using $py\"; "
+        f"nohup \"$py\" main.py --listen {listen} --port {COMFYUI_PORT} "
+        f"> {LINUX_LOG} 2>&1 < /dev/null & "
+        f"echo {STARTED}"
+    )
+
+
+def alive_command(host: Host) -> str:
+    """Is a ComfyUI still running on the box at all?
+
+    Asked while waiting for a detached launch to answer, and only for the sake of
+    the bad case: a ComfyUI that dies four seconds in is otherwise indistinguishable
+    from one that is slow, so the wait runs to its full timeout on a machine that
+    is billing the whole time.
+
+    Wrong in the safe direction, deliberately. A false ALIVE costs the wait we
+    would have had anyway; a false GONE would report a working box as broken. So
+    Linux matches the actual command line, and Windows — where matching one is
+    expensive — settles for "is any Python running", which is over-broad and never
+    wrong in the direction that matters. The bracket in `[m]ain.py` keeps pgrep
+    from matching the shell that carries this very command.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NonInteractive -Command \""
+            "$p = Get-Process -Name python, pythonw -ErrorAction SilentlyContinue; "
+            f"if ($p) {{ Write-Output '{ALIVE}' }} else {{ Write-Output '{GONE}' }}\""
+        )
+    return (
+        f"if pgrep -f '[m]ain.py --listen' >/dev/null 2>&1; then echo {ALIVE}; "
+        f"else echo {GONE}; fi"
+    )
+
+
+def logs_command(host: Host, *, tail: int = 200, follow: bool = False) -> str:
+    """Read the detached ComfyUI's log on the box — the last lines, or forever.
+
+    Exits `NO_LOG_EXIT` and says nothing when the file is not there, so the
+    caller can tell "ComfyUI has never been started here" from "the box would not
+    answer". Printing a marker instead would put a word nobody asked for at the
+    top of a log the tester is reading.
+
+    Following is `tail -f` / `Get-Content -Wait`, which reads a file and touches
+    nothing. Ending it stops reading and stops nothing else — which is the whole
+    difference between this and `go --follow`, where Ctrl-C reaches ComfyUI.
+    """
+    lines = max(1, int(tail))
+    if is_windows(host):
+        wait = " -Wait" if follow else ""
+        return (
+            "powershell -NonInteractive -Command \""
+            f"if (-not (Test-Path '{WINDOWS_LOG}')) {{ exit {NO_LOG_EXIT} }}; "
+            f"Get-Content -Path '{WINDOWS_LOG}' -Tail {lines}{wait}\""
+        )
+    follow_flag = " -f" if follow else ""
+    return (
+        f"if [ ! -f {LINUX_LOG} ]; then exit {NO_LOG_EXIT}; fi; "
+        f"tail -n {lines}{follow_flag} {LINUX_LOG}"
     )

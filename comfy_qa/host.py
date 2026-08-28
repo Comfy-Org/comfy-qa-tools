@@ -386,19 +386,67 @@ def go_cmd(
         "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
     no_install: Annotated[bool, typer.Option(
         "--no-install", help="Fail rather than installing ComfyUI if it is absent.")] = False,
+    follow: Annotated[bool, typer.Option(
+        "--follow", help="Stream ComfyUI's log here. Ctrl-C then stops ComfyUI.")] = False,
+    new_window: Annotated[bool, typer.Option(
+        "--new-window", help="Run this in a new macOS Terminal window instead.")] = False,
 ) -> None:
-    """Start the machine, make sure ComfyUI is on it, and run it where you can watch.
+    """Start the machine, make sure ComfyUI is on it, and hand the prompt back.
 
     The everyday command. If ComfyUI is already serving you get the URL straight
-    away; otherwise it is installed if needed and launched in the foreground, with
-    its startup log on this terminal exactly as a local `main.py` would print it.
+    away; otherwise it is installed if needed and launched *on the box*, where it
+    keeps running after this returns — so a second machine can be brought up in
+    this same terminal. `host logs` reads its log; `--follow` streams it here
+    instead, and Ctrl-C then stops ComfyUI, which is what this used to do always.
     """
     from .gcloud import Gcloud
+    from .lifecycle import in_a_new_window
 
     hosts, host = _lookup(name, config)
+    if new_window:
+        # Before anything is started: a hand-off that fails must not leave a box
+        # running behind a window that never opened.
+        rest = ["host", "go", host.name, "--follow"]
+        rest += ["--config", str(config)] if config else []
+        rest += ["--no-browser"] if no_browser else []
+        rest += ["--no-install"] if no_install else []
+        _act(in_a_new_window, rest, lambda line: typer.echo(f"  {line}"))
+        return
     gc = Gcloud()
     ready = _bring_up(gc, host, hosts)
-    _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
+    _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
+           follow=follow)
+
+
+@app.command("logs")
+def logs_cmd(
+    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    tail: Annotated[Optional[int], typer.Option(
+        "--tail", help="Print this many lines and stop. Add --follow to keep reading.")] = None,
+    follow: Annotated[Optional[bool], typer.Option(
+        "--follow/--no-follow",
+        help="Keep reading as it is written. The default unless --tail is given.")] = None,
+) -> None:
+    """Read the ComfyUI log on a box, since `go` no longer streams it here.
+
+    With no arguments it follows, because "what is it doing now" is the question
+    people have. `--tail N` is the other one — "what did it say" — and answers it
+    and stops. Ctrl-C ends the reading and nothing else: ComfyUI keeps running,
+    which is the whole point of it being detached.
+    """
+    from .gcloud import Gcloud
+    from .lifecycle import read_logs
+
+    host = _host(name, config)
+    try:
+        _act(read_logs, Gcloud(), host, lambda line: typer.echo(f"  {line}"),
+             tail=200 if tail is None else tail,
+             follow=(tail is None) if follow is None else follow)
+    except KeyboardInterrupt:
+        typer.echo(f"\nstopped reading. ComfyUI is still running on {host.name}, "
+                   f"and so is the machine — `comfy-qat host down {host.name}` to "
+                   f"stop paying for it.")
 
 
 def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
@@ -475,12 +523,17 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None)
 
 
 def _serve(gc, host: Host, ready, *, no_browser: bool = False,
-           no_install: bool = False) -> None:
-    """The rest of `go` once the machine is up: install if needed, then run it."""
+           no_install: bool = False, follow: bool = False) -> None:
+    """The rest of `go` once the machine is up: install if needed, then run it.
+
+    Detached unless `--follow`. Both prove the same thing before returning —
+    ComfyUI answering on the tunnel — and differ only in where its log goes and
+    therefore in what Ctrl-C reaches.
+    """
     import webbrowser
 
     from .gcloud import GcloudError
-    from .lifecycle import ensure_installed, serve, wait_for_ssh
+    from .lifecycle import ensure_installed, serve, start_detached, wait_for_ssh
 
     say = lambda line: typer.echo(f"  {line}")
     browser = None if no_browser else (lambda url: webbrowser.open(url))
@@ -507,7 +560,8 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         wait_for_ssh(gc, host, say)
         ensure_installed(gc, host, say)
         typer.echo("")
-        code = serve(gc, host, say, open_browser=browser)
+        code = (serve if follow else start_detached)(
+            gc, host, say, open_browser=browser)
     except _reportable() as exc:
         typer.echo(f"\n{exc}", err=True)
         if exc.fix:
@@ -521,8 +575,17 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                    f"`comfy-qat host down {host.name}` to stop paying.")
         return
 
-    typer.echo(f"\nComfyUI exited ({code}). "
-               f"`comfy-qat host down {host.name}` to stop the machine.")
+    if follow:
+        typer.echo(f"\nComfyUI exited ({code}). "
+                   f"`comfy-qat host down {host.name}` to stop the machine.")
+        return
+
+    # The URL is last on purpose. ComfyUI announces its own address — correct on
+    # the box, wrong here — and whatever is said after it is what gets opened.
+    typer.echo(f"\nComfyUI is running on {host.name} and this terminal is free.")
+    typer.echo(f"  comfy-qat host logs {host.name}   # follow its log, on the box")
+    typer.echo(f"  comfy-qat host down {host.name}   # close the tunnel, stop the box")
+    typer.echo(f"\nOpen {host.url} in your browser.")
 
 
 @app.command("switch")

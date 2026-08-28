@@ -7,6 +7,20 @@ you find out only when a test does something strange.
 Every failure after the machine has been started says so, and says how to stop
 paying for it. A message that only explains what went wrong leaves a GPU box
 running all night.
+
+**ComfyUI runs on the box, so the terminal does not have to.** The log used to be
+streamed back over SSH, which is why `go` owned a terminal until Ctrl-C — and why
+two machines could not be used at once, which is the ordinary case: Windows in
+one browser tab, Linux in another. `start_detached` launches it on the box with
+its output going to a file there, waits until it really answers, prints the URL
+and hands the prompt back. `serve` is the old behaviour, kept under `--follow`,
+where Ctrl-C still reaches ComfyUI.
+
+Detaching moves one thing and one thing only: *where the log goes*. It does not
+move where "up" is decided. A launch that returned as soon as the box said
+STARTED would be the booted-VM lie again, one level down — started, billing, and
+serving nothing — so a detached launch is not finished until ComfyUI has answered
+on the tunnel, exactly as before.
 """
 
 from __future__ import annotations
@@ -849,6 +863,405 @@ def serve(
     return code
 
 
+# How often, while waiting for a detached launch, the box is asked whether its
+# ComfyUI is even still there. Every poll would be an SSH round trip for a
+# question whose answer changes once; never asking is three minutes of GPU time
+# spent waiting for a process that died in four seconds.
+ALIVE_EVERY = 30
+
+# What a ComfyUI that could not import something says on its way out. Read from
+# the log on the box, because a detached launch's exit code is the *launcher's*,
+# and the launcher succeeds perfectly at starting something that then dies.
+_MISSING_MODULE = re.compile(r"ModuleNotFoundError|No module named|ImportError")
+
+
+def _open_forward(host: Host, tunnel_dir: Path | None, say: Callable[[str], None]) -> bool:
+    """Open the tunnel if it is not already open. Says so only when it opens one.
+
+    Ordering, not tidiness: gcloud tests the connection before it will serve and
+    refuses when the far port has no listener, so the forward cannot exist until
+    ComfyUI is up. That is why this is called from inside the wait rather than
+    before the launch — the same reason `serve` opens it from its watcher, and
+    undoing it makes `go` impossible on any box that is not already serving.
+    """
+    if not host.is_remote:
+        return True
+    if tunnel_status(host.name, tunnel_dir).running:
+        return True
+    try:
+        open_tunnel(host, tunnel_dir)
+    except TunnelError:
+        return False        # usually "not listening yet". Ask again next time.
+    say(f"tunnel open: {host.url}")
+    return True
+
+
+def _still_alive(gc: Gcloud, host: Host) -> bool | None:
+    """Is ComfyUI still running on the box? None means the box would not say.
+
+    None is not False. A box that cannot be asked has told us nothing, and
+    reporting nothing as "it died" would end a wait that was going to succeed.
+    """
+    from .provision import GONE, alive_command
+
+    try:
+        answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                               alive_command(host))
+    except GcloudError:
+        return None
+    answer = str(answer or "").strip()
+    if not answer:
+        return None
+    return GONE not in answer
+
+
+def _log_tail(gc: Gcloud, host: Host, lines: int = 20) -> str:
+    """The end of the detached ComfyUI's log, read off the box.
+
+    The whole cost of detaching is that the startup log is no longer on this
+    terminal, so a failure that says "it never answered" and nothing else is a
+    worse failure than the one it replaced. This is what buys that back.
+    """
+    from .provision import logs_command
+
+    try:
+        text = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                             logs_command(host, tail=lines, follow=False))
+    except GcloudError:
+        # No log, or an unreachable box. Either way there is nothing to quote,
+        # and failing to read a log is not worth replacing the real failure.
+        return ""
+    return str(text or "").strip()
+
+
+def _repair(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None:
+    """Install an existing checkout's requirements once, and only once.
+
+    The same repair `serve` does on a non-zero exit, reached differently: a
+    detached ComfyUI that dies on a missing import exits *after* the launcher has
+    already returned 0, so the evidence is in the log on the box rather than in
+    an exit code. Watched exactly that on 2026-08-27, on `sqlalchemy`.
+    """
+    from .provision import repair_command
+
+    say("")
+    say("that looks like a missing dependency rather than a broken "
+        "install — installing its requirements and trying once more")
+    try:
+        repaired = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                          repair_command(host), stream=True)
+    except GcloudError as exc:
+        raise give_up(
+            f"ComfyUI on {host.name} would not start, and its requirements could "
+            f"not be installed either: {exc}") from exc
+    if repaired != 0:
+        # Relaunching after a failed repair prints the identical traceback again
+        # and teaches nothing. The usual cause is that the box has no way out.
+        raise give_up(
+            f"ComfyUI on {host.name} is missing a dependency, and "
+            f"installing its requirements failed (exit {repaired}). "
+            f"Its log is above.", egress=True)
+
+
+def start_detached(
+    gc: Gcloud,
+    host: Host,
+    say: Callable[[str], None],
+    *,
+    open_browser: Callable[[str], None] | None = None,
+    probe_fn=None,
+    sleep=None,
+    now=None,
+    timeout: int = COMFY_TIMEOUT,
+    tunnel_dir: Path | None = None,
+    repair: bool = True,
+) -> int:
+    """Launch ComfyUI on the box, leave it running there, and give the prompt back.
+
+    The everyday launch. ComfyUI has always run on the box; the terminal was
+    occupied only because its log was streamed back over SSH, and that one
+    convenience made two machines at once impossible — Windows in one browser tab
+    and Linux in another is the ordinary case, not an exotic one. So the log goes
+    to a file on the box and `host logs` reads it.
+
+    What does **not** change is when this returns. "Started" is not "serving":
+    a launch that came back on the box's say-so would leave a GPU machine billing
+    while ComfyUI failed to import something, which is the booted-VM lie this
+    whole module exists to refuse. So the tunnel is opened as soon as there is
+    something to tunnel to, ComfyUI is asked until it answers, and only an answer
+    counts.
+
+    A failure here reads the log off the box and quotes it, because the tester
+    can no longer see it scroll past — and stops the ComfyUI this run started, so
+    the next attempt is not refused by a port its own predecessor is holding.
+    """
+    from .provision import NO_PYTHON_EXIT, launch_detached_command, log_for
+
+    sleep = sleep or _pause
+    now = now or _clock
+    probe_fn = probe_fn or probe
+
+    def give_up(message: str, *, egress: bool = False,
+                stop_first: tuple[str, str] | None = None) -> LifecycleError:
+        return _give_up(host, tunnel_dir, say, message, egress=egress,
+                        stop_first=stop_first)
+
+    holder = _port_holder(gc, host)
+    if holder is not None:
+        pid, name = holder
+        # A held port is only a problem when what holds it is not the thing you
+        # wanted. If it serves, it is not in the way — it is the answer.
+        _open_forward(host, tunnel_dir, say)
+        serving = probe_fn(host)
+        if serving is not None:
+            say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
+                f"— using it rather than starting a second one")
+            say(f"ComfyUI answering: {serving.line()}")
+            if open_browser is not None:
+                open_browser(host.url)
+            return 0
+        raise give_up(
+            f"something is already listening on {host.name}'s ComfyUI port "
+            f"({name}, pid {pid}), and it is not answering as ComfyUI, so a "
+            f"second one cannot start.",
+            stop_first=holder)
+
+    say(f"starting ComfyUI on {host.name} — it stays running on the box after "
+        f"this command returns")
+    say(f"its log is {log_for(host)} on the box: comfy-qat host logs {host.name}")
+    if host.is_remote:
+        # ComfyUI announces its own address — "To see the GUI go to
+        # http://127.0.0.1:8188" — which is true on the box and wrong here, where
+        # 8188 is the local install. It is the first line of the log `host logs`
+        # will show, so say the right one alongside it.
+        say(f"when it says 127.0.0.1:{COMFYUI_PORT}, on this machine that is "
+            f"{host.url}")
+
+    code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                  launch_detached_command(host), stream=True)
+    if code == NO_PYTHON_EXIT:
+        raise give_up(
+            f"there is no Python on {host.name} to run ComfyUI with (NO_PYTHON), so "
+            "it could not be started.")
+    if code != 0:
+        # The launcher itself failed, which on Linux it essentially cannot: the
+        # detached form exits as soon as the process is spawned. Treated as the
+        # foreground launch treats it, because the one repair that fixes it is
+        # cheap and the alternative is handing back an exit code and no advice.
+        if repair:
+            _repair(gc, host, say, give_up)
+            return start_detached(
+                gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
+                sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,
+                repair=False,
+            )
+        raise give_up(
+            f"ComfyUI on {host.name} could not be launched (exit {code}).")
+
+    stamp = None
+    deadline = now() + timeout
+    asked_alive = now()
+    while True:
+        if _open_forward(host, tunnel_dir, say):
+            stamp = probe_fn(host)
+            if stamp is not None:
+                break
+        if now() >= deadline:
+            break
+        if now() - asked_alive >= ALIVE_EVERY:
+            asked_alive = now()
+            if _still_alive(gc, host) is False:
+                say(f"ComfyUI is no longer running on {host.name} — it stopped "
+                    f"before it ever answered")
+                break
+        sleep(POLL_SECONDS)
+
+    if stamp is None:
+        return _never_answered(gc, host, say, tunnel_dir=tunnel_dir, repair=repair,
+                               open_browser=open_browser, probe_fn=probe_fn,
+                               sleep=sleep, now=now, timeout=timeout)
+
+    say(f"ComfyUI answering: {stamp.line()}")
+    if open_browser is not None:
+        open_browser(host.url)
+    return 0
+
+
+def _never_answered(gc: Gcloud, host: Host, say: Callable[[str], None], *,
+                    tunnel_dir, repair: bool, **again) -> int:
+    """A detached launch that started something and never got an answer.
+
+    Three things have to happen here and the order matters. The log is read off
+    the box first, while the box is still reachable, because it is the only
+    evidence left once the terminal has stopped carrying it. Then whatever this
+    run started is stopped, so the next attempt is not refused by a port its own
+    predecessor is holding — the tidy-up that used to be a courtesy and is now
+    the thing standing between a tester and "Port 8188 is already in use".
+    """
+    def give_up(message: str, *, egress: bool = False,
+                stop_first: tuple[str, str] | None = None) -> LifecycleError:
+        return _give_up(host, tunnel_dir, say, message, egress=egress,
+                        stop_first=stop_first)
+
+    tail = _log_tail(gc, host)
+    if tail:
+        say("")
+        say(f"the last of its log on {host.name}:")
+        for line in tail.splitlines():
+            say(f"  | {line}")
+    _stop_ours(gc, host, say)
+
+    if repair and _MISSING_MODULE.search(tail):
+        _repair(gc, host, say, give_up)
+        return start_detached(gc, host, say, tunnel_dir=tunnel_dir, repair=False,
+                              **again)
+
+    stand_down(host, tunnel_dir, say)
+    raise LifecycleError(
+        f"ComfyUI on {host.name} exited without ever answering on {host.url}. "
+        "The machine is up and billing.",
+        kind=COMFYUI_ABSENT,
+        fix=(f"read its whole log on the box:\n        "
+             f"comfy-qat host logs {host.name} --tail 100"
+             "\n        or get onto the machine:\n        "
+             + how_to_get_in(host)
+             + "\n        or stop paying for it:\n        "
+             + stop_paying(host)),
+    )
+
+
+def read_logs(
+    gc: Gcloud,
+    host: Host,
+    say: Callable[[str], None],
+    *,
+    tail: int = 200,
+    follow: bool = True,
+) -> int:
+    """Show a running box's ComfyUI log — the last lines, or as it is written.
+
+    Reading a file and nothing else. Ending a follow stops reading and stops
+    nothing else, which is the whole difference between this and `go --follow`,
+    where Ctrl-C reaches ComfyUI itself.
+
+    Every state that is not "there is a log" is answered rather than waited on. A
+    command that hangs against a stopped box is the worst of the three, because
+    the box it is silently waiting for is one you might still be paying for.
+    """
+    from .provision import NO_LOG_EXIT, log_for, logs_command
+
+    if host.kind == "local":
+        raise LifecycleError(
+            f"{host.name} is this machine, and this tool did not start its ComfyUI, "
+            f"so there is no log of its own to follow.",
+            fix=("read the terminal you started it in, or start it there:\n        "
+                 f"~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port {host.port} "
+                 "--listen 127.0.0.1"),
+        )
+
+    try:
+        state = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        raise LifecycleError(str(exc), fix=exc.fix) from exc
+    if state != RUNNING:
+        raise LifecycleError(
+            f"{host.name} is not running, so it has no ComfyUI and no log to "
+            f"follow. Whatever it was writing stopped when the machine did.",
+            fix=f"comfy-qat host go {host.name}   # start the box and ComfyUI on it",
+        )
+
+    try:
+        code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                      logs_command(host, tail=tail, follow=follow), stream=True)
+    except GcloudError as exc:
+        raise LifecycleError(
+            f"could not read the ComfyUI log on {host.name}: {exc}",
+            fix=(how_to_get_in(host) + "\n        or stop paying for it:\n        "
+                 + stop_paying(host)),
+        ) from exc
+
+    if code == NO_LOG_EXIT:
+        raise LifecycleError(
+            f"there is no ComfyUI log at {log_for(host)} on {host.name}, so nothing "
+            f"has started ComfyUI there. The machine is running and billing.",
+            fix=(f"comfy-qat host go {host.name}   # start it, and this will have "
+                 "something to read\n        or stop paying for it:\n        "
+                 + stop_paying(host)),
+        )
+    return code
+
+
+def _tool_invocation() -> str:
+    """How to run this tool from a shell that is not this one.
+
+    A new window is a login shell with its own PATH, so `comfy-qat` may not be on
+    it — this tool is routinely installed in a venv that only the current shell
+    has activated. The full path is used when there is one, and the module entry
+    point when there is not, because a window that opens onto `command not found`
+    is worse than being told plainly that no window can be opened.
+    """
+    import shlex
+    import shutil
+    import sys
+
+    found = shutil.which("comfy-qat")
+    if found:
+        return shlex.quote(found)
+    argv0 = Path(sys.argv[0]) if sys.argv and sys.argv[0] else None
+    if argv0 is not None and argv0.name.startswith("comfy-qat") and argv0.exists():
+        return shlex.quote(str(argv0.resolve()))
+    return f"{shlex.quote(sys.executable)} -m comfy_qa"
+
+
+def _applescript_string(text: str) -> str:
+    """One AppleScript string literal. Backslash and quote are the only escapes."""
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def in_a_new_window(rest: list[str], say: Callable[[str], None]) -> None:
+    """Run `comfy-qat <rest>` in a new terminal window instead of this one.
+
+    A convenience, kept deliberately small. macOS Terminal through `osascript` is
+    the one case worth supporting here, and everything else is told plainly that
+    it cannot rather than being half-served: a window that silently does not
+    appear, on a command whose job is to start a GPU box, is a machine you are
+    paying for and cannot see. The refusal prints the exact command, so the
+    fallback is one paste rather than a reconstruction.
+    """
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+
+    line = " ".join([_tool_invocation(), *(shlex.quote(word) for word in rest)])
+    by_hand = f"open a terminal window and run:\n        {line}"
+
+    if sys.platform != "darwin" or shutil.which("osascript") is None:
+        raise LifecycleError(
+            "--new-window can only open a macOS Terminal window, and this is not a "
+            "Mac with osascript on it. Nothing was started.",
+            fix=by_hand,
+        )
+
+    script = f"tell application \"Terminal\" to do script {_applescript_string(line)}"
+    try:
+        done = subprocess.run(["osascript", "-e", script],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LifecycleError(
+            f"could not open a new Terminal window: {exc}. Nothing was started.",
+            fix=by_hand,
+        ) from exc
+    if done.returncode != 0:
+        raise LifecycleError(
+            "could not open a new Terminal window: "
+            f"{done.stderr.strip() or 'osascript would not say why'}. "
+            "Nothing was started.",
+            fix=by_hand,
+        )
+    say(f"opened a new Terminal window running: {line}")
+
+
 def _family(host: Host) -> str:
     """"Windows Server 2022" -> "windows". Enough to say "the same kind of box"."""
     words = (host.os or "").lower().split()
@@ -914,7 +1327,18 @@ def put_away(
     tunnel_dir: Path | None = None,
     keep_running: bool = False,
 ) -> None:
-    """Close the tunnel and stop the machine, so it stops costing money."""
+    """Close the tunnel and stop the machine, so it stops costing money.
+
+    `go` now leaves a ComfyUI running on the box, so "down" has one more thing to
+    be true about — and it is, without doing anything extra: stopping the
+    instance stops everything on it, ComfyUI included. There is nothing to reach
+    over SSH and nothing that can be missed, which is why this is the honest
+    place for that to happen rather than a tidy-up somewhere earlier.
+
+    `--keep-running` is the exception and says so. It leaves the machine on
+    deliberately, so it leaves ComfyUI on with it; the next `host go` finds that
+    ComfyUI and uses it rather than starting a second one.
+    """
     if close_tunnel(host.name, tunnel_dir):
         say("tunnel closed")
 
@@ -940,6 +1364,7 @@ def put_away(
 
     if keep_running:
         say(f"{host.name} left running — it is still billing")
+        say(f"any ComfyUI on it is still running too: comfy-qat host logs {host.name}")
         return
 
     try:
