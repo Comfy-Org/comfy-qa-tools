@@ -242,6 +242,13 @@ apart. Without `--name` a free one is chosen for you.
 Ninety-eight boxes named `comfy-linux-2` through `comfy-linux-99` already exist,
 which is not a situation this tool is going to guess its way out of.
 
+**`'9lives' is not a name Compute Engine will take. A name starts with a letter, then letters, digits or hyphens, up to 63 characters, and does not end in a hyphen. Nothing was created.`**
+Google's own rule for an instance name, checked here rather than at the create.
+Spaces, underscores and capitals are fixed for you — `--name "My Box"` becomes
+`my-box` — but a name that starts with a digit, ends in a hyphen or runs past 63
+characters cannot be fixed without inventing one. Drop `--name` and one is
+picked for you.
+
 **`a 20 GB disk is too small — the image will not fit and models will not either. Ask for at least 50.`**
 The Windows Server image alone does not fit below 50 GB. The default is 200,
 which is room for a few checkpoints; `--disk 500` if you are testing something
@@ -255,7 +262,11 @@ Both allowances are read before anything is created, and printed either way:
 quota checked:
   L4: 1, in 43 region(s)
   GPUS_ALL_REGIONS (every card, project-wide): 1
+  already running and holding 1 card of it: comfy-win
 ```
+
+The third line only appears when something is already spending the ceiling, and
+it counts **cards**, not boxes: one `a3-highgpu-8g` holds eight of it on its own.
 
 **`this project has no L4 quota, so a L4 box cannot start anywhere. Nothing was created.`**
 The card has never been granted. Ask for it and wait — Google's answer is
@@ -279,6 +290,13 @@ card, made in the console.
 Not a quota you need to raise — a box you need to stop. `comfy-qat host down
 comfy-win` frees the allowance, and the create then goes through. This is checked
 before anything is made rather than being discovered as a refusal afterwards.
+
+**`GPUS_ALL_REGIONS is 8 and 2 GPU boxes are already running on it, holding 9 of it between them: comfy-win, comfy-h100. Nothing was created.`**
+The same refusal with more than one box running, and the reason it counts cards
+rather than boxes: an `a3-highgpu-8g` is eight of the ceiling on its own. Stop
+whichever you are not using and run the create again. The count comes from
+`acceleratorCount` on each running instance, so a box with no card at all does
+not appear here however large it is.
 
 **`this project's L4 grant names no region, so there is nowhere to put the box. Nothing was created.`**
 A grant exists but covers no named region, which is what an empty or malformed
@@ -323,6 +341,28 @@ You named a zone with `--zone` and that zone has never had that machine type.
 `--zone` is an override for deliberately testing one zone, so it is one zone and
 no fall-through; drop it and a working zone is chosen for you.
 
+**`us-central1-f has never offered nvidia-tesla-t4, so a T4 box cannot be created there at all. Nothing was created.`**
+The other half of the same check, and the half that usually catches it. Five of
+the nine cards ride on `n1-standard-8`, which almost every zone on Earth offers,
+so checking only the machine type would let a `--zone` that has never had that
+card through to a create that takes a minute to fail. Both are checked.
+
+With `--zone` the summary says so, rather than describing a ranking that did not
+happen:
+
+```
+zone order — 1 to try, and it is the one you named with --zone: nothing was ranked or measured
+  1. us-central1-f
+```
+
+**`note: the nearest region offers no nvidia-l4, so this looked further afield`** /
+**`note: the 4 nearest regions offer no g2-standard-8, so this looked further afield`**
+Not a failure. Only the nearest few regions get their zones looked up, because
+asking `machine-types list` about a hundred and thirty zones is slow for an answer
+whose first entries are the only ones ever used. When those few turn up nothing
+the search widens, and the note says which half was missing — the card or the
+machine type. They are different problems and used to print the same sentence.
+
 **`this project has no L4 quota in europe-west4, so nothing can start there. Nothing was created.`**
 `--region` narrows the choice without naming a zone, and it can narrow it to
 nothing. Ask for the card in that region, or drop `--region`.
@@ -344,6 +384,12 @@ as it happens because a silent thirty-second pause reads as a hang.
 Not failures. A stockout in one zone is routine and says nothing about your
 account; a zone Google itself names in the refusal is moved to the front of what
 is left, because that answer is fresher than anything measured beforehand.
+
+**`stopping after 6 zones — each attempt takes about a minute`**
+The cap on attempts, and the only way to reach it is Google's own suggestions:
+the ranked list is six zones long, and each stockout can add one more to the
+front of the queue. Without the cap a chain of suggestions is a fall-through with
+no end, on a command that is already slow. Run it again to try the rest.
 
 **`every zone tried is out of L4 capacity: europe-west4-a, europe-west4-b, europe-west1-b. Nothing was created and nothing is billing.`**
 The card is short everywhere you are allowed to use it. Nothing was made, so

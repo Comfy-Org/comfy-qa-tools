@@ -261,6 +261,17 @@ def zones_with_machine_type(entries: list[dict], machine_type: str) -> list[str]
     return found
 
 
+def _nearest(count: int) -> str:
+    """`the nearest region offers` / `the 4 nearest regions offer`.
+
+    A note is prose and gets read as prose. "the 1 nearest regions offer no
+    nvidia-l4" is a sentence somebody has to stop and re-read.
+    """
+    if count == 1:
+        return "the nearest region offers"
+    return f"the {count} nearest regions offer"
+
+
 def _rank(zones: list[str], scores: dict[str, float]) -> list[str]:
     """Nearest region first; inside a region, Google's own zone order.
 
@@ -305,11 +316,23 @@ def choose(
     # Look at the nearest few regions first, and widen only if they turn up
     # nothing. Asking `machine-types list` about a hundred and thirty zones is
     # slow for an answer whose first five entries are the only ones ever used.
+    #
+    # `dict.fromkeys` rather than a plain tuple: on a project holding quota in
+    # four regions or fewer the two widths are the same number, and the loop then
+    # made the identical `machine-types list` call twice before giving up.
     notes: list[str] = []
-    for width in (nearest, len(ranked_regions)):
+    reason = ""
+    widths = list(dict.fromkeys((min(nearest, len(ranked_regions)), len(ranked_regions))))
+    for width in widths:
         near = set(ranked_regions[:width])
         candidates = [zone for zone in in_quota if region_of(zone) in near]
         if not candidates:
+            # Not the same reason as finding candidates and none of them having
+            # the machine type, and saying so mattered: the note blamed the
+            # machine type either way, so widening past a near region that simply
+            # has no L4 read as "europe-west4 offers no g2-standard-8", which it
+            # does offer.
+            reason = reason or f"{_nearest(nearest)} no {accelerator}"
             continue
         usable = zones_with_machine_type(
             gc.machine_types(project, _rank(candidates, scores)[:limit * 3], machine_type),
@@ -317,15 +340,13 @@ def choose(
         )
         both = [zone for zone in candidates if zone in set(usable)]
         if both:
-            if width > nearest:
-                notes.append(
-                    f"the {nearest} nearest regions offer no {machine_type}, so this "
-                    f"looked further afield"
-                )
+            if width > widths[0]:
+                notes.append(f"{reason}, so this looked further afield")
             return Ordering(
                 zones=tuple(_rank(both, scores)[:limit]),
                 regions=tuple(ranked_regions), latency=scores, notes=tuple(notes),
             )
+        reason = reason or f"{_nearest(nearest)} no {machine_type}"
 
     return Ordering(
         zones=(), regions=tuple(ranked_regions), latency=scores,
