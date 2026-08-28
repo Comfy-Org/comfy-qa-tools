@@ -148,3 +148,40 @@ def test_env_is_reachable_but_not_advertised():
 
     still_there = CliRunner().invoke(app, ["env", "--help"])
     assert still_there.exit_code == 0, "hidden must not mean gone"
+
+
+def test_bare_comfy_qat_lists_your_machines():
+    """The question someone has when they type the tool's name and nothing else
+    is "what have I got, and what is running" — not "what are the flags"."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    result = CliRunner().invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "NAME" in result.output and "KIND" in result.output
+    assert "Usage:" not in result.output, "help answers a question nobody asked"
+
+
+def test_help_still_prints_help():
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    assert "Usage:" in CliRunner().invoke(app, ["--help"]).output
+
+
+def test_with_no_host_list_at_all_it_points_at_setup(tmp_path, monkeypatch):
+    """The one case where help is the better answer: nothing to list, and
+    `setup` is the thing they actually need."""
+    from typer.testing import CliRunner
+
+    from comfy_qa import config
+    from comfy_qa.cli import app
+
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", tmp_path / "gone.toml")
+    result = CliRunner().invoke(app, [])
+
+    assert result.exit_code == 0
+    assert "comfy-qat setup" in result.output

@@ -19,7 +19,12 @@ from . import setup as setup_mod
 app = typer.Typer(
     help="QA tooling for testing Comfy: know which machine you are testing, "
          "and stamp every result with it.",
-    no_args_is_help=True,
+    # Bare `comfy-qat` lists your machines rather than printing help. The
+    # question someone has when they type the name of this tool and nothing
+    # else is "what have I got, and what is running" — help answers a question
+    # nobody asked, and listing is read-only, so the safe thing is also the
+    # useful one. `--help` still prints help.
+    no_args_is_help=False,
 )
 
 # The verbs, at the top level. `host` was a noun in front of every one of them
@@ -52,14 +57,27 @@ def _version_callback(asked: bool) -> None:
         raise typer.Exit()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def root(
+    ctx: typer.Context,
     version: Annotated[bool, typer.Option(
         "--version", callback=_version_callback, is_eager=True,
         help="Print the build — version, plus the commit in a checkout — and exit.")] = False,
 ) -> None:
     """QA tooling for testing Comfy: know which machine you are testing,
     and stamp every result with it."""
+    if ctx.invoked_subcommand is None:
+        # No host list yet is the one case where help is the better answer:
+        # there is nothing to list and `setup` is what they need.
+        from .config import ConfigError, load
+
+        try:
+            load(None)
+        except ConfigError:
+            typer.echo(ctx.get_help())
+            typer.echo("\nNo machines yet. Start with:  comfy-qat setup")
+            raise typer.Exit(code=0)
+        ctx.invoke(host.list_cmd, config=None, live=False)
 
 # v0's environment check, carried forward so it stays reachable under the new
 # binary. It is not part of release 1 and gets rewritten when its own release
