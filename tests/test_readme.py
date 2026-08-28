@@ -87,3 +87,26 @@ def test_the_readme_describes_everything_the_tool_writes():
     section = text[text.index("## What it writes"):]
     for artefact in ["hosts.toml", "tunnels/", ".pid", ".log"]:
         assert artefact in section, f"{artefact} is written but not declared"
+
+
+def test_env_is_reachable_but_not_advertised():
+    """`env` belongs to a different tool and still works.
+
+    It reports the build and feature-flag state of deployed environments, which
+    has nothing to do with operating machines — but it was verified against all
+    three cloud environments and is the only way anyone has to check which build
+    an environment is serving. Deleting it takes a capability away; hiding it
+    stops it confusing someone reading `--help` for the first time.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    listed = next(c for c in app.registered_commands if c.name == "env")
+    assert listed.hidden is True, "advertised again"
+
+    shown = CliRunner().invoke(app, ["--help"])
+    assert "env" not in shown.output
+
+    still_there = CliRunner().invoke(app, ["env", "--help"])
+    assert still_there.exit_code == 0, "hidden must not mean gone"

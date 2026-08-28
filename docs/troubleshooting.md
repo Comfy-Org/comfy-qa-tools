@@ -529,6 +529,20 @@ a Google Cloud box. `host down` would have closed the tunnel, said "local ComfyU
 left running — this tool did not start it", and left a GPU instance running.
 A cloud box is `kind = "gce"`; fix the entry and run `host down` again.
 
+**`--all stops every machine, so it takes no name.`**
+`host down --all` is "stop everything"; naming one as well is a contradiction.
+Drop the name, or drop `--all`.
+
+**`say which machine, or --all for every one of them.`**
+`host down` with nothing to act on. The question at the end of a session is
+usually "am I still paying for anything", and `--all` is the answer to that one.
+
+**`2 of 3 did not stop and may still be billing:`**
+`--all` keeps going when one machine refuses, because stopping the rest is the
+whole point — then it lists the ones that failed with what to do about each.
+Exit 1. Anything listed here is still costing money; the console is the
+last resort.
+
 **`could not stop comfy-win: ...`**
 gcloud refused to stop the machine, so **it is still running and still billing.**
 Try again, and if it keeps failing stop it in the Google Cloud console — an

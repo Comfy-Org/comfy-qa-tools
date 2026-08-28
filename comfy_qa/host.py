@@ -29,6 +29,7 @@ from .config import (
     load,
     resolve,
 )
+from .lifecycle import LifecycleError
 from .stamp import ProbeError, fetch, mismatch
 
 app = typer.Typer(
@@ -364,14 +365,63 @@ def open_cmd(
 
 @app.command("down")
 def down_cmd(
-    name: Annotated[str, typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+    name: Annotated[Optional[str], typer.Argument(
+        help="Which machine: a name, or what you want — windows, l4, windows/l4. "
+             "Omit it with --all.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     keep_running: Annotated[bool, typer.Option(
         "--keep-running", help="Close the tunnel but leave the machine on.")] = False,
+    everything: Annotated[bool, typer.Option(
+        "--all", help="Stop every cloud machine you have declared.")] = False,
 ) -> None:
-    """Close the tunnel and stop the machine, so it stops costing money."""
+    """Close the tunnel and stop the machine, so it stops costing money.
+
+    `--all` exists because the question at the end of a session is never "is
+    comfy-win stopped", it is "am I still paying for anything" — and answering
+    that by naming each box in turn is how one gets missed.
+    """
     from .gcloud import Gcloud
     from .lifecycle import put_away
+
+    if everything:
+        if name:
+            typer.echo("--all stops every machine, so it takes no name.", err=True)
+            raise typer.Exit(code=2)
+        try:
+            hosts = [h for h in load(config) if h.is_remote]
+        except ConfigError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(code=2)
+        if not hosts:
+            typer.echo("no cloud machines are declared, so nothing can be billing.")
+            return
+
+        gc = Gcloud()
+        failed = []
+        for host in hosts:
+            typer.echo(f"{host.name}:")
+            try:
+                put_away(gc, host, lambda line: typer.echo(f"  {line}"),
+                         keep_running=keep_running)
+            except LifecycleError as exc:
+                # One machine refusing to stop must not leave the rest running —
+                # that is the whole reason for stopping them in one command.
+                failed.append((host, exc))
+                typer.echo(f"  {exc}", err=True)
+        if failed:
+            typer.echo(f"\n{len(failed)} of {len(hosts)} did not stop and may still "
+                       f"be billing:", err=True)
+            for host, exc in failed:
+                typer.echo(f"  {host.name} — {exc.fix or 'stop it in the console'}",
+                           err=True)
+            raise typer.Exit(code=1)
+        typer.echo("\nstopped." if len(hosts) == 1
+                   else f"\nall {len(hosts)} stopped.")
+        return
+
+    if not name:
+        typer.echo("say which machine, or --all for every one of them.", err=True)
+        raise typer.Exit(code=2)
 
     host = _host(name, config)
     _act(put_away, Gcloud(), host, lambda line: typer.echo(f"  {line}"),

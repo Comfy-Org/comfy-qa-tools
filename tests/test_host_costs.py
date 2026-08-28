@@ -62,10 +62,17 @@ class Cloud:
     rather than quietly answering.
     """
 
-    def __init__(self, *, start=None, describe=None):
+    def __init__(self, *, start=None, describe=None, stop=None):
         self.calls: list[str] = []
         self._start = start
         self._describe = describe
+        self._stop = stop
+
+    def stop_instance(self, instance, zone, project):
+        self.calls.append("stop_instance")
+        if self._stop is not None:
+            raise self._stop
+        return ""
 
     def start_instance(self, instance, zone, project):
         self.calls.append("start_instance")
@@ -309,3 +316,36 @@ def test_no_zone_suggested_is_also_a_refusal(cli):
 def test_moving_a_local_host_was_already_a_refusal_and_stays_one(cli):
     """The rule has to describe what the group already does, or it is not a rule."""
     assert cli("move", "local").exit_code == 2
+
+
+def test_down_all_stops_every_cloud_machine(cli):
+    """The question at the end of a session is never "is comfy-win stopped", it
+    is "am I still paying for anything" — and answering that by naming each box
+    in turn is how one gets missed. Asked for twice in one day."""
+    result = cli("down", "--all")
+
+    assert result.exit_code == 0, result.output
+    assert result.cloud.calls.count("stop_instance") == 1, "the cloud box"
+    assert "local" not in result.output, "a local install cannot be stopped"
+    assert "stopped" in result.output
+
+
+def test_down_all_keeps_going_when_one_refuses(cli):
+    """Stopping the rest is the whole point, so one failure must not abandon
+    the others — and the ones still billing are named at the end."""
+    from comfy_qa.gcloud import GcloudError
+
+    cloud = Cloud(stop=GcloudError("boom"))
+    result = cli("down", "--all", cloud=cloud)
+
+    assert result.exit_code == 1
+    assert cloud.calls.count("stop_instance") == 1, "it tried"
+    assert "may still be billing" in result.output
+
+
+def test_down_all_refuses_a_name_as_well(cli):
+    """"Stop everything" and "stop this one" are different instructions."""
+    result = cli("down", "comfy-win", "--all")
+
+    assert result.exit_code == 2
+    assert "takes no name" in result.output

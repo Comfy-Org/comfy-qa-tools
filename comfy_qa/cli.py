@@ -47,7 +47,13 @@ def root(
 # v0's environment check, carried forward so it stays reachable under the new
 # binary. It is not part of release 1 and gets rewritten when its own release
 # comes round; until then, losing it would be a regression nobody asked for.
-app.command("env")(commands.env_cmd)
+# Hidden, not removed. `env` belongs to a different tool — it reports the build
+# and flag state of deployed environments, which has nothing to do with the
+# machines this one operates — but it works, it was verified against all three
+# cloud environments, and deleting it would take away the only way anyone has to
+# check which build an environment is serving. So it stays reachable and stops
+# advertising itself.
+app.command("env", hidden=True)(commands.env_cmd)
 
 
 FIRST_RUN = """\
