@@ -504,6 +504,69 @@ class Gcloud:
             args.append(f"--metadata={metadata}")
         self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
 
+    def accelerator_types(self, project: str, name: str) -> list[dict]:
+        """Every zone that offers one card. `name` is Google's own id, `nvidia-l4`.
+
+        Filtered server-side to keep the payload small, and filtered again by the
+        caller: gcloud warns on every call that its `=` operator is changing to
+        match more than it does today, and the day it does, `nvidia-l4` also
+        returns `nvidia-l4-vws`.
+        """
+        return self.run([
+            "compute", "accelerator-types", "list",
+            f"--project={project}", f"--filter=name={name}",
+        ]) or []
+
+    def machine_types(self, project: str, zones: list[str], name: str) -> list[dict]:
+        """Whether these zones offer one machine type. Zone-scoped, so it is quick."""
+        if not zones:
+            return []
+        return self.run([
+            "compute", "machine-types", "list",
+            f"--project={project}", f"--zones={','.join(zones)}",
+            f"--filter=name={name}",
+        ]) or []
+
+    def create_instance_from_image(
+        self, name: str, zone: str, project: str, *, machine_type: str,
+        image_family: str, image_project: str, disk_gb: int,
+        disk_type: str = "pd-balanced", accelerator: str | None = None,
+        metadata: str | None = None, metadata_from_file: str | None = None,
+    ) -> None:
+        """Create a new box from a public image. From here the project is billed.
+
+        `accelerator` is passed only for the machine families where the GPU is a
+        separate thing you attach — N1. G2 and A2 have the card built into the
+        machine type, and passing `--accelerator` alongside one of those is
+        refused by Google, which is the most common way a create by hand fails.
+
+        `--maintenance-policy=TERMINATE` is not optional on a GPU box: an
+        accelerator cannot live-migrate, and Google refuses the create without
+        it rather than choosing for you.
+
+        No `--no-address` here, deliberately, and for the reason `move` learned:
+        with no Cloud NAT on the project, a box with no external address has no
+        egress at all, and a machine that cannot reach pypi cannot install
+        ComfyUI. The tunnel does not need the address; the install does.
+        """
+        self._ready_for(project)
+        args = [
+            "compute", "instances", "create", name,
+            f"--zone={zone}", f"--project={project}",
+            f"--machine-type={machine_type}",
+            f"--image-family={image_family}", f"--image-project={image_project}",
+            f"--boot-disk-size={disk_gb}GB", f"--boot-disk-type={disk_type}",
+            f"--boot-disk-device-name={name}",
+            "--maintenance-policy=TERMINATE",
+        ]
+        if accelerator:
+            args.append(f"--accelerator={accelerator}")
+        if metadata:
+            args.append(f"--metadata={metadata}")
+        if metadata_from_file:
+            args.append(f"--metadata-from-file={metadata_from_file}")
+        self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
+
     def firewall_rules(self, project: str) -> list[dict]:
         return self.run(["compute", "firewall-rules", "list", f"--project={project}"]) or []
 

@@ -223,6 +223,138 @@ def discover_cmd(
     typer.echo(f"\nadded {len(additions)} to {path}")
 
 
+@app.command("create")
+def create_cmd(
+    os_choice: Annotated[str, typer.Option(
+        "--os", help="linux or windows. One box per OS is the pattern here.")],
+    gpu: Annotated[str, typer.Option(
+        "--gpu", help="The card: l4, t4, a100... The machine type follows from it.")],
+    name: Annotated[Optional[str], typer.Option(
+        "--name", help="Name the box. Default: comfy-linux / comfy-win, numbered if taken.")] = None,
+    zone: Annotated[Optional[str], typer.Option(
+        "--zone", help="Use this zone and only this zone. Default: chosen for you.")] = None,
+    region: Annotated[Optional[str], typer.Option(
+        "--region", help="Narrow to one region; the zone inside it is still chosen.")] = None,
+    disk: Annotated[int, typer.Option(
+        "--disk", help="Boot disk in GB. Models live on it.")] = 200,
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    yes: Annotated[bool, typer.Option("--yes", help="Do not ask before creating.")] = False,
+    dry_run: Annotated[bool, typer.Option(
+        "--dry-run", help="Print the plan, the quota and the zone order. Create nothing.")] = False,
+) -> None:
+    """Create a GPU box, choosing the zone for you.
+
+    The card is the only real decision. The machine type follows from it — an L4
+    is a G2 with the GPU built in, a T4 is an N1 with one attached — and the zone
+    is chosen: regions this project holds quota in, zones inside them that offer
+    the card and the machine type, ranked by latency measured from here, and
+    tried in order until one has capacity.
+
+    Quota is checked before anything exists, because a refusal costs nothing and
+    a quota failure after the instance exists costs money and a cleanup.
+    """
+    from .create import (
+        build, check_quota, host_entry, next_steps, nowhere, order_zones,
+        plan, summary, taken_names,
+    )
+    from .discover import next_ports, to_toml
+    from .gcloud import Gcloud, GcloudError
+
+    path = config or DEFAULT_CONFIG_PATH
+    try:
+        hosts = load(path)
+    except ConfigError:
+        hosts = []
+
+    gc = Gcloud()
+    try:
+        project = gc.current_project()
+        if not project:
+            typer.echo("no project set. Run: comfy-qat setup", err=True)
+            raise typer.Exit(code=2)
+        instances = gc.list_instances(project)
+        typer.echo("reading quota — this takes about a minute…", err=True)
+        quotas = gc.gpu_quotas(project)
+    except GcloudError as exc:
+        _refused(exc)
+
+    try:
+        blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
+                         taken=taken_names(hosts, instances))
+        check = check_quota(blueprint.card, quotas, instances)
+        typer.echo("\nquota checked:")
+        for line in check.lines():
+            typer.echo(f"  {line}")
+        problem = check.problem()
+        if problem is not None:
+            _refused(problem)
+        ordering = order_zones(gc, project, blueprint, check,
+                               zone=zone, region=region, config=path)
+    except _reportable() as exc:
+        _refused(exc)
+    except GcloudError as exc:
+        _refused(exc)
+
+    if not ordering:
+        _refused(nowhere(blueprint, ordering, project))
+
+    typer.echo("")
+    for step in blueprint.steps(ordering.zones[0]):
+        typer.echo(f"  - {step}")
+    typer.echo("")
+    for line in summary(blueprint, ordering):
+        typer.echo(line)
+    for note in ordering.notes:
+        typer.echo(f"\nnote: {note}")
+
+    if dry_run:
+        typer.echo("\n--dry-run: nothing created")
+        return
+    if not yes and not typer.confirm(f"\nCreate {blueprint.name}?"):
+        typer.echo("nothing changed")
+        return
+
+    typer.echo("")
+    try:
+        made_in = build(gc, blueprint, ordering, project,
+                        lambda line: typer.echo(f"  {line}"))
+    except _reportable() as exc:
+        typer.echo(f"\n{exc}", err=True)
+        if exc.fix:
+            typer.echo(f"to fix: {exc.fix}", err=True)
+        raise typer.Exit(code=1)
+    except GcloudError as exc:
+        typer.echo(f"\n{exc}", err=True)
+        raise typer.Exit(code=1)
+
+    # Re-read rather than reusing the list from before the create: this command
+    # takes minutes, and a `host discover` in another terminal in the meantime
+    # would have taken the port this was about to hand out. Two hosts on one port
+    # is the failure you cannot diagnose from the outside.
+    try:
+        port = next_ports(load(path), 1)[0]
+    except ConfigError:
+        port = next_ports(hosts, 1)[0]
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            path.write_text(STARTER, encoding="utf-8")
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(to_toml(host_entry(blueprint, made_in, project), port))
+    except OSError as exc:
+        typer.echo(f"\n{blueprint.name} exists in {made_in} and is billing, but it "
+                   f"could not be written to {path}: {exc}. Add it by hand, or run "
+                   f"`comfy-qat host discover`. To stop it now: gcloud compute "
+                   f"instances stop {blueprint.name} --zone={made_in} "
+                   f"--project={project}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\n{blueprint.name} is up in {made_in}, on port {port}.")
+    for line in next_steps(blueprint, made_in):
+        typer.echo(line)
+
+
 def _lookup(name: str, config: Optional[Path]) -> tuple[list[Host], Host]:
     """The whole host list, and the one machine the argument meant.
 

@@ -211,6 +211,187 @@ mistake would become a file nothing can load, on the one command that promises t
 change nothing. The message carries the parse error; fix that in the file, then run
 `comfy-qat host discover`.
 
+## Creating a box
+
+`host create` makes the machine, choosing the zone for you. Nothing here is
+created until the plan and the quota have been printed and agreed to, and
+`--dry-run` stops before any of it.
+
+The card is the only real decision. **The machine type follows from it** — an L4
+is the G2 family with the GPU built into the machine type, a T4 or P100 or V100
+is N1 with a card attached — and getting that the wrong way round is the single
+most common way a create by hand fails. You never pass a machine type here.
+
+### Before anything exists
+
+**`no card called 'rtx4090'. This tool can create: a100, a100-80gb, h100, k80, l4, p100, p4, t4, v100.`**
+A card this tool has no machine-type mapping for. The list is what it can order,
+not what your project is allowed — `comfy-qat auth quota list` is the second half
+of the answer.
+
+**`no operating system called 'freebsd'. Say --os linux or --os windows.`**
+Two images, one per operating system: Ubuntu 22.04 and Windows Server 2022.
+`ubuntu`, `debian` and `win` are accepted spellings of those two.
+
+**`comfy-win is already taken — a host list entry or an instance on this project has that name. Pick another with --name.`**
+Names are checked against your host list *and* against the instances on the
+project, because either collision ends the same way: two machines you cannot tell
+apart. Without `--name` a free one is chosen for you.
+
+**`could not find an unused name starting comfy-linux. Give one with --name.`**
+Ninety-eight boxes named `comfy-linux-2` through `comfy-linux-99` already exist,
+which is not a situation this tool is going to guess its way out of.
+
+**`a 20 GB disk is too small — the image will not fit and models will not either. Ask for at least 50.`**
+The Windows Server image alone does not fit below 50 GB. The default is 200,
+which is room for a few checkpoints; `--disk 500` if you are testing something
+large.
+
+### The quota gate
+
+Both allowances are read before anything is created, and printed either way:
+
+```
+quota checked:
+  L4: 1, in 43 region(s)
+  GPUS_ALL_REGIONS (every card, project-wide): 1
+```
+
+**`this project has no L4 quota, so a L4 box cannot start anywhere. Nothing was created.`**
+The card has never been granted. Ask for it and wait — Google's answer is
+typically minutes to a couple of days:
+
+```sh
+comfy-qat auth quota request --gpu l4 --region us-central1
+```
+
+**`H100-80GB needs 8 of this project's GPU allowance and the grant is 1. Nothing was created.`**
+Some machine types come as a fixed block of cards — the smallest H100 machine
+type is eight of them — so the grant has to cover the whole block, not one card.
+
+**`GPUS_ALL_REGIONS is 0 on this project — that is the ceiling across every card, whatever the L4 grant says, and 1 is needed. Nothing was created.`**
+The project-wide ceiling across every GPU, and the one that most often actually
+bites: it is **1** on the project this was built against. A per-card grant of 4
+means nothing if this is 0. Raising it is a separate request from asking for a
+card, made in the console.
+
+**`GPUS_ALL_REGIONS is 1 and comfy-win is already running on it, so a new GPU box cannot start until that one stops. Nothing was created.`**
+Not a quota you need to raise — a box you need to stop. `comfy-qat host down
+comfy-win` frees the allowance, and the create then goes through. This is checked
+before anything is made rather than being discovered as a refusal afterwards.
+
+**`this project's L4 grant names no region, so there is nowhere to put the box. Nothing was created.`**
+A grant exists but covers no named region, which is what an empty or malformed
+quota record looks like. Ask for the card in a region by name.
+
+### Choosing the zone
+
+You do not pass a zone. The order is worked out in four steps, and the first one
+is the one that is easy to get wrong:
+
+1. **Regions this project holds quota for that card in.** Quota is granted per
+   region, so ranking by distance alone confidently picks a zone where nothing
+   can start.
+2. **Zones in those regions that offer the card *and* the machine type**, read
+   from `accelerator-types list` and `machine-types list`.
+3. **Ranked by latency measured from your machine**, not inferred from a map. One
+   TCP connect to each candidate region's Compute Engine regional endpoint,
+   cached for a week in `~/.config/comfy-qa-tools/zone-latency.json`. Delete that
+   file to re-measure.
+4. **Tried in order, falling through on a stockout.**
+
+Step 3 is measured rather than assumed for a reason worth knowing: every
+`<region>-<service>.googleapis.com` name resolves to the *same* anycast Google
+front end, so timing those tells you the distance to your nearest Google edge and
+nothing about the region. The regional endpoints
+(`compute.<region>.rep.googleapis.com`) resolve per region and do not.
+
+```
+zone order — 6 to try, quota first, then what is offered, then measured latency (nearest: europe-west4)
+  1. europe-west4-a  (208 ms to europe-west4)
+  2. europe-west4-b  (208 ms to europe-west4)
+  3. europe-west1-b  (219 ms to europe-west1)
+```
+
+**`nowhere to put comfy-linux: no region this project has L4 quota in offers g2-standard-8. Nothing was created.`**
+Quota and availability do not overlap. The fix line prints the two commands that
+show each half separately — where Google offers the card at all, and where you are
+allowed to use it.
+
+**`us-central1-f does not offer g2-standard-8, so a L4 box cannot be created there at all. Nothing was created.`**
+You named a zone with `--zone` and that zone has never had that machine type.
+`--zone` is an override for deliberately testing one zone, so it is one zone and
+no fall-through; drop it and a working zone is chosen for you.
+
+**`this project has no L4 quota in europe-west4, so nothing can start there. Nothing was created.`**
+`--region` narrows the choice without naming a zone, and it can narrow it to
+nothing. Ask for the card in that region, or drop `--region`.
+
+### While it is being created
+
+Capacity is the one thing that cannot be checked in advance — Google publishes no
+"is there room" endpoint — so this is try-and-see, and each attempt is announced
+as it happens because a silent thirty-second pause reads as a hang.
+
+```
+  trying europe-west4-a…
+  europe-west4-a has no L4 free right now
+  Google suggests europe-west4-c
+  trying europe-west4-c…
+```
+
+**`europe-west4-a has no L4 free right now`** / **`Google suggests europe-west4-c`**
+Not failures. A stockout in one zone is routine and says nothing about your
+account; a zone Google itself names in the refusal is moved to the front of what
+is left, because that answer is fresher than anything measured beforehand.
+
+**`every zone tried is out of L4 capacity: europe-west4-a, europe-west4-b, europe-west1-b. Nothing was created and nothing is billing.`**
+The card is short everywhere you are allowed to use it. Nothing was made, so
+there is nothing to clean up and nothing to stop. Wait and run the same command
+again — stockouts usually clear in minutes to hours — or use a card you also have
+quota for.
+
+**`Google refused to create comfy-linux in us-central1-a: ...`**
+Not a capacity problem: Google refused for some other reason, and its own sentence
+is quoted. Anything after this point could in principle have left something
+half-made, so the fix line prints the command that lists the project's instances.
+
+**`comfy-linux exists in us-central1-a and is billing, but it could not be written to ~/.config/comfy-qa-tools/hosts.toml: ... Add it by hand, or run `comfy-qat host discover`. To stop it now: gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
+The machine was created and the host list was not. The box is real and billing, so
+the message leads with that: either adopt it with `host discover`, or stop it with
+the command given. It is the one message here printed after money is being spent.
+
+### The NVIDIA driver
+
+**The driver is not in either base image**, and a GPU box without it looks
+completely healthy: it boots, it answers, it installs ComfyUI, and it runs on the
+CPU. `host go` detects that now — but only after you have paid to find out.
+
+**Linux boxes install it themselves.** The create attaches Google's own
+`startup_script.sh` from
+[GoogleCloudPlatform/compute-gpu-installation](https://github.com/GoogleCloudPlatform/compute-gpu-installation),
+which is what
+[Install GPU drivers](https://cloud.google.com/compute/docs/gpus/install-drivers-gpu)
+points at for automating the install. It reboots the box once or twice and
+carries on across the reboots; `host go` waits that out. Google notes it does not
+work on instances with Secure Boot enabled — nothing here turns Secure Boot on.
+
+**Windows boxes do not**, and this tool does not pretend otherwise. Google
+documents exactly one way to install the driver on Windows Server, and it is a
+person at an Administrator PowerShell prompt. `host create` prints those two
+commands when it finishes:
+
+```powershell
+Invoke-WebRequest https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 -OutFile C:\install_gpu_driver.ps1
+C:\install_gpu_driver.ps1
+```
+
+Compute Engine does have a `windows-startup-script-url` metadata key, and pointing
+it at that script would probably work. "Probably" is how a box gets created,
+billed, and found running on its CPU an hour later, so it is left as a deliberate
+seam rather than a guess: run the two commands once, by hand, and
+`comfy-qat host stamp <name>` will show a `cuda:0` device instead of a CPU one.
+
 ## Starting and stopping
 
 **`ComfyUI is not answering on http://127.0.0.1:8188`**

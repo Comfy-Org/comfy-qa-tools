@@ -3,6 +3,70 @@
 You have a host list. This is what you do with it, from "I need a Windows box with
 an L4" to "I am done and not paying for it any more".
 
+## Making the box: `create`
+
+Before there is a loop, there is a machine. One command, and the card is the only
+real decision:
+
+```sh
+comfy-qat host create --os linux --gpu t4
+comfy-qat host create --os windows --gpu l4
+comfy-qat host create --os linux --gpu t4 --name box-2 --disk 500
+comfy-qat host create --os linux --gpu t4 --dry-run
+```
+
+**You do not type a machine type.** It follows from the card, and this is the
+thing most often got wrong by hand: an L4 is the G2 family with the GPU built
+*into* the machine type — passing `--accelerator` alongside one is refused — while
+a T4, P4, P100, V100 or K80 is an N1 with a card attached to it.
+
+**You do not type a zone either.** It is chosen, in this order:
+
+1. regions this project holds quota for that card in — quota is granted per
+   region, and ranking on distance alone picks somewhere nothing can start;
+2. zones inside them that offer both the card and the machine type;
+3. ranked by latency **measured** from your machine, cached for a week beside
+   your host list;
+4. tried in order, moving on when a zone says it has none free.
+
+`--zone us-central1-a` overrides all of that, for deliberately testing one zone —
+it is then that zone or nothing, with no fall-through. `--region europe-west4`
+narrows without naming a zone.
+
+Quota is checked before anything exists, both the card's grant and
+`GPUS_ALL_REGIONS` — the project-wide ceiling across every card, which is the one
+that usually bites, and which a box you already have running is spending. A
+refusal at that point costs nothing; a quota failure after the instance exists
+costs money and a cleanup.
+
+```
+quota checked:
+  L4: 1, in 43 region(s)
+  GPUS_ALL_REGIONS (every card, project-wide): 1
+
+  - create comfy-linux in europe-west4-a: Ubuntu 22.04, L4 (nvidia-l4)
+  - machine type g2-standard-8 — built into the machine type
+  - 200 GB pd-balanced boot disk from ubuntu-2204-lts
+  - startup script installs the NVIDIA driver on first boot
+  - add comfy-linux to the host list on the next free port
+
+zone order — 4 to try, quota first, then what is offered, then measured latency (nearest: europe-west4)
+  1. europe-west4-a  (208 ms to europe-west4)
+  2. europe-west4-b  (208 ms to europe-west4)
+  3. us-central1-a   (311 ms to us-central1)
+```
+
+`--dry-run` prints exactly that — the plan, the quota it read and the zone order
+it would try — and creates nothing.
+
+The finished box is added to your host list on a free port, so `host go` works on
+it immediately. **The NVIDIA driver is not in either base image**, and a box
+without it runs ComfyUI on the CPU while looking perfectly healthy: Linux boxes
+install it from a startup script on first boot, Windows boxes are handed the two
+commands Google documents and you run them once. See
+[troubleshooting](troubleshooting.md#the-nvidia-driver) for why that half is
+deliberately manual.
+
 ## One command: `go`
 
 ```sh

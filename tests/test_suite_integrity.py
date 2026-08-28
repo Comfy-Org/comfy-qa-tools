@@ -38,6 +38,8 @@ REQUIRED = {
     "test_auth_flow",
     "test_config",
     "test_config_hostile",
+    "test_create",
+    "test_create_cli",
     "test_discover",
     "test_docs",
     "test_env",
@@ -63,6 +65,7 @@ REQUIRED = {
     "test_tunnel",
     "test_tunnel_identity",
     "test_version",
+    "test_zones",
 }
 
 # conftest.py is deliberately not in that list, and does not need to be.
