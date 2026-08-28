@@ -342,3 +342,53 @@ def test_a_gcloud_refusal_while_reading_is_a_refusal_not_a_failed_create(cli):
     assert result.exit_code == 2
     assert "gcloud auth login" in result.output
     assert billable(result) == []
+
+
+# --- the one message printed after money is being spent -------------------
+
+
+def test_a_box_that_cannot_be_recorded_leads_with_the_command_that_stops_it(
+        tmp_path, monkeypatch):
+    """The host list could not be written, so the box exists and nothing knows.
+
+    `comfy-qat host down` reads the host list, so at this moment it cannot reach
+    the machine — the raw `gcloud ... stop` is the only thing that works, and it
+    is the only thing that is urgent. It has to come before the adoption path and
+    before the interpolated OSError, which can be long enough on its own to push
+    a command at the end of a paragraph off the visible part of a terminal.
+    """
+    blocked = tmp_path / "afile"
+    blocked.write_text("not a directory", encoding="utf-8")
+    cloud = FakeGcloud()
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+
+    result = CliRunner().invoke(app, [
+        "host", "create", "--os", "linux", "--gpu", "l4", "--yes",
+        "--config", str(blocked / "hosts.toml")])
+
+    assert result.exit_code == 1, "the work started and failed — not a refusal"
+    assert cloud.created[0] == "comfy-linux"
+
+    output = result.output
+    stop = output.index("gcloud compute instances stop comfy-linux")
+    assert stop < output.index("host discover"), (
+        "the adoption path is printed before the command that stops the billing")
+    assert stop < output.index("could not be written to"), (
+        "the write error is printed before the command that stops the billing")
+    assert "--zone=europe-west4-a" in output
+    assert f"--project={PROJECT}" in output
+
+
+def test_the_stop_command_is_on_a_line_of_its_own(tmp_path, monkeypatch):
+    """Buried mid-paragraph it is not copy-pastable, which is the whole point."""
+    blocked = tmp_path / "afile"
+    blocked.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: FakeGcloud())
+
+    result = CliRunner().invoke(app, [
+        "host", "create", "--os", "linux", "--gpu", "l4", "--yes",
+        "--config", str(blocked / "hosts.toml")])
+
+    line = next(line for line in result.output.splitlines()
+                if "gcloud compute instances stop" in line)
+    assert line.strip().startswith("gcloud compute instances stop")
