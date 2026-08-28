@@ -119,18 +119,18 @@ it stops and prints the link. Run it again afterwards; it skips what is already 
 It works without prompts too: `--project`, `--region`, `--non-interactive`.
 
 ```sh
-comfy-qat host list       # see your machines
-comfy-qat auth status     # re-check readiness at any time
+comfy-qat list            # see your machines
+comfy-qat status          # re-check readiness at any time
 comfy-qat guide           # the short version, in the terminal
 ```
 
 ## Everyday use
 
 ```sh
-comfy-qat host go windows       # start it, tunnel in, leave ComfyUI running on the box
-comfy-qat host logs windows     # what that ComfyUI is saying, whenever you want it
-comfy-qat host stamp windows    # the line that says what produced your result
-comfy-qat host down windows     # close the tunnel, stop the box, stop paying
+comfy-qat go windows       # start it, tunnel in, leave ComfyUI running on the box
+comfy-qat logs windows     # what that ComfyUI is saying, whenever you want it
+comfy-qat stamp windows    # the line that says what produced your result
+comfy-qat down windows     # close the tunnel, stop the box, stop paying
 ```
 
 `windows` there is not a special name — it is the machine described rather than
@@ -148,13 +148,13 @@ picking one. Names always win over a description.
 Changing machine is one command, which stops the box you were on:
 
 ```sh
-comfy-qat host switch linux     # start the Linux box, then stop the Windows one
+comfy-qat switch linux     # start the Linux box, then stop the Windows one
 ```
 
 Making the box is one command too, and the card is the only real decision:
 
 ```sh
-comfy-qat host create --os linux --gpu t4
+comfy-qat create --os linux --gpu t4
 ```
 
 The machine type follows from the card — an L4 is a G2 with the GPU built in, a
@@ -193,28 +193,33 @@ printed; one that fits two is refused with both named.
 | `comfy-qat --version` | what you are running — `comfy-qat 1.0.0 (0d27bd4)` from a checkout. Paste it with any result |
 | `comfy-qat setup` | first run: sign-in, project, billing, quota, host list |
 | `comfy-qat guide` | the first-run instructions, in the terminal |
-| `comfy-qat auth status` | signed in? which project? billing? GPU quota? — `--json` too |
-| `comfy-qat auth login` | prints the sign-in commands; gcloud does the signing in |
-| `comfy-qat auth quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
-| `comfy-qat auth quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
-| `comfy-qat host` | same as `list` — read-only is the safe default |
-| `comfy-qat host list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
-| `comfy-qat host create` | make a GPU box: `--os linux --gpu t4`. The zone is chosen, not typed. `--zone`, `--region`, `--name`, `--disk`, `--yes`, `--dry-run` |
-| `comfy-qat host init` | write a starter host list you can edit |
-| `comfy-qat host discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
-| `comfy-qat host up <host>` | start it and wait until ComfyUI actually answers |
-| `comfy-qat host open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
-| `comfy-qat host down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
-| `comfy-qat host go <host>` | up + install if needed + launch ComfyUI on the box and hand the prompt back. `--follow` streams its log here instead, `--new-window` opens a macOS Terminal window, `--no-browser`, `--no-install` |
-| `comfy-qat host logs <host>` | read the ComfyUI log on a box. Follows by default; `--tail N` prints that many lines and stops |
-| `comfy-qat host switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
-| `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
-| `comfy-qat host stamp <host>` | ask a machine what it is. `--json` |
+| `comfy-qat status` | signed in? which project? billing? GPU quota? — `--json` too |
+| `comfy-qat login` | prints the sign-in commands; gcloud does the signing in |
+| `comfy-qat quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
+| `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
+| `comfy-qat list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
+| `comfy-qat create` | make a GPU box: `--os linux --gpu t4`. The zone is chosen, not typed. `--zone`, `--region`, `--name`, `--disk`, `--yes`, `--dry-run` |
+| `comfy-qat init` | write a starter host list you can edit |
+| `comfy-qat discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
+| `comfy-qat up <host>` | start it and wait until ComfyUI actually answers |
+| `comfy-qat open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
+| `comfy-qat down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
+| `comfy-qat go <host>` | up + install if needed + launch ComfyUI on the box and hand the prompt back. `--follow` streams its log here instead, `--new-window` opens a macOS Terminal window, `--no-browser`, `--no-install` |
+| `comfy-qat logs <host>` | read the ComfyUI log on a box. Follows by default; `--tail N` prints that many lines and stops |
+| `comfy-qat switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
+| `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
+| `comfy-qat stamp <host>` | ask a machine what it is. `--json` |
 
-| `comfy-qat env` | v0's build and feature-flag check for deployed environments |
 
 Every command takes `--config` to point at a host list somewhere other than the
 default.
+
+Two things still run and are no longer advertised. `comfy-qat host ...` and
+`comfy-qat auth ...` are the old spellings, kept so nothing written down before
+the verbs moved to the top level breaks — a deprecation window, not a second
+permanent way to type everything. And `env`, v0's build and feature-flag check
+for deployed environments, which belongs to a different tool and would only
+confuse a first reader of `--help`.
 
 ### The stamp
 
@@ -230,7 +235,7 @@ thing using ComfyUI's own field names.
 
 Lives at `~/.config/comfy-qa-tools/hosts.toml`. `comfy-qat setup` writes it and
 fills in your cloud boxes automatically — Google already knows each one's zone,
-card and operating system, so none of it needs typing. `comfy-qat host discover`
+card and operating system, so none of it needs typing. `comfy-qat discover`
 does the same on demand, and never touches entries you already have.
 
 ```toml

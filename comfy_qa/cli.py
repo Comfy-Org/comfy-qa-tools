@@ -22,8 +22,25 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
-app.add_typer(host.app, name="host")
-app.add_typer(auth.app, name="auth")
+# The verbs, at the top level. `host` was a noun in front of every one of them
+# and nothing else in this tool collides with `go`, `down`, `list` or `stamp`,
+# so it was pure typing — and on a second operating system it is typing you do
+# twice as often.
+for _command in host.app.registered_commands:
+    app.registered_commands.append(_command)
+for _command in auth.app.registered_commands:
+    app.registered_commands.append(_command)
+for _group in auth.app.registered_groups:
+    app.add_typer(_group.typer_instance, name=_group.name)
+
+# The old spellings still work and no longer advertise themselves. Anything
+# written down before today — a script, a run sheet, muscle memory — keeps
+# working; `--help` shows one way to do each thing rather than two.
+#
+# These are a deprecation window, not a second permanent spelling: 26 command
+# paths is not a simplification of 13.
+app.add_typer(host.app, name="host", hidden=True)
+app.add_typer(auth.app, name="auth", hidden=True)
 
 
 def _version_callback(asked: bool) -> None:

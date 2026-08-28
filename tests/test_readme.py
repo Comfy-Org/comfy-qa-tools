@@ -28,21 +28,48 @@ NOT_BUILT: set[str] = set()
 
 
 def _surface(typer_app: typer.Typer, prefix: str = "") -> list[str]:
-    """Every invocable command path, e.g. 'auth quota request'."""
+    """Every command path this tool advertises, e.g. 'quota request'.
+
+    Hidden ones are skipped, and there are two kinds. `host go` and `auth status`
+    are the old spellings, kept working so nothing written down before the verbs
+    moved to the top level breaks — documenting both would be documenting the
+    same command twice. And `env` belongs to a different tool: it still runs,
+    and putting it in the README would advertise it again.
+    """
     found = []
     for command in typer_app.registered_commands:
+        if getattr(command, "hidden", False):
+            continue
         found.append(f"{prefix}{command.name}".strip())
     for group in typer_app.registered_groups:
+        if getattr(group, "hidden", False):
+            continue
         found.extend(_surface(group.typer_instance, prefix=f"{prefix}{group.name} "))
     return found
 
 
+def _everything(typer_app: typer.Typer, prefix: str = "") -> list[str]:
+    """Every command path that exists, hidden ones included."""
+    found = []
+    for command in typer_app.registered_commands:
+        found.append(f"{prefix}{command.name}".strip())
+    for group in typer_app.registered_groups:
+        found.extend(_everything(group.typer_instance, prefix=f"{prefix}{group.name} "))
+    return found
+
+
 COMMANDS = _surface(app)
+# The two checks need different sets. The README has to document everything the
+# tool advertises, and may mention anything that exists — a hidden command is
+# still real, and saying `host go` still works is a fact worth writing down.
+EXISTS = _everything(app)
 
 
 def test_the_surface_is_not_empty():
     """A bug in _surface would make every other test here pass vacuously."""
-    assert {"setup", "guide", "env", "host list", "auth quota request"} <= set(COMMANDS)
+    # The advertised surface, after the verbs moved to the top level. `env` and
+    # the `host`/`auth` spellings are hidden and deliberately absent.
+    assert {"setup", "guide", "list", "go", "quota request"} <= set(COMMANDS)
 
 
 @pytest.mark.parametrize("command", COMMANDS)
@@ -56,7 +83,7 @@ def test_every_command_is_in_the_readme(command):
 def test_the_readme_invents_no_commands():
     """The other direction: a promised command that does not exist is a lie."""
     text = README.read_text()
-    known = set(COMMANDS)
+    known = set(EXISTS)
     for raw in re.findall(r"comfy-qat ([a-z][a-z-]*(?: [a-z][a-z-]*)?)", text):
         if raw in NOT_BUILT:
             continue
@@ -74,7 +101,7 @@ def test_host_create_is_no_longer_described_as_missing():
     an older tool, and reads as current.
     """
     text = README.read_text()
-    assert "comfy-qat host create" in text
+    assert "comfy-qat create" in text
     status = text[text.index("## Status"):text.index("## Install")]
     assert "host create" in status
     assert "not built" not in status.lower(), (
