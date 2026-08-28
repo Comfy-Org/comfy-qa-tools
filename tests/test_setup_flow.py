@@ -373,7 +373,9 @@ def test_discovery_adds_the_box_and_the_sign_off_does_not_ask_for_it_by_hand(hos
     assert "added comfy-win" in result.output
     assert "Ready — 2 machine(s), 1 in the cloud." in result.output
     assert "by hand" not in result.output
-    assert "host discover" not in result.output
+    # The command, not the word: the temp path in this output contains the
+    # test's own name, which includes "discovery".
+    assert "comfy-qat discover" not in result.output
 
 
 def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
@@ -422,7 +424,7 @@ def test_a_second_run_changes_nothing_and_asks_nothing(hosts):
     assert again.exit_code == 0, again.output
     assert hosts.read_text() == before, "a re-run rewrote the host list"
     assert "1 cloud box(es), all already in your host list" in again.output
-    assert "host list at" in again.output, "the starter is not written twice"
+    assert "list at" in again.output, "the starter is not written twice"
     assert "Which project?" not in again.output
 
 

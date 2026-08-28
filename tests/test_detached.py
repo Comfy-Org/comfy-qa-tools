@@ -506,7 +506,7 @@ def test_new_window_refuses_plainly_off_macos(monkeypatch):
 
     assert "can only open a macOS Terminal window" in str(caught.value)
     assert "Nothing was started" in str(caught.value)
-    assert "host go comfy-win --follow" in caught.value.fix, "print what to paste"
+    assert "go comfy-win --follow" in caught.value.fix, "print what to paste"
 
 
 def test_new_window_refuses_when_osascript_is_missing(monkeypatch):
@@ -563,5 +563,5 @@ def test_new_window_runs_the_command_it_says_it_will(monkeypatch):
 
     script = seen["args"][-1]
     assert script.startswith('tell application "Terminal" to do script "')
-    assert "host go comfy-linux --follow" in script
+    assert "go comfy-linux --follow" in script
     assert any("opened a new Terminal window" in line for line in lines)

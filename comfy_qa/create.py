@@ -19,6 +19,16 @@ availability second, measured latency third — and this tries them in that orde
 falling through when Google says a zone has none free. `--zone` is still there
 for someone deliberately testing one zone.
 
+The fall-through stays inside the ordering it was given, which it did not always.
+Google names a zone in its stockout refusal, that answer is fresher than anything
+measured beforehand, and `build` used to take it wherever it pointed — including
+out of `--zone`, whose whole meaning is "this zone or nothing", and out of the
+regions the project holds quota in. A suggestion is followed only when
+`Ordering.fall_through` is set and only into a region already on the list, and no
+more than `zones.MAX_ATTEMPTS` creates are attempted however many are offered.
+Each of those three is a way of ending up with a running, billing box somewhere
+nobody chose.
+
 *The quota is checked before anything exists.* Both the card's own grant and
 `GPUS_ALL_REGIONS`, the project-wide ceiling across every card, which is 1 on
 this project and is the limit that actually bites. Refusing costs nothing. A
@@ -33,12 +43,13 @@ see `WINDOWS_DRIVER` below.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .lifecycle import LifecycleError, is_capacity_failure, suggested_zones
-from .zones import Ordering, region_of
+from .zones import MAX_ATTEMPTS, Ordering, region_of
 
 # Kinds of refusal, so a caller can tell them apart without matching on prose.
 NO_QUOTA = "no-quota"          # the project's grant will not allow this
@@ -51,6 +62,22 @@ DEFAULT_DISK_GB = 200
 # The Windows Server image will not fit below this, and a GPU box with no room
 # for models is a box you pay to re-create. Ubuntu would take 10.
 MIN_DISK_GB = 50
+
+# And a ceiling, because `--disk` has no unit and a typo has no upper bound.
+# pd-balanced is billed by the provisioned gigabyte from the moment the instance
+# exists, whether or not anything is ever written to it, so `--disk 20000` for
+# `2000` is one keystroke and eighteen terabytes nobody notices until the bill.
+# 4 TB is far more than a box for reproducing a bug has ever needed; asking for
+# more is a decision worth making in the console, deliberately.
+MAX_DISK_GB = 4000
+
+# Google's rule for an instance name, and the reason it is checked here rather
+# than left to gcloud: by the time gcloud sees it, this command has spent a
+# minute reading quota, opened four TCP probes, and asked for a confirmation.
+# `plan` claims to be "offline, and total", and a name it cannot use is
+# something it knows offline.
+NAME_PATTERN = re.compile(r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?")
+MAX_NAME_LEN = 63
 
 
 @dataclass(frozen=True)
@@ -265,7 +292,7 @@ def card_for(gpu: str) -> Card:
         return CARDS[key]
     raise LifecycleError(
         f"no card called {gpu!r}. This tool can create: {', '.join(sorted(CARDS))}.",
-        fix="comfy-qat auth quota list — the cards this project is allowed",
+        fix="comfy-qat quota list — the cards this project is allowed",
         kind=NO_QUOTA,
     )
 
@@ -278,7 +305,7 @@ def image_for(os_choice: str) -> Image:
         return IMAGES[key]
     raise LifecycleError(
         f"no operating system called {os_choice!r}. Say --os linux or --os windows.",
-        fix="comfy-qat host create --os linux --gpu l4",
+        fix="comfy-qat create --os linux --gpu l4",
         kind=NO_ZONE,
     )
 
@@ -297,11 +324,22 @@ def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
     """
     if preferred:
         base = _clean(preferred)
+        if not NAME_PATTERN.fullmatch(base):
+            # `_clean` keeps anything `str.isalnum()` calls alphanumeric, and that
+            # includes é and ボ. Google's rule is narrower than Python's, so the
+            # cleaned form is what gets checked, not what was typed.
+            raise LifecycleError(
+                f"{preferred!r} is not a name Google will accept. An instance name is "
+                f"a lowercase letter, then up to {MAX_NAME_LEN - 1} more of "
+                f"a-z, 0-9 and -, ending in a letter or a digit.",
+                fix="comfy-qat create --os linux --gpu l4 --name comfy-l4",
+                kind=CREATE_FAILED,
+            )
         if base in taken:
             raise LifecycleError(
                 f"{preferred} is already taken — a host list entry or an instance on "
                 f"this project has that name. Pick another with --name.",
-                fix="comfy-qat host list",
+                fix="comfy-qat list",
                 kind=CREATE_FAILED,
             )
         return base
@@ -315,7 +353,7 @@ def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
             return candidate
     raise LifecycleError(
         f"could not find an unused name starting {base}. Give one with --name.",
-        fix="comfy-qat host list",
+        fix="comfy-qat list",
         kind=CREATE_FAILED,
     )
 
@@ -331,7 +369,17 @@ def plan(
         raise LifecycleError(
             f"a {disk_gb} GB disk is too small — the image will not fit and models "
             f"will not either. Ask for at least {MIN_DISK_GB}.",
-            fix=f"comfy-qat host create --os {image.key} --gpu {gpu} --disk {DEFAULT_DISK_GB}",
+            fix=f"comfy-qat create --os {image.key} --gpu {gpu} --disk {DEFAULT_DISK_GB}",
+            kind=CREATE_FAILED,
+        )
+    if disk_gb > MAX_DISK_GB:
+        raise LifecycleError(
+            f"a {disk_gb} GB disk is larger than anything this tool creates. The disk "
+            f"bills by the gigabyte provisioned, from the moment the box exists and "
+            f"whether or not anything is written to it, so a typo here is expensive "
+            f"and silent. Ask for at most {MAX_DISK_GB}, or make a disk that size "
+            f"deliberately in the console.",
+            fix=f"comfy-qat create --os {image.key} --gpu {gpu} --disk {DEFAULT_DISK_GB}",
             kind=CREATE_FAILED,
         )
     return Blueprint(
@@ -353,6 +401,9 @@ class QuotaCheck:
     needed: int
     running: tuple[str, ...]
     regions: tuple[str, ...]
+    # Cards held by those running boxes, which is not len(running). One
+    # `a3-highgpu-8g` is one instance and eight of the ceiling.
+    in_use: int = 0
 
     def lines(self) -> list[str]:
         """What was checked and what it said — printed by a dry run and a real one."""
@@ -361,13 +412,23 @@ class QuotaCheck:
                 return "not granted"
             return "unlimited" if value < 0 else str(value)
 
+        def ceiling(value: int | None) -> str:
+            # None here is not the same None as the card's. A card the project
+            # holds nothing for reports no record, and that is a refusal. The
+            # project-wide ceiling always exists, so no record means it was not
+            # read — which does not gate anything, and must not read as "zero".
+            if value is None:
+                return "not reported by this project"
+            return "unlimited" if value < 0 else str(value)
+
         out = [
             f"{self.card}: {amount(self.card_limit)}"
             + (f", in {len(self.regions)} region(s)" if self.regions else ""),
-            f"GPUS_ALL_REGIONS (every card, project-wide): {amount(self.global_limit)}",
+            f"GPUS_ALL_REGIONS (every card, project-wide): {ceiling(self.global_limit)}",
         ]
         if self.running:
-            out.append(f"already running and using it: {', '.join(self.running)}")
+            out.append(f"already running and using it: {', '.join(self.running)} "
+                       f"({self.in_use} card(s))")
         return out
 
     def problem(self) -> LifecycleError | None:
@@ -376,7 +437,7 @@ class QuotaCheck:
             return LifecycleError(
                 f"this project has no {self.card} quota, so a {self.card} box cannot "
                 f"start anywhere. Nothing was created.",
-                fix=f"comfy-qat auth quota request --gpu {self.card.lower()} "
+                fix=f"comfy-qat quota request --gpu {self.card.lower()} "
                     f"--region us-central1, then wait for Google",
                 kind=NO_QUOTA,
             )
@@ -384,7 +445,7 @@ class QuotaCheck:
             return LifecycleError(
                 f"{self.card} needs {self.needed} of this project's GPU allowance and "
                 f"the grant is {self.card_limit}. Nothing was created.",
-                fix=f"comfy-qat auth quota request --gpu {self.card.lower()} "
+                fix=f"comfy-qat quota request --gpu {self.card.lower()} "
                     f"--region us-central1, then wait for Google",
                 kind=NO_QUOTA,
             )
@@ -393,20 +454,22 @@ class QuotaCheck:
                 f"GPUS_ALL_REGIONS is {self.global_limit} on this project — that is the "
                 f"ceiling across every card, whatever the {self.card} grant says, and "
                 f"{self.needed} is needed. Nothing was created.",
-                fix="comfy-qat auth quota request --gpu l4 --region us-central1 asks for "
+                fix="comfy-qat quota request --gpu l4 --region us-central1 asks for "
                     "a card; raising the project-wide ceiling is a separate request at "
                     "https://console.cloud.google.com/iam-admin/quotas",
                 kind=NO_QUOTA,
             )
         if self.running and self.global_limit is not None and 0 <= self.global_limit < (
-            self.needed + len(self.running)
+            self.needed + self.in_use
         ):
             names = ", ".join(self.running)
+            held = (f"{names} is already holding {self.in_use} of it"
+                    if self.in_use != len(self.running)
+                    else f"{names} is already running on it")
             return LifecycleError(
-                f"GPUS_ALL_REGIONS is {self.global_limit} and {names} is already running "
-                f"on it, so a new GPU box cannot start until that one stops. Nothing was "
-                f"created.",
-                fix=f"comfy-qat host down {self.running[0]} — stop the one you are not "
+                f"GPUS_ALL_REGIONS is {self.global_limit} and {held}, so a new GPU box "
+                f"cannot start until that one stops. Nothing was created.",
+                fix=f"comfy-qat down {self.running[0]} — stop the one you are not "
                     f"using, then run this again",
                 kind=NO_QUOTA,
             )
@@ -414,7 +477,7 @@ class QuotaCheck:
             return LifecycleError(
                 f"this project's {self.card} grant names no region, so there is nowhere "
                 f"to put the box. Nothing was created.",
-                fix=f"comfy-qat auth quota request --gpu {self.card.lower()} "
+                fix=f"comfy-qat quota request --gpu {self.card.lower()} "
                     f"--region us-central1",
                 kind=NO_QUOTA,
             )
@@ -438,6 +501,30 @@ def _gpu_boxes_running(instances: list[dict]) -> list[str]:
     return found
 
 
+def _gpus_in_use(instances: list[dict]) -> int:
+    """How much of the ceiling the running boxes hold — in cards, not in boxes.
+
+    The ceiling is metered in accelerators. One `a3-highgpu-8g` is a single
+    instance and eight of the project's allowance, so counting instances lets the
+    gate wave through a create that Google then refuses — after the zone probing
+    and after somebody has said yes to it.
+
+    A running GPU box that reports no `acceleratorCount` is read as holding one
+    rather than none: an unfamiliar payload shape is not evidence of an empty
+    machine, and guessing low here is the direction that costs money.
+    """
+    total = 0
+    for instance in instances or []:
+        if instance.get("status") != "RUNNING":
+            continue
+        for card in instance.get("guestAccelerators") or []:
+            try:
+                total += max(1, int(card.get("acceleratorCount")))
+            except (TypeError, ValueError):
+                total += 1
+    return total
+
+
 def check_quota(card: Card, quotas: list[dict], instances: list[dict]) -> QuotaCheck:
     """Read the allowance. Pure — the caller does the two gcloud reads."""
     from .quota import allowance, global_allowance, regions_with_quota
@@ -449,6 +536,7 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict]) -> QuotaC
         needed=card.count,
         running=tuple(_gpu_boxes_running(instances)),
         regions=tuple(regions_with_quota(card.name, quotas)),
+        in_use=_gpus_in_use(instances),
     )
 
 
@@ -470,6 +558,7 @@ def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None
 
 def build(
     gc: Gcloud, blueprint: Blueprint, ordering: Ordering, project: str, say,
+    *, limit: int = MAX_ATTEMPTS,
 ) -> str:
     """Try the zones in order until one has room. Returns the zone that worked.
 
@@ -479,11 +568,33 @@ def build(
     and the pause is the normal case: a stockout refusal is not fast.
 
     A zone Google itself names in the refusal is moved to the front of what is
-    left, because that answer is fresher than anything measured beforehand.
+    left, because that answer is fresher than anything measured beforehand. It is
+    *not* a licence to leave the ordering, and it used to be. Three limits, each
+    of which was once absent and each of which spends money when it is:
+
+    **`ordering.fall_through`.** `--zone` means this zone or nothing, and
+    `order_zones` says exactly that in its note. A stockout in that zone naming
+    another one used to create the box in the other one — billing, and in the one
+    place the caller had ruled out.
+
+    **`ordering.regions`.** A suggestion outside the regions that were ranked is
+    outside `--region` when one was given, and outside the project's quota when
+    one was not. Following it creates a box somewhere nobody chose, or burns a
+    minute on a create that cannot succeed.
+
+    **`limit`.** Every refusal can name a fresh zone, so the queue refills as
+    fast as it drains and an uncapped loop is a command that looks hung. Six
+    attempts is `zones.MAX_ATTEMPTS`, which documented this cap long before
+    anything enforced it.
     """
-    queue = list(ordering.zones)
+    allowed = set(ordering.regions)
+    queue = [zone.lower() for zone in ordering.zones]
     tried: list[str] = []
+    capped = False
     while queue:
+        if len(tried) >= limit:
+            capped = True
+            break
         zone = queue.pop(0)
         if zone in tried:
             continue
@@ -502,18 +613,41 @@ def build(
                     kind=CREATE_FAILED,
                 ) from exc
             say(f"  {zone} has no {blueprint.card.name} free right now")
-            for suggested in suggested_zones(exc.raw):
-                if suggested not in tried and suggested not in queue:
+            if ordering.fall_through:
+                for named in suggested_zones(exc.raw):
+                    # Lowered because `suggested_zones` hands the zone back in the
+                    # case Google wrote it, and `US-CENTRAL1-C` is neither a zone
+                    # gcloud accepts nor a string `tried` recognises.
+                    suggested = named.lower()
+                    if suggested in tried or suggested in queue:
+                        continue
+                    # No `allowed and ...` escape hatch. An ordering that names no
+                    # region is one that cannot say where the box may go, and
+                    # "cannot say" is not permission.
+                    if region_of(suggested) not in allowed:
+                        say(f"  Google suggests {suggested}, which is outside the "
+                            f"regions this is allowed to use — not trying it")
+                        continue
                     say(f"  Google suggests {suggested}")
                     queue.insert(0, suggested)
             continue
         return zone
 
+    if capped:
+        raise LifecycleError(
+            f"stopped after {limit} zones, all out of {blueprint.card.name} capacity: "
+            f"{', '.join(tried)}. Nothing was created and nothing is billing — this is "
+            f"a cap, not the whole world, so there may be room somewhere untried.",
+            fix=("wait and run the same command again, or name a zone yourself: "
+                 "comfy-qat create --zone <zone>"),
+            kind=EXHAUSTED,
+        )
     raise LifecycleError(
         f"every zone tried is out of {blueprint.card.name} capacity: "
-        f"{', '.join(tried)}. Nothing was created and nothing is billing.",
+        f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
+        f"is billing.",
         fix=("wait and run the same command again — a stockout is usually minutes to "
-             "hours — or ask for a different card: comfy-qat auth quota list"),
+             "hours — or ask for a different card: comfy-qat quota list"),
         kind=EXHAUSTED,
     )
 
@@ -561,8 +695,8 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
         lines.append(
             f"{blueprint.name} is installing the NVIDIA driver from its startup "
             f"script, which reboots it once or twice. `host go` waits that out.")
-    lines.append(f"  comfy-qat host go {blueprint.name}     # install ComfyUI and serve it")
-    lines.append(f"  comfy-qat host down {blueprint.name}   # stop the machine, stop paying")
+    lines.append(f"  comfy-qat go {blueprint.name}     # install ComfyUI and serve it")
+    lines.append(f"  comfy-qat down {blueprint.name}   # stop the machine, stop paying")
     return lines
 
 
@@ -595,7 +729,28 @@ def order_zones(
     """
     from .zones import choose, zones_with_machine_type
 
+    # Google's zone and region names are lowercase, and so is everything read back
+    # from it. `--zone US-CENTRAL1-A` is the same request; matching it against the
+    # quota regions without lowering it refuses with a message about a region that
+    # does not exist.
+    zone = zone.strip().lower() if zone else zone
+    region = region.strip().lower() if region else region
+
     if zone:
+        # The same gate `--region` gets. `--region me-west1` is refused here with
+        # the reason; `--zone me-west1-a` used to sail past and find out from
+        # gcloud instead, a minute and a confirmation prompt later. Skipped when
+        # the grant names no region at all, which `problem()` refuses on its own.
+        if check.regions and region_of(zone) not in set(check.regions):
+            raise LifecycleError(
+                f"this project has no {blueprint.card.name} quota in "
+                f"{region_of(zone)}, so nothing can start in {zone}. Nothing was "
+                f"created.",
+                fix=(f"comfy-qat quota request --gpu "
+                     f"{blueprint.card.name.lower()} --region {region_of(zone)}, or "
+                     f"drop --zone and let this pick"),
+                kind=NO_QUOTA,
+            )
         offered = zones_with_machine_type(
             gc.machine_types(project, [zone], blueprint.machine_type),
             blueprint.machine_type,
@@ -612,7 +767,8 @@ def order_zones(
             )
         return Ordering(zones=(zone,), regions=(region_of(zone),),
                         notes=("--zone was given, so there is no fall-through: this "
-                               "zone or nothing",))
+                               "zone or nothing",),
+                        fall_through=False)
 
     regions = list(check.regions)
     if region:
@@ -621,7 +777,7 @@ def order_zones(
             raise LifecycleError(
                 f"this project has no {blueprint.card.name} quota in {region}, so "
                 f"nothing can start there. Nothing was created.",
-                fix=(f"comfy-qat auth quota request --gpu {blueprint.card.name.lower()} "
+                fix=(f"comfy-qat quota request --gpu {blueprint.card.name.lower()} "
                      f"--region {region}, or drop --region and let this pick"),
                 kind=NO_QUOTA,
             )
@@ -644,6 +800,6 @@ def nowhere(blueprint: Blueprint, ordering: Ordering, project: str) -> Lifecycle
         f"nowhere to put {blueprint.name}: {detail}. Nothing was created.",
         fix=(f"gcloud compute accelerator-types list --project={project} "
              f"--filter=name={blueprint.card.accelerator} — where Google offers the "
-             f"card at all; comfy-qat auth quota list --by-region — where you may use it"),
+             f"card at all; comfy-qat quota list --by-region — where you may use it"),
         kind=NO_ZONE,
     )

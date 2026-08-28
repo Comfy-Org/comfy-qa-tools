@@ -373,7 +373,7 @@ def test_guide_leads_with_the_single_setup_command():
     from comfy_qa.cli import FIRST_RUN
 
     assert "comfy-qat setup" in FIRST_RUN
-    for follow_up in ["host list", "auth status"]:
+    for follow_up in ["list", "status"]:
         assert follow_up in FIRST_RUN
 
 

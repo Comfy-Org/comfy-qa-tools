@@ -148,9 +148,19 @@ def test_a_measurement_is_written_and_then_reused(tmp_path):
     assert calls == [], "a cached region was measured again"
 
 
+def cached(**body):
+    """A cache file this version will actually read.
+
+    The version stamp is not optional in a fixture: without it every one of these
+    would be a miss for that reason, and each test below would pass while
+    exercising nothing it names.
+    """
+    return json.dumps({"version": zones.CACHE_VERSION, **body})
+
+
 def test_only_the_regions_not_already_cached_are_measured(tmp_path):
     store = tmp_path / "zone-latency.json"
-    store.write_text(json.dumps({"at": 1000.0, "regions": {"europe-west4": 208.1}}))
+    store.write_text(cached(at=1000.0, regions={"europe-west4": 208.1}))
     asked = []
     latencies(["europe-west4", "us-central1"],
               probe=lambda region: asked.append(region) or 300.0,
@@ -160,7 +170,7 @@ def test_only_the_regions_not_already_cached_are_measured(tmp_path):
 
 def test_a_stale_cache_is_measured_again(tmp_path):
     store = tmp_path / "zone-latency.json"
-    store.write_text(json.dumps({"at": 0.0, "regions": {"europe-west4": 1.0}}))
+    store.write_text(cached(at=0.0, regions={"europe-west4": 1.0}))
     scores = latencies(["europe-west4"], probe=lambda region: 208.1,
                        now=zones.CACHE_TTL + 1, path=store)
     assert scores == {"europe-west4": 208.1}
@@ -169,10 +179,11 @@ def test_a_stale_cache_is_measured_again(tmp_path):
 @pytest.mark.parametrize("body", [
     "not json at all",
     "[]",
-    '{"regions": {"europe-west4": 1.0}}',           # no timestamp
-    '{"at": "yesterday", "regions": {"a": 1.0}}',   # timestamp is not a number
-    '{"at": 1000.0, "regions": "everything"}',      # regions is not a table
-    '{"at": 1000.0, "regions": {"a": "quick"}}',    # a score that is not a number
+    '{"version": 1, "regions": {"europe-west4": 1.0}}',          # no timestamp
+    '{"version": 1, "at": "yesterday", "regions": {"a": 1.0}}',  # not a number
+    '{"version": 1, "at": 1000.0, "regions": "everything"}',     # not a table
+    '{"version": 1, "at": 1000.0, "regions": {"a": "quick"}}',   # not a number
+    '{"at": 1000.0, "regions": {"a": 1.0}}',                     # no version stamp
 ])
 def test_a_cache_that_cannot_be_read_is_a_miss_not_a_failure(tmp_path, body):
     """The only cost of an unreadable cache is measuring again. It is not an error."""

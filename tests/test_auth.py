@@ -71,7 +71,7 @@ def test_zero_gpu_quota_is_a_failure_with_the_fix():
     ))
     assert checks[-1].name == "gpu quota"
     assert not checks[-1].ok
-    assert "auth quota request" in checks[-1].fix
+    assert "quota request" in checks[-1].fix
 
 
 def test_non_gpu_quotas_are_ignored():

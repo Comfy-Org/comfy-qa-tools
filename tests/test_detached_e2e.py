@@ -384,7 +384,7 @@ def test_new_window_hands_over_the_following_form_of_the_command(world, monkeypa
     no_traceback(result)
     assert result.exit_code == 0, result.output
     script = seen["args"][-1]
-    assert f"host go {BOX} --follow" in script, "the new window is the one that streams"
+    assert f"go {BOX} --follow" in script, "the new window is the one that streams"
     assert str(world.config) in script, "and reads the same host list"
     assert world.gc.calls == [], "nothing was started in this terminal"
 

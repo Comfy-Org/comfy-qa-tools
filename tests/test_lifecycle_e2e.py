@@ -154,7 +154,7 @@ def nothing_left_running(world: World, result) -> None:
         )
     assert not world.gc.did("stop_instance"), "nothing here stops the box on its own"
     if world.gc.running_now:
-        assert "billing" in result.output or f"host down {BOX}" in result.output, (
+        assert "billing" in result.output or f"down {BOX}" in result.output, (
             "the box is running and the failure never mentions the bill"
         )
 

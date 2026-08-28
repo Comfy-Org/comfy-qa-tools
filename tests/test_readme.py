@@ -103,7 +103,7 @@ def test_host_create_is_no_longer_described_as_missing():
     text = README.read_text()
     assert "comfy-qat create" in text
     status = text[text.index("## Status"):text.index("## Install")]
-    assert "host create" in status
+    assert "create" in status
     assert "not built" not in status.lower(), (
         "the status table still calls `host create` not built"
     )

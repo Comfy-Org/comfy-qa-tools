@@ -72,6 +72,47 @@ build now has a version worth quoting.
 
 ### Fixes worth knowing
 
+- **A stockout could put the box in a zone you had ruled out.** `--zone` means
+  this zone or nothing, and `order_zones` said exactly that in the note it
+  attached to the ordering — but `build` never read the note. Google's refusal
+  names another zone, that zone went to the front of the queue, and the box was
+  created there: billing, in the one place the caller had excluded, and reported
+  as a success. The same path walked out of `--region`, and out of the regions
+  the project holds any quota in at all. A suggestion is now only ever followed
+  inside the ordering that was already chosen, and never when `--zone` was given.
+- **`MAX_ATTEMPTS` was documented and not enforced.** Six, "because each attempt
+  is a real instance create that takes the better part of a minute when it
+  fails" — and `build` capped nothing, so a queue that every refusal could refill
+  drained no faster than it grew. Giving up at the cap now says it was a cap, not
+  the whole world, because "everywhere is short" and "I stopped after six" are
+  different facts and only one of them means waiting will not help.
+- **`--disk` had a floor and no ceiling.** The disk bills by the gigabyte
+  provisioned from the moment the box exists, so `--disk 20000` for `2000` is one
+  keystroke and eighteen silent terabytes. Capped at 4 TB.
+- The project-wide ceiling was counted in boxes, not in cards. One
+  `a3-highgpu-8g` is a single instance and **eight** of `GPUS_ALL_REGIONS`, so an
+  H100 block already running read as holding one — and the gate waved through a
+  create Google then refused, after the zone probing and after somebody had
+  confirmed it. A running GPU box reporting no `acceleratorCount` is now read as
+  holding one rather than none, because an unfamiliar payload is not evidence of
+  an empty machine.
+- An instance name is now checked against Google's rule before anything is
+  contacted, rather than a minute of quota reads, four latency probes and a
+  confirmation prompt later. Python thinks `é` and `ボ` are alphanumeric; Google
+  does not, so a name could survive cleaning and still be refused.
+- `--zone me-west1-a` sailed past the quota gate that already refused `--region
+  me-west1`, and found out from gcloud instead.
+- The latency cache is now stamped with a version, written atomically, and holds
+  only numbers a connection could have taken. Unstamped, a file measured against
+  the anycast `<region>-<service>.googleapis.com` names — four near-identical
+  numbers that look like measurements and rank nothing — would have outlived the
+  fix for a week. It also no longer remembers a region that did **not** answer:
+  one run behind a dropped VPN used to write "unreachable" for everything and
+  keep it for seven days, leaving the ordering alphabetical long after the
+  network came back. A negative or `NaN` round trip is discarded rather than
+  ranked first — `json.loads` accepts a bare `NaN`, and one of them makes
+  `sorted` return an order that depends on its input, which breaks the one thing
+  the ranking promises: that a dry run and the real run try the same zones.
 - **`host move --dry-run` started a GPU instance.** Nothing answers "where is
   there an L4 free", so `move` finds out by trying to start the box and reading
   the suggested zone out of the refusal — and `--dry-run` was not consulted until

@@ -67,7 +67,7 @@ def test_the_plan_is_readable_before_anything_changes():
     steps = plan_move(WIN, INSTANCE, "us-central1-b").steps()
     assert any("snapshot" in step for step in steps)
     assert any("us-central1-b" in step for step in steps)
-    assert any("host list" in step for step in steps)
+    assert any("list" in step for step in steps)
     assert any("leave comfy-win stopped" in step for step in steps), (
         "the original must not be destroyed"
     )

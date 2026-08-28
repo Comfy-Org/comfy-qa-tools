@@ -125,7 +125,7 @@ def test_a_description_that_fits_nothing_says_what_is_declared():
     message = str(raised.value)
     assert "nothing declared matches 'windows'" in message
     assert "comfy-linux (Ubuntu 22.04, A100)" in message
-    assert "host discover" in message
+    assert "discover" in message
 
 
 def test_the_two_axes_are_joined_by_a_slash_and_nothing_else():

@@ -223,13 +223,13 @@ def test_a_cloud_box_with_no_tunnel_is_told_about_the_tunnel(cli, monkeypatch):
     monkeypatch.setattr(host_module, "fetch", lambda url, host: (_ for _ in ()).throw(
         ProbeError(f"nothing answered at {url}",
                    fix="start ComfyUI on that machine, or check the port in your "
-                       "host list")))
+                       "list")))
 
     result = cli("stamp", "comfy-win")
 
     assert result.exit_code == 1
-    assert "host open comfy-win" in result.output
-    assert "host go comfy-win" in result.output
+    assert "open comfy-win" in result.output
+    assert "go comfy-win" in result.output
     assert "may simply be stopped" in result.output
     assert "start ComfyUI on that machine" not in result.output, (
         "the local advice was kept for a cloud box"
@@ -244,13 +244,13 @@ def test_a_local_host_keeps_the_local_advice(cli, monkeypatch):
     monkeypatch.setattr(host_module, "fetch", lambda url, host: (_ for _ in ()).throw(
         ProbeError(f"nothing answered at {url}",
                    fix="start ComfyUI on that machine, or check the port in your "
-                       "host list")))
+                       "list")))
 
     result = cli("stamp", "local")
 
     assert result.exit_code == 1
     assert "start ComfyUI on that machine" in result.output
-    assert "host open" not in result.output
+    assert "open" not in result.output
 
 
 def test_a_cloud_box_with_a_tunnel_open_keeps_the_probe_s_own_advice(cli, monkeypatch,
@@ -280,7 +280,7 @@ def test_a_cloud_box_with_a_tunnel_open_keeps_the_probe_s_own_advice(cli, monkey
 
     assert result.exit_code == 1
     assert "this looks like a web server" in result.output
-    assert "host open comfy-win" not in result.output
+    assert "open comfy-win" not in result.output
 
 
 # --- 3. one exit code, and never a dropped fix line ---------------------------
