@@ -71,12 +71,6 @@ MIN_DISK_GB = 50
 # more is a decision worth making in the console, deliberately.
 MAX_DISK_GB = 4000
 
-# Google's rule for an instance name, and the reason it is checked here rather
-# than left to gcloud: by the time gcloud sees it, this command has spent a
-# minute reading quota, opened four TCP probes, and asked for a confirmation.
-# `plan` claims to be "offline, and total", and a name it cannot use is
-# something it knows offline.
-NAME_PATTERN = re.compile(r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?")
 MAX_NAME_LEN = 63
 
 
@@ -88,13 +82,30 @@ class Card:
     part of the machine type and `--accelerator` is refused; on N1 the machine
     type has no GPU and the card is attached to it. Nothing about the names
     tells you which, so it is written down.
+
+    Three different names for one card, and they are not interchangeable:
+
+    * `key` is what a person types after `--gpu`, and the only one a fix line
+      may ever suggest. `H100-80GB` is the card's name and `--gpu h100-80gb` is
+      not a command — the tool refuses it.
+    * `name` is what `host list` shows, and it is *not* free: `discover`
+      derives it from the instance's accelerator type, so it has to be exactly
+      what `discover.accelerator` would read back off a box holding this card.
+      Otherwise `host discover` finds a box this tool created and adds it a
+      second time.
+    * `quota_aliases` are the other spellings Google meters the same card
+      under. Empty for almost every card, and the reason it exists is H100:
+      the accelerator is `nvidia-h100-80gb` and the quota is
+      `NVIDIA-H100-GPUS`, with no 80GB anywhere in it.
     """
 
-    name: str            # what a person types, and what `host list` shows
+    key: str             # what a person types after --gpu
+    name: str            # what `host list` shows, and what discovery reads back
     accelerator: str     # Google's own accelerator-type id
     machine_type: str
     attached: bool       # is the card part of the machine type?
     count: int = 1
+    quota_aliases: tuple[str, ...] = ()
 
     @property
     def accelerator_flag(self) -> str | None:
@@ -103,26 +114,44 @@ class Card:
             return None
         return f"type={self.accelerator},count={self.count}"
 
+    @property
+    def quota_names(self) -> tuple[str, ...]:
+        """Every friendly quota name this card could be metered under."""
+        return (self.name, *self.quota_aliases)
+
 
 # The cards this tool can order, and the family each one has to be ordered in.
 # Sizes are the smallest that fits a GPU: this is a box for reproducing a bug,
 # not for training, and the card is what costs.
 CARDS: dict[str, Card] = {
-    "l4": Card("L4", "nvidia-l4", "g2-standard-8", attached=True),
-    "t4": Card("T4", "nvidia-tesla-t4", "n1-standard-8", attached=False),
-    "p4": Card("P4", "nvidia-tesla-p4", "n1-standard-8", attached=False),
-    "p100": Card("P100", "nvidia-tesla-p100", "n1-standard-8", attached=False),
-    "v100": Card("V100", "nvidia-tesla-v100", "n1-standard-8", attached=False),
+    "l4": Card("l4", "L4", "nvidia-l4", "g2-standard-8", attached=True),
+    "t4": Card("t4", "T4", "nvidia-tesla-t4", "n1-standard-8", attached=False),
+    "p4": Card("p4", "P4", "nvidia-tesla-p4", "n1-standard-8", attached=False),
+    "p100": Card("p100", "P100", "nvidia-tesla-p100", "n1-standard-8", attached=False),
+    "v100": Card("v100", "V100", "nvidia-tesla-v100", "n1-standard-8", attached=False),
     # Retired by Google in most regions. Left in because asking for it should
     # fail with "no zone offers this", which is the truth, rather than with
     # "unknown card", which is not.
-    "k80": Card("K80", "nvidia-tesla-k80", "n1-standard-8", attached=False),
-    "a100": Card("A100", "nvidia-tesla-a100", "a2-highgpu-1g", attached=True),
-    "a100-80gb": Card("A100-80GB", "nvidia-a100-80gb", "a2-ultragpu-1g", attached=True),
+    "k80": Card("k80", "K80", "nvidia-tesla-k80", "n1-standard-8", attached=False),
+    "a100": Card("a100", "A100", "nvidia-tesla-a100", "a2-highgpu-1g", attached=True),
+    "a100-80gb": Card("a100-80gb", "A100-80GB", "nvidia-a100-80gb", "a2-ultragpu-1g",
+                      attached=True),
+    # Two things about the H100 that nothing in the name tells you. Both were
+    # read off a live project on 2026-08-28.
+    #
     # The smallest H100 machine type is eight cards, so this needs eight of the
     # project's GPU allowance, not one. Counting it as one would pass the quota
     # gate and fail at the create.
-    "h100": Card("H100-80GB", "nvidia-h100-80gb", "a3-highgpu-8g", attached=True, count=8),
+    #
+    # And the card Google sells as `nvidia-h100-80gb` is metered as
+    # `NVIDIA-H100-GPUS`, with no 80GB in it. `accelerator-types list` offers
+    # `nvidia-h100-80gb` and no `nvidia-h100`; the quota list has
+    # `PREEMPTIBLE-NVIDIA-H100-GPUS` and `COMMITTED-NVIDIA-H100-GPUS` and no
+    # `-80GB-` H100 row at all. Looking the grant up under the card's own name
+    # reports "no H100-80GB quota" on a project that holds one. A100 carries both
+    # spellings, which is why this is a per-card alias rather than a rule.
+    "h100": Card("h100", "H100-80GB", "nvidia-h100-80gb", "a3-highgpu-8g",
+                 attached=True, count=8, quota_aliases=("H100",)),
 }
 
 
@@ -314,6 +343,18 @@ def _clean(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in name.lower())
 
 
+# What Compute Engine will accept as an instance name, from its own validation:
+# a lowercase letter, then up to MAX_NAME_LEN - 1 more of letters, digits and
+# hyphens, not ending in one. `_clean` turns anything into hyphens and lowercase,
+# which is enough for `My Box` and not enough for `9lives` or `box_`. Checking
+# here rather than letting the create fail costs nothing; letting it fail costs
+# the quota read, the zone ranking, four TCP probes, a confirmation prompt and a
+# minute of gcloud, and answers with Google's wording about a regular expression
+# rather than with what to type instead. `plan` claims to be "offline, and
+# total", and a name Google cannot use is something it knows offline.
+_GCE_NAME = re.compile(rf"^[a-z]([-a-z0-9]{{0,{MAX_NAME_LEN - 2}}}[a-z0-9])?$")
+
+
 def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
     """A name nothing else is using, here or on the project.
 
@@ -324,15 +365,17 @@ def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
     """
     if preferred:
         base = _clean(preferred)
-        if not NAME_PATTERN.fullmatch(base):
+        if not _GCE_NAME.match(base):
             # `_clean` keeps anything `str.isalnum()` calls alphanumeric, and that
             # includes é and ボ. Google's rule is narrower than Python's, so the
             # cleaned form is what gets checked, not what was typed.
             raise LifecycleError(
-                f"{preferred!r} is not a name Google will accept. An instance name is "
-                f"a lowercase letter, then up to {MAX_NAME_LEN - 1} more of "
-                f"a-z, 0-9 and -, ending in a letter or a digit.",
-                fix="comfy-qat create --os linux --gpu l4 --name comfy-l4",
+                f"{preferred!r} is not a name Compute Engine will take. A name "
+                f"starts with a letter, then letters, digits or hyphens, up to "
+                f"{MAX_NAME_LEN} characters, and does not end in a hyphen. Nothing "
+                f"was created.",
+                fix="drop --name and one is picked for you: comfy-linux or "
+                    "comfy-win, numbered if it is taken",
                 kind=CREATE_FAILED,
             )
         if base in taken:
@@ -401,9 +444,14 @@ class QuotaCheck:
     needed: int
     running: tuple[str, ...]
     regions: tuple[str, ...]
-    # Cards held by those running boxes, which is not len(running). One
-    # `a3-highgpu-8g` is one instance and eight of the ceiling.
-    in_use: int = 0
+    # What a person types after `--gpu` to mean this card. Not the same string as
+    # `card` for the H100, and a fix line that says `--gpu h100-80gb` names a card
+    # this tool refuses.
+    key: str = ""
+    # Cards held by those running boxes, which is not len(running). One running
+    # `a3-highgpu-8g` is one instance and eight of the ceiling, and counting boxes
+    # lets a create through the gate that Google then refuses.
+    held: int = 0
 
     def lines(self) -> list[str]:
         """What was checked and what it said — printed by a dry run and a real one."""
@@ -427,9 +475,15 @@ class QuotaCheck:
             f"GPUS_ALL_REGIONS (every card, project-wide): {ceiling(self.global_limit)}",
         ]
         if self.running:
-            out.append(f"already running and using it: {', '.join(self.running)} "
-                       f"({self.in_use} card(s))")
+            cards = "1 card" if self.held == 1 else f"{self.held} cards"
+            out.append(f"already running and holding {cards} of it: "
+                       f"{', '.join(self.running)}")
         return out
+
+    @property
+    def typed(self) -> str:
+        """The `--gpu` spelling to put in a fix line, never the display name."""
+        return self.key or self.card.lower()
 
     def problem(self) -> LifecycleError | None:
         """The reason this cannot be created, or None. Nothing has happened yet."""
@@ -437,7 +491,7 @@ class QuotaCheck:
             return LifecycleError(
                 f"this project has no {self.card} quota, so a {self.card} box cannot "
                 f"start anywhere. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.card.lower()} "
+                fix=f"comfy-qat quota request --gpu {self.typed} "
                     f"--region us-central1, then wait for Google",
                 kind=NO_QUOTA,
             )
@@ -445,7 +499,7 @@ class QuotaCheck:
             return LifecycleError(
                 f"{self.card} needs {self.needed} of this project's GPU allowance and "
                 f"the grant is {self.card_limit}. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.card.lower()} "
+                fix=f"comfy-qat quota request --gpu {self.typed} "
                     f"--region us-central1, then wait for Google",
                 kind=NO_QUOTA,
             )
@@ -460,16 +514,22 @@ class QuotaCheck:
                 kind=NO_QUOTA,
             )
         if self.running and self.global_limit is not None and 0 <= self.global_limit < (
-            self.needed + self.in_use
+            self.needed + self.held
         ):
-            names = ", ".join(self.running)
-            held = (f"{names} is already holding {self.in_use} of it"
-                    if self.in_use != len(self.running)
-                    else f"{names} is already running on it")
+            if len(self.running) == 1:
+                return LifecycleError(
+                    f"GPUS_ALL_REGIONS is {self.global_limit} and {self.running[0]} is "
+                    f"already running on it, so a new GPU box cannot start until that "
+                    f"one stops. Nothing was created.",
+                    fix=f"comfy-qat down {self.running[0]} — stop the one you are "
+                        f"not using, then run this again",
+                    kind=NO_QUOTA,
+                )
             return LifecycleError(
-                f"GPUS_ALL_REGIONS is {self.global_limit} and {held}, so a new GPU box "
-                f"cannot start until that one stops. Nothing was created.",
-                fix=f"comfy-qat down {self.running[0]} — stop the one you are not "
+                f"GPUS_ALL_REGIONS is {self.global_limit} and {len(self.running)} GPU "
+                f"boxes are already running on it, holding {self.held} of it between "
+                f"them: {', '.join(self.running)}. Nothing was created.",
+                fix=f"comfy-qat down {self.running[0]} — stop the ones you are not "
                     f"using, then run this again",
                 kind=NO_QUOTA,
             )
@@ -477,7 +537,7 @@ class QuotaCheck:
             return LifecycleError(
                 f"this project's {self.card} grant names no region, so there is nowhere "
                 f"to put the box. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.card.lower()} "
+                fix=f"comfy-qat quota request --gpu {self.typed} "
                     f"--region us-central1",
                 kind=NO_QUOTA,
             )
@@ -501,42 +561,73 @@ def _gpu_boxes_running(instances: list[dict]) -> list[str]:
     return found
 
 
-def _gpus_in_use(instances: list[dict]) -> int:
-    """How much of the ceiling the running boxes hold — in cards, not in boxes.
+def _cards_running(instances: list[dict]) -> int:
+    """How much of the ceiling running boxes hold. Cards, not boxes.
 
-    The ceiling is metered in accelerators. One `a3-highgpu-8g` is a single
-    instance and eight of the project's allowance, so counting instances lets the
-    gate wave through a create that Google then refuses — after the zone probing
-    and after somebody has said yes to it.
+    GPUS_ALL_REGIONS is metered in cards, and an a3-highgpu-8g holds eight of
+    them. Counting boxes says one, which passes the gate on a ceiling of 8 and
+    is then refused by Google — the refusal this whole module exists to make
+    before anything bills, after the zone probing and after somebody has said
+    yes to it.
 
-    A running GPU box that reports no `acceleratorCount` is read as holding one
-    rather than none: an unfamiliar payload shape is not evidence of an empty
-    machine, and guessing low here is the direction that costs money.
+    `acceleratorCount` is in the live payload for a built-in G2 card as well as
+    an attached N1 one. A row that reports no count, or a count that reads as
+    zero or less, is counted as one rather than dropped: an unfamiliar payload
+    shape is not evidence of an empty machine, a card that is there is spending,
+    and guessing low here is the direction that costs money.
     """
-    total = 0
+    held = 0
     for instance in instances or []:
         if instance.get("status") != "RUNNING":
             continue
-        for card in instance.get("guestAccelerators") or []:
+        for accel in instance.get("guestAccelerators") or []:
             try:
-                total += max(1, int(card.get("acceleratorCount")))
+                held += max(1, int(accel.get("acceleratorCount")))
             except (TypeError, ValueError):
-                total += 1
-    return total
+                held += 1
+    return held
+
+
+def card_grant(card: Card, quotas: list[dict]) -> tuple[int | None, list[str]]:
+    """This card's allowance and the regions it covers, under every spelling.
+
+    One card can be metered under more than one friendly name — the H100 is sold
+    as `nvidia-h100-80gb` and metered as `NVIDIA-H100-GPUS` — so the grant is the
+    best of them and the regions are the union. Best rather than first: a project
+    that carries both spellings would otherwise be read off whichever one came
+    back with a zero.
+    """
+    from .quota import UNLIMITED, allowance, regions_with_quota
+
+    limits = [allowance(name, quotas) for name in card.quota_names]
+    granted = [value for value in limits if value is not None]
+    if not granted:
+        limit: int | None = None
+    elif UNLIMITED in granted:
+        limit = UNLIMITED
+    else:
+        limit = max(granted)
+
+    regions: set[str] = set()
+    for name in card.quota_names:
+        regions |= set(regions_with_quota(name, quotas))
+    return limit, sorted(regions)
 
 
 def check_quota(card: Card, quotas: list[dict], instances: list[dict]) -> QuotaCheck:
     """Read the allowance. Pure — the caller does the two gcloud reads."""
-    from .quota import allowance, global_allowance, regions_with_quota
+    from .quota import global_allowance
 
+    limit, regions = card_grant(card, quotas)
     return QuotaCheck(
         card=card.name,
-        card_limit=allowance(card.name, quotas),
+        card_limit=limit,
         global_limit=global_allowance(quotas),
         needed=card.count,
         running=tuple(_gpu_boxes_running(instances)),
-        regions=tuple(regions_with_quota(card.name, quotas)),
-        in_use=_gpus_in_use(instances),
+        regions=tuple(regions),
+        key=card.key,
+        held=_cards_running(instances),
     )
 
 
@@ -582,10 +673,12 @@ def build(
     one was not. Following it creates a box somewhere nobody chose, or burns a
     minute on a create that cannot succeed.
 
-    **`limit`.** Every refusal can name a fresh zone, so the queue refills as
-    fast as it drains and an uncapped loop is a command that looks hung. Six
-    attempts is `zones.MAX_ATTEMPTS`, which documented this cap long before
-    anything enforced it.
+    **`limit`.** The same cap `zones.choose` applies to the ranked list, applied
+    again here because the suggestions are not on that list. `choose` hands over
+    six zones and every refusal can name a fresh one, so the queue refills as
+    fast as it drains: an uncapped fall-through has no end and is a command that
+    looks hung. Six attempts is `zones.MAX_ATTEMPTS`, which documented this cap
+    long before anything enforced it.
     """
     allowed = set(ordering.regions)
     queue = [zone.lower() for zone in ordering.zones]
@@ -634,6 +727,7 @@ def build(
         return zone
 
     if capped:
+        say(f"stopping after {len(tried)} zones — each attempt takes about a minute")
         raise LifecycleError(
             f"stopped after {limit} zones, all out of {blueprint.card.name} capacity: "
             f"{', '.join(tried)}. Nothing was created and nothing is billing — this is "
@@ -642,6 +736,7 @@ def build(
                  "comfy-qat create --zone <zone>"),
             kind=EXHAUSTED,
         )
+
     raise LifecycleError(
         f"every zone tried is out of {blueprint.card.name} capacity: "
         f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
@@ -701,12 +796,23 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
 
 
 def summary(blueprint: Blueprint, ordering: Ordering) -> list[str]:
-    """The zone order, said the way it was decided."""
+    """The zone order, said the way it was decided.
+
+    Two ways, and saying the wrong one is worse than saying nothing. With
+    `--zone` there is one zone, nothing was ranked and nothing was measured;
+    describing that as "quota first, then what is offered, then measured latency
+    (nearest: us-central1)" claims three decisions that never happened and names
+    a nearest region out of a set of one.
+    """
     if not ordering.zones:
         return []
-    first = region_of(ordering.zones[0])
-    head = (f"zone order — {len(ordering.zones)} to try, quota first, then what is "
-            f"offered, then measured latency (nearest: {first})")
+    if not ordering.latency:
+        head = (f"zone order — {len(ordering.zones)} to try, and it is the one you "
+                f"named with --zone: nothing was ranked or measured")
+    else:
+        first = region_of(ordering.zones[0])
+        head = (f"zone order — {len(ordering.zones)} to try, quota first, then what is "
+                f"offered, then measured latency (nearest: {first})")
     return [head] + [f"  {index}. {line}" for index, line
                      in enumerate(ordering.lines(), start=1)]
 
@@ -719,15 +825,18 @@ def order_zones(
 
     `--zone` is one zone and no fall-through: it exists for someone deliberately
     testing that zone, and quietly moving them to another one would be the
-    opposite of what they asked for. It is still checked against what Google
-    offers there, because finding out that a zone has never had an L4 is worth a
-    second and not worth a create.
+    opposite of what they asked for. Both halves are still checked against what
+    Google offers there — the machine type *and* the card. Checking only the
+    machine type reads as a check and is not one for five of the nine cards: a
+    T4, P4, P100, V100 or K80 is an `n1-standard-8`, which almost every zone on
+    Earth offers, so the card is the half that actually varies and was the half
+    not being looked at.
 
     `--region` narrows without naming a zone, which is the ordinary way to say
     "somewhere in Europe" — the zone inside it is still chosen and still falls
     through.
     """
-    from .zones import choose, zones_with_machine_type
+    from .zones import choose, zones_offering, zones_with_machine_type
 
     # Google's zone and region names are lowercase, and so is everything read back
     # from it. `--zone US-CENTRAL1-A` is the same request; matching it against the
@@ -747,7 +856,7 @@ def order_zones(
                 f"{region_of(zone)}, so nothing can start in {zone}. Nothing was "
                 f"created.",
                 fix=(f"comfy-qat quota request --gpu "
-                     f"{blueprint.card.name.lower()} --region {region_of(zone)}, or "
+                     f"{blueprint.card.key} --region {region_of(zone)}, or "
                      f"drop --zone and let this pick"),
                 kind=NO_QUOTA,
             )
@@ -765,6 +874,20 @@ def order_zones(
                      f"--filter=name={blueprint.machine_type} --project={project}"),
                 kind=NO_ZONE,
             )
+        has_card = zones_offering(
+            gc.accelerator_types(project, blueprint.card.accelerator),
+            blueprint.card.accelerator,
+        )
+        if zone not in has_card:
+            raise LifecycleError(
+                f"{zone} has never offered {blueprint.card.accelerator}, so a "
+                f"{blueprint.card.name} box cannot be created there at all. Nothing "
+                f"was created.",
+                fix=(f"drop --zone and let this pick one, or pick a zone that has the "
+                     f"card: gcloud compute accelerator-types list "
+                     f"--filter=name={blueprint.card.accelerator} --project={project}"),
+                kind=NO_ZONE,
+            )
         return Ordering(zones=(zone,), regions=(region_of(zone),),
                         notes=("--zone was given, so there is no fall-through: this "
                                "zone or nothing",),
@@ -777,7 +900,7 @@ def order_zones(
             raise LifecycleError(
                 f"this project has no {blueprint.card.name} quota in {region}, so "
                 f"nothing can start there. Nothing was created.",
-                fix=(f"comfy-qat quota request --gpu {blueprint.card.name.lower()} "
+                fix=(f"comfy-qat quota request --gpu {blueprint.card.key} "
                      f"--region {region}, or drop --region and let this pick"),
                 kind=NO_QUOTA,
             )

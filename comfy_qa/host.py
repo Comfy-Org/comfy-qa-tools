@@ -344,11 +344,18 @@ def create_cmd(
         with path.open("a", encoding="utf-8") as handle:
             handle.write(to_toml(host_entry(blueprint, made_in, project), port))
     except OSError as exc:
-        typer.echo(f"\n{blueprint.name} exists in {made_in} and is billing, but it "
-                   f"could not be written to {path}: {exc}. Add it by hand, or run "
-                   f"`comfy-qat discover`. To stop it now: gcloud compute "
-                   f"instances stop {blueprint.name} --zone={made_in} "
-                   f"--project={project}", err=True)
+        # The only message in this command printed after money is being spent,
+        # and the one place the order of the sentences matters. The box is real,
+        # it is billing, and the host list has no record of it — so `comfy-qat down`
+        # cannot reach it and the raw gcloud stop is the only thing that works.
+        # It leads, on its own line, ahead of the adoption path and ahead of the
+        # OSError text, which can be long enough on its own to push a command at
+        # the end of a paragraph out of sight.
+        typer.echo(f"\n{blueprint.name} exists in {made_in} and is billing. To stop it "
+                   f"now:\n  gcloud compute instances stop {blueprint.name} "
+                   f"--zone={made_in} --project={project}", err=True)
+        typer.echo(f"\nIt could not be written to {path}: {exc}. Add it by hand, or run "
+                   f"`comfy-qat discover` to adopt it.", err=True)
         raise typer.Exit(code=1)
 
     typer.echo(f"\n{blueprint.name} is up in {made_in}, on port {port}.")

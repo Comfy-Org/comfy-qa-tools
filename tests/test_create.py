@@ -491,6 +491,20 @@ class Cloud:
     def machine_types(self, project, zone_list, name):
         return [{"name": name, "zone": zone} for zone in zone_list]
 
+    def accelerator_types(self, project, name):
+        """Answered even though this file's own `order_zones` never asks.
+
+        A `--zone` override has two halves to check, not one: a zone can offer
+        `n1-standard-8` — nearly every zone does — and have no T4 in it at all,
+        so checking only the machine type passes a zone where the card has never
+        existed. A fake that answers only about machine types cannot tell the
+        difference, and a create.py that closes that hole would fail here with an
+        AttributeError rather than with a result. Answering both halves keeps
+        this file honest against either version.
+        """
+        return [{"name": name, "zone": zone} for zone in
+                (f"{region}-{letter}" for region in L4_REGIONS for letter in "abcf")]
+
 
 def order(*zones_):
     return Ordering(zones=tuple(zones_), regions=tuple(dict.fromkeys(
@@ -594,11 +608,33 @@ def test_the_create_asks_for_the_image_family_and_the_disk_it_planned():
 
 # --- the overrides ---------------------------------------------------------
 
+# The zone the override tests name. `-f` on purpose: it is the odd zone in
+# us-central1 — it has T4 and no G2 on the live project — so a fake that only
+# happens to cover a, b and c would pass these for the wrong reason.
+OVERRIDE_ZONE = "us-central1-f"
+
+
+def test_the_fake_offers_the_card_in_the_zone_the_override_tests_name():
+    """A precondition of the two tests below, asserted rather than assumed.
+
+    `order_zones(zone=...)` has two halves to satisfy: the zone must offer the
+    machine type *and* the card. A `Cloud` whose `accelerator_types` does not
+    cover OVERRIDE_ZONE turns the next test into "us-central1-f has never
+    offered nvidia-l4" — it still fails, but for a reason that has nothing to do
+    with what it is testing, and the message points at the tool rather than at
+    the fixture. This is the line that says so.
+    """
+    offered = {entry["zone"] for entry in Cloud().accelerator_types(PROJECT, "nvidia-l4")}
+    assert OVERRIDE_ZONE in offered, (
+        f"the Cloud fake does not offer the card in {OVERRIDE_ZONE}, which the "
+        f"--zone tests below rely on. Widen its accelerator_types."
+    )
+
 
 def test_an_explicit_zone_is_used_alone_with_no_fall_through():
     check = check_quota(CARDS["l4"], LIVE, [])
-    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check, zone="us-central1-f")
-    assert ordering.zones == ("us-central1-f",)
+    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check, zone=OVERRIDE_ZONE)
+    assert ordering.zones == (OVERRIDE_ZONE,)
     assert "no fall-through" in ordering.notes[0]
 
 
@@ -609,8 +645,8 @@ def test_an_explicit_zone_that_never_offers_the_machine_type_is_refused():
 
     check = check_quota(CARDS["l4"], LIVE, [])
     with pytest.raises(LifecycleError) as raised:
-        order_zones(NoMachines(), PROJECT, LINUX_L4, check, zone="us-central1-f")
-    assert "us-central1-f does not offer g2-standard-8" in str(raised.value)
+        order_zones(NoMachines(), PROJECT, LINUX_L4, check, zone=OVERRIDE_ZONE)
+    assert f"{OVERRIDE_ZONE} does not offer g2-standard-8" in str(raised.value)
     assert raised.value.kind == NO_ZONE
 
 
