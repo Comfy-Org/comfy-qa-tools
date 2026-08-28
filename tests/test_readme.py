@@ -21,8 +21,10 @@ from comfy_qa.cli import app
 
 README = Path(__file__).resolve().parent.parent / "README.md"
 
-# Documented as deliberately absent, with a reason, rather than silently missing.
-NOT_BUILT = {"host create"}
+# Commands the README documents as deliberately absent, with a reason, rather than
+# silently missing. `host create` was here for three releases and has shipped, so
+# the set is empty — kept, because the next unbuilt command will want it.
+NOT_BUILT: set[str] = set()
 
 
 def _surface(typer_app: typer.Typer, prefix: str = "") -> list[str]:
@@ -64,11 +66,20 @@ def test_the_readme_invents_no_commands():
         ), f"README shows `comfy-qat {raw}`, which the binary does not have"
 
 
-def test_host_create_is_named_as_not_built():
-    """It was 'coming next' for three releases. Say so plainly instead."""
+def test_host_create_is_no_longer_described_as_missing():
+    """It was 'coming next' for three releases, then 'not built'. Now it exists.
+
+    A status table that still says a shipped command is missing is the exact
+    failure this file was written for, running the other way: the page describes
+    an older tool, and reads as current.
+    """
     text = README.read_text()
-    assert "host create" in text
-    assert "not built" in text.lower()
+    assert "comfy-qat host create" in text
+    status = text[text.index("## Status"):text.index("## Install")]
+    assert "host create" in status
+    assert "not built" not in status.lower(), (
+        "the status table still calls `host create` not built"
+    )
 
 
 def test_the_readme_points_at_the_real_config_path():

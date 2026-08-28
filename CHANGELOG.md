@@ -13,6 +13,22 @@ build now has a version worth quoting.
 
 ### Machines
 
+- `host create` — the box itself, which was the one thing still made by hand in
+  the console. `--os linux --gpu t4` is the whole command: the machine type
+  follows from the card (an L4 is a G2 with the GPU built in and refuses
+  `--accelerator`; a T4 is an N1 with one attached), Windows gets
+  `enable-windows-ssh=TRUE` without which nothing here can reach it, and Linux
+  gets Google's own driver startup script, because the NVIDIA driver is not in
+  the base image and a box without it runs ComfyUI on the CPU while looking
+  healthy. **The zone is chosen, not typed**: regions the project holds quota in,
+  zones inside them offering the card and the machine type, ranked by latency
+  measured from this machine — the `<region>-<service>.googleapis.com` names all
+  resolve to one anycast front end, so the regional `compute.<region>.rep.` ones
+  are what get timed — and tried in order, falling through on a stockout.
+  Quota is read before anything exists, the card's grant *and* `GPUS_ALL_REGIONS`,
+  the project-wide ceiling that is 1 here and is the limit that actually bites.
+  `--zone`, `--region`, `--name`, `--disk`, `--yes`, `--dry-run`.
+
 - `host init`, `host list`, `host discover` — declare the machines you test on,
   or have them read out of Google Cloud. Bare `host` lists, because read-only is
   the safe default. (#1, #11)

@@ -40,7 +40,7 @@ a GPU box have not, and are recorded as not run rather than assumed.
 | `host switch` | shipped — stop the box you were on, go to the one you want |
 | `host move` | shipped — escape a zone with no GPU capacity |
 | `host stamp` | shipped — the evidence line |
-| `host create` | **not built.** Boxes are made in the console, then `host discover` |
+| `host create` | shipped — name a card, the zone is chosen for you |
 | `env` | carried over from v0, unchanged, awaiting its own release |
 
 Version **1.0.0**, 1049 tests. They run on Python 3.11, 3.12 and 3.13, on Ubuntu
@@ -151,6 +151,21 @@ Changing machine is one command, which stops the box you were on:
 comfy-qat host switch linux     # start the Linux box, then stop the Windows one
 ```
 
+Making the box is one command too, and the card is the only real decision:
+
+```sh
+comfy-qat host create --os linux --gpu t4
+```
+
+The machine type follows from the card — an L4 is a G2 with the GPU built in, a
+T4 is an N1 with one attached — and **the zone is chosen rather than typed**:
+regions this project holds quota in, zones inside them that offer the card and
+the machine type, ranked by latency measured from your machine, and tried in
+order until one has capacity. Quota is checked before anything exists, both the
+card's own grant and `GPUS_ALL_REGIONS`, the project-wide ceiling that is the one
+that usually bites. `--dry-run` prints the plan, the quota it read and the zone
+order it would try, and creates nothing.
+
 `go` is the one command worth memorising. It starts the instance, installs
 ComfyUI if the box has none — with a torch built for that box's CUDA — launches
 it in the foreground with its startup log on your terminal exactly as a local
@@ -184,6 +199,7 @@ printed; one that fits two is refused with both named.
 | `comfy-qat auth quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
 | `comfy-qat host` | same as `list` — read-only is the safe default |
 | `comfy-qat host list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
+| `comfy-qat host create` | make a GPU box: `--os linux --gpu t4`. The zone is chosen, not typed. `--zone`, `--region`, `--name`, `--disk`, `--yes`, `--dry-run` |
 | `comfy-qat host init` | write a starter host list you can edit |
 | `comfy-qat host discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
 | `comfy-qat host up <host>` | start it and wait until ComfyUI actually answers |
@@ -255,6 +271,9 @@ per OS you never have to remember what you called it. Every field is documented 
 Everything lives under `~/.config/comfy-qa-tools/`:
 
 - `hosts.toml` — the host list, and the only file you would ever edit.
+- `zone-latency.json` — how long a TCP connect to each Google Cloud region took
+  from this machine, measured by `host create` and reused for a week. Delete it to
+  re-measure; nothing else reads it.
 - `tunnels/<host>.pid`, `tunnels/<host>.json` and `tunnels/<host>.log` — written by
   `host open`, `up` and `go`. A tunnel outlives the command that started it, so
   what it is gets recorded rather than assumed: the pid, the moment that process
