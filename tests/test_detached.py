@@ -158,7 +158,7 @@ def test_no_python_on_the_box_is_still_named_as_itself(tmp_path):
                probe_fn=lambda h: None)
 
     assert "NO_PYTHON" in str(caught.value)
-    assert "reset-windows-password" in caught.value.fix, "the way onto a Windows box"
+    assert "comfy-qat rdp" in caught.value.fix, "the way onto a Windows box"
 
 
 # --- the cost of detaching, bought back ------------------------------------

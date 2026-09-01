@@ -1140,6 +1140,23 @@ The new machine is up and in your host list; only the cleanup failed. The snapsh
 is still billing and the message repeats the command that removes it.
 
 
+## Getting onto a box
+
+**`<name> is this machine — open a terminal`**
+
+`ssh` reaches cloud boxes. The local install is already here, so there is nothing
+to connect to — open a terminal window.
+
+**`<name> runs Windows, which has no ssh here`**
+
+Windows Server boxes are reached over Remote Desktop, not SSH. `comfy-qat rdp
+<name>` resets the password, prints it, and forwards RDP to `localhost:33389`.
+
+**`<name> is not a Windows cloud box`**
+
+`rdp` is only for Windows. For a Linux box use `comfy-qat ssh <name>`; for the
+local install, open a terminal.
+
 ## Stamping a machine
 
 **`nothing answered at http://127.0.0.1:8190`**

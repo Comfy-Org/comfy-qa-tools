@@ -31,7 +31,8 @@ from .config import (
     resolve,
 )
 from . import say
-from .lifecycle import LifecycleError
+from .lifecycle import LifecycleError, is_windows
+from .provision import RDP_PORT
 from .stamp import ProbeError, fetch, mismatch
 
 app = typer.Typer(
@@ -660,6 +661,78 @@ def go_cmd(
     ready = _bring_up(gc, host, hosts, offer_move=config or True)
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
            follow=follow)
+
+
+@app.command("ssh")
+def ssh_cmd(
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — linux, l4.")] = None,
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+) -> None:
+    """Open a shell on a box, through the tunnel.
+
+    The long form is `gcloud compute ssh <instance> --tunnel-through-iap --zone
+    <zone> --project <project>`, and this tool already knows the last three. Every
+    fix line that used to print that now says `comfy-qat ssh <box>`.
+    """
+    import os as os_module
+
+    from .gcloud import Gcloud
+
+    host = _host(_selector(name, os_, gpu), config)
+    if not host.is_remote:
+        say.fail(f"{host.name} is this machine — open a terminal", code=2)
+    if is_windows(host):
+        say.fail(f"{host.name} runs Windows, which has no ssh here",
+                 fix=f"comfy-qat rdp {host.name}", code=2)
+
+    gc = Gcloud()
+    argv = gc.ssh_argv(host.gce_instance, host.gce_zone, host.gce_project)
+    # Replaced rather than spawned: an interactive shell wants this terminal, and
+    # a subprocess wrapper would put a layer between the user and their own
+    # Ctrl-C. Nothing after this line runs.
+    say.step(f"opening a shell on {host.name}")
+    os_module.execvp(argv[0], argv)
+
+
+@app.command("rdp")
+def rdp_cmd(
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+) -> None:
+    """Reset the Windows password and forward RDP, then hand over the details.
+
+    Two gcloud commands and a port number to remember. Google documents no way
+    around the password reset, so this does the parts it can and prints the one
+    thing only a person can do — typing the password into Remote Desktop.
+    """
+    from .gcloud import Gcloud, GcloudError
+
+    host = _host(_selector(name, os_, gpu), config)
+    if not host.is_remote or not is_windows(host):
+        say.fail(f"{host.name} is not a Windows cloud box",
+                 fix=f"comfy-qat ssh {host.name}", code=2)
+
+    gc = Gcloud()
+    try:
+        credentials = gc.windows_password(host.gce_instance, host.gce_zone,
+                                          host.gce_project)
+    except GcloudError as exc:
+        _refused(exc)
+    say.result(f"user     {credentials.get('username', '')}")
+    say.result(f"password {credentials.get('password', '')}")
+    say.result(f"address  localhost:{RDP_PORT}")
+    say.step("forwarding RDP — Ctrl-C closes it")
+    argv = gc.rdp_argv(host.gce_instance, host.gce_zone, host.gce_project, RDP_PORT)
+    import os as os_module
+    os_module.execvp(argv[0], argv)
 
 
 @app.command("logs")

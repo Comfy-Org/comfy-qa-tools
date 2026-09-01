@@ -96,15 +96,31 @@ def test_linux_asks_the_box_which_python_it_has():
     assert 'command -v "python$v"' in command, "asked, not assumed"
     assert " ".join(PYTHON_SERIES_SUPPORTED) in command, "and tried newest first"
     assert f"python{PYTHON_SERIES} -m venv" not in command, "that is the assumption"
-    assert '"$PY" -m venv venv' in command
+    assert '"$PY" -m venv --clear venv' in command
 
 
-def test_linux_checks_the_venv_exists_before_installing_into_it():
-    """Otherwise the real error surfaces a hundred pip lines later."""
+def test_linux_checks_the_venv_works_before_installing_into_it():
+    """Existing is not the test — a venv built before python3.10-venv was there
+    has no pip in it, and every later line fails on `No module named pip`."""
     command = install_command(LINUX)
-    guard = command.index("if [ ! -x ./venv/bin/python ]")
+    guard = command.index("INSTALL_INCOMPLETE: the venv has no pip")
     assert guard < command.index("pip install --upgrade pip")
-    assert "INSTALL_INCOMPLETE: the venv was not created" in command
+
+
+def test_a_venv_that_cannot_run_pip_is_rebuilt_rather_than_installed_into():
+    """`python -m venv` over a broken venv leaves it broken; --clear empties it."""
+    command = install_command(LINUX)
+    assert "-m venv --clear venv" in command
+    assert "reusing the venv" in command, "a working one is not thrown away"
+
+
+def test_an_install_is_not_believed_on_the_strength_of_one_file():
+    """main.py alone reported INSTALLED on a box whose venv had no pip. The next
+    run skipped the install and died several steps later on a missing module."""
+    for host in ALL:
+        command = check_command(host)
+        assert "pip" in command, "a venv that cannot install into itself is not one"
+        assert command.count("MISSING") >= 2, "both ways of not being installed"
 
 
 def test_every_apt_call_waits_for_the_dpkg_lock():

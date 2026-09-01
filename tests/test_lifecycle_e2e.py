@@ -333,7 +333,7 @@ def test_go_when_the_box_has_no_python_says_which_failure_it_is(world):
     no_traceback(result)
     assert result.exit_code == 1
     assert "NO_PYTHON" in result.output
-    assert "reset-windows-password" in result.output, "the way onto a Windows box"
+    assert "comfy-qat rdp" in result.output, "the way onto a Windows box"
     assert not world.pid_file().exists(), "the tunnel is closed on the way out"
 
 

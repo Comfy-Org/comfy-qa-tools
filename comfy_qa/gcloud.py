@@ -460,6 +460,38 @@ class Gcloud:
             raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
         return subprocess.run([exe, *args]).returncode
 
+    def ssh_argv(self, instance: str, zone: str, project: str) -> list[str]:
+        """The command that opens an interactive shell on a box.
+
+        Returned rather than run: `ssh` replaces this process with it, so the
+        shell owns the terminal and Ctrl-C reaches the remote side rather than a
+        wrapper around it.
+        """
+        return [
+            "gcloud", "compute", "ssh", instance,
+            f"--zone={zone}", f"--project={project}", "--tunnel-through-iap",
+        ]
+
+    def rdp_argv(self, instance: str, zone: str, project: str,
+                 local_port: int) -> list[str]:
+        """The command that forwards Remote Desktop from the box to this Mac."""
+        return [
+            "gcloud", "compute", "start-iap-tunnel", instance, "3389",
+            f"--local-host-port=localhost:{local_port}",
+            f"--zone={zone}", f"--project={project}",
+        ]
+
+    def windows_password(self, instance: str, zone: str, project: str) -> dict:
+        """Reset the box's Windows password and return the new credentials.
+
+        Google documents no way to read the existing one — resetting is the only
+        route in, and it is what their own instructions tell you to do.
+        """
+        return self.run([
+            "compute", "reset-windows-password", instance,
+            f"--zone={zone}", f"--project={project}", "--quiet",
+        ]) or {}
+
     def ssh_output(self, instance: str, zone: str, project: str, remote: str) -> str:
         """Run a command on the instance and return what it printed."""
         args = [

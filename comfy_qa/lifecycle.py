@@ -188,18 +188,21 @@ def how_to_get_in(host: Host) -> str:
     SSH through IAP. Printing the Windows recipe for a Linux box would send
     someone down a dead end.
     """
-    where = f"--zone {host.gce_zone} --project {host.gce_project}"
+    # This tool already knows the zone and the project. Making someone read
+    # `gcloud compute ssh comfy-linux-a --tunnel-through-iap --zone us-central1-a
+    # --project stately-timing-504610-p1` off a screen at 2am, and retype it
+    # correctly, is work it can simply do — so the short form is what is offered
+    # and the long one is what it runs.
+    #
+    # One command per line, no indent: `say.fix` puts every fix under the same
+    # eight-space rule when it is printed, so writing the alignment in here as
+    # well is how the two used to drift apart.
     if is_windows(host):
-        # One command per line, no indent: `say.fix` puts every fix under the
-        # same eight-space rule when it is printed, so writing the alignment in
-        # here as well is how the two used to drift apart.
         return (
-            f"gcloud compute reset-windows-password {host.gce_instance} {where}\n"
-            f"gcloud compute start-iap-tunnel {host.gce_instance} 3389 "
-            f"--local-host-port=localhost:33389 {where}\n"
+            f"comfy-qat rdp {host.name}\n"
             "then point Remote Desktop at localhost:33389"
         )
-    return f"gcloud compute ssh {host.gce_instance} --tunnel-through-iap {where}"
+    return f"comfy-qat ssh {host.name}"
 
 
 def stop_paying(host: Host) -> str:

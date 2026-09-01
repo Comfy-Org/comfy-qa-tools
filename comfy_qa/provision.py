@@ -52,6 +52,10 @@ PYTHON_SERIES_SUPPORTED = ("3.12", "3.11", "3.10")
 # here carries this rather than racing it.
 APT_LOCK_WAIT = 300
 
+# Where `rdp` forwards Remote Desktop to. 3389 locally would collide with a real
+# RDP server on this Mac; the far side is always 3389 because that is Windows.
+RDP_PORT = 33389
+
 # Google's Identity-Aware Proxy forwards from this range and only this range.
 # A rule scoped to it is not an opening to the internet: reaching the port still
 # requires a tunnel authenticated as someone with access to the project.
@@ -105,15 +109,36 @@ def log_for(host: Host) -> str:
 
 
 def check_command(host: Host) -> str:
-    """Print INSTALLED or MISSING. Nothing else, so the caller can branch on it."""
+    """Print INSTALLED or MISSING. Nothing else, so the caller can branch on it.
+
+    An install is main.py *and* an environment that can install into itself. It
+    used to be main.py alone, and a real box proved why: the first attempt cloned
+    ComfyUI, then failed to build the venv because Ubuntu ships venv in a separate
+    package. main.py was there, so the next run reported "ComfyUI is already
+    installed", skipped the install, and died several steps later on
+    `No module named pip` — a message about a missing venv, printed by a run that
+    had just declared the install complete.
+
+    A venv that cannot run pip is not an environment; it is a directory. If one
+    is present it has to work. A portable bundle carries no venv at all, which is
+    why this asks rather than requires.
+    """
     if is_windows(host):
         return (
             "powershell -NonInteractive -Command "
-            f"\"if (Test-Path '{WINDOWS_ROOT}\\main.py') "
-            "{ Write-Output 'INSTALLED' } else { Write-Output 'MISSING' }\""
+            f"\"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            "{ Write-Output 'MISSING'; exit 0 }; "
+            f"if (Test-Path '{WINDOWS_ROOT}\\venv\\Scripts\\python.exe') "
+            f"{{ & '{WINDOWS_ROOT}\\venv\\Scripts\\python.exe' -m pip --version "
+            "*> $null; "
+            "if ($LASTEXITCODE -ne 0) { Write-Output 'MISSING'; exit 0 } }; "
+            "Write-Output 'INSTALLED'\""
         )
     return (
-        f"if [ -f {LINUX_ROOT}/main.py ]; then echo INSTALLED; else echo MISSING; fi"
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo MISSING; "
+        f"elif [ -e {LINUX_ROOT}/venv ] && "
+        f"! {LINUX_ROOT}/venv/bin/python -m pip --version >/dev/null 2>&1; "
+        "then echo MISSING; else echo INSTALLED; fi"
     )
 
 
@@ -420,11 +445,17 @@ def install_command(host: Host, index: str | None = None) -> str:
         f"sudo mkdir -p {LINUX_ROOT} && sudo chown \"$USER\" {LINUX_ROOT}; "
         f"git clone https://github.com/comfyanonymous/ComfyUI.git {LINUX_ROOT} || true; "
         f"cd {LINUX_ROOT}; "
-        '"$PY" -m venv venv; '
+        # --clear when one is already there. A venv built before python3.10-venv
+        # was installed has no pip in it, and `python -m venv` over the top of it
+        # leaves that as it is; --clear empties it first. Scoped to the venv
+        # directory, so a re-run never touches the clone or the models beside it.
+        'if ./venv/bin/python -m pip --version >/dev/null 2>&1; '
+        'then echo "reusing the venv"; '
+        'else "$PY" -m venv --clear venv; fi; '
         # Without this the pip lines below run against a half-made venv and the
         # error surfaces a hundred lines later as a missing module.
-        "if [ ! -x ./venv/bin/python ]; then "
-        "echo 'INSTALL_INCOMPLETE: the venv was not created'; exit 1; fi; "
+        "if ! ./venv/bin/python -m pip --version >/dev/null 2>&1; then "
+        "echo 'INSTALL_INCOMPLETE: the venv has no pip'; exit 1; fi; "
         "echo 'installing torch (this is the slow part)'; "
         "./venv/bin/python -m pip install --upgrade pip; "
         "./venv/bin/python -m pip install torch torchvision torchaudio"

@@ -116,15 +116,16 @@ def test_a_booted_box_with_no_comfyui_is_a_failure_not_a_success(tmp_path):
     message = str(caught.value)
     assert "ComfyUI is not answering" in message
     assert "billing" in message, "say that it is costing money right now"
-    assert "reset-windows-password" in caught.value.fix
+    assert "comfy-qat rdp" in caught.value.fix
 
 
 def test_the_way_in_matches_the_operating_system():
     """Printing the Windows recipe for a Linux box sends someone down a dead end."""
-    assert "reset-windows-password" in how_to_get_in(WIN)
+    assert "comfy-qat rdp" in how_to_get_in(WIN)
     assert "Remote Desktop" in how_to_get_in(WIN)
-    assert "compute ssh" in how_to_get_in(LINUX)
-    assert "reset-windows-password" not in how_to_get_in(LINUX)
+    assert "comfy-qat ssh" in how_to_get_in(LINUX)
+    assert "comfy-qat rdp" not in how_to_get_in(LINUX)
+    assert "comfy-qat ssh" in how_to_get_in(LINUX)
 
 
 def test_a_box_that_never_reaches_running_gives_up_rather_than_hanging(tmp_path):
@@ -238,7 +239,7 @@ def test_waiting_for_ssh_gives_up_with_the_manual_way_in():
     with pytest.raises(LifecycleError) as caught:
         wait_for_ssh(Gcloud(runner=runner), WIN, say, timeout=0, sleep=lambda _: None)
     assert "not accepting commands" in str(caught.value)
-    assert "reset-windows-password" in caught.value.fix
+    assert "comfy-qat rdp" in caught.value.fix
 
 
 def test_a_zone_with_no_capacity_is_named_as_such(tmp_path):
