@@ -349,3 +349,41 @@ def test_down_all_refuses_a_name_as_well(cli):
 
     assert result.exit_code == 2
     assert "takes no name" in result.output
+
+
+# --- 4. a summary about money may not contradict itself -----------------------
+#
+# `down --all --keep-running` deliberately leaves every machine on, and then the
+# closing line said "all N stopped." Each host had already printed "still
+# billing" immediately above it. The one command whose purpose is answering "am I
+# still paying" answered it wrongly, in the direction that costs.
+
+
+def test_keeping_them_running_is_not_reported_as_stopping_them(cli):
+    class Kept(Cloud):
+        def instance_status(self, name, zone, project):
+            self.calls.append("instance_status")
+            return "RUNNING"
+
+    result = cli("down", "--all", "--keep-running", cloud=Kept())
+
+    assert "stopped." not in result.output, (
+        "--keep-running stops nothing, so no closing line may say it did"
+    )
+    assert "still billing" in result.output
+    assert result.exit_code == 0
+
+
+def test_stopping_them_still_says_so(cli):
+    """The guard above must not swallow the ordinary case."""
+    class Stopped(Cloud):
+        def instance_status(self, name, zone, project):
+            self.calls.append("instance_status")
+            return "RUNNING"
+
+        def stop_instance(self, name, zone, project):
+            self.calls.append(f"compute instances stop {name}")
+
+    result = cli("down", "--all", cloud=Stopped())
+    assert "stopped." in result.output
+    assert result.exit_code == 0

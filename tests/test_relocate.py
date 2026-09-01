@@ -77,3 +77,35 @@ def test_an_instance_with_no_disks_still_plans_something():
     plan = plan_move(WIN, {"name": "comfy-win"}, "us-central1-b")
     assert plan.new_instance == "comfy-win-b"
     assert plan.machine_type == "g2-standard-8"
+
+
+# --- what a move leaves behind, stated truthfully -----------------------------
+
+RUNNING_SOURCE = {**INSTANCE, "status": "RUNNING"}
+
+
+def test_a_running_source_is_not_described_as_stopped():
+    """`leave X stopped` was printed unconditionally, including about a box that
+    was on. A false statement about a billing GPU is the worst kind this tool
+    can make, because the whole point of the tool is knowing what costs."""
+    plan = plan_move(WIN, RUNNING_SOURCE, "us-central1-b")
+    leave = plan.steps()[-1]
+    assert "running" in leave and "keeps billing" in leave
+    assert "stopped" not in leave
+
+
+def test_a_stopped_source_still_reads_as_stopped():
+    plan = plan_move(WIN, INSTANCE, "us-central1-b")
+    assert "stopped" in plan.steps()[-1]
+
+
+def test_leaving_the_source_alone_is_a_step_the_dispatch_knows_about():
+    """LEAVE had no branch in run_move: it fell through, was recorded as done,
+    and nothing ever executed it. Keeping it inert is correct — a move must not
+    stop a box someone may be using — but it has to be inert on purpose."""
+    import inspect
+
+    from comfy_qa import relocate
+
+    body = inspect.getsource(relocate.run_move)
+    assert "LEAVE" in body, "the one step with no branch is the one that lied"

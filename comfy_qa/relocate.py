@@ -280,6 +280,10 @@ class Plan:
     # None for G2/A2/A3, where the machine type carries the card, and passing the
     # flag alongside one of those is refused by Google.
     accelerator: str | None = None
+    # Whether the box being moved is on right now. A move does not touch it
+    # either way, so this exists only so the plan and the summary can say what is
+    # true rather than what is convenient.
+    source_running: bool = False
     # Copied from the source rather than decided here: a move is meant to
     # produce the same machine somewhere else, and a box with no egress is not
     # the same machine — it cannot install, update or download anything.
@@ -367,8 +371,14 @@ class Plan:
             ))
 
         out.append(Action(REGISTER, f"add {self.new_instance} to your host list"))
+        # This is a statement, not an action — see the LEAVE branch in run_move.
+        # It said "stopped" unconditionally until 2026-09-01, which was a false
+        # statement about a billing GPU whenever the source happened to be on.
         out.append(Action(
             LEAVE,
+            f"leave {self.host.gce_instance} running in {self.host.gce_zone} — "
+            "it keeps billing until you stop it"
+            if self.source_running else
             f"leave {self.host.gce_instance} stopped in {self.host.gce_zone}",
         ))
         return out
@@ -396,6 +406,7 @@ def plan_move(host: Host, instance: dict, to_zone: str,
         snapshot=f"{disk}-move",
         machine_type=machine_type(instance),
         accelerator=accelerator_of(instance),
+        source_running=(instance.get("status") == "RUNNING"),
         disk_type=_tail((source_disk or {}).get("type")) or None,
         metadata=metadata_pairs(instance),
         **{k: v for k, v in (
@@ -650,6 +661,20 @@ def delete_disk_command(plan: Plan) -> str:
             f"--project={plan.project} --quiet")
 
 
+def delete_instance_command(plan: Plan) -> str:
+    """Remove the box a move left behind, and its disk with it.
+
+    `--delete-disks=all` is deliberate. A moved-from box is created with
+    `auto-delete=no` on its boot disk, so deleting the instance alone leaves a
+    200-300 GB disk billing with nothing attached to it — which looks like
+    nothing at all in the console, and is the leftover people actually get
+    caught by. Handed over, never run: this destroys an install.
+    """
+    return (f"gcloud compute instances delete {plan.host.gce_instance} "
+            f"--zone={plan.host.gce_zone} --project={plan.project} "
+            "--delete-disks=all --quiet")
+
+
 def delete_snapshot_command(plan: Plan, name: str | None = None) -> str:
     return (f"gcloud compute snapshots delete {name or plan.snapshot} "
             f"--project={plan.project} --quiet")
@@ -831,6 +856,13 @@ def run_move(
                 gc.delete_snapshot(snapshot_name, project)
             elif action.kind == REGISTER:
                 register(plan)
+            elif action.kind == LEAVE:
+                # Deliberately nothing. A move leaves the source alone, and the
+                # user may still be working on it. Before this branch existed the
+                # step fell through the dispatch and was recorded as done, which
+                # is how "leave comfy-win stopped" came to be printed about a box
+                # that was running.
+                pass
         except GcloudError as exc:
             # The box exists by this point, so a snapshot that will not delete is
             # a bill to hand over, not a reason to call a finished move a failure.

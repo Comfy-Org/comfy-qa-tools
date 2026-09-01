@@ -589,8 +589,15 @@ def down_cmd(
                 typer.echo(f"  {host.name} — {exc.fix or 'stop it in the console'}",
                            err=True)
             raise typer.Exit(code=1)
-        typer.echo("\nstopped." if len(hosts) == 1
-                   else f"\nall {len(hosts)} stopped.")
+        if keep_running:
+            # The one command whose purpose is answering "am I still paying"
+            # used to answer it wrongly here: --keep-running leaves every box on,
+            # and the close said they had all stopped.
+            typer.echo(f"\nall {len(hosts)} left running — still billing. "
+                       "Run without --keep-running to stop them.")
+        else:
+            typer.echo("\nstopped." if len(hosts) == 1
+                       else f"\nall {len(hosts)} stopped.")
         return
 
     if not name:
@@ -992,7 +999,8 @@ def move_cmd(
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
     from .relocate import (
-        MoveError, blocked, leftovers, prepare, remove_leftovers, run_move,
+        MoveError, blocked, delete_instance_command, leftovers, prepare,
+        remove_leftovers, run_move,
     )
 
     host = _host(_selector(name, os_, gpu), config)
@@ -1087,10 +1095,19 @@ def move_cmd(
         typer.echo(f"\nwarning: {warning}", err=True)
 
     port = ports[0] if ports else host.port
-    typer.echo(f"\n{plan.new_instance} is in {target}, on port {port}.")
-    typer.echo(f"  comfy-qat go {plan.new_instance}")
-    typer.echo(f"\n{host.gce_instance} is still in {host.gce_zone}, stopped. Delete it "
-               f"when you are happy with the new one.")
+    # Creating an instance starts it. Saying "now run go" read as "now start it",
+    # so a moved box billed silently from the moment the move finished.
+    typer.echo(f"\n{plan.new_instance} is running in {target}, on port {port}, "
+               f"and billing from now.")
+    typer.echo(f"  comfy-qat go {plan.new_instance}     # tunnel to it and serve")
+    typer.echo(f"  comfy-qat down {plan.new_instance}   # stop paying")
+
+    was = "running and still billing" if plan.source_running else "stopped"
+    typer.echo(f"\nleft behind: {host.gce_instance} in {host.gce_zone} ({was}), "
+               f"and its disk {plan.source_disk}.")
+    if plan.source_running:
+        typer.echo(f"  comfy-qat down {host.name}")
+    typer.echo(f"  {delete_instance_command(plan)}")
 
 
 def _probe_fix(host: Host) -> str | None:
