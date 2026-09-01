@@ -50,6 +50,10 @@ def gcloud(statuses, **extra):
             return ""
         if "NetFirewallRule" in key or "ufw" in key:
             return "ALREADY"
+        if "--command=echo ok" in key:
+            # A box this run started is asked whether sshd is listening before a
+            # tunnel is opened into it. RUNNING is the VM powered on, not sshd up.
+            return "ok"
         raise AssertionError(f"unexpected: {key}")
 
     gc = Gcloud(runner=runner)
@@ -696,3 +700,57 @@ def test_a_port_held_by_a_working_comfyui_is_used_not_refused(tmp_path):
     assert "using it rather than starting a second one" in told
     assert "tunnel closed" not in told, "it tore down a working tunnel"
     assert not any("starting ComfyUI on" in line for line in lines), "no second one"
+
+
+def test_a_box_this_run_started_is_not_tunnelled_before_ssh_answers(tmp_path):
+    """RUNNING is the VM powered on, not sshd listening.
+
+    A real run started an Ubuntu box, saw RUNNING in 25s, opened the tunnel
+    immediately and got `failed to connect to backend ... Failed to connect to
+    port 22`. The tunnel process died, `go` reported "the tunnel closed", and
+    nothing about that message points at the actual cause. The wait already
+    existed and was already used before the install; the tunnel just raced it.
+    """
+    from comfy_qa.tunnel import TunnelError
+
+    order: list[str] = []
+    gc = gcloud(["TERMINATED", "RUNNING"])
+    real_ssh = gc.ssh_output
+
+    def watched(*args, **kwargs):
+        order.append("ssh")
+        return real_ssh(*args, **kwargs)
+
+    gc.ssh_output = watched
+    lines, say = said()
+
+    def launcher(*a, **k):
+        order.append("tunnel")
+        raise TunnelError("stop here — the ordering is the whole assertion")
+
+    with pytest.raises(LifecycleError):
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, launcher=launcher,
+                 probe_fn=lambda host: STAMP, sleep=lambda _: None)
+
+    assert order[:2] == ["ssh", "tunnel"], (
+        f"the tunnel was opened before sshd was known to be up: {order}"
+    )
+
+
+def test_a_box_already_running_is_not_made_to_prove_ssh_again(tmp_path):
+    """It has had its chance to finish booting. Paying an SSH round trip on
+    every `go` to re-establish that is a cost with no failure behind it."""
+    asked: list[str] = []
+    gc = gcloud(["RUNNING"])
+    real_ssh = gc.ssh_output
+
+    def watched(*args, **kwargs):
+        asked.append("ssh")
+        return real_ssh(*args, **kwargs)
+
+    gc.ssh_output = watched
+    lines, say = said()
+    bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None,
+             probe_fn=lambda host: STAMP)
+
+    assert not asked

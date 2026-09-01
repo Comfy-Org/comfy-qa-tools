@@ -131,6 +131,10 @@ def gcloud(statuses: dict[str, object], fail: Exception | None = None):
             return ""
         if "NetFirewallRule" in key or "ufw" in key:
             return "ALREADY"
+        if "--command=echo ok" in key:
+            # A box this run started is asked whether sshd is listening before a
+            # tunnel is opened into it. RUNNING is the VM powered on, not sshd up.
+            return "ok"
         raise AssertionError(f"unexpected: {key}")
 
     gc = gcloud_module.Gcloud(runner=runner)

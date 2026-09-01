@@ -388,6 +388,17 @@ def bring_up(
                 fix=_with_the_bill(host, "check it in the console, then try again"),
             )
         waking.done("running")
+        # RUNNING is the VM powered on, not sshd listening. Ubuntu needs another
+        # 30-60s and Windows minutes, and a tunnel opened into that gap dies with
+        # "failed to connect to backend ... Failed to connect to port 22" — which
+        # reads as a permissions problem and is not. This wait already existed and
+        # was already used later, before the install; the tunnel simply did not
+        # use it, so `go` on a box it had just started raced its own boot.
+        #
+        # Only when this run started it. A box that was already RUNNING has had
+        # its chance to finish booting, and paying an SSH round trip on every `go`
+        # to re-establish that is a cost with no failure behind it.
+        wait_for_ssh(gc, host, say, sleep=sleep, now=now, tunnel_dir=tunnel_dir)
     else:
         say(f"{host.name} is running")
 
