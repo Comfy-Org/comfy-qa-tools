@@ -11,7 +11,9 @@ nowhere else. The list is now read out of the source instead, by walking the AST
 of every module in `comfy_qa/` for the ways this tool tells someone that something
 went wrong:
 
-  1. `typer.echo(..., err=True)` — anything written to stderr
+  1. `typer.echo(..., err=True)`, and `say.error` / `say.fail` / `say.warn`,
+     which are the same thing once a module has been converted to the shared
+     output vocabulary — anything written to stderr
   2. `ConfigError`, `GcloudError`, `LifecycleError`, `ProbeError`, `SetupStopped`
      — the message argument of every failure this tool raises at a person
   3. `Check(..., False, ...)` and a `say(...)` inside an `except` handler — the
@@ -51,6 +53,13 @@ PACKAGE = ROOT / "comfy_qa"
 ERROR_TYPES = ("ConfigError", "GcloudError", "LifecycleError", "ProbeError",
                "SetupStopped", "TunnelError")
 
+# `comfy_qa/say.py` is where stderr output goes now. A converted module writes
+# `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and
+# an `Exit`, and if this walk only knew the echo form, converting a module would
+# have quietly emptied it out of the page. Both forms are read, because the
+# conversion is happening one module at a time and both are live.
+SAY_FAILURES = ("error", "fail", "warn")
+
 # Literal text that is deliberately *not* a troubleshooting entry. There are only
 # two kinds, and both have to be argued for in a comment before being added:
 #
@@ -70,10 +79,6 @@ NOT_AN_ENTRY = {
     # wait is long. Windows takes minutes to start its SSH server.
     "waiting for the machine to accept commands — Windows takes a few minutes":
         "progress while retrying, not a failure",
-    # Not a failure either: `auth quota list` warns on stderr that the call is
-    # slow, so the warning stays out of --json's stdout.
-    "reading quota — this takes about a minute…":
-        "progress on stderr so it stays out of --json output",
 }
 
 # A run this long identifies the message on its own, so every one of them has to
@@ -160,6 +165,9 @@ def _message_argument(call: ast.Call, *, in_except: bool) -> ast.AST | None:
             return call.args[0] if call.args else None
         return None
 
+    if name in SAY_FAILURES:
+        return call.args[0] if call.args else None
+
     if name in ERROR_TYPES:
         return call.args[0] if call.args else None
 
@@ -231,7 +239,26 @@ def test_the_message_list_was_actually_found():
     """A walker that silently matches nothing would pass every test below it."""
     assert len(MESSAGES) > 40, f"only found {len(MESSAGES)} messages — the walk is broken"
     files = {message.where.split(":")[0] for message in MESSAGES}
-    assert {"config.py", "gcloud.py", "host.py", "lifecycle.py", "setup.py"} <= files
+    assert {"auth.py", "commands.py", "config.py", "gcloud.py", "host.py",
+            "lifecycle.py", "setup.py"} <= files
+
+
+def test_a_message_routed_through_say_is_still_collected():
+    """The conversion to `say` must not be a way to leave the page behind.
+
+    `auth.py` and `commands.py` no longer contain a single `typer.echo(err=True)`,
+    so if this walk had kept reading only for that form, their errors would have
+    dropped out of the required set and nobody would have been told. This is the
+    check that the new form is really being read, rather than the file list above
+    happening to hold for some other reason.
+    """
+    tree = ast.parse('say.fail("a message long enough to identify", fix="do this")')
+    found = [phrase for _, expression in _message_expressions(tree)
+             for phrase in _literal_runs(expression)]
+    assert "a message long enough to identify" in found
+
+    routed = [m for m in MESSAGES if m.where.split(":")[0] in ("auth.py", "commands.py")]
+    assert routed, "no auth/commands messages collected — the say rule is not firing"
 
 
 @pytest.mark.parametrize("message", MESSAGES, ids=lambda m: f"{m.where} {m.phrase[:40]}")

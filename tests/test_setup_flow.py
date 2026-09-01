@@ -141,7 +141,7 @@ def test_a_completely_fresh_machine_is_walked_all_the_way_to_a_host_list(hosts):
     assert "billing linked to proj-1" in result.output
     assert "GPU quota is zero on this project" in result.output
     assert hosts.exists(), "a host list is written even with nothing else ready"
-    assert "Ready — 1 machine(s), 0 in the cloud." in result.output
+    assert "ready — 1 machine, 0 in the cloud" in result.output
 
 
 def test_a_fresh_machine_with_no_terminal_stops_at_sign_in_and_says_the_command(hosts):
@@ -208,7 +208,7 @@ def test_a_bad_number_asks_again_rather_than_guessing(hosts):
     result = run(cloud, input="9\nnope\n1\n")
 
     assert result.exit_code == 0, result.output
-    assert "Pick a number between 1 and 2." in result.output
+    assert "pick a number between 1 and 2" in result.output
     assert "config set project alpha" in cloud.calls
 
 
@@ -371,7 +371,7 @@ def test_discovery_adds_the_box_and_the_sign_off_does_not_ask_for_it_by_hand(hos
 
     assert result.exit_code == 0, result.output
     assert "added comfy-win" in result.output
-    assert "Ready — 2 machine(s), 1 in the cloud." in result.output
+    assert "ready — 2 machines, 1 in the cloud" in result.output
     assert "by hand" not in result.output
     # The command, not the word: the temp path in this output contains the
     # test's own name, which includes "discovery".
@@ -383,8 +383,8 @@ def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
     result = run(cloud)
 
     assert "no cloud boxes on this project yet" in result.output
-    assert "Ready — 1 machine(s), 0 in the cloud." in result.output
-    assert "Add one by hand" in result.output
+    assert "ready — 1 machine, 0 in the cloud" in result.output
+    assert "no cloud boxes yet" in result.output
     assert "comfy-qat discover" in result.output
 
 
@@ -395,7 +395,7 @@ def test_discovery_failing_still_finishes_and_says_so(hosts):
 
     assert result.exit_code == 0
     assert "could not list cloud boxes" in result.output
-    assert "Ready — 1 machine(s), 0 in the cloud." in result.output
+    assert "ready — 1 machine, 0 in the cloud" in result.output
 
 
 def test_a_discovered_box_lands_on_a_port_that_is_not_the_local_comfyui(hosts):

@@ -515,7 +515,9 @@ read that first. Get onto the box with the printed command to finish by hand.
 http://127.0.0.1:8190. The machine is up and billing; ComfyUI is not installed or
 not started.`**
 The machine and the tunnel are both fine — ComfyUI itself is not serving. **The box
-is billing while this is true.** The error prints how to get onto it, which differs
+is billing while this is true**, which is why the fix line ends with
+`or stop paying for it: comfy-qat host down comfy-win`. The error prints how to get
+onto it, which differs
 by OS: Windows needs a password reset and Remote Desktop over the tunnel, anything
 else takes SSH through IAP.
 
@@ -606,7 +608,7 @@ the machine, so they are now reported separately. Read what gcloud wrote in
 `~/.config/comfy-qa-tools/tunnels/<host>.log`; an expired session is the usual
 cause. Reopen with `comfy-qat open <name>`, or stop paying for the box.
 
-**`gcloud is not signed in, so comfy-win cannot be reached: ... Waiting will not fix this, and the machine is running and billing.`**
+**`gcloud is not signed in, so comfy-win cannot be reached: ... The machine is running and billing.`**
 The credential died between starting the box and reaching it. The tool used to keep
 retrying for five minutes, which cannot succeed and costs money the whole time, so
 it now stops immediately and closes the tunnel behind it. `gcloud auth login`, then
@@ -853,8 +855,8 @@ with access to the project.
 Not an error — the first launch on a project creating the rule above. It appears
 once.
 
-**`ComfyUI is not listening on the machine yet, so there is nothing to tunnel to — starting it first`**
-**`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`ComfyUI is not running on comfy-win-b yet.`**
+**`nothing is listening on the machine yet, so there is nothing to tunnel to — starting ComfyUI first`**
+**`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`ComfyUI is not running on comfy-win-b yet`**
 Not a broken tunnel — an ordering fact, and the one that made `host go` unable to
 work at all on a box that was not already serving.
 
@@ -1211,20 +1213,26 @@ reason.
 failed deploy gets caught: it leaves the old build running and looks entirely
 normal.
 
-**`unknown environment(s): testclod. known: testcloud, stagingcloud, cloud, local`**
-A typo in an environment name. Those four are the only ones there are.
+**`no such environment: testclod`**
+A typo in an environment name. The fix line lists the only ones there are:
+`known environments: testcloud, stagingcloud, cloud, local`.
 
-**`not probed: cloud`**
-You asked for the evidence block of an environment that was not in the run. Either
-name it as a target too, or drop the other targets: `--evidence` reports on what was
-probed, not on everything that exists.
+**`cloud was not probed, so there is no evidence for it`**
+You asked for the evidence block of an environment that was not in the run. The fix
+line names what *was* probed this run. Either add it as a target too, or drop the
+other targets: `--evidence` reports on what was probed, not on everything that
+exists.
 
 **--expect needs exactly one cloud environment, e.g. `comfy-qat env testcloud
 --expect <sha>`**
 `--expect` compares one environment against one SHA, so it needs exactly one cloud
 target named. With none or several there is nothing unambiguous to compare.
 
-**`FAIL  testcloud serves 4f2a1b9c, expected 9d7e3a10`**
+**`testcloud serves 4f2a1b9c, expected 9d7e3a10`** (exit code 1)
+The mismatch is on stderr, like every other failure, so `--json` output stays a
+document. A pass instead prints `ok    testcloud serves 9d7e3a10 as expected` on
+stdout, and prints nothing at all under `--json`, where the exit code says it.
+
 The environment is not running the build you named — which is the whole point of
 the check, and usually means the deploy did not land rather than that you typed the
 wrong SHA. Confirm the SHA in the frontend repo before assuming the deploy failed.
@@ -1232,7 +1240,7 @@ wrong SHA. Confirm the SHA in the frontend repo before assuming the deploy faile
 **`--json and --evidence produce different output; pick one`**
 Two answers to the same question. Asking for both used to silently discard one.
 
-**`note: --flags only affects the evidence block; add --evidence <env> to see it`**
+**`warning: --flags only changes the evidence block; add --evidence <env>`**
 Not an error — `--flags` names the flags called out in an evidence block, so on its
 own it changes nothing you can see.
 
@@ -1301,9 +1309,11 @@ comfy-qat quota request --gpu l4 --region us-central1
 `--quota-id <id>` takes a raw Google quota id instead, if you would rather name one
 exactly.
 
-**`name what you want: --gpu l4,a100 (or --quota-id for a raw id)`**
+**`name a card to ask for`**
 `auth quota request` was run with nothing to request. It will not guess a card for
-you — asking for the wrong one wastes days of approval time.
+you — asking for the wrong one wastes days of approval time. The fix line offers
+`comfy-qat auth quota request --gpu l4,a100`, or `--quota-id`, to name a raw quota
+id exactly.
 
 **`a project-wide allowance only, no specific card granted`**
 `GPUS-ALL-REGIONS-per-project` is a ceiling on how many GPUs you may run in total.
@@ -1313,24 +1323,25 @@ which is why this reads as a failure rather than a pass. Ask for an actual card:
 comfy-qat quota request --gpu l4 --region us-central1
 ```
 
-**`this project reports no quota for 'l4' in europe-west4. It is metered in us-central1. Available: L4`**
+**`this project reports no quota for 'l4' in europe-west4, it is metered in us-central1`**
 You have that card, somewhere else. Quota is granted per region, so an L4 approved
 in `us-central1` does nothing for a box in `europe-west4`. Either build in the
 region that has it, or request it where you want it. The older wording said
 `no quota for 'l4' … Available: L4`, which read as a contradiction; the region is
 the missing half.
 
-**`this project reports no quota for 'h100'. Available: A100, L4, T4`**
+**`this project reports no quota for 'h100'`**
 You asked for a card Google does not offer this project, or not in that region.
-The message lists what is available. `comfy-qat quota` shows the same thing
-with current limits.
+The fix line lists what it does offer — `ask for one of: A100, L4, T4` — and
+`comfy-qat quota` shows the same thing with current limits.
 
 **`request for l4 failed: ...`**
 The quota request was rejected on submission. The most common cause is an account
 with no billing history — Google frequently will not grant GPU quota until a project
 has been billed at least once. Retrying will not change that.
 
-**`still pending: l4, a100`** (exit code 75)
+**`still pending: l4, a100. Approval can take days — run this again to keep
+waiting, or `comfy-qat auth quota` to check.`** (exit code 75)
 Not an error. The requests went in but have not been approved within the wait window.
 Approval can take days. Run the same command again to keep waiting, or
 `comfy-qat quota` to check. The console link printed with the request shows the

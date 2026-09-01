@@ -458,7 +458,9 @@ def test_the_ceiling_makes_it_stop_first(cli, monkeypatch):
 
     assert "allows 1 GPU machine at a time" in result.output
     stopped = result.output.index("comfy-linux stopped")
-    started = result.output.index("comfy-win is running")
+    # The box is started with a timed step now, so the marker for "it began" is
+    # the line that opens it rather than the one that closes it.
+    started = result.output.index("comfy-win is stopped — starting it")
     assert stopped < started, "the other one has to go first, or neither can run"
 
 

@@ -135,7 +135,7 @@ def test_status_reports_every_check_when_everything_is_ready():
     assert result.exit_code == 0, result.output
     for name in ["gcloud", "account", "project", "billing", "gpu quota"]:
         assert name in result.output
-    assert "FAIL" not in result.output
+    assert "fail" not in result.output
 
 
 @pytest.mark.parametrize("cloud,last,unseen", [
@@ -150,10 +150,10 @@ def test_status_stops_at_the_first_failure_rather_than_reporting_five(cloud, las
     result = run(cloud, "status")
 
     assert result.exit_code == 1
-    lines = [line for line in result.output.splitlines() if line.startswith(("ok", "FAIL"))]
-    assert lines[-1].startswith("FAIL")
+    lines = [line for line in result.output.splitlines() if line.startswith(("ok", "fail"))]
+    assert lines[-1].startswith("fail")
     assert last in lines[-1]
-    assert sum(line.startswith("FAIL") for line in lines) == 1
+    assert sum(line.startswith("fail") for line in lines) == 1
     for name in unseen:
         assert name not in result.output, f"{name} was checked after a failure"
 
@@ -302,13 +302,13 @@ def test_quota_json_is_clean_on_stdout_with_the_slow_warning_on_stderr():
     assert set(payload) == {"project", "gpus", "by_region"}
     assert payload["project"] == "proj-1"
     assert {card["gpu"] for card in payload["gpus"]} == {"L4", "A100"}
-    assert "takes about a minute" in result.stderr
+    assert "reading quota (about a minute)" in result.stderr
 
 
 def test_nothing_usable_prints_the_command_that_fixes_it():
     result = run(FakeCloud(quotas=[T4, A100]), "quota", "list")
 
-    assert "Nothing is usable yet" in result.output
+    assert "nothing is usable yet" in result.output
     assert "comfy-qat quota request --gpu" in result.output
 
 
@@ -464,7 +464,7 @@ def test_a_card_this_project_does_not_offer_lists_what_it_does():
 
     assert result.exit_code == 2
     assert "this project reports no quota for 'h100'" in result.stderr
-    assert "Available: A100, L4, T4" in result.stderr
+    assert "ask for one of: A100, L4, T4" in result.stderr
 
 
 def test_a_card_offered_elsewhere_says_where_rather_than_contradicting_itself():
@@ -475,14 +475,14 @@ def test_a_card_offered_elsewhere_says_where_rather_than_contradicting_itself():
 
     assert result.exit_code == 2
     assert "no quota for 'l4' in europe-west4" in result.stderr
-    assert "It is metered in us-central1" in result.stderr
+    assert "it is metered in us-central1" in result.stderr
 
 
 def test_a_project_with_no_gpu_quota_at_all_offers_nothing():
     result = run(FakeCloud(quotas=[]), "quota", "request", "--gpu", "l4")
 
     assert result.exit_code == 2
-    assert "Available: none" in result.stderr
+    assert "no GPU quota at all" in result.stderr
 
 
 def test_a_request_google_refuses_is_not_a_success():
@@ -534,4 +534,4 @@ def test_the_status_quota_line_is_one_row_per_card_and_admits_truncation():
     assert result.exit_code == 0
     assert line.count("K80") == 1, f"one row per card, not per region: {line}"
     assert "L4=1" in line, "the card you would actually use must survive the cut"
-    assert "+2 more" in line and "6 card(s) ready" in line
+    assert "+2 more" in line and "6 cards ready" in line

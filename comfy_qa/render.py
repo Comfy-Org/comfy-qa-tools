@@ -1,8 +1,15 @@
 """Output shapes. The QA playbooks disagree on the evidence format, so emit all
-three rather than picking a house style and making testers retype."""
+three rather than picking a house style and making testers retype.
+
+The marks in here used to be their own dialect — `!!` for a failure, `<< MISMATCH`
+for a version gap, `WARNING ` where the rest of the tool says `warning: `. Three
+notations for two ideas, in one file that exists to be pasted. They now come from
+`say`, so a table and an error read as the same program.
+"""
 
 from __future__ import annotations
 
+from . import say
 from .env import EnvReport, flag_diff, release_line
 
 
@@ -24,10 +31,10 @@ def table(reports: list[EnvReport]) -> str:
     lines = []
     for r in reports:
         if r.error:
-            lines.append(f"{r.name:<15} !! {r.error}")
+            lines.append(f"{r.name:<15} no answer — {r.error}")
         elif r.kind == "local":
             fe = r.frontend_installed or "?"
-            warn = f"  << MISMATCH, core wants {r.frontend_required}" if r.frontend_mismatch else ""
+            warn = f"  mismatch: core wants {r.frontend_required}" if r.frontend_mismatch else ""
             lines.append(
                 f"{r.name:<15} ComfyUI {_known(r.comfyui_version)}  frontend {fe}{warn}")
         else:
@@ -60,7 +67,7 @@ def table(reports: list[EnvReport]) -> str:
 
     line = _local_vs_cloud(reports)
     if line:
-        out += [line, ""]
+        out += [say.WARNING + line, ""]
     return "\n".join(out)
 
 
@@ -74,8 +81,10 @@ def _local_vs_cloud(reports: list[EnvReport]) -> str | None:
         return None
     local_line = ".".join(local.frontend_installed.split(".")[:2])
     if local_line != cloud_line:
-        return (f"WARNING  local frontend is {local.frontend_installed} but cloud is on the "
-                f"{cloud_line} line — the local half of a {cloud_line} plan would test the wrong build")
+        # Returned unmarked: `table` puts `say.WARNING` in front of it, and
+        # `as_dict` hands it to a machine, which has no use for the word.
+        return (f"local frontend is {local.frontend_installed} but cloud is on the "
+                f"{cloud_line} line — the local half of a {cloud_line} plan tests the wrong build")
     return None
 
 

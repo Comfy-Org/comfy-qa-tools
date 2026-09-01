@@ -4,9 +4,14 @@
 failure this is written to avoid: it looks like success, bills like success, and
 you find out only when a test does something strange.
 
-Every failure after the machine has been started says so, and says how to stop
-paying for it. A message that only explains what went wrong leaves a GPU box
-running all night.
+Every failure after the machine has been started says how to stop paying for it.
+A message that only explains what went wrong leaves a GPU box running all night.
+That line used to be hand-copied into ten fix strings, eight-space indent
+included; it comes from `_with_the_bill` now.
+
+Nothing here prints. Every one of these functions is handed a `say` and reports
+through it, so the same flow reads the same whether it is driven by `go`, by
+`switch`, or by a test collecting lines in a list.
 
 **ComfyUI runs on the box, so the terminal does not have to.** The log used to be
 streamed back over SSH, which is why `go` owned a terminal until Ctrl-C — and why
@@ -32,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import say as output
 from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .stamp import ProbeError, Stamp, fetch
@@ -44,6 +50,12 @@ from .tunnel import (
     open_tunnel,
     status as tunnel_status,
 )
+
+# A step whose command streams its own log gets a rarer tick than a silent one:
+# the log is already the evidence it is alive, and a line every half-minute on top
+# of pip's output is noise. This is for the minutes when pip goes quiet fetching a
+# two-gigabyte wheel, which is where "is it hung?" actually gets asked.
+STREAM_TICK_SECONDS = 60
 
 BOOT_TIMEOUT = 300      # Windows is slower than Linux; both fit inside this.
 COMFY_TIMEOUT = 180     # after the box is up, how long ComfyUI gets to answer
@@ -98,7 +110,14 @@ def _pause(seconds: float) -> None:
     time.sleep(seconds)
 
 
-def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None) -> bool:
+def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None,
+          tick: Callable[[], None] | None = None) -> bool:
+    """Poll until `check` passes or the window closes.
+
+    `tick` is called on every pass so a wait that runs for minutes can say it is
+    still running. It is a no-op cost when nothing is due — `Slow.tick` decides —
+    which is why the interval lives there and not in this loop.
+    """
     sleep = sleep or _pause
     now = now or _clock
     deadline = now() + timeout
@@ -107,6 +126,8 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None) -> b
             return True
         if now() >= deadline:
             return False
+        if tick is not None:
+            tick()
         sleep(POLL_SECONDS)
 
 
@@ -169,22 +190,36 @@ def how_to_get_in(host: Host) -> str:
     """
     where = f"--zone {host.gce_zone} --project {host.gce_project}"
     if is_windows(host):
+        # One command per line, no indent: `say.fix` puts every fix under the
+        # same eight-space rule when it is printed, so writing the alignment in
+        # here as well is how the two used to drift apart.
         return (
             f"gcloud compute reset-windows-password {host.gce_instance} {where}\n"
-            f"        gcloud compute start-iap-tunnel {host.gce_instance} 3389 "
+            f"gcloud compute start-iap-tunnel {host.gce_instance} 3389 "
             f"--local-host-port=localhost:33389 {where}\n"
-            "        then point Remote Desktop at localhost:33389"
+            "then point Remote Desktop at localhost:33389"
         )
     return f"gcloud compute ssh {host.gce_instance} --tunnel-through-iap {where}"
 
 
 def stop_paying(host: Host) -> str:
-    """The one line every post-start failure has to end with.
+    """The command that stops the bill."""
+    return f"comfy-qat down {host.name}"
 
-    The machine is on and billing by the time most of these can happen, and a
-    message that does not say so is how a box runs all night.
+
+def _with_the_bill(host: Host, *advice: str) -> str:
+    """A fix that ends by saying how to stop paying for the machine.
+
+    The machine is on and billing by the time most of these failures can happen,
+    and a fix that does not say so is how a box runs all night. Ten sites carried
+    that by copying `"\n        or stop paying for it:\n        "` into their own
+    string; this is the one place it is written, so the wording and the alignment
+    can no longer drift apart. The `# closes the tunnel and stops the box`
+    comment went with them: the label already says what the command is for.
     """
-    return f"comfy-qat down {host.name}   # closes the tunnel and stops the box"
+    lines = [line for line in advice if line]
+    tail = f"{'or ' if lines else ''}stop paying for it: {stop_paying(host)}"
+    return output.fix(*lines, tail)
 
 
 def is_auth_failure(exc: GcloudError) -> bool:
@@ -282,25 +317,38 @@ def bring_up(
     started = False
     if state != RUNNING:
         # TERMINATED is Google's word for stopped. Saying so avoids alarm.
-        say(f"{host.name} is {'stopped' if state == 'TERMINATED' else state.lower()} — starting it")
+        # A boot is the first place this tool can go quiet for minutes, so the
+        # step is timed: it says it is still waiting while it waits, and how long
+        # it took when the box answers.
+        waking = output.slow(
+            f"{host.name} is {'stopped' if state == 'TERMINATED' else state.lower()}"
+            " — starting it",
+            expect=f"up to {boot_timeout}s",
+            emit=say, clock=now, background=False,
+        ).start()
         try:
             gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
         except GcloudError as exc:
+            waking.give_up()
             # Classify on everything gcloud printed. The one-line summary for a
             # compute error is `---`, which matches nothing.
             if is_capacity_failure(exc.raw):
                 elsewhere = suggested_zones(exc.raw)
                 if elsewhere:
-                    advice = (
-                        f"Google says {', '.join(elsewhere)} has capacity right now.\n"
-                        f"        comfy-qat move {host.name} --to {elsewhere[0]}"
+                    advice = output.fix(
+                        f"Google says {', '.join(elsewhere)} has capacity right now:",
+                        f"comfy-qat move {host.name} --to {elsewhere[0]}",
                     )
                 else:
-                    advice = (
-                        "wait and try later, or move the box to another zone:\n"
-                        f"        comfy-qat move {host.name}"
+                    advice = output.fix(
+                        "wait and try later, or move the box to another zone:",
+                        f"comfy-qat move {host.name}",
                     )
                 raise LifecycleError(
+                    # "not a fault on your side" is not reassurance for its own
+                    # sake: without it people spend an hour auditing their quota
+                    # and billing for a shortage that has nothing to do with
+                    # either. It changes the next action, so it stays.
                     f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
                     f"right now, so {host.name} cannot start. This is not a fault on "
                     "your side, and retrying in the same zone will not help.",
@@ -325,20 +373,23 @@ def bring_up(
                 last_error = exc
                 return False
 
-        up = _wait(is_running, timeout=boot_timeout, sleep=sleep, now=now)
+        up = _wait(is_running, timeout=boot_timeout, sleep=sleep, now=now,
+                   tick=waking.tick)
         if not up:
+            waking.give_up()
             if last_error is not None:
                 raise LifecycleError(
                     f"could not tell whether {host.name} reached RUNNING: {last_error}",
-                    fix=last_error.fix or stop_paying(host),
+                    fix=_with_the_bill(host, last_error.fix),
                 ) from last_error
             raise LifecycleError(
-                f"{host.name} did not reach RUNNING within {boot_timeout}s. It was "
-                "asked to start, so it may be billing already.",
-                fix=("check it in the console, then try again, or:\n        "
-                     + stop_paying(host)),
+                f"{host.name} did not reach RUNNING within {boot_timeout}s. It "
+                "was asked to start, so it may be billing already.",
+                fix=_with_the_bill(host, "check it in the console, then try again"),
             )
-    say(f"{host.name} is running")
+        waking.done("running")
+    else:
+        say(f"{host.name} is running")
 
     existing = tunnel_status(host.name, tunnel_dir)
     if existing.running:
@@ -357,23 +408,25 @@ def bring_up(
                 # impossible on any box that was not already serving: it opened
                 # the tunnel first, the tunnel refused, and the launch it was
                 # about to do was the very thing that would have fixed it.
-                say("ComfyUI is not listening on the machine yet, so there is "
-                    "nothing to tunnel to — starting it first")
+                say("nothing is listening on the machine yet, so there is nothing "
+                    "to tunnel to — starting ComfyUI first")
                 raise LifecycleError(
-                    f"ComfyUI is not running on {host.name} yet.",
+                    f"ComfyUI is not running on {host.name} yet",
                     kind=COMFYUI_ABSENT,
                     fix=f"comfy-qat go {host.name}",
                 ) from exc
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",
                 kind=TUNNEL_DOWN,
-                fix=((exc.fix + "\n        or stop paying for it:\n        ") if exc.fix
-                     else "") + stop_paying(host),
+                fix=_with_the_bill(host, exc.fix),
             ) from exc
         say(f"tunnel open: {host.url}")
 
     stamp = None
     deadline = now() + comfy_timeout
+    answering = output.slow(f"waiting for ComfyUI on {host.url}",
+                            expect=f"up to {comfy_timeout}s",
+                            emit=say, clock=now, background=False).start()
     while True:
         stamp = probe_fn(host)
         if stamp is not None:
@@ -386,33 +439,39 @@ def bring_up(
         # A dead tunnel and an absent ComfyUI look identical from here — both are
         # silence on the port — and only one of them is fixed on the box.
         if not tunnel_status(host.name, tunnel_dir).running:
+            answering.give_up()
             raise LifecycleError(
                 f"the tunnel to {host.name} closed, so nothing is listening on "
-                f"{host.url} any more. ComfyUI was never reached.",
+                f"{host.url}. ComfyUI was never reached.",
                 kind=TUNNEL_DOWN,
-                fix=(f"read what gcloud said in {log_file(host.name, tunnel_dir)}, "
-                     f"then:\n        comfy-qat open {host.name}"
-                     "\n        or stop paying for it:\n        "
-                     + stop_paying(host)),
+                fix=_with_the_bill(
+                    host,
+                    f"read what gcloud said in {log_file(host.name, tunnel_dir)}, then:",
+                    f"comfy-qat open {host.name}",
+                ),
             )
         if now() >= deadline:
             break
+        answering.tick()
         sleep(POLL_SECONDS)
 
     if stamp is None:
+        answering.give_up()
         raise LifecycleError(
-            f"{host.name} is running and tunnelled, but ComfyUI is not answering on "
-            f"{host.url}. The machine is up and billing; ComfyUI is not installed or "
-            "not started.",
+            f"{host.name} is running and tunnelled, but ComfyUI is not answering "
+            f"on {host.url}. The machine is up and billing; ComfyUI is not "
+            "installed or not started.",
             kind=COMFYUI_ABSENT,
-            fix=(
-                "get onto the machine and install or start ComfyUI:\n        "
-                + how_to_get_in(host)
-                + "\n        or stop paying for it:\n        "
-                + stop_paying(host)
+            fix=_with_the_bill(
+                host,
+                "get onto the machine and install or start ComfyUI:",
+                how_to_get_in(host),
             ),
         )
 
+    # `give_up`, not `done`: the next line *is* the completion, and a separate
+    # "answered in 2m10s" above it would be the same fact twice.
+    answering.give_up()
     say(f"ComfyUI answering: {stamp.line()}")
     return Ready(host=host, stamp=stamp, started=started, tunnelled=True)
 
@@ -450,18 +509,18 @@ def wait_for_ssh(
             if is_auth_failure(exc):
                 stand_down(host, tunnel_dir, say)
                 raise LifecycleError(
-                    f"gcloud is not signed in, so {host.name} cannot be reached: {exc}. "
-                    "Waiting will not fix this, and the machine is running and billing.",
-                    fix=((exc.fix or "gcloud auth login")
-                         + "\n        or stop paying for it:\n        "
-                         + stop_paying(host)),
+                    # "Waiting will not fix this" went: nothing is waiting any
+                    # more by the time this is printed. The bill stayed, because
+                    # the machine is on and nobody reading this knows that yet.
+                    f"gcloud is not signed in, so {host.name} cannot be reached: "
+                    f"{exc}. The machine is running and billing.",
+                    fix=_with_the_bill(host, exc.fix or "gcloud auth login"),
                 ) from exc
             if now() >= deadline:
                 stand_down(host, tunnel_dir, say)
                 raise LifecycleError(
                     f"{host.name} is running but not accepting commands after {timeout}s: {exc}",
-                    fix=(how_to_get_in(host) + "\n        or stop paying for it:\n        "
-                         + stop_paying(host)),
+                    fix=_with_the_bill(host, how_to_get_in(host)),
                 ) from exc
             if not said_waiting:
                 say("waiting for the machine to accept commands — Windows takes a few minutes")
@@ -492,8 +551,13 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         _verify(gc, host, say, give_up)
         return
 
-    say("ComfyUI is not there — installing it. This takes a while; torch is the "
-        "slow part.")
+    # The install streams its own log, so this ticks rarely: the log is the
+    # evidence it is alive, and the tick is there for the minutes when pip has
+    # gone quiet fetching a two-gigabyte wheel. It also reports how long the
+    # whole thing took, which is the number people actually want afterwards.
+    installing = output.slow("ComfyUI is not there — installing it",
+                             expect="several minutes; torch is the slow part",
+                             emit=say, every=STREAM_TICK_SECONDS).start()
     try:
         try:
             reported = gc.ssh_output(host.gce_instance, host.gce_zone,
@@ -504,12 +568,15 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                            install_command(host, torch_index_for(str(reported or ""))),
                            stream=True)
     except GcloudError as exc:
+        installing.give_up()
         raise give_up(
             f"the ComfyUI install on {host.name} did not finish: {exc}") from exc
 
     if installed != 0:
+        installing.give_up()
         raise give_up(
             f"the ComfyUI install on {host.name} did not finish (exit {installed})")
+    installing.done("installed")
 
     # An install script that exits 0 having installed nothing is not a theory:
     # on Windows a failed clone leaves every later step running in the wrong
@@ -589,35 +656,37 @@ def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
     TypeError instead of printing it.
     """
     stand_down(host, tunnel_dir, say)
-    advice = how_to_get_in(host)
+
+    # Each possibility is a labelled block, because they used to run together:
+    # the egress command was followed straight by the RDP recipe, so three
+    # unrelated commands read as one four-step procedure.
+    blocks: list[str] = []
+    if egress and host.is_remote:
+        # Not guessable from the box: everything reaches it fine, so nobody
+        # thinks to check whether it can reach anything. IAP gets you in; an
+        # instance with no external address and no Cloud NAT cannot get out,
+        # which is why a pypi timeout is the sign to look for.
+        blocks.append(output.fix(
+            "if pypi timed out, the box has no route out — give it one and run "
+            "this again:",
+            f"gcloud compute instances add-access-config {host.gce_instance} "
+            f"--zone={host.gce_zone} --project={host.gce_project}",
+        ))
     if stop_first is not None and host.is_remote:
         from .provision import stop_command
 
         pid, _ = stop_first
-        advice = (
-            "if that is a ComfyUI you no longer want, stop it:\n        "
+        blocks.append(output.fix(
+            "if that is a ComfyUI you no longer want, stop it and run this again:",
             f"gcloud compute ssh {host.gce_instance} --zone={host.gce_zone} "
             f"--project={host.gce_project} --tunnel-through-iap "
-            f"--command='{stop_command(host, pid)}'"
-            f"\n        then run the same command again\n        " + advice
-        )
-    if egress and host.is_remote:
-        # Not guessable from the box: everything reaches it fine, so nobody
-        # thinks to check whether it can reach anything.
-        advice = (
-            "if pypi timed out, the box has no route out — IAP reaches it, "
-            "but an instance with no external address and no Cloud NAT "
-            "cannot reach the internet:\n        "
-            f"gcloud compute instances add-access-config {host.gce_instance} "
-            f"--zone={host.gce_zone} --project={host.gce_project}"
-            "\n        then run the same command again\n        "
-            + advice
-        )
-    return LifecycleError(
-        message,
-        fix=(advice + "\n        or stop paying for it:\n        "
-             + stop_paying(host)),
-    )
+            f"--command='{stop_command(host, pid)}'",
+        ))
+    blocks.append(output.fix(
+        f"{'or ' if blocks else ''}get onto the machine and look:",
+        how_to_get_in(host),
+    ))
+    return LifecycleError(message, fix=_with_the_bill(host, *blocks))
 
 
 def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None:
@@ -659,9 +728,8 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
         # The specific failure: PyPI's Windows torch wheel is CPU-only, so any
         # `pip install -r requirements.txt` on Windows quietly produces a box
         # that cannot use the card it is rented for.
-        say(f"torch on {host.name} cannot see the {host.gpu or 'GPU'} — it is a "
-            "CPU-only build, so ComfyUI would start and refuse to run")
-        say("  installing the CUDA build instead; this is the slow part")
+        say(f"torch on {host.name} is a CPU-only build and cannot see the "
+            f"{host.gpu or 'GPU'} — installing the CUDA build instead")
     else:
         return
 
@@ -675,8 +743,10 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     except GcloudError:
         reported = None
     index = torch_index_for(str(reported or ""))
-    say(f"  installing torch from {index.rsplit('/', 1)[-1]}, "
-        f"which is what this box's driver supports")
+    fetching = output.slow(
+        f"installing torch from {index.rsplit('/', 1)[-1]}, which is what this "
+        "box's driver supports",
+        expect="several minutes", emit=say, every=STREAM_TICK_SECONDS).start()
 
     try:
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
@@ -684,11 +754,14 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
                                      index=index),
                       stream=True)
     except GcloudError as exc:
+        fetching.give_up()
         raise give_up(f"could not install torch on {host.name}: {exc}", egress=True) from exc
     if code != 0:
+        fetching.give_up()
         raise give_up(
             f"torch could not be installed on {host.name} (exit {code}), so "
             "ComfyUI cannot use its GPU. Its log is above.", egress=True)
+    fetching.done("installed")
 
 
 def serve(
@@ -772,7 +845,7 @@ def serve(
         serving = probe_fn(host)
         if serving is not None:
             say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
-                f"— using it rather than starting a second one")
+                "— using it rather than starting a second one")
             say(f"ComfyUI answering: {serving.line()}")
             say(f"open {host.url}")
             if open_browser is not None:
@@ -783,9 +856,8 @@ def serve(
         # database lock error, neither of which says what is holding it or that
         # this tool is usually the one that left it there.
         raise give_up(
-            f"something is already listening on {host.name}'s ComfyUI port "
-            f"({name}, pid {pid}), and it is not answering as ComfyUI, so a "
-            f"second one cannot start.",
+            f"something else holds {host.name}'s ComfyUI port ({name}, pid {pid}) "
+            "and is not answering as ComfyUI, so a second one cannot start.",
             stop_first=holder)
 
     say(f"starting ComfyUI on {host.name} — its log follows. Ctrl-C to stop it.")
@@ -811,8 +883,7 @@ def serve(
 
     if code == NO_PYTHON_EXIT:
         raise give_up(
-            f"there is no Python on {host.name} to run ComfyUI with (NO_PYTHON), so "
-            "it could not be started.")
+            f"there is no Python on {host.name} to run ComfyUI with (NO_PYTHON)")
     if code not in (0, INTERRUPTED_EXIT):
         # An install is not the same as a working install. `ensure_installed`
         # asks whether main.py is on the box, so a machine built from a snapshot
@@ -860,10 +931,8 @@ def serve(
         raise LifecycleError(
             f"ComfyUI on {host.name} exited without ever answering on {host.url}. "
             "The machine is up and billing.",
-            fix=("read the log above, then get onto the machine:\n        "
-                 + how_to_get_in(host)
-                 + "\n        or stop paying for it:\n        "
-                 + stop_paying(host)),
+            fix=_with_the_bill(host, "read the log above, then get onto the machine:",
+                               how_to_get_in(host)),
         )
     return code
 
@@ -1126,12 +1195,13 @@ def _never_answered(gc: Gcloud, host: Host, say: Callable[[str], None], *,
         f"ComfyUI on {host.name} exited without ever answering on {host.url}. "
         "The machine is up and billing.",
         kind=COMFYUI_ABSENT,
-        fix=(f"read its whole log on the box:\n        "
-             f"comfy-qat logs {host.name} --tail 100"
-             "\n        or get onto the machine:\n        "
-             + how_to_get_in(host)
-             + "\n        or stop paying for it:\n        "
-             + stop_paying(host)),
+        fix=_with_the_bill(
+            host,
+            "read its whole log on the box:",
+            f"comfy-qat logs {host.name} --tail 100",
+            "or get onto the machine:",
+            how_to_get_in(host),
+        ),
     )
 
 
@@ -1159,9 +1229,11 @@ def read_logs(
         raise LifecycleError(
             f"{host.name} is this machine, and this tool did not start its ComfyUI, "
             f"so there is no log of its own to follow.",
-            fix=("read the terminal you started it in, or start it there:\n        "
-                 f"~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port {host.port} "
-                 "--listen 127.0.0.1"),
+            fix=output.fix(
+                "read the terminal you started it in, or start it there:",
+                f"~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port {host.port} "
+                "--listen 127.0.0.1",
+            ),
         )
 
     try:
@@ -1181,17 +1253,18 @@ def read_logs(
     except GcloudError as exc:
         raise LifecycleError(
             f"could not read the ComfyUI log on {host.name}: {exc}",
-            fix=(how_to_get_in(host) + "\n        or stop paying for it:\n        "
-                 + stop_paying(host)),
+            fix=_with_the_bill(host, how_to_get_in(host)),
         ) from exc
 
     if code == NO_LOG_EXIT:
         raise LifecycleError(
             f"there is no ComfyUI log at {log_for(host)} on {host.name}, so nothing "
             f"has started ComfyUI there. The machine is running and billing.",
-            fix=(f"comfy-qat go {host.name}   # start it, and this will have "
-                 "something to read\n        or stop paying for it:\n        "
-                 + stop_paying(host)),
+            fix=_with_the_bill(
+                host,
+                f"comfy-qat go {host.name}   # start it, and this will have "
+                "something to read",
+            ),
         )
     return code
 
@@ -1239,7 +1312,7 @@ def in_a_new_window(rest: list[str], say: Callable[[str], None]) -> None:
     import sys
 
     line = " ".join([_tool_invocation(), *(shlex.quote(word) for word in rest)])
-    by_hand = f"open a terminal window and run:\n        {line}"
+    by_hand = output.fix("open a terminal window and run:", line)
 
     if sys.platform != "darwin" or shutil.which("osascript") is None:
         raise LifecycleError(
@@ -1361,8 +1434,11 @@ def put_away(
                 f"{host.name} says kind = 'local' but names a cloud instance "
                 f"({', '.join(named)}). Refusing to report it as stopped: if that "
                 f"machine is running, it is billing.",
-                fix=(f"fix the entry in your host list — a cloud box is "
-                     f"kind = 'gce' — then:\n        comfy-qat down {host.name}"),
+                fix=output.fix(
+                    "fix the entry in your host list — a cloud box is kind = 'gce' "
+                    "— then:",
+                    f"comfy-qat down {host.name}",
+                ),
             )
         say("local ComfyUI left running — this tool did not start it")
         return

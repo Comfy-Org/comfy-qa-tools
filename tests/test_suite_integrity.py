@@ -59,6 +59,7 @@ REQUIRED = {
     "test_readme",
     "test_relocate",
     "test_resolve",
+    "test_say",
     "test_setup",
     "test_setup_flow",
     "test_stamp",

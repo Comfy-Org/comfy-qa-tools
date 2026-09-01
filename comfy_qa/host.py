@@ -30,6 +30,7 @@ from .config import (
     load,
     resolve,
 )
+from . import say
 from .lifecycle import LifecycleError
 from .stamp import ProbeError, fetch, mismatch
 
@@ -275,8 +276,13 @@ def create_cmd(
             typer.echo("no project set. Run: comfy-qat setup", err=True)
             raise typer.Exit(code=2)
         instances = gc.list_instances(project)
-        typer.echo("reading quota — this takes about a minute…", err=True)
-        quotas = gc.gpu_quotas(project)
+        # The first place `create` goes quiet, and long enough that silence reads
+        # as a hang. Timed rather than announced once and then nothing.
+        reading = say.slow("reading quota", expect="about a minute").start()
+        try:
+            quotas = gc.gpu_quotas(project)
+        finally:
+            reading.done()
     except GcloudError as exc:
         _refused(exc)
 

@@ -13,7 +13,7 @@ import typer
 
 from .gcloud import Gcloud, GcloudError
 
-from . import auth, commands, host
+from . import auth, commands, host, say
 from . import setup as setup_mod
 
 app = typer.Typer(
@@ -53,7 +53,7 @@ def _version_callback(asked: bool) -> None:
     if asked:
         from . import version_string
 
-        typer.echo(version_string())
+        say.result(version_string())
         raise typer.Exit()
 
 
@@ -96,9 +96,8 @@ First run — one command.
 
   comfy-qat setup
 
-It signs you in to Google Cloud, picks your project, checks billing, sorts out GPU
-quota and writes your host list. It asks only where the decision is genuinely
-yours, and says what it is doing at each step.
+Sign-in, project, billing, GPU quota and your host list, in one pass. It asks only
+where the decision is genuinely yours, and says what it is doing as it goes.
 
 Afterwards:
 
@@ -128,7 +127,7 @@ def setup_cmd(
         confirm=typer.confirm,
         ask=typer.prompt,
         choose=_choose,
-        say=lambda line: typer.echo(f"  {line}"),
+        say=say.step,
     )
     try:
         path = setup_mod.run_setup(
@@ -136,18 +135,11 @@ def setup_cmd(
             interactive=not non_interactive,
             project=project, region=region,
         )
-    except setup_mod.SetupStopped as stop:
-        typer.echo(f"\nsetup stopped: {stop}", err=True)
-        if stop.fix:
-            typer.echo(f"to fix: {stop.fix}", err=True)
-        raise typer.Exit(code=1)
-    except GcloudError as exc:
-        # A gcloud failure is a message, never a traceback. Tracebacks tell a
-        # tester nothing they can act on.
-        typer.echo(f"\nsetup stopped: {exc}", err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=1)
+    except (setup_mod.SetupStopped, GcloudError) as exc:
+        # One handler, because there was never a difference: both are a message
+        # and a fix, and a gcloud failure is a message rather than a traceback,
+        # which tells a tester nothing they can act on.
+        say.fail(f"setup stopped: {exc}", exc.fix)
 
     # The old sign-off told people to add cloud boxes by hand, which discovery
     # had just done for them.
@@ -159,16 +151,22 @@ def setup_cmd(
         hosts = []
 
     remote = [host for host in hosts if host.is_remote]
-    typer.echo(f"\nReady — {len(hosts)} machine(s), {len(remote)} in the cloud.")
-    typer.echo("  comfy-qat list        see them")
-    typer.echo("  comfy-qat stamp local what a machine is, exactly")
+    say.result(f"\nready — {say.count(len(hosts), 'machine')}, "
+               f"{len(remote)} in the cloud")
+    say.result("  comfy-qat list        see them")
+    say.result("  comfy-qat stamp local what a machine is, exactly")
     if not remote:
-        typer.echo(f"\nNo cloud boxes found. Add one by hand in {path}, or create one in")
-        typer.echo("Google Cloud and run `comfy-qat discover`.")
+        say.result(f"\nno cloud boxes yet. Add one to {path} by hand, or create one in "
+                   "Google Cloud and run `comfy-qat discover`.")
 
 
 def _choose(question: str, options: list[str]) -> str:
-    """Numbered pick. Typer has no list prompt, and a free-text guess is worse."""
+    """Numbered pick. Typer has no list prompt, and a free-text guess is worse.
+
+    Plain `typer.echo` rather than `say`: this is the body of a prompt, and it
+    has to appear on the same stream as the question `typer.prompt` is about to
+    ask. It is neither an answer nor a diagnostic.
+    """
     typer.echo(question)
     for index, option in enumerate(options, start=1):
         typer.echo(f"  {index}. {option}")
@@ -180,13 +178,13 @@ def _choose(question: str, options: list[str]) -> str:
             picked = 0
         if 1 <= picked <= len(options):
             return options[picked - 1]
-        typer.echo(f"Pick a number between 1 and {len(options)}.")
+        typer.echo(f"pick a number between 1 and {len(options)}")
 
 
 @app.command("guide")
 def guide_cmd() -> None:
     """How to set this up, without leaving the terminal."""
-    typer.echo(FIRST_RUN)
+    say.result(FIRST_RUN)
 
 
 def register(parent: typer.Typer, name: str = "qa") -> None:

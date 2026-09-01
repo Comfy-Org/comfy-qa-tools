@@ -17,6 +17,7 @@ from typing import Annotated, Callable, Optional
 
 import typer
 
+from . import say
 from .quota import (
     GLOBAL_ALLOWANCE,
     available_gpus,
@@ -145,7 +146,7 @@ def run_checks(gc: Gcloud) -> list[Check]:
         shown += f" (+{len(summary) - 4} more)"
     results.append(Check(
         "gpu quota", True,
-        f"{shown} — {len(summary)} card(s) ready",
+        f"{shown} — {say.count(len(summary), 'card')} ready",
     ))
 
     return results
@@ -173,14 +174,16 @@ def status_cmd(
     checks = run_checks(Gcloud())
 
     if as_json:
-        typer.echo(json.dumps([asdict(c) for c in checks], indent=2))
+        say.result(json.dumps([asdict(c) for c in checks], indent=2))
     else:
         for check in checks:
-            mark = "ok  " if check.ok else "FAIL"
-            typer.echo(f"{mark}  {check.name:<10} {check.detail}")
+            say.check(check.ok, f"{check.name:<10} {check.detail}")
         failed = next((c for c in checks if not c.ok), None)
         if failed and failed.fix:
-            typer.echo(f"\nto fix: {failed.fix}")
+            # The rows are the answer and stay on stdout; the fix belongs to a
+            # failure and goes where every other fix goes. This was the one
+            # `to fix:` of fourteen that was printed on stdout.
+            say.write_fix(failed.fix)
 
     if any(not c.ok for c in checks):
         raise typer.Exit(code=1)
@@ -193,9 +196,9 @@ def login_cmd() -> None:
     `gcloud auth login` opens a browser and is interactive, so it is handed over
     rather than driven. Running it yourself also leaves you the repro trail.
     """
-    typer.echo("Run these, then `comfy-qat status`:\n")
-    typer.echo("  gcloud auth login")
-    typer.echo("  gcloud config set project <your-project-id>")
+    say.result("run these, then `comfy-qat status`:\n")
+    say.result("  gcloud auth login")
+    say.result("  gcloud config set project <your-project-id>")
 
 
 @quota_app.callback(invoke_without_command=True)
@@ -216,20 +219,20 @@ def quota_list_cmd(
     gc = Gcloud()
     try:
         project = _require_project(gc)
-        typer.echo("reading quota — this takes about a minute…", err=True)
-        quotas = gc.gpu_quotas(project)
-        prefs = gc.quota_preferences(project)
+        # Google's quota API is slow enough that a silent minute reads as a hang,
+        # so the step says how long it should take and then keeps saying it is
+        # still there. On stderr, which is what keeps `--json` a document.
+        with say.slow("reading quota", expect="about a minute"):
+            quotas = gc.gpu_quotas(project)
+            prefs = gc.quota_preferences(project)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=2)
+        say.fail(exc, code=2)
 
     rows = readiness(quotas, prefs, region=region)
     cards = summarise(rows)
 
     if as_json:
-        typer.echo(json.dumps({
+        say.result(json.dumps({
             "project": project,
             "gpus": [asdict(c) for c in cards],
             "by_region": [asdict(r) for r in rows],
@@ -237,7 +240,7 @@ def quota_list_cmd(
         return
 
     if not rows:
-        typer.echo(f"{project}: no GPU quotas reported.")
+        say.result(f"{project}: no GPU quotas reported")
         return
 
     notes = {
@@ -248,25 +251,25 @@ def quota_list_cmd(
 
     if by_region:
         width = max([len(r.region) for r in rows] + [6])
-        typer.echo(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>5}  STATUS")
+        say.result(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>5}  STATUS")
         for row in rows:
-            typer.echo(f"{row.gpu:<14} {row.region:<{width}} {row.limit:>5}  {notes[row.status]}")
+            say.result(f"{row.gpu:<14} {row.region:<{width}} {row.limit:>5}  {notes[row.status]}")
         return
 
     width = max([len(c.where) for c in cards] + [6])
-    typer.echo(f"{'GPU':<14} {'LIMIT':>5}  {'WHERE':<{width}}  STATUS")
+    say.result(f"{'GPU':<14} {'LIMIT':>5}  {'WHERE':<{width}}  STATUS")
     for card in cards:
-        typer.echo(f"{card.gpu:<14} {card.limit:>5}  {card.where:<{width}}  {notes[card.status]}")
+        say.result(f"{card.gpu:<14} {card.limit:>5}  {card.where:<{width}}  {notes[card.status]}")
 
     if not any(c.usable for c in cards):
-        typer.echo("\nNothing is usable yet. Ask for one or more cards:")
-        typer.echo("  comfy-qat quota request --gpu l4,a100 --region us-central1")
+        say.result("\nnothing is usable yet. Ask for a card:")
+        say.result("  comfy-qat quota request --gpu l4,a100 --region us-central1")
 
 
 @quota_app.command("request")
 def quota_request_cmd(
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Card(s) to ask for, comma separated, e.g. l4,a100.")] = None,
+        "--gpu", help="Cards to ask for, comma separated, e.g. l4,a100.")] = None,
     quota_id: Annotated[Optional[str], typer.Option(
         "--quota-id", help="Raw quota id, if you would rather name it exactly.")] = None,
     value: Annotated[int, typer.Option("--value", help="How many of each card.")] = 1,
@@ -283,21 +286,21 @@ def quota_request_cmd(
     often refused until it has been billed once.
     """
     if not gpu and not quota_id:
-        typer.echo("name what you want: --gpu l4,a100 (or --quota-id for a raw id)", err=True)
-        raise typer.Exit(code=2)
+        say.fail("name a card to ask for",
+                 fix=say.fix("comfy-qat auth quota request --gpu l4,a100",
+                             "or --quota-id, to name a raw quota id exactly"),
+                 code=2)
 
     gc = Gcloud()
     try:
         project = _require_project(gc)
         quotas = gc.gpu_quotas(project)
     except GcloudError as exc:
-        typer.echo(str(exc), err=True)
         # The exception carries the command that fixes it — dropping it left
         # `no project set` with nowhere to go, while `quota list` said `comfy-qat
-        # setup` for the same failure.
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=2)
+        # setup` for the same failure. `say.fail` reads `.fix` off the exception,
+        # so it can no longer be lost by forgetting a line.
+        say.fail(exc, code=2)
 
     wanted: list[tuple[str, str]] = []
     if quota_id:
@@ -315,13 +318,15 @@ def quota_request_cmd(
             elsewhere = sorted({
                 row.region for row in readiness(quotas) if matches(name, row.quota_id)
             }) if region else []
-            typer.echo(
+            say.fail(
                 f"this project reports no quota for {name!r}"
                 + (f" in {region}" if region else "")
-                + (f". It is metered in {', '.join(elsewhere)}" if elsewhere else "")
-                + f". Available: {offer}", err=True,
+                + (f", it is metered in {', '.join(elsewhere)}" if elsewhere else ""),
+                fix=(f"ask for one of: {offer}" if offer != "none" else
+                     "this project reports no GPU quota at all — "
+                     "comfy-qat auth quota request --gpu l4 --region us-central1"),
+                code=2,
             )
-            raise typer.Exit(code=2)
         wanted.append((name, resolved))
 
     submitted: list[tuple[str, str]] = []
@@ -331,14 +336,14 @@ def quota_request_cmd(
             region=region, justification=justification,
         )
         if dry_run:
-            typer.echo("gcloud " + " ".join(args))
+            say.result("gcloud " + " ".join(args))
             continue
         try:
             gc.run(args)
         except GcloudError as exc:
-            typer.echo(f"request for {name} failed: {exc}", err=True)
+            say.error(f"request for {name} failed: {exc}", blank_line=False)
             continue
-        typer.echo(f"requested {name} = {value}" + (f" in {region}" if region else ""))
+        say.result(f"requested {name} = {value}" + (f" in {region}" if region else ""))
         submitted.append((name, resolved))
 
     if dry_run:
@@ -347,7 +352,7 @@ def quota_request_cmd(
         # Every request was refused. Exiting 0 told a script it had worked.
         raise typer.Exit(code=2)
 
-    typer.echo(f"track them: {console_quota_url(project)}")
+    say.result(f"track them: {console_quota_url(project)}")
     if not wait:
         return
 
@@ -362,16 +367,18 @@ def quota_request_cmd(
             timeout=max(0.0, deadline - time.monotonic()), interval=POLL_SECONDS,
         )
         if granted:
-            typer.echo(f"granted: {name}")
+            say.result(f"granted: {name}")
         else:
             still_waiting.append(name)
 
     if still_waiting:
-        typer.echo(
-            f"still pending: {', '.join(still_waiting)}. Approval can take days — "
-            "run `comfy-qat quota` to check, or this command again to keep waiting."
-        )
-        raise typer.Exit(code=75)  # EX_TEMPFAIL: not an error, not done either
+        # 75 is EX_TEMPFAIL: not an error and not done either. Nothing is broken,
+        # so this is a result rather than a failure, and it names what to run
+        # next because approval can take days and the wait has to be re-entered.
+        say.result(f"still pending: {', '.join(still_waiting)}. Approval can take "
+                   "days — run this again to keep waiting, or `comfy-qat quota` "
+                   "to check.")
+        raise typer.Exit(code=75)
 
 
 def _require_project(gc: Gcloud) -> str:
