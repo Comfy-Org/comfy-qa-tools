@@ -384,6 +384,32 @@ class Gcloud:
         ], timeout=QUOTA_TIMEOUT) or []
         return [q for q in infos if "GPU" in (q.get("quotaId") or "").upper()]
 
+    def region_quotas(self, region: str, project: str) -> dict[str, tuple[float, float]]:
+        """Usage and limit per metric for one region, keyed by metric name.
+
+        Deliberately not `quotas info list`, which is where gpu_quotas reads
+        from: that gives limits without usage, and "is there room" needs both.
+        `regions describe` carries the pair.
+
+        Returns an empty dict rather than raising. This exists to make a plan
+        more honest, and a plan that cannot be improved is still a plan — it must
+        never be the reason a move that would have worked is refused.
+        """
+        try:
+            described = self.run([
+                "compute", "regions", "describe", region,
+                f"--project={project}",
+            ], timeout=QUOTA_TIMEOUT) or {}
+        except GcloudError:
+            return {}
+        out: dict[str, tuple[float, float]] = {}
+        for quota in described.get("quotas") or []:
+            metric = quota.get("metric")
+            if metric:
+                out[metric] = (float(quota.get("usage") or 0),
+                               float(quota.get("limit") or 0))
+        return out
+
     def list_instances(self, project: str) -> list[dict]:
         """Every Compute Engine instance on the project, across all zones."""
         return self.run([

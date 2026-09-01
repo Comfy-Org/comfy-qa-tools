@@ -113,11 +113,12 @@ class Cloud:
     """
 
     def __init__(self, *, disks=(), snapshots=(), instances=(), fail=None,
-                 machine_types=("g2-standard-8",)):
+                 machine_types=("g2-standard-8",), region=None):
         self.disks = [dict(d) for d in disks]
         self.snapshots = [dict(s) for s in snapshots]
         self.instances = [dict(i) for i in instances]
         self.machine_types = list(machine_types)
+        self.region = region
         self.fail = dict(fail or {})
         self.calls: list[str] = []
 
@@ -151,6 +152,10 @@ class Cloud:
             zone = self._flag(args, "--zones")
             return ([{"name": wanted, "zone": zone}]
                     if wanted in self.machine_types else [])
+        if key.startswith("compute regions describe"):
+            # The SSD allowance, read before the plan is printed. `None` here
+            # means "could not tell", which must leave the plan alone.
+            return self.region
         if key.startswith("compute disks snapshot"):
             return self._take_snapshot(args)
         if key.startswith("compute disks create"):
@@ -490,7 +495,7 @@ def test_a_disk_that_cannot_be_confirmed_is_refused_with_the_command_to_remove_i
 
     assert because in str(caught.value)
     assert "gcloud compute disks delete comfy-win-a-b" in caught.value.fix
-    assert cloud.calls[-1].startswith("compute machine-types list"), (
+    assert all(("list" in call or "describe" in call) for call in cloud.calls), (
         "it refused before touching anything"
     )
 
@@ -714,7 +719,9 @@ def test_looking_at_the_project_changes_nothing_on_it():
     before = (list(cloud.disks), list(cloud.snapshots), list(cloud.instances))
     survey(gc, plan)
     assert (cloud.disks, cloud.snapshots, cloud.instances) == before
-    assert all("list" in call for call in cloud.calls)
+    assert all(("list" in call or "describe" in call) for call in cloud.calls), (
+        "reading a quota or an instance is fine; changing anything is not"
+    )
 
 
 SSD_QUOTA_REFUSAL = (
@@ -867,3 +874,44 @@ def test_cleaning_up_replans_before_moving_on():
     assert not after.reuse_disk, (
         "reusing a disk that was just deleted is the silent failure this guards"
     )
+
+
+# --- the disk type is decided before the user agrees to it ----------------
+#
+# The plan promised "pd-balanced, matching comfy-win-a". The user said yes. The
+# create then failed on SSD_TOTAL_GB, took pd-standard instead, and announced a
+# slower box after the fact — offering a remedy (raise the quota, delete the
+# disk, run again) that throws away a copy already paid for and waited on.
+
+def _region(usage, limit):
+    return {"quotas": [{"metric": "SSD_TOTAL_GB", "usage": usage, "limit": limit}]}
+
+
+def test_a_disk_that_will_not_fit_is_planned_as_the_slower_one():
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE], region=_region(400, 500))
+    _, plan, _ = (cloud, *prepare(cloud.gcloud(), WIN, INSTANCE, "us-central1-b"))
+
+    assert plan.disk_type == "pd-standard"
+    line = next(s for s in plan.steps() if s.startswith("create disk"))
+    assert "100 GB left" in line and "300 GB" in line
+    assert "more slowly" in line, "the consequence belongs in the plan, not after it"
+
+
+def test_a_disk_that_fits_still_matches_the_original():
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE], region=_region(0, 5000))
+    _, plan, _ = (cloud, *prepare(cloud.gcloud(), WIN, INSTANCE, "us-central1-b"))
+
+    assert plan.disk_type == "pd-balanced"
+    assert "matching comfy-win-a" in next(
+        s for s in plan.steps() if s.startswith("create disk"))
+
+
+def test_an_unreadable_allowance_changes_nothing():
+    """Advisory only. A check that refuses a move which would have succeeded is
+    worse than the surprise it prevents, and the runtime fallback still catches
+    the real thing."""
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE], region=None)
+    _, plan, _ = (cloud, *prepare(cloud.gcloud(), WIN, INSTANCE, "us-central1-b"))
+
+    assert plan.disk_type == "pd-balanced"
+    assert plan.disk_note is None

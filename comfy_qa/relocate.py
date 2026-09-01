@@ -280,6 +280,9 @@ class Plan:
     # None for G2/A2/A3, where the machine type carries the card, and passing the
     # flag alongside one of those is refused by Google.
     accelerator: str | None = None
+    # Why the disk type is not the source's, when it is not. Set before the plan
+    # is printed so the user consents to the disk they will actually get.
+    disk_note: str | None = None
     # Whether the box being moved is on right now. A move does not touch it
     # either way, so this exists only so the plan and the summary can say what is
     # true rather than what is convenient.
@@ -355,11 +358,16 @@ class Plan:
                         f"{self.host.gce_instance} ({self.host.gce_zone}) as "
                         f"{self.snapshot}",
                     ))
+                because = (
+                    f", {self.disk_note} — it will boot and load models more "
+                    "slowly than the original"
+                    if self.disk_note else f", matching {self.source_disk}"
+                )
                 out.append(Action(
                     CREATE_DISK,
                     f"create disk {self.new_disk} in {self.to_zone} from that "
-                    f"snapshot ({self.disk_type or GCLOUD_DEFAULT_DISK_TYPE}, "
-                    f"matching {self.source_disk})",
+                    f"snapshot ({self.disk_type or GCLOUD_DEFAULT_DISK_TYPE}"
+                    f"{because})",
                 ))
             carried = (
                 f" with {self.accelerator.replace('type=', '').replace(',count=', ' x')}"
@@ -617,7 +625,46 @@ def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str) -> tuple[Plan,
     found = survey(gc, plan)
     if found.source_disk is not None:
         plan = replace(plan, disk_type=_tail(found.source_disk.get("type")) or None)
+        plan = _within_the_allowance(gc, plan, found.source_disk)
     return plan, found
+
+
+# The disk types metered against SSD_TOTAL_GB. pd-standard is not one of them,
+# which is why it is the thing to fall back to.
+_SSD_METRIC = "SSD_TOTAL_GB"
+
+
+def _within_the_allowance(gc: Gcloud, plan: Plan, source_disk: dict) -> Plan:
+    """Downgrade the planned disk type BEFORE the plan is printed, if it must.
+
+    The plan promised "pd-balanced, matching comfy-linux", the user said yes, and
+    then the create failed on SSD_TOTAL_GB and took pd-standard instead —
+    announcing a slower box after consent, and offering a remedy (raise the
+    quota, delete the disk, run again) that throws away a 200 GB copy already
+    paid for and waited on.
+
+    Advisory only. If this cannot read the quota it changes nothing, and the
+    runtime fallback still catches it: a check that refuses a move which would
+    have succeeded is worse than the surprise it prevents.
+    """
+    if plan.disk_type not in _SSD_TYPES:
+        return plan
+    region = plan.to_zone.rsplit("-", 1)[0]
+    quotas = gc.region_quotas(region, plan.project)
+    if _SSD_METRIC not in quotas:
+        return plan
+    usage, limit = quotas[_SSD_METRIC]
+    try:
+        needed = float(source_disk.get("sizeGb") or 0)
+    except (TypeError, ValueError):
+        return plan
+    if not needed or usage + needed <= limit:
+        return plan
+    return replace(plan, disk_type=GCLOUD_DEFAULT_DISK_TYPE,
+                   disk_note=(
+                       f"{region} has {limit - usage:.0f} GB left of its "
+                       f"{limit:.0f} GB SSD allowance and this needs {needed:.0f} GB"
+                   ))
 
 
 def blocked(plan: Plan, found: Found) -> MoveError | None:
