@@ -998,6 +998,7 @@ def move_cmd(
     """
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
+    from .hostfile import apply, rename_and_add
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
         remove_leftovers, run_move,
@@ -1066,17 +1067,32 @@ def move_cmd(
     ports: list[int] = []
 
     def register(done) -> None:
-        """Write the moved box into the host list — the move's last real step."""
+        """Rewrite the host list so the box keeps its name, its port and its URL.
+
+        This used to append a second entry under a new name and a new port, which
+        is why a successful move left `comfy-qat go <box>` still failing: the
+        original entry was untouched and still named the zone with no capacity.
+
+        The box being moved away from is not dropped — it exists in GCE and bills
+        until somebody deletes it, so it stays reachable under a name that says
+        where it is. Both halves land in one atomic write or neither does.
+        """
         hosts = load(path)
-        port = next_ports(hosts, 1)[0]
+        retired = done.retired_name
+        freed = next_ports(hosts, 1)[0]
         moved = Discovered(
-            name=done.new_instance, os=host.os or "unknown", gpu=host.gpu or "",
+            name=host.name, os=host.os or "unknown", gpu=host.gpu or "",
             gce_instance=done.new_instance, gce_zone=done.to_zone,
             gce_project=host.gce_project, running=True,
         )
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(to_toml(moved, port))
-        ports.append(port)
+        text = rename_and_add(
+            path.read_text(encoding="utf-8"),
+            name=host.name, renamed=retired, renamed_port=freed,
+            added=to_toml(moved, host.port),
+        )
+        apply(path, text,
+              expect={h.name for h in hosts} - {host.name} | {retired, host.name})
+        ports.append(host.port)
 
     typer.echo("")
     try:
@@ -1097,16 +1113,16 @@ def move_cmd(
     port = ports[0] if ports else host.port
     # Creating an instance starts it. Saying "now run go" read as "now start it",
     # so a moved box billed silently from the moment the move finished.
-    typer.echo(f"\n{plan.new_instance} is running in {target}, on port {port}, "
-               f"and billing from now.")
-    typer.echo(f"  comfy-qat go {plan.new_instance}     # tunnel to it and serve")
-    typer.echo(f"  comfy-qat down {plan.new_instance}   # stop paying")
+    typer.echo(f"\n{host.name} is now in {target}, running and billing from now. "
+               f"Same name, same port {port}.")
+    typer.echo(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+    typer.echo(f"  comfy-qat down {host.name}   # stop paying")
 
     was = "running and still billing" if plan.source_running else "stopped"
-    typer.echo(f"\nleft behind: {host.gce_instance} in {host.gce_zone} ({was}), "
-               f"and its disk {plan.source_disk}.")
+    typer.echo(f"\nthe old box is still in {host.gce_zone} ({was}), now called "
+               f"{plan.retired_name}, with its disk {plan.source_disk}.")
     if plan.source_running:
-        typer.echo(f"  comfy-qat down {host.name}")
+        typer.echo(f"  comfy-qat down {plan.retired_name}")
     typer.echo(f"  {delete_instance_command(plan)}")
 
 

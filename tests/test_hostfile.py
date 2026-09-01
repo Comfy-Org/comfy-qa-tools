@@ -1,0 +1,139 @@
+"""Rewriting the host list without losing it.
+
+Every other write to hosts.toml appends, which cannot lose anything. This one
+rewrites, and the file is hand-maintained, carries comments, and names every
+machine the user can reach — a truncated hosts.toml is worse than any move
+failure, because after it no command works at all.
+
+So these tests are about the failure, not the feature.
+"""
+
+from __future__ import annotations
+
+import tomllib
+
+import pytest
+
+from comfy_qa.hostfile import HostFileError, apply, rename_and_add
+
+HOSTS = """\
+# my machines — this comment must survive
+[hosts.local]
+kind = "local"
+port = 8188
+
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-c"
+gce_project  = "proj"
+port         = 8192
+
+# the windows one
+[hosts.comfy-win]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8190
+"""
+
+ADDED = """
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8192
+"""
+
+
+def renamed():
+    return rename_and_add(HOSTS, name="comfy-linux",
+                          renamed="comfy-linux-us-central1-c",
+                          renamed_port=8193, added=ADDED)
+
+
+def test_the_moved_box_keeps_its_name_and_its_port():
+    parsed = tomllib.loads(renamed())["hosts"]
+    assert parsed["comfy-linux"]["port"] == 8192
+    assert parsed["comfy-linux"]["gce_zone"] == "us-central1-a"
+
+
+def test_the_old_box_stays_reachable_under_a_name_that_says_where_it_is():
+    """It exists in GCE and bills until deleted. Dropping it from the list would
+    make it unstoppable by this tool, which is a money bug dressed as tidying."""
+    parsed = tomllib.loads(renamed())["hosts"]
+    old = parsed["comfy-linux-us-central1-c"]
+    assert old["gce_zone"] == "us-central1-c"
+    assert old["port"] == 8193, "the canonical port went to the new box"
+
+
+def test_unrelated_hosts_and_comments_survive():
+    out = renamed()
+    assert "# my machines — this comment must survive" in out
+    assert "# the windows one" in out
+    parsed = tomllib.loads(out)["hosts"]
+    assert parsed["comfy-win"]["port"] == 8190
+    assert parsed["local"]["port"] == 8188
+
+
+def test_renaming_a_host_that_is_not_there_is_refused():
+    with pytest.raises(HostFileError, match="not in the host list"):
+        rename_and_add(HOSTS, name="nope", renamed="nope-x",
+                       renamed_port=8199, added=ADDED)
+
+
+def test_a_block_with_no_port_line_is_refused_rather_than_silently_colliding():
+    text = "[hosts.comfy-linux]\nkind = \"gce\"\n"
+    with pytest.raises(HostFileError, match="no port line"):
+        rename_and_add(text, name="comfy-linux", renamed="comfy-linux-z",
+                       renamed_port=8193, added=ADDED)
+
+
+# --- apply(): nothing reaches the file unless it is right --------------------
+
+def test_a_result_that_would_not_parse_never_lands(tmp_path):
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    with pytest.raises(HostFileError, match="would not parse"):
+        apply(path, "[hosts.broken\n", expect={"x"})
+    assert path.read_text(encoding="utf-8") == HOSTS, "the original was touched"
+
+
+def test_a_result_missing_a_host_never_lands(tmp_path):
+    """The failure this check exists for: a transform that quietly drops a box."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    with pytest.raises(HostFileError, match="missing comfy-win"):
+        apply(path, "[hosts.local]\nkind = \"local\"\nport = 8188\n",
+              expect={"local", "comfy-win"})
+    assert path.read_text(encoding="utf-8") == HOSTS
+
+
+def test_a_good_rewrite_lands_and_keeps_a_copy_of_what_was_there(tmp_path):
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    apply(path, renamed(),
+          expect={"local", "comfy-win", "comfy-linux", "comfy-linux-us-central1-c"})
+
+    assert tomllib.loads(path.read_text(encoding="utf-8"))["hosts"]["comfy-linux"][
+        "gce_zone"] == "us-central1-a"
+    backup = path.with_name("hosts.toml.bak")
+    assert backup.exists() and backup.read_text(encoding="utf-8") == HOSTS
+
+
+def test_no_temp_file_is_left_beside_the_host_list(tmp_path):
+    """A stray .tmp next to hosts.toml is the kind of thing somebody later has to
+    make a decision about."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    apply(path, renamed(),
+          expect={"local", "comfy-win", "comfy-linux", "comfy-linux-us-central1-c"})
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []

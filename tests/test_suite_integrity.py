@@ -49,6 +49,7 @@ REQUIRED = {
     "test_env",
     "test_gcloud_auth",
     "test_host_costs",
+    "test_hostfile",
     "test_lifecycle",
     "test_lifecycle_e2e",
     "test_move",

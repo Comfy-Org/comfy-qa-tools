@@ -392,9 +392,21 @@ Four things worth knowing before you run it:
   the disk is copied, the snapshot is kept, so moving to a different zone repeats
   only the disk rather than the whole copy.
 
-The new box gets a new name — the instance name with a zone suffix — because two
-machines that differ only by zone and share a name is how you end up reading
-results from the wrong one.
+**The box keeps its name, its port and its URL.** A move used to append a second
+host entry under a new name on a new port, leaving the original entry pointing at
+the zone that had no capacity — so `go <box>` failed after a move exactly as it
+had before one. Google only requires instance names to be unique per *zone*, so
+the name travels.
+
+The box you moved away from is not dropped: it still exists and still bills until
+somebody deletes it. It stays in the host list renamed by where it is —
+`comfy-win-us-central1-a` — so `down` can still reach it. That name says something;
+`comfy-win-a` did not, and after two moves neither did `comfy-win-a-b`.
+
+The host list is rewritten in place to do this. It is checked before it lands —
+the result must parse and must hold exactly the machines it should — the previous
+file is copied to `hosts.toml.bak`, and the swap is atomic. Comments and hosts
+this tool does not manage are preserved.
 
 ## Which machine am I actually on?
 

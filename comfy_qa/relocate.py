@@ -296,6 +296,18 @@ class Plan:
         return self.host.gce_project or ""
 
     @property
+    def retired_name(self) -> str:
+        """What the box being moved away from is called in the host list after.
+
+        The new box takes the canonical name and the canonical port, so the old
+        one is renamed by where it is. `comfy-linux-us-central1-c` says what it
+        is; `comfy-linux-a` did not, and after two moves neither did
+        `comfy-linux-a-b`. It stays in the list so `down` can still reach it —
+        the box is real and still billing until somebody deletes it.
+        """
+        return f"{self.host.name}-{self.host.gce_zone}"
+
+    @property
     def snapshot_family(self) -> str:
         """The names this tool's own move snapshots take for this disk.
 
@@ -397,11 +409,17 @@ def plan_move(host: Host, instance: dict, to_zone: str,
     """
     disk = boot_disk(instance) or host.gce_instance
     tag = suffix_for(to_zone)
+    # The box keeps its name. GCE names are unique per ZONE, not per project, so
+    # `comfy-linux` can exist in both — the suffix was never Google's requirement,
+    # only a way to keep the appended host-list key unique. Appending is what
+    # broke the move: `go comfy-linux` still pointed at the empty zone afterwards.
+    # The disk keeps a suffix because disks are what a half-finished move leaves
+    # lying around, and telling two copies apart matters more than the name does.
     return Plan(
         host=host,
         to_zone=to_zone,
         source_disk=disk,
-        new_instance=f"{host.gce_instance}-{tag}",
+        new_instance=host.gce_instance or host.name,
         new_disk=f"{disk}-{tag}",
         snapshot=f"{disk}-move",
         machine_type=machine_type(instance),

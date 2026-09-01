@@ -293,7 +293,7 @@ def test_a_boot_disk_named_nothing_like_the_instance_still_moves():
 
     assert plan.source_disk == "windows-install-2024"
     assert plan.new_disk == "windows-install-2024-b"
-    assert plan.new_instance == "comfy-win-b", "the instance keeps the box's name"
+    assert plan.new_instance == "comfy-win", "the instance keeps the box's name"
 
     _, say = recorder()
     added, register = registrations()
@@ -301,7 +301,7 @@ def test_a_boot_disk_named_nothing_like_the_instance_still_moves():
 
     assert cloud.ran("compute disks snapshot")[0].split()[3] == "windows-install-2024"
     assert cloud.find_disk("windows-install-2024-b", "us-central1-b")
-    assert cloud.find_instance("comfy-win-b")
+    assert cloud.find_instance("comfy-win")
 
 
 # --- a clean move --------------------------------------------------------
@@ -315,9 +315,9 @@ def test_a_clean_move_does_each_step_once_and_leaves_no_snapshot():
 
     assert outcome.done == (SNAPSHOT, CREATE_DISK, CREATE_INSTANCE,
                             DELETE_SNAPSHOT, REGISTER, "leave")
-    assert added == ["comfy-win-b"]
+    assert added == ["comfy-win"]
     assert cloud.find_disk("comfy-win-a-b", "us-central1-b")
-    assert cloud.find_instance("comfy-win-b")
+    assert cloud.find_instance("comfy-win")
     assert cloud.find_snapshot("comfy-win-a-move") is None, (
         "a 300 GB snapshot nothing reads is a bill"
     )
@@ -403,8 +403,8 @@ def test_the_disk_a_dead_run_left_is_reused_not_recreated():
                             "leave")
     assert cloud.ran("compute disks snapshot") == [], "no second 300 GB copy"
     assert cloud.ran("compute disks create") == []
-    assert cloud.find_instance("comfy-win-b")
-    assert added == ["comfy-win-b"]
+    assert cloud.find_instance("comfy-win")
+    assert added == ["comfy-win"]
     assert any("reuse the disk comfy-win-a-b" in line for line in lines)
 
 
@@ -445,7 +445,7 @@ def test_a_snapshot_without_a_disk_is_reused_and_the_snapshot_is_not_retaken():
 def test_an_instance_that_already_exists_is_kept_and_only_registered():
     cloud, gc, plan, found = prepared(Cloud(
         disks=[SOURCE, ORPHAN_DISK], snapshots=[ORPHAN_SNAPSHOT],
-        instances=[INSTANCE, {"name": "comfy-win-b", "status": "RUNNING",
+        instances=[INSTANCE, {"name": "comfy-win", "status": "RUNNING",
                               "zone": f"{URL}/zones/us-central1-b"}],
     ))
     _, say = recorder()
@@ -455,7 +455,7 @@ def test_an_instance_that_already_exists_is_kept_and_only_registered():
 
     assert outcome.reused_instance()
     assert cloud.ran("compute instances create") == []
-    assert added == ["comfy-win-b"]
+    assert added == ["comfy-win"]
     assert cloud.find_snapshot("comfy-win-a-move-b") is None
 
 
@@ -600,7 +600,10 @@ def test_a_failure_creating_the_instance_leaves_both_and_says_so():
     assert any("disks delete comfy-win-a-b" in c for c in caught.value.cleanup)
     assert any("snapshots delete comfy-win-a-move" in c for c in caught.value.cleanup)
     assert cloud.find_disk("comfy-win-a-b", "us-central1-b"), "it really is there"
-    assert cloud.find_instance("comfy-win-b") is None
+    # The box keeps its name now, so "was it created" is a question about the
+    # destination zone, not about the name — exactly as it is for gcloud.
+    assert not [i for i in cloud.instances
+                if i["zone"].endswith("us-central1-b")], "nothing was created"
     assert added == [], "nothing goes in the host list without a machine"
 
 
@@ -637,8 +640,8 @@ def test_a_failure_writing_the_host_list_still_leaves_a_usable_machine():
     with pytest.raises(MoveError) as caught:
         run_move(gc, plan, found, say, register=register)
 
-    assert "the instance comfy-win-b in us-central1-b" in caught.value.left
-    assert cloud.find_instance("comfy-win-b")
+    assert "the instance comfy-win in us-central1-b" in caught.value.left
+    assert cloud.find_instance("comfy-win")
 
 
 def test_a_snapshot_that_will_not_delete_is_a_bill_not_a_failed_move():
@@ -653,7 +656,7 @@ def test_a_snapshot_that_will_not_delete_is_a_bill_not_a_failed_move():
 
     outcome = run_move(gc, plan, found, say, register=register)
 
-    assert added == ["comfy-win-b"]
+    assert added == ["comfy-win"]
     assert len(outcome.warnings) == 1
     assert "still billing" in outcome.warnings[0]
     assert "gcloud compute snapshots delete comfy-win-a-move" in outcome.warnings[0]

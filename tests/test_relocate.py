@@ -50,12 +50,25 @@ def test_windows_ssh_metadata_survives_the_move():
     assert "windows-startup-script-ps1" not in carried, "only what matters"
 
 
-def test_the_new_names_say_where_it_went():
+def test_the_box_keeps_its_name_and_the_disk_says_where_it_went():
+    """GCE names are unique per zone, not per project, so the suffix was never
+    Google's requirement — it existed to keep an appended host-list key unique,
+    and that append is what left `go comfy-win` pointing at the old zone.
+
+    The disk keeps a suffix: two copies of one install are what a half-finished
+    move leaves lying around, and telling them apart matters."""
     plan = plan_move(WIN, INSTANCE, "us-central1-b")
-    assert plan.new_instance == "comfy-win-b"
+    assert plan.new_instance == "comfy-win"
     assert plan.new_disk == "comfy-win-b"
     assert plan.to_zone == "us-central1-b"
     assert plan.machine_type == "g2-standard-8"
+
+
+def test_the_box_left_behind_is_named_by_where_it_is():
+    """`comfy-win-a` did not say where it was, and after two moves neither did
+    `comfy-win-a-b`. It stays in the list because it still bills."""
+    plan = plan_move(WIN, INSTANCE, "us-central1-b")
+    assert plan.retired_name == "comfy-win-us-central1-a"
 
 
 def test_suffix_is_the_zone_letter():
@@ -75,7 +88,7 @@ def test_the_plan_is_readable_before_anything_changes():
 
 def test_an_instance_with_no_disks_still_plans_something():
     plan = plan_move(WIN, {"name": "comfy-win"}, "us-central1-b")
-    assert plan.new_instance == "comfy-win-b"
+    assert plan.new_instance == "comfy-win"
     assert plan.machine_type == "g2-standard-8"
 
 
