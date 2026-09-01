@@ -648,7 +648,10 @@ def go_cmd(
         _act(in_a_new_window, rest, lambda line: typer.echo(f"  {line}"))
         return
     gc = Gcloud()
-    ready = _bring_up(gc, host, hosts)
+    # Only `go` offers the rebuild. `up` and `switch` share _bring_up, and switch
+    # stops the other boxes immediately afterwards — confirming a move there would
+    # leave it half executed, old box not stopped and new box not up.
+    ready = _bring_up(gc, host, hosts, offer_move=config or True)
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
            follow=follow)
 
@@ -741,13 +744,45 @@ def _failed(host: Host, hosts: list[Host], exc, kept: list[Host] | None = None) 
         typer.echo(f"to fix: {exc.fix}", err=True)
 
 
-def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None):
+def _offer_move(host: Host, exc, config: Optional[Path]) -> bool:
+    """Ask whether to rebuild the box in a zone that has capacity, and do it.
+
+    `go` already detected the stockout, already read the zone Google named in the
+    refusal, and already built the `move` command — and then handed it over to be
+    typed. It had the answer and stopped one step short of using it.
+
+    Asking rather than doing, because a move spends real money: it copies the
+    whole boot disk, takes minutes, and can itself hit a stockout with the
+    paid-for disk made and no machine. Never offered where it cannot be answered
+    (a pipe, a script), and never from `switch`, which stops other boxes straight
+    afterwards and would be left half-done.
+    """
+    from .gcloud import can_prompt
+
+    zones = getattr(exc, "zones", ())
+    if not zones or not can_prompt():
+        return False
+
+    target = zones[0]
+    typer.echo("")
+    if not typer.confirm(
+        f"Rebuild {host.name} in {target}? It copies the boot disk, takes a few "
+        f"minutes, and bills from the moment the new box exists"
+    ):
+        return False
+
+    move_cmd(name=host.name, to=target, config=config, yes=True)
+    return True
+
+
+def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
+              *, offer_move: Optional[Path] | bool = False):
     """Get the machine up, with every failure turned into a next command.
 
     Returns None when the box is up but ComfyUI is absent — the one failure the
     steps after this one exist to fix.
     """
-    from .lifecycle import COMFYUI_ABSENT, bring_up
+    from .lifecycle import COMFYUI_ABSENT, STOCKOUT, bring_up
 
     try:
         return bring_up(gc, host, lambda line: typer.echo(f"  {line}"), comfy_timeout=15)
@@ -758,6 +793,12 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None)
         if exc.kind == COMFYUI_ABSENT:
             return None
         _failed(host, hosts, exc, kept)
+        if exc.kind == STOCKOUT and offer_move is not False:
+            config = offer_move if isinstance(offer_move, Path) else None
+            if _offer_move(host, exc, config):
+                typer.echo(f"\n{host.name} has moved. Run the same command again:")
+                typer.echo(f"  comfy-qat go {host.name}")
+                raise typer.Exit(code=0)
         raise typer.Exit(code=1)
 
 

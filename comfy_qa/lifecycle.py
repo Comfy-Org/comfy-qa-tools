@@ -70,10 +70,14 @@ TUNNEL_DOWN = "tunnel-down"
 class LifecycleError(Exception):
     """Something a person has to act on. `fix` says what."""
 
-    def __init__(self, message: str, fix: str | None = None, kind: str = "error") -> None:
+    def __init__(self, message: str, fix: str | None = None, kind: str = "error",
+                 zones: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.fix = fix
         self.kind = kind
+        # Where Google said there is capacity, carried rather than left for a
+        # caller to read back out of the prose it just formatted.
+        self.zones = zones
 
 
 @dataclass
@@ -302,6 +306,7 @@ def bring_up(
                     "your side, and retrying in the same zone will not help.",
                     kind=STOCKOUT,
                     fix=advice,
+                    zones=tuple(elsewhere),
                 ) from exc
             raise LifecycleError(f"could not start {host.name}: {exc}", fix=exc.fix) from exc
         started = True

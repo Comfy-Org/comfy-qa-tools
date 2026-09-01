@@ -123,12 +123,12 @@ def cli(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
 
-    def invoke(*args, cloud=None):
+    def invoke(*args, cloud=None, input=None):
         cloud = cloud if cloud is not None else Cloud()
         path = tmp_path / "hosts.toml"
         path.write_text(HOSTS, encoding="utf-8")
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
-        result = CliRunner().invoke(app, [*args, "--config", str(path)])
+        result = CliRunner().invoke(app, [*args, "--config", str(path)], input=input)
         result.cloud = cloud        # type: ignore[attr-defined]
         return result
 
@@ -387,3 +387,77 @@ def test_stopping_them_still_says_so(cli):
     result = cli("down", "--all", cloud=Stopped())
     assert "stopped." in result.output
     assert result.exit_code == 0
+
+
+# --- 5. the rebuild is offered, never taken ----------------------------------
+#
+# `go` detected the stockout, read the zone out of Google's refusal and printed
+# the `move` command — then stopped, leaving the user to type what the tool had
+# already worked out. Offering it is the fix; doing it silently is not, because a
+# move copies a whole boot disk, takes minutes, and bills from the moment the new
+# box exists.
+
+
+def _stuck(monkeypatch, *, tty: bool):
+    from comfy_qa import gcloud as gcloud_module
+    monkeypatch.setattr(gcloud_module, "can_prompt", lambda: tty)
+
+    class Stuck(Cloud):
+        def instance_status(self, name, zone, project):
+            self.calls.append("instance_status")
+            return "TERMINATED"
+
+        def start_instance(self, name, zone, project):
+            self.calls.append("start_instance")
+            raise GcloudError("---", raw=STOCKOUT)
+
+    return Stuck()
+
+
+def test_a_stockout_offers_the_rebuild_rather_than_only_naming_it(cli, monkeypatch):
+    moved = []
+    from comfy_qa import host as host_module
+    monkeypatch.setattr(host_module, "move_cmd",
+                        lambda **kw: moved.append(kw))
+
+    cli("go", "comfy-win", cloud=_stuck(monkeypatch, tty=True), input="y\n")
+
+    assert moved, "the offer was accepted and nothing moved"
+    assert moved[0]["to"] == "us-central1-b", "it must use the zone Google named"
+    assert moved[0]["yes"] is True, "the user already answered the question"
+
+
+def test_declining_the_rebuild_changes_nothing(cli, monkeypatch):
+    moved = []
+    from comfy_qa import host as host_module
+    monkeypatch.setattr(host_module, "move_cmd", lambda **kw: moved.append(kw))
+
+    result = cli("go", "comfy-win", cloud=_stuck(monkeypatch, tty=True), input="n\n")
+
+    assert not moved
+    assert result.exit_code == 1
+
+
+def test_nothing_is_offered_where_it_cannot_be_answered(cli, monkeypatch):
+    """A pipe or a script must not stop on a question nobody will see."""
+    moved = []
+    from comfy_qa import host as host_module
+    monkeypatch.setattr(host_module, "move_cmd", lambda **kw: moved.append(kw))
+
+    result = cli("go", "comfy-win", cloud=_stuck(monkeypatch, tty=False))
+
+    assert not moved
+    assert result.exit_code == 1
+    assert "us-central1-b" in result.output, "it still says where to go"
+
+
+def test_switch_never_offers_a_rebuild(cli, monkeypatch):
+    """switch stops the other boxes straight after bringing one up. A move
+    confirmed in the middle leaves it half executed — old box not stopped, new
+    box not up."""
+    moved = []
+    from comfy_qa import host as host_module
+    monkeypatch.setattr(host_module, "move_cmd", lambda **kw: moved.append(kw))
+
+    cli("switch", "comfy-win", cloud=_stuck(monkeypatch, tty=True), input="y\n")
+    assert not moved
