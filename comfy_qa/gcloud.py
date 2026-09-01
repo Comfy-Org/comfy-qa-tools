@@ -477,9 +477,23 @@ class Gcloud:
 
     def create_instance_from_disk(
         self, name: str, zone: str, project: str, disk: str, machine_type: str,
-        metadata: str | None = None, *, external_ip: bool = False,
+        metadata: str | None = None, *, accelerator: str | None = None,
+        external_ip: bool = False,
         network: str | None = None, subnet: str | None = None,
     ) -> None:
+        """Recreate a box in another zone from a copy of its disk.
+
+        `accelerator` mirrors `create_instance_from_image`: passed only for the
+        N1 families, where the card is attached rather than built into the
+        machine type, and omitted for G2/A2/A3, where passing it is refused.
+        Leaving it off entirely — which this did until 2026-09-01 — moves a T4
+        box and hands back an `n1-standard-8` with no GPU, reporting success.
+
+        `--maintenance-policy=TERMINATE` goes with it for the same reason it does
+        there: an accelerator cannot live-migrate and Google refuses the create
+        without it. It is scoped to the accelerator case rather than set always,
+        so moving a CPU box keeps whatever policy it had.
+        """
         self._ready_for(project)
         args = [
             "compute", "instances", "create", name,
@@ -487,6 +501,9 @@ class Gcloud:
             f"--machine-type={machine_type}",
             f"--disk=name={disk},boot=yes,auto-delete=no",
         ]
+        if accelerator:
+            args.append(f"--accelerator={accelerator}")
+            args.append("--maintenance-policy=TERMINATE")
         # `--no-address` used to be hardcoded here, reasoning that IAP does not
         # need a public IP. True for reaching the box; nothing about the box
         # reaching pypi. With no Cloud NAT on the project that left a machine

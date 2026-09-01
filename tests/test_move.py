@@ -27,6 +27,7 @@ import pytest
 from comfy_qa.config import Host
 from comfy_qa.gcloud import Gcloud, GcloudError
 from comfy_qa.relocate import (
+    accelerator_of,
     CREATE_DISK,
     CREATE_INSTANCE,
     DELETE_SNAPSHOT,
@@ -766,3 +767,69 @@ def test_a_failure_that_is_not_about_the_allowance_still_stops_the_move():
     with pytest.raises(GcloudError, match="permission denied"):
         plan = plan_move(WIN, INSTANCE, "us-central1-b", source_disk=SOURCE)
         _create_disk(Cloud(), plan, "snap", lambda line: None)
+
+
+# --- the card travels with the box ---------------------------------------
+#
+# A move used to build the new instance without `--accelerator`, so the five
+# cards that are attached by flag rather than built into the machine type — T4,
+# P4, P100, V100, K80, all N1 — were left behind. The box booted, ComfyUI
+# installed, the move reported success, and torch reported no CUDA device.
+
+N1_INSTANCE = {
+    **INSTANCE,
+    "name": "comfy-t4",
+    "machineType": f"{URL}/zones/us-central1-a/machineTypes/n1-standard-8",
+    "disks": [
+        {"boot": True, "source": f"{URL}/zones/us-central1-a/disks/comfy-t4-a",
+         "deviceName": "persistent-disk-0"},
+    ],
+    "guestAccelerators": [{
+        "acceleratorType": f"{URL}/zones/us-central1-a/acceleratorTypes/nvidia-tesla-t4",
+        "acceleratorCount": 1,
+    }],
+}
+
+T4 = Host(name="comfy-t4", kind="gce", port=8195, os="Ubuntu 22.04", gpu="T4",
+          gce_instance="comfy-t4", gce_zone="us-central1-a", gce_project=PROJECT)
+
+
+def test_an_attached_card_is_read_off_the_box_not_rebuilt_from_the_name():
+    """`host.gpu` says "T4"; only the instance knows `nvidia-tesla-t4`."""
+    assert accelerator_of(N1_INSTANCE) == "type=nvidia-tesla-t4,count=1"
+    assert accelerator_of(INSTANCE) is None, "a G2 carries its card in the type"
+
+
+def test_the_zone_does_not_travel_with_the_card():
+    """acceleratorType is a URL naming the zone being moved away from."""
+    assert "us-central1-a" not in (accelerator_of(N1_INSTANCE) or "")
+
+
+def test_moving_an_n1_box_actually_creates_it_with_the_card():
+    cloud = Cloud(instances=[dict(N1_INSTANCE)],
+                  disks=[disk("comfy-t4-a", "us-central1-a")],
+                  machine_types=["n1-standard-8"])
+    gc = cloud.gcloud()
+    plan, found = prepare(gc, T4, N1_INSTANCE, "us-central1-b")
+    run_move(gc, plan, found, recorder()[1], register=lambda _: None)
+
+    created = cloud.ran("compute instances create")
+    assert created, "nothing was created"
+    assert "--accelerator=type=nvidia-tesla-t4,count=1" in created[0]
+    # An accelerator cannot live-migrate; Google refuses the create without this.
+    assert "--maintenance-policy=TERMINATE" in created[0]
+
+
+def test_moving_a_g2_box_does_not_pass_a_flag_google_would_refuse():
+    cloud, gc, plan, found = prepared()
+    run_move(gc, plan, found, recorder()[1], register=lambda _: None)
+
+    created = cloud.ran("compute instances create")
+    assert created and "--accelerator" not in created[0]
+
+
+def test_the_plan_says_which_card_the_new_box_gets():
+    """So a card being dropped is visible before the money is spent."""
+    plan = plan_move(T4, N1_INSTANCE, "us-central1-b")
+    line = next(s for s in plan.steps() if s.startswith("create comfy-t4"))
+    assert "n1-standard-8" in line and "nvidia-tesla-t4" in line

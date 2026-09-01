@@ -134,6 +134,32 @@ def machine_type(instance: dict) -> str:
     return _tail(instance.get("machineType")) or "g2-standard-8"
 
 
+def accelerator_of(instance: dict) -> str | None:
+    """The `--accelerator` value the source box needs, or None if it carries none.
+
+    Five of the nine cards this tool can order are attached by flag rather than
+    built into the machine type — T4, P4, P100, V100, K80, all on N1. Not passing
+    it produced an `n1-standard-8` with no GPU, from a move that reported success:
+    the box booted, ComfyUI installed, and the only symptom was torch reporting no
+    CUDA device, which reads as a broken test rather than a broken move.
+
+    Read off the instance rather than rebuilt from `host.gpu`. `host.gpu` is a
+    display string ("T4") and `discover.accelerator` is lossy — it uppercases and
+    strips the vendor prefix, so nothing can turn it back into `nvidia-tesla-t4`
+    without the card table. What the box actually reports cannot be wrong.
+
+    `acceleratorType` comes back as a zonal URL, and the zone in it is the one
+    being moved away from. Only the last segment travels.
+    """
+    cards = instance.get("guestAccelerators") or []
+    if not cards:
+        return None
+    kind = _tail(cards[0].get("acceleratorType"))
+    if not kind:
+        return None
+    return f"type={kind},count={cards[0].get('acceleratorCount') or 1}"
+
+
 def metadata_pairs(instance: dict) -> str | None:
     """Carry across the metadata that matters, notably Windows SSH.
 
@@ -251,6 +277,9 @@ class Plan:
     machine_type: str
     disk_type: str | None = None
     metadata: str | None = None
+    # None for G2/A2/A3, where the machine type carries the card, and passing the
+    # flag alongside one of those is refused by Google.
+    accelerator: str | None = None
     # Copied from the source rather than decided here: a move is meant to
     # produce the same machine somewhere else, and a box with no egress is not
     # the same machine — it cannot install, update or download anything.
@@ -316,9 +345,14 @@ class Plan:
                     f"snapshot ({self.disk_type or GCLOUD_DEFAULT_DISK_TYPE}, "
                     f"matching {self.source_disk})",
                 ))
+            carried = (
+                f" with {self.accelerator.replace('type=', '').replace(',count=', ' x')}"
+                if self.accelerator else ""
+            )
             out.append(Action(
                 CREATE_INSTANCE,
-                f"create {self.new_instance} in {self.to_zone} ({self.machine_type})",
+                f"create {self.new_instance} in {self.to_zone} "
+                f"({self.machine_type}{carried})",
             ))
 
         # A snapshot is deleted whenever the move would leave one behind, whether
@@ -361,6 +395,7 @@ def plan_move(host: Host, instance: dict, to_zone: str,
         new_disk=f"{disk}-{tag}",
         snapshot=f"{disk}-move",
         machine_type=machine_type(instance),
+        accelerator=accelerator_of(instance),
         disk_type=_tail((source_disk or {}).get("type")) or None,
         metadata=metadata_pairs(instance),
         **{k: v for k, v in (
@@ -788,6 +823,7 @@ def run_move(
                 gc.create_instance_from_disk(
                     plan.new_instance, plan.to_zone, project, plan.new_disk,
                     plan.machine_type, plan.metadata,
+                    accelerator=plan.accelerator,
                     external_ip=plan.external_ip,
                     network=plan.network, subnet=plan.subnet,
                 )
