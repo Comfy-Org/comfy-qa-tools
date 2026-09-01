@@ -37,6 +37,21 @@ LINUX_ROOT = "/opt/comfyui"
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
 
+# Linux cannot pin it the way Windows can. Windows installs the interpreter it
+# wants (winget carries every series); a Linux image ships exactly one python3
+# and the archive holds no other — Ubuntu 22.04 has 3.10, 24.04 has 3.12. So the
+# box is asked what it has, newest first, and anything 3.13+ is passed over
+# rather than used. Assuming `python3.12` was there is what made the first real
+# Linux box fail: it fell through to `python3` (3.10) and then to a venv module
+# Ubuntu does not install by default.
+PYTHON_SERIES_SUPPORTED = ("3.12", "3.11", "3.10")
+
+# apt on a freshly booted cloud image is usually already busy — cloud-init and
+# unattended-upgrades both hold the dpkg lock for the first minute or two, and
+# the failure is an immediate "could not get lock", not a wait. Every apt call
+# here carries this rather than racing it.
+APT_LOCK_WAIT = 300
+
 # Google's Identity-Aware Proxy forwards from this range and only this range.
 # A rule scoped to it is not an opening to the internet: reaching the port still
 # requires a tunnel authenticated as someone with access to the project.
@@ -377,17 +392,44 @@ def install_command(host: Host, index: str | None = None) -> str:
             "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; "
             "Write-Output 'install complete'\""
         )
+    apt = f"sudo apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT} -y -qq"
+    series = " ".join(PYTHON_SERIES_SUPPORTED)
     return (
         "set -e; "
+        "echo 'installing prerequisites'; "
+        f"{apt} update; "
+        f"{apt} install git; "
+        # The interpreter is discovered, not assumed. `python3` is deliberately
+        # last: on 24.04 it is 3.12 and fine, on 22.04 it is 3.10 and also fine,
+        # but on an image that has moved to 3.13 it is the one answer that must
+        # not win, so it is only reached when no supported series is installed.
+        f'PY=""; for v in {series}; do '
+        'if command -v "python$v" >/dev/null 2>&1; then PY="python$v"; break; fi; '
+        "done; "
+        f'if [ -z "$PY" ]; then for v in {series}; do '
+        f'if {apt} install "python$v-venv" >/dev/null 2>&1; '
+        'then PY="python$v"; break; fi; done; fi; '
+        'if [ -z "$PY" ]; then '
+        "echo 'INSTALL_INCOMPLETE: no supported python (3.10-3.12) on this image'; "
+        "exit 1; fi; "
+        # Debian and Ubuntu ship venv as a separate package, so a present
+        # interpreter is not a usable one. Installing it is cheap and idempotent.
+        f'{apt} install "$PY-venv"; '
+        'echo "building with $PY"; '
         f"echo 'cloning ComfyUI into {LINUX_ROOT}'; "
         f"sudo mkdir -p {LINUX_ROOT} && sudo chown \"$USER\" {LINUX_ROOT}; "
         f"git clone https://github.com/comfyanonymous/ComfyUI.git {LINUX_ROOT} || true; "
         f"cd {LINUX_ROOT}; "
-        f"python{PYTHON_SERIES} -m venv venv || python3 -m venv venv; "
+        '"$PY" -m venv venv; '
+        # Without this the pip lines below run against a half-made venv and the
+        # error surfaces a hundred lines later as a missing module.
+        "if [ ! -x ./venv/bin/python ]; then "
+        "echo 'INSTALL_INCOMPLETE: the venv was not created'; exit 1; fi; "
         "echo 'installing torch (this is the slow part)'; "
         "./venv/bin/python -m pip install --upgrade pip; "
-        "./venv/bin/python -m pip install torch torchvision torchaudio; "
-        "./venv/bin/python -m pip install -r requirements.txt; "
+        "./venv/bin/python -m pip install torch torchvision torchaudio"
+        + (f" --index-url {index}; " if index else "; ")
+        + "./venv/bin/python -m pip install -r requirements.txt; "
         f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo INSTALL_INCOMPLETE; exit 1; fi; "
         "echo 'install complete'"
     )

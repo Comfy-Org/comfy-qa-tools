@@ -11,8 +11,10 @@ import pytest
 
 from comfy_qa.config import Host
 from comfy_qa.provision import (
+    APT_LOCK_WAIT,
     LINUX_ROOT,
     PYTHON_SERIES,
+    PYTHON_SERIES_SUPPORTED,
     WINDOWS_ROOT,
     check_command,
     install_command,
@@ -68,6 +70,50 @@ def test_the_interpreter_is_pinned_below_3_13():
     assert PYTHON_SERIES == "3.12"
     assert PYTHON_SERIES in install_command(WIN)
     assert PYTHON_SERIES in install_command(LINUX)
+    assert all(series < "3.13" for series in PYTHON_SERIES_SUPPORTED)
+    assert PYTHON_SERIES_SUPPORTED[0] == PYTHON_SERIES, "newest first"
+
+
+def test_linux_installs_its_prerequisites_rather_than_hoping():
+    """The first real Linux box died here, and both halves were assumptions.
+
+    `python3.12` was assumed present: Ubuntu 22.04 ships 3.10 and its archive
+    has no 3.12 at all. Then the fallback to `python3` found an interpreter
+    whose venv module Ubuntu strips into a separate package, so `-m venv`
+    produced a directory with no pip in it. Windows never had this problem
+    because its branch installs git and python before using them; this one now
+    does the same.
+    """
+    command = install_command(LINUX)
+    assert "apt-get" in command
+    assert "install git" in command, "git is not on a minimal cloud image either"
+    assert "-venv" in command, "a present interpreter is not a usable one on Ubuntu"
+
+
+def test_linux_asks_the_box_which_python_it_has():
+    """Discovered newest-first, never hardcoded to one series."""
+    command = install_command(LINUX)
+    assert 'command -v "python$v"' in command, "asked, not assumed"
+    assert " ".join(PYTHON_SERIES_SUPPORTED) in command, "and tried newest first"
+    assert f"python{PYTHON_SERIES} -m venv" not in command, "that is the assumption"
+    assert '"$PY" -m venv venv' in command
+
+
+def test_linux_checks_the_venv_exists_before_installing_into_it():
+    """Otherwise the real error surfaces a hundred pip lines later."""
+    command = install_command(LINUX)
+    guard = command.index("if [ ! -x ./venv/bin/python ]")
+    assert guard < command.index("pip install --upgrade pip")
+    assert "INSTALL_INCOMPLETE: the venv was not created" in command
+
+
+def test_every_apt_call_waits_for_the_dpkg_lock():
+    """cloud-init and unattended-upgrades hold it for the first minutes of a
+    box's life, and apt's default is to fail immediately rather than wait."""
+    command = install_command(LINUX)
+    assert command.count("apt-get") == command.count(
+        f"apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT}"
+    )
 
 
 @pytest.mark.parametrize("host", ALL)
