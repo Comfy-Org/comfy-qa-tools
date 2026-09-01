@@ -698,7 +698,7 @@ def delete_snapshot_command(plan: Plan, name: str | None = None) -> str:
             f"--project={plan.project} --quiet")
 
 
-def leftovers(plan: Plan, found: Found) -> list[str]:
+def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
     """What earlier runs left behind, what it is, and what removes it.
 
     A part-finished move bills in silence: an unattached 300 GB disk and a 21 GB
@@ -722,12 +722,13 @@ def leftovers(plan: Plan, found: Found) -> list[str]:
             + " — from an earlier move, billing"
         )
         lines.append(f"  {delete_snapshot_command(plan, snap.get('name'))}")
-    for snap in found.unrelated_snapshots:
+    # Someone else's mess, reported away from this move's decision — it used to
+    # print a delete command for a different box three lines above "Move X? [y/N]".
+    for snap in found.unrelated_snapshots if unrelated else ():
         note = describe_snapshot(snap)
         lines.append(
             f"snapshot {snap.get('name')}" + (f" ({note})" if note else "")
-            + " — its source disk no longer exists. Not this move's, not touched "
-              "by --clean; delete it yourself if you do not want it."
+            + " — from a box that no longer exists, billing"
         )
         lines.append(f"  {delete_snapshot_command(plan, snap.get('name'))}")
     if found.instance is not None:

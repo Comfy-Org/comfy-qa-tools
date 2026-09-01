@@ -1029,7 +1029,7 @@ def move_cmd(
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before making changes.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
     clean: Annotated[bool, typer.Option(
-        "--clean", help="Delete what an earlier, half-finished move left behind, and stop.")] = False,
+        "--clean", help="Delete what an earlier, half-finished move left behind, then move.")] = False,
 ) -> None:
     """Move a box to a zone that has capacity, keeping its ComfyUI install.
 
@@ -1039,6 +1039,7 @@ def move_cmd(
     """
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
+    from .gcloud import can_prompt
     from .hostfile import apply, rename_and_add
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
@@ -1067,22 +1068,34 @@ def move_cmd(
 
     # Whatever an earlier run left is billing right now, whether or not this one
     # goes ahead — and an unattached disk looks like nothing at all in a console.
-    if found.anything():
-        typer.echo("\nalready on the project:")
-        for line in leftovers(plan, found):
+    # Only this move's leftovers appear here: a stray snapshot from a different
+    # box, with its own delete command, used to land three lines above the
+    # confirm, and it is not something this command touches. It is reported at
+    # the end instead.
+    mine = leftovers(plan, found, unrelated=False)
+    if mine:
+        typer.echo("\nan earlier run left this behind, and it is billing:")
+        for line in mine:
             typer.echo(f"  {line}")
 
-    if clean:
-        if not yes and not typer.confirm("\nDelete those?"):
-            typer.echo("nothing changed")
-            return
-        try:
-            removed = remove_leftovers(gc, plan, found, lambda line: typer.echo(f"  {line}"))
-        except GcloudError as exc:
-            typer.echo(f"\ncould not clean up: {exc}", err=True)
-            raise typer.Exit(code=1)
-        typer.echo(f"\nremoved {len(removed)}. Run the move again to rebuild.")
-        return
+        # Reusing them is the default and usually right — that is what makes a
+        # failed move cheap to retry. Deleting them starts the copy from scratch.
+        if clean or (not yes and can_prompt()
+                     and typer.confirm("\nDelete these and start the move fresh?")):
+            try:
+                removed = remove_leftovers(
+                    gc, plan, found, lambda line: typer.echo(f"  {line}"))
+            except GcloudError as exc:
+                typer.echo(f"\ncould not clean up: {exc}", err=True)
+                raise typer.Exit(code=1)
+            typer.echo(f"\nremoved {len(removed)}.")
+            # The plan was built from resources that no longer exist. Carrying on
+            # with it would REUSE a deleted disk, or skip a snapshot it now needs,
+            # and neither fails loudly — the move just builds from nothing.
+            try:
+                plan, found = prepare(gc, host, instance, target)
+            except GcloudError as exc:
+                _refused(exc)
 
     problem = blocked(plan, found)
     if problem is not None:
@@ -1165,6 +1178,15 @@ def move_cmd(
     if plan.source_running:
         typer.echo(f"  comfy-qat down {plan.retired_name}")
     typer.echo(f"  {delete_instance_command(plan)}")
+
+    # Reported here rather than before the confirm: it belongs to a box that no
+    # longer exists, this command does not touch it, and it is not part of the
+    # decision the user just made.
+    stray = leftovers(plan, found, unrelated=True)[len(mine):]
+    if stray:
+        typer.echo("\nalso on the project, unrelated to this move and billing:")
+        for line in stray:
+            typer.echo(f"  {line}")
 
 
 def _probe_fix(host: Host) -> str | None:

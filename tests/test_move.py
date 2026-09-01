@@ -678,7 +678,7 @@ def test_the_orphan_is_reported_with_its_size_and_the_command_that_removes_it():
 
     assert "comfy-win-a-move-b" in report and "21 GB stored" in report
     assert "comfy-win-snap" in report and "18 GB stored" in report
-    assert "source disk no longer exists" in report, (
+    assert "no longer exists" in report, (
         "comfy-win-snap is of a disk that is gone; say so rather than deleting it"
     )
 
@@ -836,3 +836,34 @@ def test_the_plan_says_which_card_the_new_box_gets():
     plan = plan_move(T4, N1_INSTANCE, "us-central1-b")
     line = next(s for s in plan.steps() if s.startswith("create comfy-t4"))
     assert "n1-standard-8" in line and "nvidia-tesla-t4" in line
+
+
+# --- cleaning up and then moving, in one run ------------------------------
+#
+# `--clean` used to delete and stop, so a half-finished move could not be
+# cleaned and retried in one command. Letting it carry on introduced a trap:
+# the plan was built from `found`, and after a deletion `found` describes
+# resources that are gone. Carrying on with it would REUSE a deleted disk or
+# skip a snapshot it now needs, and neither fails loudly — the move just builds
+# from nothing.
+
+
+def test_cleaning_up_replans_before_moving_on():
+    """The plan is rebuilt from the project as it is after the deletion."""
+    left = disk("comfy-win-a-b", "us-central1-b", from_snapshot="comfy-win-a-move")
+    cloud = Cloud(disks=[SOURCE, left], instances=[INSTANCE],
+                  snapshots=[snapshot("comfy-win-a-move", "comfy-win-a")])
+    gc = cloud.gcloud()
+
+    _, before = prepare(gc, WIN, INSTANCE, "us-central1-b")
+    assert before.disk is not None, "the fixture has to start with something to clean"
+
+    remove_leftovers(gc, plan_move(WIN, INSTANCE, "us-central1-b"), before,
+                     lambda line: None)
+    _, after = prepare(gc, WIN, INSTANCE, "us-central1-b")
+
+    assert after.disk is None, "the replan still believes in the deleted disk"
+    assert after.snapshot is None
+    assert not after.reuse_disk, (
+        "reusing a disk that was just deleted is the silent failure this guards"
+    )
