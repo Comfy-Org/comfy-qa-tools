@@ -839,3 +839,48 @@ def test_every_command_that_leaves_a_box_running_names_the_bill():
         f"{', '.join(missing)} can leave a machine running without saying how to "
         "stop paying for it. Every other billable path in this tool says it."
     )
+
+
+# --- a dry run may not delete anything, --clean included ----------------------
+#
+# `--clean` short-circuits the confirmation, so `move --clean --dry-run` reached
+# `remove_leftovers` and ran `disks delete --quiet` and `snapshots delete --quiet`
+# for real — then printed "--dry-run: nothing changed" twenty-five lines later.
+# The one flag whose entire contract is "show me what would happen" performed the
+# only irreversible deletion in the command and then denied it.
+#
+# This file already holds the same rule for the other half: `move --dry-run` must
+# not START a box. That test exists because a dry run once did. This is the same
+# promise, broken a different way.
+
+
+def test_a_dry_run_deletes_nothing_even_with_clean(cli):
+    """The preconditions are ordinary: an earlier failed move left a disk or a
+    snapshot, which is the exact state `--clean` exists for."""
+    class Littered(Cloud):
+        def run(self, args, **kwargs):
+            joined = " ".join(str(a) for a in args)
+            self.calls.append(joined)
+            if "disks list" in joined:
+                return [{"name": "comfy-win-a-b", "zone": ".../us-central1-b",
+                         "sizeGb": "300", "type": ".../pd-balanced", "users": [],
+                         "sourceSnapshot": ".../comfy-win-a-move",
+                         "creationTimestamp": "2026-09-04T10:00:00.000-07:00"}]
+            if "snapshots list" in joined:
+                return [{"name": "comfy-win-a-move", "diskSizeGb": "300",
+                         "sourceDisk": ".../disks/comfy-win-a",
+                         "storageBytes": "1000", "status": "READY",
+                         "creationTimestamp": "2026-09-04T09:00:00.000-07:00"}]
+            if "machine-types list" in joined:
+                return [{"name": "g2-standard-8"}]
+            raise AssertionError(f"unexpected: {joined}")
+
+    result = cli("move", "comfy-win", "--to", "us-central1-b", "--clean",
+                 "--dry-run", cloud=Littered())
+
+    destructive = [c for c in result.cloud.calls
+                   if "delete" in c or "snapshot" in c and "list" not in c]
+    assert not [c for c in destructive if "delete" in c], (
+        f"a dry run deleted something: {destructive}"
+    )
+    assert "nothing changed" in result.output or "are not" in result.output

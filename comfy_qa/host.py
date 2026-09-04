@@ -1352,8 +1352,25 @@ def move_cmd(
 
         # Reusing them is the default and usually right — that is what makes a
         # failed move cheap to retry. Deleting them starts the copy from scratch.
-        if clean or (not yes and can_prompt()
-                     and typer.confirm("\nDelete these and start the move fresh?")):
+        #
+        # `dry_run` FIRST, and it is the whole point of this line. `--clean`
+        # short-circuits the confirm, so `move --clean --dry-run` reached
+        # `remove_leftovers` and ran `disks delete --quiet` and `snapshots delete
+        # --quiet` for real — then, twenty-five lines below, printed "--dry-run:
+        # nothing changed". The one flag whose entire contract is "show me what
+        # would happen" performed the only irreversible deletion in this command
+        # and then denied it.
+        #
+        # The comment above `_zone_with_capacity` says "everything a dry run must
+        # not do lives inside this call, guard included". That was true of the
+        # thing it was written about, and this sat outside it. A guard scoped to
+        # one call is a guard for one call.
+        if dry_run and (clean or found.disk is not None or found.snapshot is not None):
+            say.result("\n--dry-run: these would be deleted first, and are not:")
+            for name in [n for n in (plan.new_disk, found.snapshot_name) if n]:
+                say.result(f"  {name}")
+        elif clean or (not yes and can_prompt()
+                       and typer.confirm("\nDelete these and start the move fresh?")):
             try:
                 removed = remove_leftovers(gc, plan, found, say.step)
             except GcloudError as exc:
