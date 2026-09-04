@@ -1320,6 +1320,24 @@ to try and, separately, the commands that delete what this attempt left behind i
 you would rather stop. Both are printed, because the disk that already exists is
 billing either way and choosing between them is yours.
 
+## Asking for two different zones
+
+**`--zone <a> and --region <b> cannot both be right: --zone pins one zone, --region asks for a choice within one region`**
+
+The two options contradict each other by their own descriptions, so passing both is
+not an intention this tool can carry out — it is a mistake, usually a stale `--zone`
+left in shell history.
+
+It used to let `--zone` win and say nothing about the region it discarded. On a
+laptop in London that is the difference between a box 21 ms away and one in Iowa at
+115 ms, created, billed, and only noticeable because everything feels slow.
+
+The rule this follows, which is worth knowing because it is not "never combine
+flags": **a flag that is ignored is refused when it would have changed the outcome,
+and ignored quietly when it could not.** `--yes` with `--dry-run` is the same shape
+and is fine, because `--yes` only suppresses a prompt that `--dry-run` never
+reaches.
+
 ## A read that said nothing
 
 **`could not tell whether <name> is running, so there is no saying whether it has a log.`**

@@ -264,6 +264,35 @@ def create_cmd(
     from .discover import next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
 
+    # Before anything is read from Google, because this is a string check and
+    # `create` otherwise spends a minute on quota before saying anything.
+    #
+    # `--zone` is "use this zone and only this zone" and `--region` is "narrow to
+    # one region; the zone inside it is still chosen". Together they are not an
+    # expressible intention, they are a mistake — and `--zone` silently won, so
+    # `--region europe-west2 --zone us-central1-a` created a box in Iowa without
+    # ever mentioning the region it discarded.
+    #
+    # The rule, which generalises past this pair: refuse when the ignored flag
+    # would have changed the outcome; ignore quietly when it could not. `--yes`
+    # with `--dry-run` is the same shape and is fine, because `--yes` only
+    # suppresses a prompt `--dry-run` never reaches.
+    #
+    # This is the position `_selector` already takes for --os/--gpu: "picking a
+    # winner would carry that mistake out on a machine". Here the machine costs
+    # money and can land on the wrong continent.
+    if zone and region:
+        say.fail(
+            f"--zone {zone} and --region {region} cannot both be right: --zone "
+            "pins one zone, --region asks for a choice within one region",
+            fix=say.fix(
+                "one or the other:",
+                f"comfy-qat create --os {os_choice} --gpu {gpu} --zone {zone}",
+                f"comfy-qat create --os {os_choice} --gpu {gpu} --region {region}",
+            ),
+            code=2,
+        )
+
     path = config or DEFAULT_CONFIG_PATH
     try:
         hosts = load(path)

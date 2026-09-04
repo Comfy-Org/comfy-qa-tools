@@ -451,3 +451,30 @@ def test_the_stop_command_is_on_a_line_of_its_own(tmp_path, monkeypatch):
     line = next(line for line in result.output.splitlines()
                 if "gcloud compute instances stop" in line)
     assert line.strip().startswith("gcloud compute instances stop")
+
+
+def test_zone_and_region_together_are_refused_not_silently_resolved(cli):
+    """The two contradict each other by their own help text, so passing both is a
+    mistake rather than an intention. `--zone` silently won, so `--region
+    europe-west2 --zone us-central1-a` made a box in Iowa and never mentioned the
+    region it threw away — 21 ms from this desk against 115 ms, billed either way.
+
+    The tool already takes this position for --os/--gpu, where `_selector` says
+    picking a winner "would carry that mistake out on a machine".
+    """
+    result = cli("--os", "linux", "--gpu", "l4",
+                 "--zone", "us-central1-a", "--region", "europe-west2")
+
+    assert result.exit_code == 2, result.output
+    assert "cannot both be right" in result.output
+    assert "us-central1-a" in result.output and "europe-west2" in result.output
+
+
+def test_it_refuses_before_it_reads_anything_from_google(cli):
+    """A string check that costs a minute of quota reads first is a string check
+    nobody waits for."""
+    result = cli("--os", "linux", "--gpu", "l4",
+                 "--zone", "us-central1-a", "--region", "europe-west2")
+
+    assert billable(result) == []
+    assert "quota" not in result.output.lower(), result.output
