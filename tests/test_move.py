@@ -29,6 +29,7 @@ from comfy_qa.hostfile import HostFileError
 from comfy_qa.gcloud import Gcloud, GcloudError
 from comfy_qa.relocate import (
     accelerator_of,
+    describe_snapshot,
     CREATE_DISK,
     CREATE_INSTANCE,
     DELETE_SNAPSHOT,
@@ -1205,3 +1206,17 @@ def test_the_box_being_moved_is_not_counted_against_itself():
     """`comfy-win`'s own entry is replaced by this move, not kept beside it."""
     plan = plan_move(WIN, INSTANCE, "us-central1-b")
     assert would_not_load([WIN], plan) is None, "it would collide only with itself"
+
+
+def test_a_snapshot_leads_with_the_number_that_bills():
+    """Snapshots are compressed and incremental, so storage is the cost and the
+    source disk size is not. This named the disk first — and reading it off, the
+    lead told the user a month-old orphan cost about eight pounds a month when it
+    stores 18 GB and costs about fifty pence, and argued for deleting it on that
+    basis. The tool's own ordering produced the wrong recommendation."""
+    phrase = describe_snapshot({
+        "name": "comfy-win-snap", "diskSizeGb": "300",
+        "storageBytes": str(18 * 1024 ** 3), "sourceDisk": ".../disks/comfy-win",
+    })
+    assert phrase.index("stored") < phrase.index("300 GB"), phrase
+    assert "of a 300 GB disk" in phrase, "the disk size has to say what it is"

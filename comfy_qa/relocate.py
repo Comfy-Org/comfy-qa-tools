@@ -265,16 +265,26 @@ def describe_disk(disk: dict | None) -> str:
 
 
 def describe_snapshot(snapshot: dict | None) -> str:
-    """A snapshot in one phrase. Storage is what bills, so storage is named."""
+    """A snapshot in one phrase, with the number that bills first.
+
+    Storage is what a snapshot costs — they are compressed and incremental — and
+    this named the SOURCE DISK first, which is usually many times larger. That
+    ordering is not academic: reading it off, I told the user a month-old orphan
+    was costing about eight pounds a month when it stores 18 GB and costs about
+    fifty pence, and recommended deleting it partly on that basis.
+
+    The disk size still earns its place — it says how big the thing this came
+    from was — but it goes second and says what it is.
+    """
     if not snapshot:
         return ""
     bits = []
-    size = _size(snapshot, "diskSizeGb")
-    if size:
-        bits.append(f"{size} GB disk")
     stored = _gib(snapshot.get("storageBytes"))
     if stored:
         bits.append(f"{stored} stored")
+    size = _size(snapshot, "diskSizeGb")
+    if size:
+        bits.append(f"of a {size} GB disk")
     source = _tail(snapshot.get("sourceDisk"))
     if source:
         bits.append(f"of {source}")
