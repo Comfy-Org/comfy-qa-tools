@@ -466,9 +466,10 @@ def test_an_instance_that_already_exists_is_kept_and_only_registered():
 
 # --- refusing to reuse the wrong disk ------------------------------------
 
+# The disk in use is deliberately not here: it is refused too, but answering it
+# with a delete command is the defect
+# `test_a_disk_in_use_is_not_answered_with_a_command_to_delete_it` covers.
 @pytest.mark.parametrize("bad, because", [
-    (disk("comfy-win-a-b", "us-central1-b", from_snapshot="comfy-win-a-move-b",
-          users=("something-else",)), "attached to"),
     (disk("comfy-win-a-b", "us-central1-b"), "nothing records"),
     (disk("comfy-win-a-b", "us-central1-b", from_snapshot="someone-elses-backup"),
      "not a snapshot this move takes"),
@@ -769,6 +770,60 @@ def test_what_this_move_left_is_a_prefix_of_everything_lying_around():
     # Nothing said twice, and nothing dropped between the two lists.
     assert len(set(mine) & set(stray)) == 0, set(mine) & set(stray)
     assert set(mine) | set(stray) == set(everything)
+
+
+def test_a_disk_in_use_is_not_answered_with_a_command_to_delete_it():
+    """The refusal and its fix have to agree, or the fix is the one that gets run.
+
+    `blocked` chose one fix for every reason `judge_disk` can refuse a disk, so
+    the "attached to comfy-win-b. That is a disk in use, not a leftover from a
+    half-finished move." refusal was answered with `gcloud compute disks delete
+    ... --quiet` for that same disk — a sentence and a command that contradict
+    each other inside one message. Google refuses to delete an attached disk, so
+    the handed-over command cannot work either. The move is blocked by a machine
+    that is using the disk; the ways out are that machine or another zone.
+    """
+    in_use = disk("comfy-win-a-b", "us-central1-b", from_snapshot="comfy-win-a-move-b",
+                  users=("comfy-win-b",))
+    _, _, plan, found = prepared(Cloud(
+        disks=[SOURCE, in_use], snapshots=[ORPHAN_SNAPSHOT], instances=[INSTANCE],
+    ))
+
+    problem = blocked(plan, found)
+
+    assert problem is not None
+    assert "attached to comfy-win-b" in str(problem)
+    assert "disks delete" not in (problem.fix or ""), problem.fix
+    assert "comfy-win-b" in (problem.fix or ""), problem.fix
+    # Nothing here is this move's to clean up, so nothing is offered as such.
+    assert problem.cleanup == (), problem.cleanup
+
+    # Still refused, and still before anything is touched.
+    cloud, gc, plan, found = prepared(Cloud(
+        disks=[SOURCE, in_use], snapshots=[ORPHAN_SNAPSHOT], instances=[INSTANCE],
+    ))
+    assert found.reuse_disk is False
+    _, say = recorder()
+    _, register = registrations()
+    with pytest.raises(MoveError) as caught:
+        run_move(gc, plan, found, say, register=register)
+    assert "attached to comfy-win-b" in str(caught.value)
+    assert "disks delete" not in caught.value.fix
+    assert all(("list" in call or "describe" in call) for call in cloud.calls)
+
+
+def test_an_unattached_disk_this_move_cannot_reuse_still_offers_the_delete():
+    """The other refusals are unchanged: that disk really is nobody's."""
+    _, _, plan, found = prepared(Cloud(
+        disks=[SOURCE, disk("comfy-win-a-b", "us-central1-b")],
+        snapshots=[ORPHAN_SNAPSHOT], instances=[INSTANCE],
+    ))
+
+    problem = blocked(plan, found)
+
+    assert problem is not None
+    assert "nothing records" in str(problem)
+    assert "gcloud compute disks delete comfy-win-a-b" in (problem.fix or "")
 
 
 def test_nothing_lying_around_means_nothing_reported():

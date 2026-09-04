@@ -675,6 +675,23 @@ def blocked(plan: Plan, found: Found) -> MoveError | None:
     """
     if not found.blocker:
         return None
+    users = (found.disk or {}).get("users") or []
+    if users:
+        # A refusal and its fix have to agree. One fix was offered for every
+        # reason a disk can be refused, so "attached to comfy-win-b. That is a
+        # disk in use, not a leftover from a half-finished move." was answered
+        # with `gcloud compute disks delete ... --quiet` for that same disk —
+        # the sentence and the command contradicting each other inside one
+        # message, and the command is the half that gets run. Google refuses to
+        # delete an attached disk, so it could not have worked either. What is
+        # in the way is a machine, so the ways out are that machine or a zone
+        # this move is not already occupying.
+        return MoveError(
+            found.blocker,
+            fix=(f"{_tail(users[0])} is using it. Move somewhere else, or deal "
+                 f"with that machine first:\n        "
+                 f"comfy-qat move {plan.host.name} --to <another zone>"),
+        )
     if found.disk is not None:
         return MoveError(
             found.blocker,
