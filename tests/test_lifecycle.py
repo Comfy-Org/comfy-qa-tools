@@ -960,3 +960,38 @@ def test_a_describe_that_says_nothing_is_not_evidence_the_box_started(tmp_path):
     assert "it started, and it is billing" not in str(caught.value)
     assert "nothing needs retrying" not in (caught.value.fix or "")
     assert "list --live" in caught.value.fix, "it has to say how to find out"
+
+
+# --- a read that succeeded and said nothing --------------------------------
+#
+# `instance_status` returns "" when the describe worked and carried no state.
+# That is a third answer, and it is falsy where the old "UNKNOWN" sentinel was
+# truthy — so every `if state:` and every `!= RUNNING` downstream changed
+# behaviour silently rather than comparing wrong. Nine call sites; one was
+# taught about it when the sentinel changed.
+
+def test_keep_running_does_not_bill_you_on_a_read_that_said_nothing(tmp_path):
+    """The honest branch existed two lines above and fired only on GcloudError,
+    so an empty answer fell into the confident billing claim instead."""
+    lines, say = said()
+    found = put_away(gcloud([""]), WIN, say, tunnel_dir=tmp_path, keep_running=True)
+
+    assert found == "unknown", found
+    assert not any("still billing" in line for line in lines), lines
+    assert any("could not tell" in line for line in lines)
+
+
+def test_the_stop_path_does_not_leave_a_gap_where_the_state_goes(tmp_path):
+    lines, say = said()
+    put_away(gcloud(["", ""]), WIN, say, tunnel_dir=tmp_path)
+    assert not any(" was  — " in line for line in lines), lines
+
+
+def test_logs_does_not_claim_a_box_is_off_from_a_read_that_said_nothing(tmp_path):
+    from comfy_qa.lifecycle import read_logs
+
+    with pytest.raises(LifecycleError) as caught:
+        read_logs(gcloud([""]), WIN, said()[1])
+
+    assert "could not tell" in str(caught.value)
+    assert "not running" not in str(caught.value)

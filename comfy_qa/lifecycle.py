@@ -351,7 +351,8 @@ def bring_up(
         # step is timed: it says it is still waiting while it waits, and how long
         # it took when the box answers.
         waking = output.slow(
-            f"{host.name} is {'stopped' if state == 'TERMINATED' else state.lower()}"
+            f"{host.name} is "
+            f"{'stopped' if state == TERMINATED else readable_state(state)}"
             " — starting it",
             expect=f"up to {boot_timeout}s",
             emit=say, clock=now, background=False,
@@ -1397,6 +1398,12 @@ def read_logs(
         state = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         raise LifecycleError(str(exc), fix=exc.fix) from exc
+    if not state:
+        raise LifecycleError(
+            f"could not tell whether {host.name} is running, so there is no "
+            "saying whether it has a log.",
+            fix=output.fix("ask Google again:", "comfy-qat list --live"),
+        )
     if state != RUNNING:
         raise LifecycleError(
             f"{host.name} is not running, so it has no ComfyUI and no log to "
@@ -1633,6 +1640,14 @@ def put_away(
         except GcloudError as exc:
             # Not knowing is its own answer, and it is not "it is fine".
             say(f"could not tell whether {host.name} is running: {exc}. "
+                "Check with `comfy-qat list --live`")
+            return "unknown"
+        if not state:
+            # A describe that succeeded and said nothing. The honest branch is
+            # two lines above and fired only on GcloudError, so this fell into
+            # the confident billing claim instead — the right answer was already
+            # written and simply unreachable from here.
+            say(f"could not tell whether {host.name} is running. "
                 "Check with `comfy-qat list --live`")
             return "unknown"
         if state == TERMINATED:

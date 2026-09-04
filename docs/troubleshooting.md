@@ -1320,6 +1320,21 @@ to try and, separately, the commands that delete what this attempt left behind i
 you would rather stop. Both are printed, because the disk that already exists is
 billing either way and choosing between them is yours.
 
+## A read that said nothing
+
+**`could not tell whether <name> is running, so there is no saying whether it has a log.`**
+
+Asking Google what the machine is doing succeeded and came back without a state.
+That is a third answer — not running, not stopped — and it is reported rather than
+guessed, because both guesses are wrong in a way that costs something: "it is off"
+walks away from a box that may be billing, and "it is on" sends you looking for a
+log that does not exist.
+
+`comfy-qat list --live` asks again. It is usually transient.
+
+The same answer reaches `down --keep-running`, which says "could not tell whether
+<name> is running" rather than claiming it is still billing.
+
 ## A start whose answer was lost
 
 **`the start of <name> did not report back (<error>), but the machine is <state> — it started, and it is billing.`**
