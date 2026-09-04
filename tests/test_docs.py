@@ -50,8 +50,12 @@ PACKAGE = ROOT / "comfy_qa"
 # it: until they did, it reached a terminal as a traceback rather than as a
 # message, so the page had nothing to say about it and this test had no reason to
 # ask. An error class becomes documentable the moment a command reports it.
-ERROR_TYPES = ("ConfigError", "GcloudError", "LifecycleError", "ProbeError",
-               "SetupStopped", "TunnelError")
+# The walk matches the CONSTRUCTOR name, not the base class, so a subclass is
+# invisible until it is named here. `HostFileError` subclasses `ConfigError` and
+# was missed on exactly that basis — which left every message in the module that
+# rewrites the host list during a move undocumented and unnoticed.
+ERROR_TYPES = ("ConfigError", "GcloudError", "HostFileError", "LifecycleError",
+               "ProbeError", "SetupStopped", "TunnelError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and

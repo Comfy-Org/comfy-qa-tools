@@ -1104,9 +1104,14 @@ exists and carries on from there — so delete only if you have decided against 
 **`already on the project:`** followed by a disk or a snapshot
 An earlier `host move` did not finish, and what it created is still there and still
 billing. This is a report, not an error — the move carries on and reuses what it
-can. Each line is followed by the exact `gcloud ... delete` command that removes it,
-and `comfy-qat move <name> --clean` removes them all and stops. Nothing is
-deleted for you.
+can, which is what makes a failed move cheap to retry. Each line is followed by the
+exact `gcloud ... delete` command that removes it.
+
+Nothing is deleted unless you say so. In a terminal you are asked "Delete these and
+start the move fresh?" and the move continues either way; `--clean` answers yes
+without asking. **Both then carry on and create the box** — `--clean` is "clean up
+first, then move", not "clean up instead of moving". Under `--yes`, or with output
+piped, the leftovers are kept and reported.
 
 **`comfy-win-a-b already exists in us-central1-b, but ...`**
 A disk is sitting where the move wants to put one, and it could not be confirmed as
@@ -1140,6 +1145,51 @@ The new machine is up and in your host list; only the cleanup failed. The snapsh
 is still billing and the message repeats the command that removes it.
 
 
+## Rewriting the host list during a move
+
+A move rewrites `hosts.toml` so the box keeps its name, its port and its URL. That
+is the one place this tool rewrites a file you maintain by hand, so it refuses
+rather than guesses, and it refuses **before** writing anything. The previous file
+is copied to `hosts.toml.bak` first, and the swap is atomic.
+
+All of these arrive at the last step of a move, which means **the new box already
+exists and is billing**. The host list not being updated is recoverable; not
+knowing you are paying is not. `gcloud compute instances list` shows what is
+running, and `comfy-qat down <name>` stops it once the list names it again.
+
+**`the rewritten host list would not load: <reason> Nothing was written.`**
+
+The result would have been a file this tool then refuses to read — after which no
+command works at all until somebody edits it. The usual cause is moving a box back
+to a zone it came from: the entry retired by the earlier move still names that
+instance in that zone, and so does the one coming home, so two entries describe one
+machine. Delete the stale `[hosts.<name>-<zone>]` entry, then run the move again.
+
+**`the rewritten host list does not hold what it should — missing <a>, unexpected <b>. Nothing was written.`**
+
+An internal check: the rewrite would have lost or invented a machine. Nothing was
+written. This should not happen; if it does, `hosts.toml` is unchanged and worth
+sending on with what you ran.
+
+**`the rewritten host list would not parse: <reason>`**
+
+The transform produced invalid TOML. Nothing was written. Most likely something in
+the file the rewrite did not expect — send the file and the command.
+
+**`<name> is not in the host list, so it cannot be moved.`**
+
+The name given does not appear in `hosts.toml`. `comfy-qat list` shows what is
+declared.
+
+**`<name> has no port line, so its port cannot be freed.`**
+
+Every host needs its own `port`, and a move has to hand the moved box the old
+port while giving the retired entry a new one. A `[hosts.<name>]` block with no
+`port` line stops that. Add one — any free number above 8188 — and run the move
+again. Note this also fires when the port line carries a trailing comment
+(`port = 8192  # the QA port`), which is a limitation of the rewrite rather than a
+problem with your file.
+
 ## A new box and its GPU driver
 
 **`<name> still has no working GPU driver after 900s. The machine is running and billing.`**
@@ -1164,6 +1214,16 @@ failed rather than being slow. The machine is billing either way — `comfy-qat
 down <name>` stops it.
 
 ## Stopping machines
+
+**`<name> machine(s) could not be checked — run `comfy-qat list --live`.`** / **`<name> machine(s) left running and billing: <names>.`** / **`nothing was running, so nothing is billing.`**
+
+How `down --all --keep-running` ends. The flag closes the tunnels and deliberately
+leaves the machines on, so the closing line has to say what is actually running —
+it is the only reason to read the command's output at all.
+
+The first form is the one to act on: it means the tool asked Google and did not get
+an answer, usually an expired login (`gcloud auth login`). It is not "nothing is
+running". `comfy-qat list --live` asks again.
 
 **`could not tell whether <name> is running: <error>. Check with `comfy-qat list --live``**
 

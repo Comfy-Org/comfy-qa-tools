@@ -384,7 +384,8 @@ Four things worth knowing before you run it:
   a snapshot and a 300 GB disk may now exist, and they bill. Run the same command
   again: it reads the project first, says what it found, and carries on from there.
   Every leftover it reports comes with the exact command that removes it, and
-  `--clean` removes the ones belonging to this move and stops. It never deletes
+  `--clean` removes the ones belonging to this move and then carries on with the
+  move itself — "clean up first", not "clean up instead". It never deletes
   anything without being asked.
 - **The zone Google suggests can be out by the time you get there.** It is where
   there was capacity when it answered, not a reservation, and there is no way to
