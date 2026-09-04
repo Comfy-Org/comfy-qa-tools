@@ -743,7 +743,64 @@ def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
 # A sweep of all eleven commands put the violation set at exactly those two,
 # which is what makes this a calibrated rule rather than an invented one.
 
-BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd", "disconnect_cmd")
+# Hand-maintained, and that is the third such collection in this codebase today.
+# ERROR_TYPES silently DROPPED two members and had to be made self-checking;
+# BUILT_IN_CARD could silently GAIN one. This one fails the second way: a new
+# command that leaves a box running, never added here, is simply not checked.
+#
+# So the list is derived rather than typed. Anything in host.py that reaches
+# `bring_up` — the one call that starts a machine — is a command that can leave
+# one running, and has to name the bill.
+# `down_cmd` is here because of `--keep-running`, which deliberately leaves a box
+# on. The derivation below found it; it was not typed.
+BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd",
+                    "disconnect_cmd", "down_cmd")
+
+
+def _commands_that_can_start_a_machine() -> set[str]:
+    """Every command whose body reaches a call that starts or keeps a box up.
+
+    Derived from the source, so a NEW command cannot be added without either
+    naming the bill or failing this. That is the whole difference between this
+    and a list somebody remembers to update.
+    """
+    import ast
+    import inspect
+
+    from comfy_qa import host as host_module
+
+    starters = {"bring_up", "_bring_up", "put_away", "_serve", "build"}
+    found = set()
+    for node in ast.walk(ast.parse(inspect.getsource(host_module))):
+        if not isinstance(node, ast.FunctionDef) or not node.name.endswith("_cmd"):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call):
+                func = inner.func
+                called = (func.id if isinstance(func, ast.Name)
+                          else func.attr if isinstance(func, ast.Attribute) else "")
+                # put_away only leaves a box running under keep_running=True;
+                # otherwise it is the command that stops one.
+                if called == "put_away" and not any(
+                    kw.arg == "keep_running" for kw in inner.keywords
+                ):
+                    continue
+                if called in starters:
+                    found.add(node.name)
+    return found
+
+
+def test_the_list_of_billable_commands_is_not_missing_one():
+    """The guard on the guard. The test below checks a hand-maintained tuple, and
+    a hand-maintained tuple that nothing derives is how a new command gets missed
+    — which is exactly how `disconnect` was missed until the test below was
+    written, and it was written for two other commands."""
+    derived = _commands_that_can_start_a_machine()
+    unlisted = sorted(derived - set(BILLABLE_ENDINGS))
+    assert not unlisted, (
+        f"{', '.join(unlisted)} can leave a machine running and is not in "
+        "BILLABLE_ENDINGS, so nothing checks that it names the bill."
+    )
 
 
 def test_every_command_that_leaves_a_box_running_names_the_bill():
@@ -769,8 +826,12 @@ def test_every_command_that_leaves_a_box_running_names_the_bill():
         body = ast.get_source_segment(source, node) or ""
         # Either it names the command itself, or it defers to something that
         # does: lifecycle's stop_paying / _with_the_bill, or _serve's ending.
+        # Either it names the command itself, or it defers to something that
+        # does. `put_away` names it on the keep_running branch, which is the only
+        # branch of `down` that leaves a box up.
         says_it = ("comfy-qat down" in body or "stop_paying" in body
-                   or "_with_the_bill" in body or "_serve(" in body)
+                   or "_with_the_bill" in body or "_serve(" in body
+                   or "put_away" in body)
         if not says_it:
             missing.append(name)
 

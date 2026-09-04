@@ -1667,6 +1667,11 @@ def put_away(
             return "idle"
         say(f"{host.name} left running — it is still billing")
         say(f"any ComfyUI on it is still running too: comfy-qat logs {host.name}")
+        # And how to stop, which this did not say. The --all branch summarises it
+        # for the whole set; the single-host form offered `logs` and left the bill
+        # hanging — the half of the rule that six commands hand-wrote and two
+        # forgot.
+        say(f"when the work is finished: {stop_paying(host)}")
         return "billing"
 
     # Read before stopping, so the line afterwards is news rather than grammar.
