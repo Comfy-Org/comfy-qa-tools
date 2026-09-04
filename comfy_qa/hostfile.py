@@ -95,6 +95,32 @@ def apply(path: Path, text: str, *, expect: set[str]) -> None:
             f"missing {missing}, unexpected {extra}. Nothing was written."
         )
 
+    # Names being right is not the file being right. Comparing names let through
+    # the worst outcome this module can produce: a file that parses, holds exactly
+    # the expected names, and is then REFUSED by the loader — after which no
+    # comfy-qat command works at all until somebody hand-edits it.
+    #
+    # The way in is the most ordinary sequence there is. A stockout pushes a box
+    # out of us-central1-c, capacity comes back, you move it home. Move one
+    # retires the old entry as `<name>-us-central1-c`, still naming instance
+    # `<name>` in zone c. Move two puts `<name>` back in zone c. Two entries, two
+    # distinct names, one machine — which `config.parse` rejects, correctly,
+    # because reading results from the wrong box is what this tool exists to stop.
+    #
+    # It lands at the REGISTER step, so by then the box is moved, running and
+    # billing, and `down` can no longer reach it.
+    #
+    # So validate with the real loader rather than a proxy for it. Whatever the
+    # tool will refuse to read, this refuses to write.
+    from .config import ConfigError, parse
+
+    try:
+        parse(parsed)
+    except ConfigError as exc:
+        raise HostFileError(
+            f"the rewritten host list would not load: {exc} Nothing was written."
+        ) from exc
+
     if path.exists():
         backup = path.with_name(path.name + ".bak")
         backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")

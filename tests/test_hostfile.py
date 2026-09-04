@@ -137,3 +137,95 @@ def test_no_temp_file_is_left_beside_the_host_list(tmp_path):
     apply(path, renamed(),
           expect={"local", "comfy-win", "comfy-linux", "comfy-linux-us-central1-c"})
     assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []
+
+
+# --- the file that parses, counts right, and still bricks the tool -----------
+#
+# Found by adversarial testing, and it is the worst thing this module can do:
+# names all correct, TOML valid, and `config.load` then refuses it — after which
+# no comfy-qat command works until somebody hand-edits the file. Worse, register()
+# runs at the REGISTER step, so the box is already moved, running and billing, and
+# `down` can no longer reach it.
+
+MOVED_ONCE = """\
+[hosts.local]
+kind = "local"
+port = 8188
+
+[hosts.comfy-linux-us-central1-c]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-c"
+gce_project  = "proj"
+port         = 8194
+
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8192
+"""
+
+COMING_HOME = """
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-c"
+gce_project  = "proj"
+port         = 8192
+"""
+
+
+def test_moving_a_box_back_where_it_came_from_is_refused_not_written(tmp_path):
+    """A stockout pushes the box out of us-central1-c; capacity returns; you move
+    it home. The retired entry still names instance `comfy-linux` in zone c, and
+    so does the one coming home. Two names, one machine — which the loader
+    rejects, correctly, because reading results from the wrong box is the thing
+    this tool exists to prevent."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(MOVED_ONCE, encoding="utf-8")
+
+    text = rename_and_add(MOVED_ONCE, name="comfy-linux",
+                          renamed="comfy-linux-us-central1-a",
+                          renamed_port=8195, added=COMING_HOME)
+
+    # It parses, and every name is exactly what was expected. That is why the
+    # old check waved it through.
+    assert tomllib.loads(text)
+    expect = {"local", "comfy-linux-us-central1-c",
+              "comfy-linux-us-central1-a", "comfy-linux"}
+    assert set(tomllib.loads(text)["hosts"]) == expect
+
+    with pytest.raises(HostFileError, match="would not load"):
+        apply(path, text, expect=expect)
+    assert path.read_text(encoding="utf-8") == MOVED_ONCE, "it was written anyway"
+    assert not path.with_name("hosts.toml.bak").exists(), (
+        "a refused write must not clobber the backup"
+    )
+
+
+def test_what_the_loader_refuses_this_refuses_to_write(tmp_path):
+    """The rule, stated once: validation here is the real loader, not a proxy."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    same_machine = HOSTS + """
+[hosts.a-different-name]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8199
+"""
+    with pytest.raises(HostFileError, match="would not load"):
+        apply(path, same_machine,
+              expect={"local", "comfy-linux", "comfy-win", "a-different-name"})
+    assert path.read_text(encoding="utf-8") == HOSTS
