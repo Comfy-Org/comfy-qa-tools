@@ -24,6 +24,13 @@ The other half of the rule is the half that matters more: **nothing that could b
 a failure is ever dropped.** A silenced error costs a testing session; a coloured
 one costs a paste. So every case below that proves something disappears is
 matched by one proving that something else did not.
+
+The last two sections are the same boundary one step further in. There, a
+subprocess's *output* reaches a person unexamined; here its *answer* does —
+`reset-windows-password` exiting 0 with nothing, printed as a blank username and
+a blank password laid out exactly like a real pair. That is the worse of the two,
+because output that reads wrong gets noticed and a credential that reads right
+does not.
 """
 
 from __future__ import annotations
@@ -35,7 +42,9 @@ import pytest
 from comfy_qa import tunnel
 from comfy_qa.gcloud import (
     KNOWN_NOISE,
+    NO_GCLOUD,
     Gcloud,
+    GcloudError,
     Relay,
     is_noise,
     plain,
@@ -344,3 +353,99 @@ def test_the_child_keeps_this_processs_stdin(tmp_path, monkeypatch, capsys):
         os.close(kept)
 
     assert "stdin said: yes" in capsys.readouterr().out
+
+
+# --- what gcloud handed back, when it is not something we can use -------------
+#
+# The same boundary, one step further in. Above, a subprocess's *output* reaches
+# a person; here its *answer* does. Both fail the same way — this tool passing on
+# something it never looked at — and the second is the more expensive, because
+# output that reads wrong is noticed and a credential that reads right is not.
+
+
+def scripted(answer):
+    """A `Gcloud` whose one call comes back with exactly this."""
+    return Gcloud(runner=lambda args, mode: answer)
+
+
+def test_a_password_reset_that_produced_nothing_is_a_failure():
+    """`run` returns None on an empty stdout, and `or {}` made that a success.
+
+    `rdp` then printed a blank username and a blank password laid out exactly
+    like a real pair, said it was forwarding RDP, and execvp'd away. The tester
+    found out at a Windows login prompt they could not get past, with nothing in
+    our output pointing back at us.
+    """
+    with pytest.raises(GcloudError) as raised:
+        scripted(None).windows_password("win-instance", "us-central1-a", "proj")
+
+    assert "win-instance" in str(raised.value), "say which box"
+    assert "no credentials" in str(raised.value)
+    assert "nothing at all" in str(raised.value), "say what came back"
+    assert "reset-windows-password" in (raised.value.fix or ""), "say how to look"
+
+
+@pytest.mark.parametrize("answer", [
+    {},                                        # exited 0, said nothing useful
+    {"username": "ali"},                       # half a pair is not a pair
+    {"password": "hunter2"},                   # nor is the other half
+    {"username": "", "password": ""},          # present and blank is the trap
+    {"ip_address": "10.0.0.2"},                # a table, wrong table
+    "reset ok",                                # not a table at all
+    ["ali", "hunter2"],
+])
+def test_only_a_complete_pair_is_a_password(answer):
+    """Anything else is a failure. There is no half-usable credential."""
+    with pytest.raises(GcloudError):
+        scripted(answer).windows_password("win-instance", "z", "p")
+
+
+def test_a_complete_pair_is_returned_as_it_came():
+    credentials = {"username": "ali", "password": "hunter2",
+                   "ip_address": "10.0.0.2"}
+    assert scripted(credentials).windows_password("w", "z", "p") == credentials
+
+
+def test_the_refusal_never_repeats_the_password():
+    """An error is pasted into Slack. The one secret on the box does not go too.
+
+    Half a pair still carries the half that matters, so the message names the
+    keys that came back and never their values.
+    """
+    with pytest.raises(GcloudError) as raised:
+        scripted({"password": "hunter2"}).windows_password("w", "z", "p")
+
+    everything = f"{raised.value} {raised.value.fix} {raised.value.raw}"
+    assert "hunter2" not in everything
+    assert "password" in everything, "naming the key is the point"
+
+
+# --- one missing binary, one sentence -----------------------------------------
+
+
+def without_gcloud(monkeypatch):
+    monkeypatch.setattr(Gcloud, "available", lambda self: None)
+    return Gcloud()
+
+
+@pytest.mark.parametrize("reach", [
+    lambda gc: gc.run(["compute", "instances", "list"]),
+    lambda gc: gc.run_interactive(["auth", "login"]),
+    lambda gc: gc.preflight("proj"),
+    lambda gc: gc.ssh("box", "z", "p", "echo ok"),
+    lambda gc: gc.ssh_output("box", "z", "p", "echo ok"),
+    lambda gc: gc.require(),
+])
+def test_every_way_in_says_the_same_thing_about_a_missing_gcloud(reach, monkeypatch):
+    """`require()` unified two of the five. These are the other three.
+
+    `ssh` and `ssh_output` each raised their own barer version with no `fix=`, so
+    the same missing binary told two people two different things and only one of
+    them where to get gcloud.
+    """
+    with pytest.raises(GcloudError) as raised:
+        reach(without_gcloud(monkeypatch))
+
+    assert str(raised.value) == "gcloud is not installed or not on PATH."
+    assert raised.value.fix == "https://cloud.google.com/sdk/docs/install"
+    assert raised.value.kind == NO_GCLOUD

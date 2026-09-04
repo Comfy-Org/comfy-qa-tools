@@ -427,6 +427,12 @@ class Gcloud:
         `rdp` never reach `run` — they hand an argv to `os.execvp` — so without
         this they turned an absent gcloud into a `FileNotFoundError` traceback
         where every other command prints a sentence and the install link.
+
+        Every site that needs the binary now asks here, which is the difference
+        between one place and the first of several. There were five: two spelled
+        the message with the install link, and two — `ssh` and `ssh_output` —
+        spelled it without, so the same missing binary told two different people
+        two different things and only one of them where to get it.
         """
         exe = self.available()
         if exe is None:
@@ -482,14 +488,7 @@ class Gcloud:
         if self.runner is not None:
             return self.runner(args, "interactive")
 
-        exe = self.available()
-        if exe is None:
-            raise GcloudError(
-                "gcloud is not installed or not on PATH.",
-                fix="https://cloud.google.com/sdk/docs/install",
-                kind=NO_GCLOUD,
-            )
-        return subprocess.run([exe, *args]).returncode
+        return subprocess.run([self.require(), *args]).returncode
 
     # --- is this going to work before we spend money on it? ----------------
 
@@ -508,12 +507,7 @@ class Gcloud:
         if self.proven:
             return
 
-        if self.available() is None:
-            raise GcloudError(
-                "gcloud is not installed or not on PATH.",
-                fix="https://cloud.google.com/sdk/docs/install",
-                kind=NO_GCLOUD,
-            )
+        self.require()
 
         if not self.active_account():
             raise GcloudError(
@@ -690,10 +684,7 @@ class Gcloud:
         if self.runner is not None:
             return self.runner(args, "stream" if stream else True)
 
-        exe = self.available()
-        if exe is None:
-            raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
-        return relay_output([exe, *args])
+        return relay_output([self.require(), *args])
 
     def ssh_argv(self, instance: str, zone: str, project: str) -> list[str]:
         """The command that opens an interactive shell on a box.
@@ -701,6 +692,16 @@ class Gcloud:
         Returned rather than run: `ssh` replaces this process with it, so the
         shell owns the terminal and Ctrl-C reaches the remote side rather than a
         wrapper around it.
+
+        **Where the output guarantee ends.** `relay_output` can hold gcloud's
+        output to `say`'s rule because it is between the child and the terminal.
+        `execvp` leaves nothing in between — this process is gone and the shell
+        owns the terminal from that line — so colour, progress bars and gcloud's
+        own advisories all reach the screen here, by construction. That is the
+        right trade for an interactive shell, which wants the terminal it is
+        being given; it is worth knowing rather than fixing. `require()` is
+        called before the hand-off because a refusal is the one thing that must
+        still be ours to word.
         """
         return [
             "gcloud", "compute", "ssh", instance,
@@ -709,7 +710,13 @@ class Gcloud:
 
     def rdp_argv(self, instance: str, zone: str, project: str,
                  local_port: int) -> list[str]:
-        """The command that forwards Remote Desktop from the box to this Mac."""
+        """The command that forwards Remote Desktop from the box to this Mac.
+
+        Also handed to `execvp`, so the note on `ssh_argv` applies here too — and
+        with more force, because this is the one IAP forward a tester watches
+        directly, and the NumPy advisory `Relay` drops everywhere else will
+        appear on this screen. It is gcloud's terminal by then.
+        """
         return [
             "gcloud", "compute", "start-iap-tunnel", instance, "3389",
             f"--local-host-port=localhost:{local_port}",
@@ -721,11 +728,36 @@ class Gcloud:
 
         Google documents no way to read the existing one — resetting is the only
         route in, and it is what their own instructions tell you to do.
+
+        Raises rather than answering with something falsy, and that is the whole
+        of the fix. `run` returns `None` when gcloud exits 0 with an empty stdout,
+        and this ended `or {}` — so no exception was raised, `rdp` printed a blank
+        username and a blank password laid out exactly like a real pair, said it
+        was forwarding RDP, and `execvp`'d away. The tester found out at a Windows
+        login prompt they could not get past, with nothing in our output pointing
+        back at us. A password this tool cannot produce is a failure; the only
+        honest shapes to return are the credentials or an exception.
+
+        The message names the keys that came back and never a value. If a
+        password *is* in there, it is the one thing on this box worth not putting
+        into an error that gets pasted somewhere.
         """
-        return self.run([
+        answer = self.run([
             "compute", "reset-windows-password", instance,
             f"--zone={zone}", f"--project={project}", "--quiet",
-        ]) or {}
+        ])
+        if isinstance(answer, dict) and answer.get("username") and answer.get("password"):
+            return answer
+        raise GcloudError(
+            f"gcloud reset the Windows password on {instance} and exited without "
+            f"an error, but the answer carried no credentials: {_shape(answer)}. "
+            f"There is no password to hand over, so nothing was forwarded.",
+            fix=(
+                f"run it yourself and read what comes back: gcloud compute "
+                f"reset-windows-password {instance} --zone={zone} "
+                f"--project={project}"
+            ),
+        )
 
     def ssh_output(self, instance: str, zone: str, project: str, remote: str) -> str:
         """Run a command on the instance and return what it printed.
@@ -743,10 +775,8 @@ class Gcloud:
         if self.runner is not None:
             return self.runner(args, "output")
 
-        exe = self.available()
-        if exe is None:
-            raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
-        proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=INSTANCE_TIMEOUT)
+        proc = subprocess.run([self.require(), *args], capture_output=True,
+                              text=True, timeout=INSTANCE_TIMEOUT)
         if proc.returncode != 0:
             message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
             raise GcloudError(message, fix=fix, raw=raw)
@@ -945,6 +975,21 @@ def localized_message(text: str) -> str | None:
         if joined:
             return joined
     return None
+
+
+def _shape(answer: object) -> str:
+    """What came back, described without repeating any of it.
+
+    Used where the answer was the wrong shape and the message has to say so.
+    Names the keys and never the values: the one call this is used on is the one
+    that resets a Windows password, and an error goes into a paste.
+    """
+    if answer is None:
+        return "nothing at all"
+    if isinstance(answer, dict):
+        keys = ", ".join(sorted(str(key) for key in answer)) or "no keys"
+        return f"a table carrying {keys}"
+    return f"a {type(answer).__name__}"
 
 
 def _is_separator(value: str) -> bool:

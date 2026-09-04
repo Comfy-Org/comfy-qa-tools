@@ -1194,6 +1194,25 @@ Windows Server boxes are reached over Remote Desktop, not SSH. `comfy-qat rdp
 `rdp` is only for Windows. For a Linux box use `comfy-qat ssh <name>`; for the
 local install, open a terminal.
 
+**`gcloud reset the Windows password on <instance> and exited without an error,
+but the answer carried no credentials`**
+
+There is no password to hand over, so nothing was forwarded — which is the whole
+point of the message. gcloud exited 0 and returned either nothing at all or a
+table with no `username` and `password` in it. This used to print a blank
+username and a blank password laid out exactly like a real pair, announce that it
+was forwarding RDP, and hand the terminal to the tunnel; you found out at a
+Windows login prompt you could not get past, with nothing in the output pointing
+back here. Run the reset yourself and read what comes back:
+
+```sh
+gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project>
+```
+
+Two causes account for most of it: the box is not RUNNING — the guest agent has
+to be up to accept a reset, so start it first — or the account signed in lacks
+`compute.instances.setMetadata` on that instance.
+
 ## Stamping a machine
 
 **`nothing answered at http://127.0.0.1:8190`**
