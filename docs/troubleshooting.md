@@ -1364,6 +1364,22 @@ and ignored quietly when it could not.** `--yes` with `--dry-run` is the same sh
 and is fine, because `--yes` only suppresses a prompt that `--dry-run` never
 reaches.
 
+## A switch that stopped the old box and could not start the new one
+
+**`the machines you had are stopped and <name> did not come up, so you are on neither. Check what is running before retrying — <name> may have started and be billing`**
+
+`switch` normally brings the target up FIRST, so a failure leaves you on the
+machine you had. When the GPU ceiling is the reason you are switching — one card
+across the whole project, which is the usual case here — that is impossible: the
+target cannot start until the other box stops. So on that path the order reverses,
+and a failure after the stop leaves you on neither machine.
+
+The bare "switch failed" that used to print reads as "nothing happened". Something
+did: the box you were working on is down, and the new one may be up and billing.
+
+`comfy-qat list --live` asks Google what is actually running, which is the only
+answer worth having before retrying.
+
 ## A read that said nothing
 
 **`could not tell whether <name> is running, so there is no saying whether it has a log.`**

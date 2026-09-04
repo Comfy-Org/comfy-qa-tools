@@ -1181,6 +1181,21 @@ def switch_cmd(
         say.result("  - leaving the other machines running (--keep-others)" if keep_others
                    else "  - nothing else is running, so nothing to stop")
 
+    # The ceiling is checked BEFORE the dry run returns, because it decides the
+    # ORDER, and the order is what a person runs `--dry-run` to see. It sat eleven
+    # lines below this return, so the preview said "go to X, then stop Y" and the
+    # real run did the opposite — stop Y, then start X. Someone typing `--dry-run`
+    # to ask "will this kill the box I am on right now" was told no, and then it
+    # did exactly that.
+    first = _blocked_by_the_ceiling(gc, host, [other for other, _why in others])
+    if first and others:
+        say.result("")
+        say.result(f"  your quota allows {say.count(first, 'GPU machine')} at a "
+                   f"time, so the order is the other way round:")
+        for other, _why in others:
+            say.result(f"  - stop {other.name} FIRST")
+        say.result(f"  - then go to {host.name} on {host.url}")
+
     if dry_run:
         say.result("\n--dry-run: nothing changed")
         return
@@ -1194,7 +1209,6 @@ def switch_cmd(
     # Watched that happen — the switch started the target, was refused with
     # "Quota 'NVIDIA_L4_GPUS' exceeded. Limit: 1.0", and reported it as a
     # failure. It was arithmetic, and it was knowable beforehand.
-    first = _blocked_by_the_ceiling(gc, host, [other for other, _why in others])
     if first:
         say.step(f"your quota allows {say.count(first, 'GPU machine')} at a time, "
                  f"so {host.name} cannot start until the other one stops")
@@ -1202,7 +1216,24 @@ def switch_cmd(
             _act(put_away, gc, other, say.step)
         others = []
 
-    ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
+    # `stopped_first` is not bookkeeping. On the ceiling path the old box is
+    # already down by the time the target is started, so a failure here leaves
+    # the user with the box they were on STOPPED and the new one possibly UP and
+    # billing — while the command exits 1, which reads as "nothing happened".
+    # `_failed` is handed an empty `kept` for the same reason and cannot say
+    # where to work instead.
+    stopped_first = bool(first)
+    try:
+        ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
+    except typer.Exit:
+        if stopped_first:
+            say.error(
+                f"the machines you had are stopped and {host.name} did not come "
+                f"up, so you are on neither. Check what is running before "
+                f"retrying — {host.name} may have started and be billing",
+                say.fix("ask Google what is up:", "comfy-qat list --live"),
+            )
+        raise
 
     for other, _why in others:
         _act(put_away, gc, other, say.step)

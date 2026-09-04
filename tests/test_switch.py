@@ -534,3 +534,26 @@ def test_a_box_that_is_starting_counts_as_one_to_stop_first():
 
     found = running_elsewhere(Gcloud(runner=runner), [target, other], target)
     assert [h.name for h, _ in found] == ["b"], found
+
+
+def test_the_dry_run_shows_the_order_the_real_run_will_use(cli, monkeypatch):
+    """`--dry-run` is typed to ask "will this kill the box I am on right now".
+
+    The ceiling check sat ELEVEN LINES BELOW the dry-run return, so the preview
+    said "go to X, then stop Y" and the real run did the opposite — stop Y, then
+    start X. It answered no and then did exactly that. At GPUS_ALL_REGIONS=1,
+    which is this project, the reversed order is the only order there is.
+    """
+    from comfy_qa import host as host_module
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
+                        lambda gc, host, others: 1)
+    result = cli("switch", "comfy-win", "--dry-run",
+                 statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+                 open_tunnels=("comfy-linux",))
+
+    assert "the order is the other way round" in result.output, result.output
+    stop = result.output.index("stop comfy-linux FIRST")
+    start = result.output.index("then go to comfy-win")
+    assert stop < start, "the preview still shows the wrong order"
+    assert "nothing changed" in result.output
