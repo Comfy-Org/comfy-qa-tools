@@ -652,6 +652,10 @@ def down_cmd(
                     say.result(f"  gcloud compute instances stop {name} "
                                f"--zone={zone}")
                 say.result("  comfy-qat discover   # or adopt them first")
+            elif strangers is None:
+                say.result("no cloud machines are declared, and the project "
+                           "could not be checked — so this is not an all-clear.")
+                say.result("  comfy-qat list --live")
             else:
                 say.result("no cloud machines are declared, and nothing is "
                            "running on the project either")
@@ -703,7 +707,7 @@ def down_cmd(
                 say.result(f"\n{say.count(len(billing), 'machine')} left running "
                            f"and billing: {', '.join(h.name for h in billing)}.")
                 say.result("Run without --keep-running to stop them.")
-            elif not unknown and not strangers:
+            elif not unknown and strangers == []:
                 say.result("\nnothing was running, so nothing is billing.")
         else:
             # "all N stopped." was printed whether five GPU boxes had been
@@ -714,7 +718,7 @@ def down_cmd(
             if caught:
                 names = ", ".join(h.name for h in caught)
                 say.result(f"\nwas billing: {names}. Stopped. Nothing is now.")
-            elif not unknown and not strangers:
+            elif not unknown and strangers == []:
                 say.result("\nnothing was running, so nothing was billing.")
             # `unknown` was collected here and never reported, so a run where
             # every read failed and every stop succeeded printed the all-clear —
@@ -730,7 +734,11 @@ def down_cmd(
                 )
                 say.result("  comfy-qat list --live")
 
-        if strangers:
+        if strangers is None:
+            say.result("\nthe project could not be checked for machines you have "
+                       "not declared, so this is not an all-clear.")
+            say.result("  comfy-qat list --live")
+        elif strangers:
             say.result(
                 f"\n{say.count(len(strangers), 'machine')} on this project is "
                 f"running and not in your host list: "
@@ -1446,7 +1454,7 @@ def move_cmd(
             say.result(f"  {line}")
 
 
-def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]]:
+def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | None:
     """Running instances on the project that no host entry names.
 
     `down --all` iterates the host list, so a box nobody declared is not merely
@@ -1455,9 +1463,12 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]]:
     now that it reads "nothing is now", which is a promise about the project
     rather than about the file.
 
-    Read-only, and failure is silent by design: this runs after the work is done,
-    and a project that cannot be listed must not turn a successful `down` into an
-    error. The summary simply says less.
+    Read-only, and a failure must not turn a successful `down` into an error —
+    this runs after the work is done. But it returns None rather than an empty
+    list when it could not look, because those are different facts and printing
+    the same sentence for both is the defect this function was written to fix,
+    wearing the fix's clothes: "nothing is running on the project either" is a
+    claim, and an unread project does not support it.
     """
     from .gcloud import GcloudError
 
@@ -1468,14 +1479,14 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]]:
         try:
             project = gc.current_project()
         except (GcloudError, AttributeError):
-            return []
+            return None
     if not project:
-        return []
+        return None
     declared = {h.gce_instance for h in hosts if h.gce_instance}
     try:
         instances = gc.list_instances(project)
     except (GcloudError, AttributeError):
-        return []
+        return None
     return [
         (i.get("name", ""), _tail_zone(i.get("zone", "")))
         for i in instances or []

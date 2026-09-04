@@ -682,3 +682,50 @@ def test_the_old_flag_still_works_and_says_where_it_went(cli):
     assert "comfy-qat disconnect" in result.output
     assert "still works" in result.output
     assert "stop_instance" not in result.cloud.calls
+
+
+def test_a_project_that_could_not_be_checked_is_not_an_all_clear(cli):
+    """The fix's own shape turned against it. The survey fails silently so a
+    project that will not list cannot break a successful `down` — but if it then
+    says nothing, the all-clear prints with no survey behind it, which is the
+    original defect wearing the fix's clothes.
+
+    "Nothing is running on the project" is a claim. An unread project does not
+    support it, and an unread project and an empty one must not produce the same
+    sentence."""
+    from comfy_qa.gcloud import GcloudError
+
+    class Blind(Cloud):
+        def instance_status(self, instance, zone, project):
+            return "TERMINATED"
+
+        def list_instances(self, project):
+            raise GcloudError("credentials expired")
+
+    result = cli("down", "--all", cloud=Blind())
+
+    assert "nothing was running" not in result.output, result.output
+    assert "not an all-clear" in result.output
+    assert "list --live" in result.output
+    assert result.exit_code == 0, "it still must not fail a successful down"
+
+
+def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.gcloud import GcloudError
+
+    class Blind(Cloud):
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            raise GcloudError("credentials expired")
+
+    path = tmp_path / "local-only.toml"
+    path.write_text(LOCAL_ONLY, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Blind())
+    result = CliRunner().invoke(app, ["down", "--all", "--config", str(path)])
+
+    assert "nothing is running on the project either" not in result.output
+    assert "not an all-clear" in result.output
+    assert result.exit_code == 0
