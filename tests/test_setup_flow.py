@@ -385,6 +385,11 @@ def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
     assert "no cloud boxes on this project yet" in result.output
     assert "ready — 1 machine, 0 in the cloud" in result.output
     assert "no cloud boxes yet" in result.output
+    # The end of the command whose job is getting a newcomer ready must point at
+    # this tool, not at the Google Cloud console. It said "create one in Google
+    # Cloud and run `comfy-qat discover`" — written before `create` existed.
+    assert "comfy-qat create" in result.output
+    assert "in Google Cloud" not in result.output
     assert "comfy-qat discover" in result.output
 
 

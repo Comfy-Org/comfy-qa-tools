@@ -160,8 +160,15 @@ def setup_cmd(
     say.result("  comfy-qat list        see them")
     say.result("  comfy-qat stamp local what a machine is, exactly")
     if not remote:
-        say.result(f"\nno cloud boxes yet. Add one to {path} by hand, or create one in "
-                   "Google Cloud and run `comfy-qat discover`.")
+        # This used to send a newcomer to the Google Cloud console, or to editing
+        # a TOML file by hand, at the end of the command whose whole job is
+        # getting them ready — and it was written before `create` existed. The
+        # first-run path pointing away from the tool is the worst place for that
+        # to be out of date.
+        say.result("\nno cloud boxes yet. Make one:")
+        say.result("  comfy-qat create --os linux --gpu l4")
+        say.result(f"\nor, if you already have one on the project, `comfy-qat "
+                   f"discover` adopts it. {path} is the list either way.")
 
 
 def _choose(question: str, options: list[str]) -> str:
