@@ -327,6 +327,41 @@ def test_every_exception_this_package_defines_is_named_here():
     )
 
 
+def test_every_exception_this_package_RAISES_is_named_here():
+    """The sibling of the test above, and the hole it cannot see.
+
+    That one enumerates classes DEFINED in comfy_qa/, so it closes the class for
+    our own exceptions and is blind to an imported one. `typer.BadParameter` is
+    raised twice in host.py and is defined by typer, so it fell outside however
+    complete that enumeration became — and both selector refusals stayed
+    undocumented while nothing looked wrong.
+
+    This one reads what is RAISED rather than what is defined, which catches the
+    third-party case without anyone having to think of it in advance.
+    """
+    raised = set()
+    for path in PACKAGE.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            call = node.exc
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            name = (func.attr if isinstance(func, ast.Attribute)
+                    else func.id if isinstance(func, ast.Name) else None)
+            # `typer.Exit` carries no message, and a bare re-raise carries none
+            # of its own either.
+            if name and name.endswith(("Error", "Stopped", "Parameter")):
+                raised.add(name)
+
+    missing = sorted(raised - set(ERROR_TYPES))
+    assert not missing, (
+        f"{', '.join(missing)} is raised in this package and is not in "
+        "ERROR_TYPES, so the messages it carries are invisible here."
+    )
+
+
 def _troubleshooting_text() -> str:
     return re.sub(r"\s+", " ", (DOCS / "troubleshooting.md").read_text(encoding="utf-8"))
 
