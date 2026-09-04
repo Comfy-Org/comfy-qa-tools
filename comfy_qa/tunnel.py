@@ -369,6 +369,17 @@ def command(host: Host) -> list[str]:
     `localhost` resolves to `::1` first on macOS, so ssh bound IPv6 only and
     every probe of `http://127.0.0.1:<port>` was refused while the forward sat
     there working perfectly over IPv6. Verified both ways on a real box.
+
+    `--quiet` because this is the worst place in the tool to be asked a question.
+    The first `gcloud compute ssh` on a machine generates
+    `~/.ssh/google_compute_engine` and prompts for a passphrase, and this one is
+    detached with its output going to a file — so the prompt is not on any screen,
+    `ssh-keygen` is waiting on `/dev/tty` for an answer nobody can see to give,
+    and `_spawn` watches for `SPAWN_GRACE` seconds, sees a process still running,
+    and records its pid as an open tunnel. A tunnel that forwards nothing,
+    recorded as one that does, is the single thing this file exists to prevent.
+    `open` can be the first command anyone runs, so it cannot rely on `go` having
+    made the key first.
     """
     if not host.is_remote:
         raise TunnelError(
@@ -379,6 +390,7 @@ def command(host: Host) -> list[str]:
         f"--zone={host.gce_zone}",
         f"--project={host.gce_project}",
         "--tunnel-through-iap",
+        "--quiet",
         "--", "-N",
         "-L", f"127.0.0.1:{host.port}:127.0.0.1:{COMFYUI_PORT}",
     ]

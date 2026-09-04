@@ -39,7 +39,9 @@ import os
 
 import pytest
 
+from comfy_qa import gcloud as gcloud_module
 from comfy_qa import tunnel
+from comfy_qa.config import Host
 from comfy_qa.gcloud import (
     KNOWN_NOISE,
     NO_GCLOUD,
@@ -51,6 +53,10 @@ from comfy_qa.gcloud import (
     readable,
     relay_output,
 )
+
+WIN = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
+           gce_instance="win-instance", gce_zone="us-central1-a",
+           gce_project="proj")
 
 # What gcloud really printed, byte for byte, on 2026-09-03. The header carries a
 # trailing space and nothing else; the advisory is two lines under a blank one.
@@ -449,3 +455,122 @@ def test_every_way_in_says_the_same_thing_about_a_missing_gcloud(reach, monkeypa
     assert str(raised.value) == "gcloud is not installed or not on PATH."
     assert raised.value.fix == "https://cloud.google.com/sdk/docs/install"
     assert raised.value.kind == NO_GCLOUD
+
+
+# --- the prompt that piping makes invisible -----------------------------------
+#
+# These flags are here *because* of everything above. Reading a stream by line
+# and showing it only when a newline arrives is right for a log and wrong for a
+# question, and gcloud asks exactly one: on a machine that has never run
+# `gcloud compute ssh`, the first one generates `~/.ssh/google_compute_engine`
+# and prompts `Enter passphrase (empty for no passphrase):` with no newline after
+# it. `ssh-keygen` then reads the answer from /dev/tty, so there is nothing to
+# feed it either. Nothing in this tool creates that key and everything in it
+# depends on the key existing, so this reproduces once per machine and never
+# again — which is why it is pinned here rather than left to be met.
+
+
+def argv_for(call):
+    """The gcloud argv one method builds, without running anything."""
+    seen = []
+    gc = Gcloud(runner=lambda args, mode: seen.append(args) or "")
+    call(gc)
+    return seen[0]
+
+
+@pytest.mark.parametrize("call,where", [
+    (lambda gc: gc.ssh("box", "z", "p", "echo ok"), "ssh"),
+    (lambda gc: gc.ssh_output("box", "z", "p", "echo ok"), "ssh_output"),
+])
+def test_a_command_run_on_a_box_never_waits_on_a_question(call, where):
+    """Neither of these can show a prompt, so neither may be asked one.
+
+    `ssh` streams through `_pump`, which reads by line — a prompt with no
+    newline would never appear. `ssh_output` captures, so it could not appear
+    even in principle: it would sit invisible for the full INSTANCE_TIMEOUT and
+    come back as "gcloud timed out", naming the network for a question nobody
+    was shown.
+    """
+    assert "--quiet" in argv_for(call), f"{where} can be asked to hold still"
+
+
+def test_the_tunnel_is_never_asked_a_question_either():
+    """The worst place of the three: detached, with its output going to a file.
+
+    Nothing is on screen, ssh-keygen waits on /dev/tty, and `_spawn` watches for
+    SPAWN_GRACE, sees a process still running and writes down its pid — a tunnel
+    that forwards nothing, recorded as one that does. `open` can be the first
+    command anyone runs, so it cannot lean on `go` having made the key first.
+    """
+    args = tunnel.command(WIN)
+
+    assert "--quiet" in args
+    assert args.index("--quiet") < args.index("--"), (
+        "after the separator it is an argument to ssh, not a flag to gcloud"
+    )
+
+
+def test_the_interactive_shell_is_left_able_to_ask():
+    """`ssh_argv` goes to execvp, so a prompt reaches a terminal and a person.
+
+    The flag is about questions nobody can see. This one they can.
+    """
+    assert "--quiet" not in Gcloud().ssh_argv("box", "z", "p")
+
+
+# --- output that stopped early says so ----------------------------------------
+
+
+class Breaks:
+    """A pipe that dies part way through, which is the only way to lose output."""
+
+    def __init__(self, lines):
+        self._lines = list(lines)
+
+    def readline(self):
+        if self._lines:
+            return self._lines.pop(0)
+        raise ValueError("I/O operation on closed file")
+
+
+def collected():
+    lines = []
+    return lines, lines.append
+
+
+def test_output_that_was_cut_short_leaves_a_mark():
+    """A log that simply stops reads exactly like a command that finished.
+
+    That is the whole reason this is not silent: the last line of a truncated
+    install log looks like a result.
+    """
+    out, to_out = collected()
+    err, to_err = collected()
+
+    gcloud_module._pump(Breaks([b"installing torch\n", b"collecting nvidia-cudnn\n"]),
+                        to_out, to_err)
+
+    assert out == ["installing torch", "collecting nvidia-cudnn"], "keep what arrived"
+    assert len(err) == 1 and err[0].startswith(gcloud_module.CUT_SHORT)
+
+
+def test_the_mark_goes_to_stderr_even_for_the_stdout_pump():
+    """Our own trouble is the story, not the answer. `logs > run.log` stays clean."""
+    out, to_out = collected()
+    err, to_err = collected()
+
+    gcloud_module._pump(Breaks([b"a line of log\n"]), to_out, to_err)
+
+    assert out == ["a line of log"]
+    assert err and gcloud_module.CUT_SHORT in err[0]
+
+
+def test_a_break_still_flushes_what_was_being_held():
+    """Held is not dropped, and a failure is not a reason to start dropping."""
+    out, to_out = collected()
+    err, to_err = collected()
+
+    gcloud_module._pump(Breaks([b"warning:\n"]), to_out, to_err)
+
+    assert out == ["warning:"], "the header was held, then lost with the break"
+    assert err and gcloud_module.CUT_SHORT in err[0]

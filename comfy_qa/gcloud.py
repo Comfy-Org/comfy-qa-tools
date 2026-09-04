@@ -314,15 +314,31 @@ def _emit(stream, line: str) -> None:
         pass
 
 
-def _pump(reader, write) -> None:
-    """Read one stream to its end, cleaning it a line at a time."""
+# What a reader says when it could not finish. A log that simply stops reads
+# exactly like a command that finished, which is the one thing it must not be
+# mistaken for — a truncated install log has a last line that looks like a
+# result. Lowercase, so `test_say.py`'s one spelling of the word still holds.
+CUT_SHORT = "warning: the rest of this output was lost"
+
+
+def _pump(reader, write, note) -> None:
+    """Read one stream to its end, cleaning it a line at a time.
+
+    `note` is where a failure to finish is reported, and it is always stderr —
+    including for the stdout pump, because a line about our own trouble is the
+    story and not the answer. Swallowing it silently was the earlier version and
+    it was wrong: everything after the break is missing, and nothing said so.
+    """
     relay = Relay()
     try:
         for raw in iter(reader.readline, b""):
             for line in relay.line(raw.decode("utf-8", "replace")):
                 write(line)
-    except (OSError, ValueError):
-        pass  # the pipe closed under us; the exit code still says what happened
+    except (OSError, ValueError) as exc:
+        for line in relay.rest():
+            write(line)
+        note(f"{CUT_SHORT} ({exc})")
+        return
     for line in relay.rest():
         write(line)
 
@@ -356,10 +372,12 @@ def relay_output(cmd: list[str], *, out=None, err=None) -> int:
     stopped ComfyUI are not lost.
     """
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        to_out = _writer(out, "stdout")
+        to_err = _writer(err, "stderr")
         pumps = [
-            threading.Thread(target=_pump, args=(process.stdout, _writer(out, "stdout")),
+            threading.Thread(target=_pump, args=(process.stdout, to_out, to_err),
                              daemon=True),
-            threading.Thread(target=_pump, args=(process.stderr, _writer(err, "stderr")),
+            threading.Thread(target=_pump, args=(process.stderr, to_err, to_err),
                              daemon=True),
         ]
         for pump in pumps:
@@ -675,11 +693,27 @@ class Gcloud:
         `WARNING:` — its own advice about its own transfer speed — into the middle
         of an install log that then got pasted into Slack. Output nobody handles
         is output nobody can hold to the rule in `say`.
+
+        **`--quiet` is not tidiness, it is the condition for piping at all.** On a
+        machine that has never run `gcloud compute ssh`, the first one generates
+        `~/.ssh/google_compute_engine` and asks `Enter passphrase (empty for no
+        passphrase):` — a prompt with no trailing newline, which `_pump` reads by
+        line and would therefore never show, from `ssh-keygen`, which reads the
+        answer from `/dev/tty` and not from anything we could feed. A `go` on a
+        fresh machine would stop dead with no output and no explanation: exactly
+        the "hide the prompt and hang" failure `run_interactive`'s docstring
+        warns about, reintroduced one file over.
+
+        `gcloud compute ssh --help` says what the flag does here, in its own
+        words: "If the user does not have a public SSH key, one is generated
+        using ssh-keygen(1) (if the --quiet flag is given, the generated key will
+        have an empty passphrase)." Nothing in this tool creates that key, and
+        everything in it depends on the key existing.
         """
         args = [
             "compute", "ssh", instance,
             f"--zone={zone}", f"--project={project}",
-            "--tunnel-through-iap", f"--command={remote}",
+            "--tunnel-through-iap", "--quiet", f"--command={remote}",
         ]
         if self.runner is not None:
             return self.runner(args, "stream" if stream else True)
@@ -766,11 +800,17 @@ class Gcloud:
         and quoted: `INSTALLED`, a CUDA version, the name of the process holding
         port 8188. A colour code around any of those is a word this tool then
         fails to recognise and a message it then puts in front of a person.
+
+        `--quiet` for the reason given on `ssh`, and one worse here: this one
+        captures its output, so a first-run key-generation prompt would not be on
+        the screen even in principle. It would sit invisible for the full
+        `INSTANCE_TIMEOUT` and come back as "gcloud timed out", which names the
+        network for a question nobody was shown.
         """
         args = [
             "compute", "ssh", instance,
             f"--zone={zone}", f"--project={project}",
-            "--tunnel-through-iap", f"--command={remote}",
+            "--tunnel-through-iap", "--quiet", f"--command={remote}",
         ]
         if self.runner is not None:
             return self.runner(args, "output")
