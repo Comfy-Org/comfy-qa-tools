@@ -39,7 +39,7 @@ from typing import Annotated, Optional
 import typer
 
 from . import say
-from .config import ConfigError, load, resolve
+from .config import ConfigError, load
 
 app = typer.Typer()
 
@@ -71,14 +71,27 @@ def delete_cmd(
     except ConfigError as exc:
         _refuse(str(exc))
 
-    # By name only. `--os windows` is a fine way to say "the machine I want to
-    # work on" and a terrible way to say "the machine to destroy": a description
-    # that quietly resolves to a different box than you pictured is survivable
-    # for `go` and is not survivable here.
-    found = resolve(hosts, name)
-    if found.host is None:
-        _refuse(f"unknown host {name!r}", fix="comfy-qat list")
-    host = found.host
+    # By name only, and matched HERE rather than through `resolve` — which is the
+    # whole point. `resolve` is deliberately generous: it takes an operating
+    # system, a card, or both, because "the windows one" is a fine way to say
+    # which machine you want to work on. It is a terrible way to say which machine
+    # to destroy. `delete windows` resolving to comfy-win is survivable for `go`
+    # and is not survivable here, and the first version of this command did
+    # exactly that despite a comment claiming otherwise.
+    host = next((h for h in hosts if h.name == name), None)
+    if host is None:
+        described = next((h for h in hosts if h.name.lower() == name.lower()), None)
+        if described is not None:
+            _refuse(
+                f"no host is called {name!r}. Did you mean {described.name!r}?",
+                fix=f"comfy-qat delete {described.name}",
+            )
+        _refuse(
+            f"no host is called {name!r}. delete takes an exact name, never a "
+            "description — a description can resolve to a machine you did not "
+            "picture, and this cannot be undone",
+            fix="comfy-qat list",
+        )
 
     if not host.is_remote:
         _refuse(f"{host.name} is this machine, not a cloud box")
