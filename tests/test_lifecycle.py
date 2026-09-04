@@ -169,10 +169,39 @@ def test_put_away_stops_the_box(tmp_path):
 
 def test_keep_running_says_plainly_that_it_still_costs(tmp_path):
     lines, say = said()
-    gc = gcloud([])
-    put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
+    gc = gcloud(["RUNNING"])
+    still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
     assert not any(key.startswith("compute instances stop") for key in gc.calls)
     assert any("still billing" in line for line in lines)
+    assert still is True
+
+
+def test_keep_running_does_not_invent_a_bill_for_a_stopped_box(tmp_path):
+    """A live run printed "left running — it is still billing" about four hosts
+    while three of them were TERMINATED. The day before, the same command claimed
+    it had stopped machines it had deliberately left on. Both are one defect: a
+    statement about money the tool never checked."""
+    lines, say = said()
+    gc = gcloud(["TERMINATED"])
+    still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
+    assert still is False
+    assert not any("billing" in line for line in lines), lines
+    assert any("already stopped" in line for line in lines)
+
+
+def test_not_knowing_whether_it_is_running_is_said_out_loud(tmp_path):
+    """Not knowing is its own answer, and it is not "it is fine"."""
+    from comfy_qa.gcloud import GcloudError
+
+    def refuses(args, mode):
+        raise GcloudError("credentials expired")
+
+    gc = Gcloud(runner=refuses)
+    lines, say = said()
+    still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
+    assert still is None
+    assert any("could not tell" in line for line in lines)
+    assert any("list --live" in line for line in lines)
 
 
 def test_put_away_never_stops_a_local_comfyui(tmp_path):

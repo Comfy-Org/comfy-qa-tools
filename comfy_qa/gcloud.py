@@ -200,11 +200,14 @@ class Gcloud:
             return "<injected>"
         return shutil.which("gcloud")
 
-    def run(self, args: list[str], *, parse_json: bool = True, timeout: int | None = None):
-        """Run `gcloud <args>`. Returns parsed JSON, or raw text if parse_json is off."""
-        if self.runner is not None:
-            return self.runner(args, parse_json)
+    def require(self) -> str:
+        """The gcloud binary, or the refusal that names what is missing.
 
+        `run` has always made this check on its way to a subprocess. `ssh` and
+        `rdp` never reach `run` — they hand an argv to `os.execvp` — so without
+        this they turned an absent gcloud into a `FileNotFoundError` traceback
+        where every other command prints a sentence and the install link.
+        """
         exe = self.available()
         if exe is None:
             raise GcloudError(
@@ -212,8 +215,14 @@ class Gcloud:
                 fix="https://cloud.google.com/sdk/docs/install",
                 kind=NO_GCLOUD,
             )
+        return exe
 
-        cmd = [exe, *args]
+    def run(self, args: list[str], *, parse_json: bool = True, timeout: int | None = None):
+        """Run `gcloud <args>`. Returns parsed JSON, or raw text if parse_json is off."""
+        if self.runner is not None:
+            return self.runner(args, parse_json)
+
+        cmd = [self.require(), *args]
         if parse_json:
             cmd += ["--format=json"]
         limit = timeout or self.timeout

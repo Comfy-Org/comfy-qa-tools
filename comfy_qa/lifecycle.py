@@ -1418,8 +1418,13 @@ def put_away(
     *,
     tunnel_dir: Path | None = None,
     keep_running: bool = False,
-) -> None:
+) -> bool | None:
     """Close the tunnel and stop the machine, so it stops costing money.
+
+    Returns whether this host is still billing when the call ends: True if it is
+    running, False if it is not, None if that could not be determined. The caller
+    summarising several hosts needs that, and it has to come from here — this is
+    the only place that knows what was actually read.
 
     `go` now leaves a ComfyUI running on the box, so "down" has one more thing to
     be true about — and it is, without doing anything extra: stopping the
@@ -1455,15 +1460,34 @@ def put_away(
                 ),
             )
         say("local ComfyUI left running — this tool did not start it")
-        return
+        return False  # a local ComfyUI costs nothing
 
     if keep_running:
+        # Read the state rather than assert one. This printed "left running — it
+        # is still billing" about every host it was given, and a live run proved
+        # what that is worth: three of four machines were TERMINATED at the time.
+        # Yesterday the same command under-reported the bill; this over-reported
+        # it. Both are the same defect — a statement about money the tool never
+        # checked — and over-reporting is not the safe direction, because someone
+        # who is told they are paying for four boxes stops believing the tool.
+        try:
+            state = gc.instance_status(host.gce_instance, host.gce_zone,
+                                       host.gce_project)
+        except GcloudError as exc:
+            # Not knowing is its own answer, and it is not "it is fine".
+            say(f"could not tell whether {host.name} is running: {exc}. "
+                "Check with `comfy-qat list --live`")
+            return None
+        if state != RUNNING:
+            say(f"{host.name} was already stopped — nothing left running")
+            return False
         say(f"{host.name} left running — it is still billing")
         say(f"any ComfyUI on it is still running too: comfy-qat logs {host.name}")
-        return
+        return True
 
     try:
         gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         raise LifecycleError(f"could not stop {host.name}: {exc}", fix=exc.fix) from exc
     say(f"{host.name} stopped")
+    return False

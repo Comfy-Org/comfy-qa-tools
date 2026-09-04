@@ -579,11 +579,17 @@ def down_cmd(
 
         gc = Gcloud()
         failed = []
+        billing: list[Host] = []
+        unknown: list[Host] = []
         for host in hosts:
             typer.echo(f"{host.name}:")
             try:
-                put_away(gc, host, lambda line: typer.echo(f"  {line}"),
-                         keep_running=keep_running)
+                still = put_away(gc, host, lambda line: typer.echo(f"  {line}"),
+                                 keep_running=keep_running)
+                if still is None:
+                    unknown.append(host)
+                elif still:
+                    billing.append(host)
             except LifecycleError as exc:
                 # One machine refusing to stop must not leave the rest running —
                 # that is the whole reason for stopping them in one command.
@@ -597,11 +603,18 @@ def down_cmd(
                            err=True)
             raise typer.Exit(code=1)
         if keep_running:
-            # The one command whose purpose is answering "am I still paying"
-            # used to answer it wrongly here: --keep-running leaves every box on,
-            # and the close said they had all stopped.
-            typer.echo(f"\nall {len(hosts)} left running — still billing. "
-                       "Run without --keep-running to stop them.")
+            # The one command whose purpose is answering "am I still paying" has
+            # now been wrong in both directions here: it claimed everything had
+            # stopped, then claimed everything was billing. Count what was read.
+            if unknown:
+                typer.echo(f"\n{say.count(len(unknown), 'machine')} could not be "
+                           "checked — run `comfy-qat list --live`.")
+            if billing:
+                typer.echo(f"\n{say.count(len(billing), 'machine')} left running "
+                           f"and billing: {', '.join(h.name for h in billing)}.")
+                typer.echo("Run without --keep-running to stop them.")
+            elif not unknown:
+                typer.echo("\nnothing was running, so nothing is billing.")
         else:
             typer.echo("\nstopped." if len(hosts) == 1
                        else f"\nall {len(hosts)} stopped.")
@@ -680,7 +693,7 @@ def ssh_cmd(
     """
     import os as os_module
 
-    from .gcloud import Gcloud
+    from .gcloud import Gcloud, GcloudError
 
     host = _host(_selector(name, os_, gpu), config)
     if not host.is_remote:
@@ -690,6 +703,12 @@ def ssh_cmd(
                  fix=f"comfy-qat rdp {host.name}", code=2)
 
     gc = Gcloud()
+    # Asked before the argv is handed to `execvp`, which has no way to report a
+    # missing binary except by raising: nothing has started, so this is a 2.
+    try:
+        gc.require()
+    except GcloudError as exc:
+        _refused(exc)
     argv = gc.ssh_argv(host.gce_instance, host.gce_zone, host.gce_project)
     # Replaced rather than spawned: an interactive shell wants this terminal, and
     # a subprocess wrapper would put a layer between the user and their own
@@ -949,8 +968,11 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
 
 @app.command("switch")
 def switch_cmd(
+    # Optional here, required by `_selector`, exactly as everywhere else: the
+    # positional and `--os`/`--gpu` are alternatives, so making the argument
+    # mandatory made the flags on the same help panel unusable.
     name: Annotated[Optional[str], typer.Argument(
-        help="Which machine: a name, or what you want — windows, l4, windows/l4.")],
+        help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,

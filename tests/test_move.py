@@ -688,6 +688,32 @@ def test_the_orphan_is_reported_with_its_size_and_the_command_that_removes_it():
     )
 
 
+def test_a_disk_in_use_is_never_reported_as_a_leftover_to_delete():
+    """Seen on a live project: `move` offered to delete a running box's boot disk.
+
+    `comfy-qat move comfy-win --to us-central1-b` printed, on stdout,
+    "disk comfy-win-a-b in us-central1-b (300 GB, pd-standard, ...) — attached to
+    nothing, billing since 2026-08-27" followed by `gcloud compute disks delete
+    comfy-win-a-b ... --quiet`, while stderr said the opposite: "attached to
+    comfy-win-b. That is a disk in use, not a leftover from a half-finished move."
+    The disk really was comfy-win-b's boot disk.
+
+    Two streams contradicting each other is bad enough; the one that is wrong is
+    the one carrying a delete command, and `--clean` runs it without asking.
+    A disk somebody is booting from is not a leftover, whatever its name is.
+    """
+    in_use = disk("comfy-win-a-b", "us-central1-b", kind="pd-standard",
+                  from_snapshot="comfy-win-a-move-b", users=("comfy-win-b",))
+    _, _, plan, found = prepared(Cloud(
+        disks=[SOURCE, in_use], snapshots=[ORPHAN_SNAPSHOT],
+        instances=[INSTANCE],
+    ))
+    report = "\n".join(leftovers(plan, found))
+
+    assert "attached to nothing" not in report, report
+    assert "gcloud compute disks delete comfy-win-a-b" not in report, report
+
+
 def test_nothing_lying_around_means_nothing_reported():
     _, _, plan, found = prepared()
     assert leftovers(plan, found) == []

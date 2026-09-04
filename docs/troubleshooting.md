@@ -1140,6 +1140,20 @@ The new machine is up and in your host list; only the cleanup failed. The snapsh
 is still billing and the message repeats the command that removes it.
 
 
+## Stopping machines
+
+**`could not tell whether <name> is running: <error>. Check with `comfy-qat list --live``**
+
+`down --keep-running` closes the tunnel and deliberately leaves the machine on,
+so it has to say whether that machine is actually billing. Asking Google failed —
+usually an expired login (`gcloud auth login`). The machine's state is unchanged
+by this: it is whatever it was before the command ran. `comfy-qat list --live`
+asks again.
+
+Not knowing is reported rather than assumed, because the two guesses available
+here are "you are paying for something you are not" and "you are not paying for
+something you are", and this tool has shipped both.
+
 ## Getting onto a box
 
 **`<name> is this machine — open a terminal`**
