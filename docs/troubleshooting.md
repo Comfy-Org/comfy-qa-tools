@@ -858,7 +858,7 @@ Not an error — the first launch on a project creating the rule above. It appea
 once.
 
 **`nothing is listening on the machine yet, so there is nothing to tunnel to — starting ComfyUI first`**
-**`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`ComfyUI is not running on comfy-win-b yet`**
+**`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`<name> is running and billing, but ComfyUI is not started on it yet`**
 Not a broken tunnel — an ordering fact, and the one that made `host go` unable to
 work at all on a box that was not already serving.
 

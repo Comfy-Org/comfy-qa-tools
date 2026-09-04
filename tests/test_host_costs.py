@@ -729,3 +729,52 @@ def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
     assert "nothing is running on the project either" not in result.output
     assert "not an all-clear" in result.output
     assert result.exit_code == 0
+
+
+# --- the success paths say how to stop paying, and something enforces it ------
+#
+# The codebase states this rule for FAILURES — lifecycle's module docstring says
+# "every failure after the machine has been started says how to stop paying for
+# it", and `_with_the_bill` enforces it. Nothing stated or enforced the SUCCESS
+# side, so six commands hand-wrote it and two forgot: `up` ended on "open <url>"
+# with a box running and billing, and single-host `down --keep-running` said
+# "still billing" and then offered `logs`.
+#
+# A sweep of all eleven commands put the violation set at exactly those two,
+# which is what makes this a calibrated rule rather than an invented one.
+
+BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd", "disconnect_cmd")
+
+
+def test_every_command_that_leaves_a_box_running_names_the_bill():
+    """Reads the source rather than driving eleven commands, because the point is
+    that a NEW one cannot be added without this. Driving them proves today; this
+    proves tomorrow."""
+    import ast
+    import inspect
+
+    from comfy_qa import host as host_module
+
+    source = inspect.getsource(host_module)
+    tree = ast.parse(source)
+    functions = {node.name: node for node in ast.walk(tree)
+                 if isinstance(node, ast.FunctionDef)}
+
+    missing = []
+    for name in BILLABLE_ENDINGS:
+        node = functions.get(name)
+        if node is None:
+            missing.append(f"{name} no longer exists — update this test")
+            continue
+        body = ast.get_source_segment(source, node) or ""
+        # Either it names the command itself, or it defers to something that
+        # does: lifecycle's stop_paying / _with_the_bill, or _serve's ending.
+        says_it = ("comfy-qat down" in body or "stop_paying" in body
+                   or "_with_the_bill" in body or "_serve(" in body)
+        if not says_it:
+            missing.append(name)
+
+    assert not missing, (
+        f"{', '.join(missing)} can leave a machine running without saying how to "
+        "stop paying for it. Every other billable path in this tool says it."
+    )

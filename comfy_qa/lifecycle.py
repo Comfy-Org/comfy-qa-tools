@@ -485,10 +485,15 @@ def bring_up(
                 # about to do was the very thing that would have fixed it.
                 say("nothing is listening on the machine yet, so there is nothing "
                     "to tunnel to — starting ComfyUI first")
+                # The box was started to get here, so it is billing. This was
+                # the only COMFYUI_ABSENT raise without the bill on it; its three
+                # siblings all carry one. `go` continues past this kind, so the
+                # line is only ever seen by a caller that stops here — `up`.
                 raise LifecycleError(
-                    f"ComfyUI is not running on {host.name} yet",
+                    f"{host.name} is running and billing, but ComfyUI is not "
+                    "started on it yet",
                     kind=COMFYUI_ABSENT,
-                    fix=f"comfy-qat go {host.name}",
+                    fix=_with_the_bill(host, f"comfy-qat go {host.name}"),
                 ) from exc
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",

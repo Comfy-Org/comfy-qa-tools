@@ -500,7 +500,14 @@ def up_cmd(
         # else you could work, and a GPU shortage is the usual reason.
         _failed(host, hosts, exc)
         raise typer.Exit(code=1)
+    # The box is running and billing from here, and this was the end of the
+    # command. Every other billable path in this tool says how to stop paying —
+    # `go`, `switch`, `create`, `move`, `logs` and `down --all` all do — and the
+    # rule those six follow, which nothing enforced, is: anything that STARTS a
+    # machine or deliberately LEAVES one running names stop_paying before it
+    # returns.
     say.result(f"\nopen {host.url}")
+    say.result(f"  comfy-qat down {host.name}   # stop the box, stop paying")
 
 
 @app.command("open")
@@ -591,6 +598,11 @@ def disconnect_cmd(
 
     host = _host(_selector(name, os_, gpu), config)
     _act(put_away, Gcloud(), host, say.detail, keep_running=True)
+    # The command whose whole purpose is leaving a box running is the one that
+    # most needs to say how to stop it. It did not — and the test that states
+    # the rule caught it on its first run, having been written for two other
+    # commands.
+    say.result(f"  comfy-qat down {host.name}   # when the work is finished")
 
 
 @app.command("down")
