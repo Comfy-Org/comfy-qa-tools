@@ -1235,7 +1235,16 @@ def move_cmd(
     # which is handed a plan and no file.
     problem = blocked(plan, found) or would_not_load(hosts, plan)
     if problem is not None:
-        say.fail(problem, code=1)
+        # 2, not 1. Both of these refuse BEFORE anything is created — the line
+        # above says so, and both their docstrings say so — and this tool's rule
+        # is that 2 means nothing was changed and 1 means the work started and
+        # failed. It exited 1.
+        #
+        # The counter-argument, which does not survive: one `blocked` variant
+        # carries `left=(...)` naming something that IS billing, so 1 could be
+        # read as "there is a mess out there". But that mess is from an earlier
+        # run, and the rule is about whether THIS invocation changed anything.
+        say.fail(problem, code=2)
 
     say.result("")
     for line in plan.steps(found):

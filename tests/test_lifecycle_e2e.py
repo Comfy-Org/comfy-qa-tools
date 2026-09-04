@@ -644,7 +644,11 @@ def test_moving_a_box_home_again_is_refused_before_it_spends_anything(world):
     result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
 
     no_traceback(result)
-    assert result.exit_code == 1
+    # 2, because nothing was created. Both refusals on this path run before the
+    # snapshot, and this tool's rule is that 2 means nothing was changed and 1
+    # means the work started and failed. It exited 1 while its own comment three
+    # lines above the call said "both refuse before anything is created".
+    assert result.exit_code == 2
     assert "comfy-win-us-central1-b" in result.output, "it names the entry in the way"
     assert "Nothing was created" in result.output
 

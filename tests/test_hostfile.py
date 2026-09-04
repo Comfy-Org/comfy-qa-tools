@@ -343,3 +343,33 @@ def test_the_real_host_lists_worked_example_survives_a_delete():
     assert out.count("#") == src.count("#"), "a commented example was destroyed"
     assert "may never use 8188" in out
     assert set(tomllib.loads(out)["hosts"]) == {"local"}
+
+
+def test_deleting_the_first_host_keeps_the_file_s_own_preamble():
+    """The comment walk ran off the top of the file: with only comments above the
+    header there is no blank line to stop it, so the whole preamble went.
+
+    A run at offset 0 is either the file's preamble or the first host's own note,
+    and nothing can tell them apart from the text — the obvious heuristic passes
+    six cases and destroys a legitimate seventh. So this takes the asymmetry the
+    rest of the tool takes about money and applies it to data: for something that
+    cannot be undone, be wrong in the direction that leaves something behind.
+    """
+    src = ("# my machines - hand maintained, mind the comments\n"
+           "# ports are allocated in order; do not reuse 8190\n"
+           "[hosts.comfy-win]\nkind = \"gce\"\nport = 8190\n\n"
+           "[hosts.local]\nkind = \"local\"\nport = 8188\n")
+    out = without(src, "comfy-win")
+
+    assert "hand maintained" in out, "the file's preamble was destroyed"
+    assert "do not reuse 8190" in out
+    assert set(tomllib.loads(out)["hosts"]) == {"local"}
+
+
+def test_a_note_below_the_top_still_goes_with_its_own_host():
+    """The rule only applies at offset 0. Anywhere else, a comment directly above
+    a block describes that block and goes with it."""
+    src = ("[hosts.local]\nkind = \"local\"\nport = 8188\n\n"
+           "# comfy-win is the PM-630 box\n"
+           "[hosts.comfy-win]\nkind = \"gce\"\nport = 8190\n")
+    assert "PM-630" not in without(src, "comfy-win")

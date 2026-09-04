@@ -131,6 +131,22 @@ def without(text: str, name: str) -> str:
         begin -= len(before[-2]) + 1
         before.pop(-2)
 
+    # If that walk reached the top of the file, stop and keep the comments.
+    #
+    # A comment run at offset 0 is either the file's own preamble or the first
+    # host's note, and NOTHING CAN TELL THEM APART from the text. The obvious
+    # heuristic — "a run reaching the top is the preamble" — passes six cases and
+    # destroys a legitimate seventh, where the note really does belong to the
+    # first host.
+    #
+    # So this takes the same asymmetry the rest of the tool takes about money and
+    # applies it to data: for an operation that cannot be undone, be wrong in the
+    # direction that leaves something behind. A stranded comment about a deleted
+    # host is cosmetic and a person removes it in two seconds. A destroyed one is
+    # gone, and `delete` reports success while doing it.
+    if begin == 0:
+        begin = start.start()
+
     if following is not None:
         trailing = text[start.end():end]
         blank = re.search(r"\r?\n[ \t]*\r?\n(?![\s\S]*\r?\n[ \t]*\r?\n)", trailing)
