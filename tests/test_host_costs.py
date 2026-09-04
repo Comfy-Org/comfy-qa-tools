@@ -593,3 +593,64 @@ def test_a_project_that_cannot_be_listed_does_not_break_a_good_run(cli):
     result = cli("down", "--all", cloud=Blind())
     assert result.exit_code == 0
     assert "was billing" in result.output
+
+
+LOCAL_ONLY = """\
+[hosts.local]
+kind = "local"
+port = 8188
+"""
+
+
+def test_no_declared_cloud_hosts_does_not_mean_nothing_is_billing(tmp_path, monkeypatch):
+    """The worst path for the old assertion to survive on. "no cloud machines are
+    declared, so nothing can be billing" is a claim about the PROJECT made without
+    asking it — and no declared hosts is exactly when this tool knows least and
+    the project is most likely to hold something nobody adopted.
+
+    The survey was added for this case and then placed after the early return, so
+    it never ran here. Built without the `cli` fixture on purpose: that fixture
+    appends its own --config after the caller's, so it cannot express this case.
+    """
+    from comfy_qa import gcloud as gcloud_module
+
+    class Wider(Cloud):
+        def current_project(self):
+            self.calls.append("current_project")
+            return "proj"
+
+        def list_instances(self, project):
+            self.calls.append("list_instances")
+            return [{"name": "somebody-elses-box", "status": "RUNNING",
+                     "zone": ".../zones/europe-west4-c"}]
+
+    cloud = Wider()
+    path = tmp_path / "local-only.toml"
+    path.write_text(LOCAL_ONLY, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    result = CliRunner().invoke(app, ["down", "--all", "--config", str(path)])
+
+    assert "nothing can be billing" not in result.output, result.output
+    assert "somebody-elses-box" in result.output
+    assert "europe-west4-c" in result.output, "the command has to be runnable"
+    assert "list_instances" in cloud.calls, "it never asked the project"
+    assert result.exit_code == 0
+
+
+def test_no_declared_hosts_and_a_quiet_project_says_both(tmp_path, monkeypatch):
+    from comfy_qa import gcloud as gcloud_module
+
+    class Quiet(Cloud):
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            return []
+
+    path = tmp_path / "local-only.toml"
+    path.write_text(LOCAL_ONLY, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Quiet())
+    result = CliRunner().invoke(app, ["down", "--all", "--config", str(path)])
+
+    assert "nothing is running on the project either" in result.output
+    assert result.exit_code == 0

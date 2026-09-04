@@ -587,11 +587,35 @@ def down_cmd(
             hosts = [h for h in load(config) if h.is_remote]
         except ConfigError as exc:
             say.fail(exc, code=2, blank_line=False)
+        gc = Gcloud()
         if not hosts:
-            say.result("no cloud machines are declared, so nothing can be billing")
+            # "nothing can be billing" was a flat assertion about the PROJECT
+            # made without asking it, on the one path where this tool knows
+            # least — no declared cloud hosts is exactly when the project is
+            # most likely to hold something nobody adopted.
+            #
+            # The survey was added for this and then placed after this return,
+            # four lines below, so it never ran here. That is the shape of half
+            # tonight's defects: the fix was real and did not reach the branch
+            # that needed it most.
+            strangers = _undeclared_and_running(gc, hosts)
+            if strangers:
+                say.result(
+                    f"you have declared no cloud machines, but "
+                    f"{say.count(len(strangers), 'machine')} on this project is "
+                    f"running: {', '.join(n for n, _ in strangers)}."
+                )
+                say.result("  not stopped — this tool only operates what you "
+                           "declare:")
+                for name, zone in strangers:
+                    say.result(f"  gcloud compute instances stop {name} "
+                               f"--zone={zone}")
+                say.result("  comfy-qat discover   # or adopt them first")
+            else:
+                say.result("no cloud machines are declared, and nothing is "
+                           "running on the project either")
             return
 
-        gc = Gcloud()
         failed = []
         billing: list[Host] = []
         unknown: list[Host] = []
@@ -1397,6 +1421,13 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]]:
     from .gcloud import GcloudError
 
     project = next((h.gce_project for h in hosts if h.gce_project), None)
+    if not project:
+        # No declared cloud host to take it from — which is the case this
+        # matters most in. Ask gcloud what project is configured.
+        try:
+            project = gc.current_project()
+        except (GcloudError, AttributeError):
+            return []
     if not project:
         return []
     declared = {h.gce_instance for h in hosts if h.gce_instance}
