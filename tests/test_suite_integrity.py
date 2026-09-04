@@ -57,6 +57,7 @@ REQUIRED = {
     "test_quota",
     "test_quota_regions",
     "test_readme",
+    "test_relay",
     "test_relocate",
     "test_resolve",
     "test_say",

@@ -69,6 +69,7 @@ from hashlib import blake2s
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, Host
+from .gcloud import Relay
 
 COMFYUI_PORT = 8188
 
@@ -389,6 +390,12 @@ def last_words(log: Path, lines: int = 6) -> str:
     A detached tunnel writes its only explanation here. When it dies on startup
     this is the difference between "ComfyUI is not answering" and "your gcloud
     session has expired", which are the same silence and opposite fixes.
+
+    Read through `Relay`, which is not only about the paste. Six lines is the
+    whole budget, and the tunnel is the one place gcloud's NumPy advisory is
+    guaranteed to appear — it is advice about IAP forwarding, printed by every
+    IAP forward. Four lines of it in a six-line tail pushes the sentence that
+    names the cause off the top of the message meant to carry it.
     """
     try:
         text = log.read_text(errors="replace").strip()
@@ -396,7 +403,10 @@ def last_words(log: Path, lines: int = 6) -> str:
         return ""
     if not text:
         return ""
-    return "\n        ".join(text.splitlines()[-lines:])
+    relay = Relay()
+    kept = [line for raw in text.splitlines() for line in relay.line(raw)]
+    kept += relay.rest()
+    return "\n        ".join(kept[-lines:])
 
 
 def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:

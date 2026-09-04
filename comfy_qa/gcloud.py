@@ -4,6 +4,13 @@ Everything that talks to Google Cloud goes through `Gcloud.run`, for two reasons
 tests replace a single seam rather than patching subprocess everywhere, and every
 failure can be turned into a message that names the command which fixes it.
 
+One seam is also why gcloud's output can be held to the same rule as our own.
+`say` bans colour and anything that redraws, because a run gets read twice — in a
+terminal and in a Slack code block — and only whole plain lines survive the
+second reading. That rule stopped at the edge of this file until a live `go` put
+gcloud's yellow `WARNING:` into the middle of an install log. It does not stop
+there now: see `relay_output` and `Relay` below.
+
 gcloud is already on PATH on a machine that has it. Never prepend the SDK bin
 directory — it bloats the command for no benefit.
 """
@@ -15,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 
 COMPUTE_SERVICE = "compute.googleapis.com"
@@ -154,6 +162,218 @@ def can_prompt() -> bool:
         return bool(sys.stdin.isatty() and sys.stderr.isatty())
     except (AttributeError, ValueError):  # a closed or replaced stream
         return False
+
+
+# --- somebody else's output, on its way into a bug report --------------------
+#
+# `say` holds one rule over everything this tool writes: no colour, no cursor
+# movement, nothing that redraws, because the output is read twice — once in a
+# terminal and once in a Slack code block — and only whole plain lines survive
+# the second reading. `test_say.py` proves it over every string constant in the
+# package, which proves it about the half of the output we write and nothing at
+# all about the half we relay.
+#
+# A real `go` run proved the gap. Between "starting ComfyUI" and "STARTED" the
+# terminal carried this, in yellow:
+#
+#     <esc>[1;33mWARNING:<esc>[0m
+#
+#     To increase the performance of the tunnel, consider installing NumPy. For
+#     instructions, please see https://cloud.google.com/iap/docs/...
+#
+# Two separate faults. The escape sequences are ours to fix and there is no
+# argument for them. The advice is gcloud's, it is about gcloud's own transfer
+# speed, and nobody reading it is in a position to act on it — but it lands in
+# the middle of an install and reads like something went wrong.
+
+# CSI (colour, cursor movement, erase), OSC (window titles), and the two-character
+# escapes. Matched per line, so the OSC's lazy body cannot run away.
+_ESCAPE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"
+    r"|\x1b[@-Z\\-_]"
+)
+
+# Whatever the pattern above did not recognise. An escape sequence this tool has
+# never seen still must not reach a paste, so the guarantee is closed by removing
+# every remaining control character rather than by predicting them. Tab stays: it
+# is ordinary in a log and prints as itself.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+# The line ending, and then everything a progress bar redrew over. Greedy, so it
+# reaches the *last* carriage return: what a terminal ends up showing is only ever
+# what came after it.
+_LINE_END = re.compile(r"[\r\n]+\Z")
+_REDRAWN = re.compile(r"^.*\r", re.DOTALL)
+
+# Lines that are true, harmless, and about gcloud rather than about anything a
+# user of this tool can do. Matched on a lowercased prefix of the whole cleaned
+# line. Only advisories go here — never anything that could be a symptom, and
+# never anything on a failure path. See `Relay` for why the list is this short.
+KNOWN_NOISE = (
+    "to increase the performance of the tunnel, consider installing numpy",
+    "please see https://cloud.google.com/iap/docs/using-tcp-forwarding",
+)
+
+# A header with nothing after the colon is not a message, it is a label for the
+# block underneath it. gcloud prints one before the advisory above, so it has to
+# be decided together with what follows — see `Relay.line`. Lowercase because
+# `test_say.py` holds the whole package to one spelling of the word.
+_BARE_HEADER = ("warning:", "warn:")
+
+# How long a finished command waits for the last of its output. Reaching this
+# would mean a reader thread wedged on a pipe that never closed; the exit code is
+# already known by then, and hanging on to it would be worse than the loss.
+PUMP_TIMEOUT = 5.0
+
+
+def plain(text: str) -> str:
+    """One line of someone else's output, made safe to read and to paste.
+
+    Carriage returns are resolved rather than deleted: a progress bar rewrites
+    one line over and over with `\\r`, and what a terminal ends up showing is
+    only ever the part after the last one. Taking that keeps the final state —
+    `100%` — and drops the ninety-nine redraws in front of it, which is the same
+    answer `say` gives for our own long steps.
+
+    Both are patterns rather than the two-character literals they could be,
+    because `test_say.py` holds every string constant in this package to "no
+    escape sequence, no carriage return" — and it is right to: a rule with an
+    exemption for the module that enforces it is not a rule. A raw pattern says
+    the same thing without carrying one.
+    """
+    return _CONTROL.sub("", _ESCAPE.sub("", _REDRAWN.sub("", _LINE_END.sub("", text))))
+
+
+def readable(text: str) -> str:
+    """A whole captured block, cleaned — and complete.
+
+    Every line survives. This is the one used on anything that failed, where the
+    line that explains it could be any of them and dropping the wrong one costs
+    a great deal more than a colour code ever did.
+    """
+    return "\n".join(plain(line) for line in (text or "").splitlines())
+
+
+def is_noise(line: str) -> bool:
+    """Is this one of the lines in `KNOWN_NOISE`?"""
+    lowered = line.strip().lower()
+    return any(lowered.startswith(sign) for sign in KNOWN_NOISE)
+
+
+class Relay:
+    """One stream of someone else's output, cleaned, with its noise dropped.
+
+    Stateful for one reason: gcloud writes the advisory as a block — a bare
+    header, a blank line, then the prose — and whether the header is worth
+    printing is not knowable until the prose arrives. So a contentless header is
+    held back, and the line that follows decides it: dropped with the noise it
+    belonged to, or printed in front of the real message it announced.
+
+    **Nothing on a failure path is ever dropped here.** A silenced error costs
+    more than every coloured one put together, so this filters the live relay
+    only; `explain_failure` cleans gcloud's words and keeps all of them.
+    """
+
+    def __init__(self) -> None:
+        self._held: list[str] = []
+
+    def line(self, text: str) -> list[str]:
+        """What to print for one line in. Usually itself; sometimes nothing."""
+        cleaned = plain(text)
+        if is_noise(cleaned):
+            # The header, if there is one, was this advisory's. It goes with it.
+            self._held = []
+            return []
+        if cleaned.strip().lower() in _BARE_HEADER:
+            self._held = [cleaned]
+            return []
+        if self._held and not cleaned.strip():
+            self._held.append(cleaned)  # the blank line inside the block
+            return []
+        held, self._held = self._held, []
+        return [*held, cleaned]
+
+    def rest(self) -> list[str]:
+        """Anything still held when the stream ended. Held is not dropped."""
+        held, self._held = self._held, []
+        return held
+
+
+def _emit(stream, line: str) -> None:
+    """Write one whole line, now.
+
+    Flushed every time, because the point of streaming an install log is watching
+    it arrive. A closed stream is not an error worth failing a command over:
+    `comfy-qat logs | head` closes the pipe on purpose.
+    """
+    try:
+        stream.write(line + "\n")
+        stream.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def _pump(reader, write) -> None:
+    """Read one stream to its end, cleaning it a line at a time."""
+    relay = Relay()
+    try:
+        for raw in iter(reader.readline, b""):
+            for line in relay.line(raw.decode("utf-8", "replace")):
+                write(line)
+    except (OSError, ValueError):
+        pass  # the pipe closed under us; the exit code still says what happened
+    for line in relay.rest():
+        write(line)
+
+
+def _writer(given, name: str):
+    """Where a pumped stream goes.
+
+    `sys.stdout` is looked up at write time rather than captured here, so a
+    caller that replaced it — a test, a pipeline — is the one written to.
+    """
+    def write(line: str) -> None:
+        _emit(given if given is not None else getattr(sys, name), line)
+    return write
+
+
+def relay_output(cmd: list[str], *, out=None, err=None) -> int:
+    """Run `cmd` with its output coming *through* this tool, not past it.
+
+    The alternative, and what this replaces, is letting the child inherit the
+    terminal. That is one line of code and it is why gcloud's yellow reached a
+    bug report: output nobody handles is output nobody can hold to the rule.
+
+    Each stream keeps its own side — the box's log stays on stdout, gcloud's
+    commentary on stderr — because `comfy-qat logs > run.log` has to collect the
+    log and not the story. Two readers rather than one merged pipe, for the same
+    reason.
+
+    Ctrl-C is left exactly as it was. The child shares this terminal's process
+    group, so the signal reaches it directly; all this does is wait for it to
+    finish writing before the exception carries on up, so the last lines of a
+    stopped ComfyUI are not lost.
+    """
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        pumps = [
+            threading.Thread(target=_pump, args=(process.stdout, _writer(out, "stdout")),
+                             daemon=True),
+            threading.Thread(target=_pump, args=(process.stderr, _writer(err, "stderr")),
+                             daemon=True),
+        ]
+        for pump in pumps:
+            pump.start()
+        try:
+            code = process.wait()
+        except KeyboardInterrupt:
+            code = process.wait()
+            for pump in pumps:
+                pump.join(timeout=PUMP_TIMEOUT)
+            raise
+        for pump in pumps:
+            pump.join(timeout=PUMP_TIMEOUT)
+    return code
 
 
 class GcloudError(Exception):
@@ -452,9 +672,15 @@ class Gcloud:
     def ssh(self, instance: str, zone: str, project: str, remote: str, *, stream: bool = True) -> int:
         """Run a command on the instance over IAP. Returns its exit code.
 
-        Streaming inherits this terminal, so a remote ComfyUI's startup log
-        appears exactly as it would if it were running locally. That is the whole
-        point: a remote launch you cannot watch is a launch you cannot debug.
+        A remote ComfyUI's startup log appears as it arrives, exactly as it would
+        if it were running locally. That is the whole point: a remote launch you
+        cannot watch is a launch you cannot debug.
+
+        It arrives through `relay_output` rather than by handing the child this
+        terminal. Inheriting was simpler and it is what put gcloud's yellow
+        `WARNING:` — its own advice about its own transfer speed — into the middle
+        of an install log that then got pasted into Slack. Output nobody handles
+        is output nobody can hold to the rule in `say`.
         """
         args = [
             "compute", "ssh", instance,
@@ -467,7 +693,7 @@ class Gcloud:
         exe = self.available()
         if exe is None:
             raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
-        return subprocess.run([exe, *args]).returncode
+        return relay_output([exe, *args])
 
     def ssh_argv(self, instance: str, zone: str, project: str) -> list[str]:
         """The command that opens an interactive shell on a box.
@@ -502,7 +728,13 @@ class Gcloud:
         ]) or {}
 
     def ssh_output(self, instance: str, zone: str, project: str, remote: str) -> str:
-        """Run a command on the instance and return what it printed."""
+        """Run a command on the instance and return what it printed.
+
+        Cleaned on the way back, because what a box printed is both branched on
+        and quoted: `INSTALLED`, a CUDA version, the name of the process holding
+        port 8188. A colour code around any of those is a word this tool then
+        fails to recognise and a message it then puts in front of a person.
+        """
         args = [
             "compute", "ssh", instance,
             f"--zone={zone}", f"--project={project}",
@@ -518,7 +750,7 @@ class Gcloud:
         if proc.returncode != 0:
             message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
             raise GcloudError(message, fix=fix, raw=raw)
-        return proc.stdout.strip()
+        return readable(proc.stdout).strip()
 
     def describe_instance(self, name: str, zone: str, project: str) -> dict:
         return self.run([
@@ -730,8 +962,13 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
     Where `classify` recognises the failure, its plainer sentence and its fix
     replace gcloud's. Where it does not, gcloud's own words are kept: they are
     usually specific and this tool has nothing better to say.
+
+    Kept in full and merely cleaned. gcloud does not colour what it writes to a
+    pipe, so in practice there is nothing here to strip — but `message` and `raw`
+    are printed and pasted like everything else, and a guarantee with a hole in
+    it for the failure path is not one.
     """
-    text = (stderr or stdout or "").strip()
+    text = readable(stderr or stdout or "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return f"gcloud exited {returncode}", None, text
