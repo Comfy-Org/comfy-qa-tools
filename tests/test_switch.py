@@ -511,3 +511,26 @@ def test_switch_with_neither_a_name_nor_a_description_says_which_machine(cli):
 
     assert result.exit_code == 2
     assert "which machine?" in result.output
+
+
+def test_a_box_that_is_starting_counts_as_one_to_stop_first():
+    """`running_elsewhere` decides which boxes `switch` stops before starting
+    another, and the project ceiling is one GPU. A box in STAGING that is not
+    counted is a box that does not get stopped — and the switch then fails on the
+    very ceiling it was trying to respect. Fifth site of the eight-states class."""
+    from comfy_qa.config import Host
+    from comfy_qa.gcloud import Gcloud
+    from comfy_qa.lifecycle import running_elsewhere
+
+    def runner(args, mode):
+        if " ".join(args).startswith("compute instances describe"):
+            return {"status": "STAGING"}
+        raise AssertionError(" ".join(args))
+
+    target = Host(name="a", kind="gce", port=8190, os="Ubuntu 22.04", gpu="L4",
+                  gce_instance="a", gce_zone="z", gce_project="p")
+    other = Host(name="b", kind="gce", port=8191, os="Ubuntu 22.04", gpu="L4",
+                 gce_instance="b", gce_zone="z", gce_project="p")
+
+    found = running_elsewhere(Gcloud(runner=runner), [target, other], target)
+    assert [h.name for h, _ in found] == ["b"], found

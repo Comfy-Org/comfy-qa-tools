@@ -106,9 +106,11 @@ def delete_cmd(
     # in STAGING is not RUNNING and is not stopped either, and this command's
     # whole promise is that what you destroy is something you just looked at.
     if state != "TERMINATED":
+        from .lifecycle import readable_state
+
         _refuse(
-            f"{host.name} is {state.lower()}, not stopped. Stop it first, so that "
-            "what you are deleting is something you have just looked at",
+            f"{host.name} is {readable_state(state)}, not stopped. Stop it first, "
+            "so that what you are deleting is something you have just looked at",
             fix=f"comfy-qat down {host.name}",
         )
 

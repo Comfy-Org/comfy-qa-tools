@@ -250,3 +250,16 @@ def test_a_host_list_that_cannot_be_written_says_what_it_will_cost(cli, tmp_path
     assert result.cloud.deleted(), "the box was still deleted"
     assert result.exit_code == 1
     assert "still in your host list" in result.output
+
+
+def test_a_state_that_read_back_empty_is_words_not_a_gap(cli):
+    """`instance_status` returns "" when the describe succeeded and said nothing.
+    Interpolated raw that read "qa-linux is , not stopped". The refusal was right;
+    the sentence was not."""
+    result = cli("delete", "comfy-linux", cloud=Cloud(status=""),
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2
+    assert not result.cloud.deleted()
+    assert "is , not stopped" not in result.output, result.output
+    assert "unknown state" in result.output

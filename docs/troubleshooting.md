@@ -1205,6 +1205,10 @@ rather than `y`. A `[y/N]` is answered by reflex at 2am; a name is not.
 
 **`<name> is <state>, not stopped. Stop it first, so that what you are deleting is something you have just looked at`**
 
+If the state reads "in an unknown state", the read succeeded and told us nothing
+about the machine — which is a third answer and not a state. The refusal is the
+same: not knowing what a box is doing is not permission to destroy it.
+
 GCE would delete a running instance quite happily. This refuses so that the state
 of the machine is something you saw seconds ago rather than assumed. `comfy-qat
 down <name>`, then delete it.

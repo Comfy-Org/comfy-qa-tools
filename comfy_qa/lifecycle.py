@@ -76,6 +76,21 @@ RUNNING = "RUNNING"
 TERMINATED = "TERMINATED"
 
 
+def state_of(gc: Gcloud, host: Host) -> str:
+    """What a machine is doing, in words fit to print.
+
+    `instance_status` has a third answer beyond the eight GCE states: an empty
+    string, meaning the read succeeded and said nothing. Interpolated raw that
+    produced "<name> is , not stopped" — so the rendering lives here rather than
+    at each of the nine call sites, two of which had it wrong.
+    """
+    return gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
+
+
+def readable_state(state: str | None) -> str:
+    return (state or "").lower() or "in an unknown state"
+
+
 # `go` continues past exactly one failure — ComfyUI not being there yet, which is
 # what it is about to fix. Everything else must stop and be shown. Catching them
 # all alike once hid a failed start and then tried SSH against a stopped machine.
@@ -1530,7 +1545,13 @@ def running_elsewhere(
         if host.name == target.name or host.kind == "local":
             continue
         reasons = []
-        if gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project) == RUNNING:
+        # Not `== RUNNING`. This decides which boxes `switch` stops before it
+        # starts another, and the project ceiling is one GPU — so a box in
+        # STAGING that is not counted here is a box that does not get stopped,
+        # and the switch then fails on the ceiling it was trying to respect.
+        # Fifth site of the same mistake; the other four were fixed today.
+        if gc.instance_status(host.gce_instance, host.gce_zone,
+                              host.gce_project) != TERMINATED:
             reasons.append("running")
         if tunnel_status(host.name, tunnel_dir).running:
             reasons.append("tunnelled")
@@ -1651,5 +1672,5 @@ def put_away(
         return "caught"
     # PROVISIONING, STAGING, REPAIRING and the rest: on its way somewhere, and
     # billing or about to be. Caught, not idle.
-    say(f"{host.name} was {before.lower()} — stopped it")
+    say(f"{host.name} was {readable_state(before)} — stopped it")
     return "caught"
