@@ -52,6 +52,28 @@ def test_terminated_reads_as_stopped_not_broken():
     assert parse(dict(COMFY_WIN, status="RUNNING"), "p").running is True
 
 
+@pytest.mark.parametrize("state", [
+    "STAGING", "PROVISIONING", "REPAIRING", "STOPPING", "SUSPENDING",
+    "SUSPENDED", "DEPROVISIONING", "", "Running", "something-new",
+])
+def test_only_terminated_reads_as_stopped(state):
+    """A machine has eight documented states and only one of them is stopped.
+
+    This read `status == "RUNNING"`, so a box in STAGING — the first 30-60
+    seconds of every start — was reported as stopped by `discover`, which is the
+    one command whose whole job is telling you what exists in a project that
+    nothing recorded. Fixed in b6f8d4f and, until now, unpinned: reverting the
+    line left the entire suite green, so the only member of this class that could
+    silently revert was the one nobody could see revert.
+
+    Anything unrecognised counts as running. Being wrong that way makes someone
+    look at a box that is off; being wrong the other way hides one that is on.
+    """
+    assert parse(dict(COMFY_WIN, status=state), "p").running is True, (
+        f"a box in {state!r} was reported as stopped"
+    )
+
+
 @pytest.mark.parametrize("licence,expected", [
     ("windows-server-2022-dc", "Windows Server 2022"),
     ("ubuntu-2204-lts", "Ubuntu 22.04"),
