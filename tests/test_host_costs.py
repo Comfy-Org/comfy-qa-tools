@@ -654,3 +654,31 @@ def test_no_declared_hosts_and_a_quiet_project_says_both(tmp_path, monkeypatch):
 
     assert "nothing is running on the project either" in result.output
     assert result.exit_code == 0
+
+
+def test_disconnect_leaves_the_machine_running_and_says_so(cli):
+    """The capability `--keep-running` existed for, under a name that says it."""
+    class Live(Cloud):
+        def instance_status(self, instance, zone, project):
+            self.calls.append("instance_status")
+            return "RUNNING"
+
+    result = cli("disconnect", "comfy-win", cloud=Live())
+
+    assert result.exit_code == 0
+    assert "still billing" in result.output
+    assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
+
+
+def test_the_old_flag_still_works_and_says_where_it_went(cli):
+    """A rename, not a removal — nothing written down before today may break."""
+    class Live(Cloud):
+        def instance_status(self, instance, zone, project):
+            return "RUNNING"
+
+    result = cli("down", "comfy-win", "--keep-running", cloud=Live())
+
+    assert result.exit_code == 0
+    assert "comfy-qat disconnect" in result.output
+    assert "still works" in result.output
+    assert "stop_instance" not in result.cloud.calls

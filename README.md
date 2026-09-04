@@ -36,6 +36,7 @@ never collide on `PATH`.
 | `logs` | shipped — read a detached ComfyUI's log on the box |
 | `ssh` | shipped — a shell on a box, without the gcloud incantation |
 | `delete` | shipped — remove a box and its disk, permanently |
+| `disconnect` | shipped — close the tunnel, leave the machine working |
 | `rdp` | shipped — Windows password and Remote Desktop forwarding |
 | `switch` | shipped — stop the box you were on, go to the one you want |
 | `move` | shipped — escape a zone with no GPU capacity |
@@ -239,6 +240,7 @@ printed; one that fits two is refused with both named.
 | `comfy-qat logs <host>` | read the ComfyUI log on a box. Follows by default; `--tail N` prints that many lines and stops |
 | `comfy-qat ssh <host>` | open a shell on a Linux box through the tunnel. Replaces `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` |
 | `comfy-qat rdp <host>` | reset a Windows box's password, print it, and forward Remote Desktop to `localhost:33389` |
+| `comfy-qat disconnect <host>` | close the tunnel and leave the machine running — for when a long job is going on the box and you want the local port back. Was `down --keep-running`, which still works |
 | `comfy-qat delete <host>` | delete a box and its boot disk permanently. Refuses while it is running, and asks you to type the box's name — a `[y/N]` is answered by reflex, a name is not |
 | `comfy-qat switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
 | `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |

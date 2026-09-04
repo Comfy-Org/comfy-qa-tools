@@ -559,6 +559,40 @@ def open_cmd(
     say.result(f"{opened} (pid {state.pid}): {state.url or host.url}")
 
 
+@app.command("disconnect")
+def disconnect_cmd(
+    name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
+    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+) -> None:
+    """Close the tunnel and leave the machine running.
+
+    For the case `down` cannot serve: a long generation or a model download is
+    running on the box, ComfyUI is detached and will keep going, and you want the
+    local port back — or you are closing the laptop. Killing the ssh process by
+    hand leaves the tunnel records behind, after which `list` reports a tunnel
+    that is not there.
+
+    This was `down --keep-running`, which is still accepted and still works. The
+    flag was the negation of its own command, one word from the command whose
+    documented purpose is to stop paying, and `down --all --keep-running` read as
+    "stop everything except don't" — the most expensive outcome reachable from the
+    cheapest-sounding command. It was also the only branch of `down` that nobody
+    exercised, which is why it was wrong about money twice in one day, in opposite
+    directions.
+
+    The machine keeps billing. That is the point of the command and it says so.
+    """
+    from .gcloud import Gcloud
+    from .lifecycle import put_away
+
+    host = _host(_selector(name, os_, gpu), config)
+    _act(put_away, Gcloud(), host, say.detail, keep_running=True)
+
+
 @app.command("down")
 def down_cmd(
     name: Annotated[Optional[str], typer.Argument(
@@ -566,7 +600,8 @@ def down_cmd(
              "Omit it with --all.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
     keep_running: Annotated[bool, typer.Option(
-        "--keep-running", help="Close the tunnel but leave the machine on.")] = False,
+        "--keep-running",
+        help="Deprecated: this is `comfy-qat disconnect`.")] = False,
     everything: Annotated[bool, typer.Option(
         "--all", help="Stop every cloud machine you have declared.")] = False,
 ) -> None:
@@ -578,6 +613,12 @@ def down_cmd(
     """
     from .gcloud import Gcloud
     from .lifecycle import put_away
+
+    # Both paths, not just --all: the single-host form is the one someone types
+    # out of habit.
+    if keep_running:
+        say.warn("`--keep-running` is now `comfy-qat disconnect <name>`. "
+                 "The flag still works.")
 
     if everything:
         if name:

@@ -1399,6 +1399,23 @@ down <name>` stops it.
 
 ## Stopping machines
 
+**`` `--keep-running` is now `comfy-qat disconnect <name>`. The flag still works. ``**
+
+A rename, not a removal. `down --keep-running` closes the tunnel and leaves the
+machine on, which is a real thing to want — a long generation or a model download
+is running on the box, ComfyUI is detached and will keep going, and you want the
+local port back.
+
+But the flag was the negation of its own command, one word from the command whose
+documented purpose is to stop paying, and `down --all --keep-running` read as "stop
+everything except don't" — the most expensive outcome reachable from the
+cheapest-sounding command. It was also the only branch of `down` that nobody
+exercised, which is why it was wrong about money twice in one day, in opposite
+directions.
+
+`comfy-qat disconnect <name>` does the same thing under a name that says it. The
+flag is kept so nothing written down before today breaks.
+
 **`<name> machine(s) could not be checked — run `comfy-qat list --live`.`** / **`<name> machine(s) left running and billing: <names>.`** / **`nothing was running, so nothing is billing.`**
 
 How `down --all --keep-running` ends. The flag closes the tunnels and deliberately
