@@ -883,4 +883,51 @@ def test_a_dry_run_deletes_nothing_even_with_clean(cli):
     assert not [c for c in destructive if "delete" in c], (
         f"a dry run deleted something: {destructive}"
     )
-    assert "nothing changed" in result.output or "are not" in result.output
+    # NOT `"nothing changed" in output` — the PRE-FIX code printed that too,
+    # which was the defect. Only an assertion about what was not deleted does
+    # any work here.
+    assert "these would be deleted first, and are not" in result.output
+
+
+def test_a_dry_run_deletes_nothing_without_clean_either(cli):
+    """The other route, which `--clean` never touched.
+
+    The old guard re-derived "is there anything to delete" from `plan` and two of
+    `found`'s five fields, and missed `spare_snapshots` — which `remove_leftovers`
+    deletes and `leftovers` lists. So `mine` was non-empty from spares alone, the
+    guard read False, a DRY RUN asked "Delete these and start the move fresh?",
+    and destroyed a real snapshot on "y". No `--clean` required.
+    """
+    class Spare(Cloud):
+        def run(self, args, **kwargs):
+            joined = " ".join(str(a) for a in args)
+            self.calls.append(joined)
+            if "disks list" in joined:
+                return []
+            if "snapshots list" in joined:
+                # Not READY, so `usable` is empty and `snapshot` is None while
+                # the family is not — which is exactly the spare-only state the
+                # old guard could not see. A snapshot part-way through creation
+                # from an interrupted move is the ordinary way to reach it.
+                return [{"name": "comfy-win-a-move", "diskSizeGb": "300",
+                         "sourceDisk": ".../disks/comfy-win-a",
+                         "storageBytes": "1000", "status": "CREATING",
+                         "creationTimestamp": "2026-09-04T09:00:00.000-07:00"}]
+            if "machine-types list" in joined:
+                return [{"name": "g2-standard-8"}]
+            raise AssertionError(f"unexpected: {joined}")
+
+    result = cli("move", "comfy-win", "--to", "us-central1-b", "--dry-run",
+                 cloud=Spare(), input="y\n")
+
+    deleted = [c for c in result.cloud.calls if "delete" in c]
+    assert not deleted, f"a dry run deleted something: {deleted}"
+    assert "Delete these" not in result.output, (
+        "a dry run must not ask a destructive question"
+    )
+    # HONEST LIMIT: this test passes against the OLD guard too — I could not get
+    # the fixture into the spare-snapshots-only state through the CLI, so it
+    # demonstrates the property without yet pinning the route that broke it. The
+    # fix is unconditional (`if dry_run:`) and therefore strictly safer than what
+    # it replaced, but this assertion is not the evidence for that. Reported as
+    # unpinned rather than left looking covered.

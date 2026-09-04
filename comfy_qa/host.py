@@ -1396,10 +1396,26 @@ def move_cmd(
         # not do lives inside this call, guard included". That was true of the
         # thing it was written about, and this sat outside it. A guard scoped to
         # one call is a guard for one call.
-        if dry_run and (clean or found.disk is not None or found.snapshot is not None):
+        # `if dry_run`, full stop. The first version of this guard re-derived
+        # "is there anything to delete" from `plan` and two of `found`'s five
+        # fields, and got it wrong in BOTH directions.
+        #
+        # It missed `found.spare_snapshots`, which `remove_leftovers` deletes and
+        # `leftovers` lists — so `mine` could be non-empty from spares alone, the
+        # guard read False, and a DRY RUN asked "Delete these and start the move
+        # fresh?" and destroyed a real snapshot on "y". That route needed no
+        # `--clean` at all, so a967d37 closed one of two.
+        #
+        # And its report named `plan.new_disk` unconditionally — always a
+        # non-empty string — so it announced a disk that does not exist while
+        # omitting the snapshot that would actually go.
+        #
+        # `mine` is computed on the line above and is exactly "is there anything
+        # here to act on". Both holes close by asking it instead of rebuilding it.
+        if dry_run:
             say.result("\n--dry-run: these would be deleted first, and are not:")
-            for name in [n for n in (plan.new_disk, found.snapshot_name) if n]:
-                say.result(f"  {name}")
+            for line in mine:
+                say.result(f"  {line}")
         elif clean or (not yes and can_prompt()
                        and typer.confirm("\nDelete these and start the move fresh?")):
             try:
