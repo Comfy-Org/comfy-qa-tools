@@ -62,11 +62,21 @@ class Cloud:
     rather than quietly answering.
     """
 
-    def __init__(self, *, start=None, describe=None, stop=None):
+    def __init__(self, *, start=None, describe=None, stop=None, status="RUNNING"):
         self.calls: list[str] = []
         self._start = start
         self._describe = describe
         self._stop = stop
+        self._status = status
+
+    def instance_status(self, instance, zone, project):
+        # `down` reads before it stops, so that "stopped" means something
+        # happened rather than that the call did not raise. RUNNING is the
+        # realistic default for a command someone runs to stop paying.
+        self.calls.append("instance_status")
+        if isinstance(self._status, Exception):
+            raise self._status
+        return self._status
 
     def stop_instance(self, instance, zone, project):
         self.calls.append("stop_instance")
@@ -385,8 +395,32 @@ def test_stopping_them_still_says_so(cli):
             self.calls.append(f"compute instances stop {name}")
 
     result = cli("down", "--all", cloud=Stopped())
-    assert "stopped." in result.output
+    assert "was billing: comfy-win" in result.output
+    assert "Nothing is now" in result.output
     assert result.exit_code == 0
+
+
+def test_a_clean_session_and_a_dirty_one_do_not_look_the_same(cli):
+    """The whole point. "all N stopped." was printed whether five GPU boxes had
+    been billing all night or none, because stopping an already-stopped box
+    succeeds trivially. Someone closing the laptop could not tell the two apart,
+    on the one question they stayed up to answer."""
+    class Idle(Cloud):
+        def instance_status(self, instance, zone, project):
+            self.calls.append("instance_status")
+            return "TERMINATED"
+
+    clean = cli("down", "--all", cloud=Idle())
+    assert "nothing was running" in clean.output
+    assert "stop_instance" not in clean.cloud.calls, (
+        "an already-stopped box does not need stopping"
+    )
+
+    dirty = cli("down", "--all")
+    assert "was billing: comfy-win" in dirty.output
+    assert clean.output != dirty.output, (
+        "the two sessions must not produce the same words"
+    )
 
 
 # --- 5. the rebuild is offered, never taken ----------------------------------

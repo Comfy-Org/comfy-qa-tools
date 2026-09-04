@@ -1501,13 +1501,21 @@ def put_away(
     *,
     tunnel_dir: Path | None = None,
     keep_running: bool = False,
-) -> bool | None:
+) -> str:
     """Close the tunnel and stop the machine, so it stops costing money.
 
-    Returns whether this host is still billing when the call ends: True if it is
-    running, False if it is not, None if that could not be determined. The caller
-    summarising several hosts needs that, and it has to come from here — this is
-    the only place that knows what was actually read.
+    Returns what was FOUND, not what is true afterwards, because the caller
+    summarising several hosts needs to say whether anything was actually costing
+    money — and after this call the answer is "no" either way:
+
+        "billing"   left running on purpose, and still costing money
+        "caught"    it was running, and this stopped it
+        "idle"      it was already stopped; nothing to catch
+        "unknown"   its state could not be read
+
+    A boolean cannot carry that. It said False both for a box this stopped and a
+    box that was already off, which is how "all N stopped." came to be printed
+    identically whether five GPU boxes had been billing all night or none.
 
     `go` now leaves a ComfyUI running on the box, so "down" has one more thing to
     be true about — and it is, without doing anything extra: stopping the
@@ -1543,7 +1551,7 @@ def put_away(
                 ),
             )
         say("local ComfyUI left running — this tool did not start it")
-        return False  # a local ComfyUI costs nothing
+        return "idle"  # a local ComfyUI costs nothing
 
     if keep_running:
         # Read the state rather than assert one. This printed "left running — it
@@ -1560,17 +1568,38 @@ def put_away(
             # Not knowing is its own answer, and it is not "it is fine".
             say(f"could not tell whether {host.name} is running: {exc}. "
                 "Check with `comfy-qat list --live`")
-            return None
+            return "unknown"
         if state != RUNNING:
             say(f"{host.name} was already stopped — nothing left running")
-            return False
+            return "idle"
         say(f"{host.name} left running — it is still billing")
         say(f"any ComfyUI on it is still running too: comfy-qat logs {host.name}")
-        return True
+        return "billing"
+
+    # Read before stopping, so the line afterwards is news rather than grammar.
+    # `stop_instance` on a box that is already TERMINATED succeeds trivially, and
+    # this printed "<name> stopped" either way — so the end of a session looked
+    # identical whether five GPU boxes had been billing all night or none. That is
+    # the one question the command exists to answer, and `--keep-running`, the
+    # branch almost nobody uses, was the only one that answered it honestly.
+    try:
+        before = gc.instance_status(host.gce_instance, host.gce_zone,
+                                    host.gce_project)
+    except GcloudError:
+        # Worth stopping anyway — the safe direction — but not worth claiming
+        # anything about what it was doing.
+        before = None
+
+    if before is not None and before != RUNNING:
+        say(f"{host.name} was already stopped")
+        return "idle"
 
     try:
         gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         raise LifecycleError(f"could not stop {host.name}: {exc}", fix=exc.fix) from exc
-    say(f"{host.name} stopped")
-    return False
+    if before == RUNNING:
+        say(f"{host.name} was running — stopped it")
+        return "caught"
+    say(f"{host.name} stopped, though its state could not be read first")
+    return "unknown"

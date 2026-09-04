@@ -161,10 +161,10 @@ def test_local_down_hands_over_the_start_command(tmp_path):
 
 def test_put_away_stops_the_box(tmp_path):
     lines, say = said()
-    gc = gcloud([])
+    gc = gcloud(["RUNNING"])
     put_away(gc, WIN, say, tunnel_dir=tmp_path)
     assert any(key.startswith("compute instances stop") for key in gc.calls)
-    assert any("stopped" in line for line in lines)
+    assert any("was running — stopped it" in line for line in lines)
 
 
 def test_keep_running_says_plainly_that_it_still_costs(tmp_path):
@@ -173,7 +173,7 @@ def test_keep_running_says_plainly_that_it_still_costs(tmp_path):
     still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
     assert not any(key.startswith("compute instances stop") for key in gc.calls)
     assert any("still billing" in line for line in lines)
-    assert still is True
+    assert still == "billing"
 
 
 def test_keep_running_does_not_invent_a_bill_for_a_stopped_box(tmp_path):
@@ -184,7 +184,7 @@ def test_keep_running_does_not_invent_a_bill_for_a_stopped_box(tmp_path):
     lines, say = said()
     gc = gcloud(["TERMINATED"])
     still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
-    assert still is False
+    assert still == "idle"
     assert not any("billing" in line for line in lines), lines
     assert any("already stopped" in line for line in lines)
 
@@ -199,7 +199,7 @@ def test_not_knowing_whether_it_is_running_is_said_out_loud(tmp_path):
     gc = Gcloud(runner=refuses)
     lines, say = said()
     still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
-    assert still is None
+    assert still == "unknown"
     assert any("could not tell" in line for line in lines)
     assert any("list --live" in line for line in lines)
 

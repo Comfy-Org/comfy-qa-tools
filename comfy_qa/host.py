@@ -581,15 +581,14 @@ def down_cmd(
         failed = []
         billing: list[Host] = []
         unknown: list[Host] = []
+        stopped: list[Host] = []
         for host in hosts:
             typer.echo(f"{host.name}:")
             try:
-                still = put_away(gc, host, lambda line: typer.echo(f"  {line}"),
+                found = put_away(gc, host, lambda line: typer.echo(f"  {line}"),
                                  keep_running=keep_running)
-                if still is None:
-                    unknown.append(host)
-                elif still:
-                    billing.append(host)
+                {"unknown": unknown, "billing": billing,
+                 "caught": stopped}.get(found, []).append(host)
             except LifecycleError as exc:
                 # One machine refusing to stop must not leave the rest running —
                 # that is the whole reason for stopping them in one command.
@@ -616,8 +615,16 @@ def down_cmd(
             elif not unknown:
                 typer.echo("\nnothing was running, so nothing is billing.")
         else:
-            typer.echo("\nstopped." if len(hosts) == 1
-                       else f"\nall {len(hosts)} stopped.")
+            # "all N stopped." was printed whether five GPU boxes had been
+            # billing all night or none, because stopping an already-stopped box
+            # succeeds trivially. The one question this command exists to answer
+            # was the one its output could not distinguish.
+            caught = [h for h in hosts if h in stopped]
+            if caught:
+                names = ", ".join(h.name for h in caught)
+                typer.echo(f"\nwas billing: {names}. Stopped. Nothing is now.")
+            else:
+                typer.echo("\nnothing was running, so nothing was billing.")
         return
 
     if not name:

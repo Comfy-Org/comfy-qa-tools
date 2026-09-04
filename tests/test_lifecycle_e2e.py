@@ -430,7 +430,7 @@ def test_up_then_open_twice_then_down_twice(world):
     no_traceback(down)
     assert down.exit_code == 0, down.output
     assert "tunnel closed" in down.output
-    assert f"{BOX} stopped" in down.output
+    assert f"{BOX} was running — stopped it" in down.output
     assert world.gc.did("stop_instance")
     assert not world.pid_file().exists(), "a pid file outliving its tunnel is a trap"
     assert wait_until(lambda: world.processes[0].poll() is not None), "the tunnel is gone"

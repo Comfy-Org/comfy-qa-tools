@@ -198,12 +198,51 @@ def _calls_inside_except(tree: ast.AST) -> set[int]:
     return inside
 
 
+def _local_reporters(tree: ast.AST) -> set[str]:
+    """Module-level helpers that exist to emit a failure, by name.
+
+    A module may wrap its own reporting — `def _refuse(message, fix=None):
+    say.fail(message, fix=fix, code=2)` — and then every call site carries the
+    literal while the recognised name is the wrapper's. `remove.py`, which holds
+    the only irreversible command in this tool, was written entirely that way and
+    contributed exactly ZERO messages to this walk: not a hole in the net, a blind
+    side, because nothing looked wrong anywhere.
+
+    So the guarantee was never "every error is documented"; it was "every error
+    not routed through a local wrapper is documented", and nobody had said so.
+    One level of indirection is followed — a wrapper that calls a wrapper is not,
+    deliberately, because at that point the module should be using `say` directly.
+    """
+    reporters: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            emits = (
+                isinstance(func, ast.Attribute)
+                and func.attr in SAY_FAILURES
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "say"
+            )
+            if emits:
+                reporters.add(node.name)
+                break
+    return reporters
+
+
 def _message_expressions(tree: ast.AST):
     """Every expression in a module that becomes a user-facing failure message."""
     handled = _calls_inside_except(tree)
+    reporters = _local_reporters(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             message = _message_argument(node, in_except=id(node) in handled)
+            if message is None and node.args and isinstance(node.func, ast.Name) \
+                    and node.func.id in reporters:
+                message = node.args[0]
             if message is not None:
                 yield node.lineno, message
         # gcloud's failure classifier builds its message in a local and raises

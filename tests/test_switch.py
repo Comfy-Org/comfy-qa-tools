@@ -210,7 +210,7 @@ def test_the_target_is_stopped_and_startable(cli):
     assert result.opened == ["comfy-win"], "no tunnel was opened to the new box"
     assert "http://127.0.0.1:8190" in result.output
     assert any("comfy-linux" in call for call in stops(result)), "the old box was left billing"
-    assert "comfy-linux stopped" in result.output
+    assert "comfy-linux was running — stopped it" in result.output
     assert "comfy-qat down comfy-win" in result.output
 
 
@@ -461,7 +461,7 @@ def test_the_ceiling_makes_it_stop_first(cli, monkeypatch):
                  open_tunnels=("comfy-linux",), serving=("comfy-win",))
 
     assert "allows 1 GPU machine at a time" in result.output
-    stopped = result.output.index("comfy-linux stopped")
+    stopped = result.output.index("comfy-linux was running — stopped it")
     # The box is started with a timed step now, so the marker for "it began" is
     # the line that opens it rather than the one that closes it.
     started = result.output.index("comfy-win is stopped — starting it")

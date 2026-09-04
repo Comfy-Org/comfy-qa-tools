@@ -1145,6 +1145,50 @@ The new machine is up and in your host list; only the cleanup failed. The snapsh
 is still billing and the message repeats the command that removes it.
 
 
+## Deleting a box
+
+`delete` is the only thing this tool does that cannot be undone. It destroys the
+instance and its boot disk, and the ComfyUI install on it goes too. Everything else
+here is reversible — a box stops and starts, a move leaves the original where it
+was, a bad host list has a backup beside it.
+
+So it refuses more than it warns, and its confirmation is typing the box's name
+rather than `y`. A `[y/N]` is answered by reflex at 2am; a name is not.
+
+**`<name> is running. Stop it first, so that what you are deleting is something you have just looked at`**
+
+GCE would delete a running instance quite happily. This refuses so that the state
+of the machine is something you saw seconds ago rather than assumed. `comfy-qat
+down <name>`, then delete it.
+
+**`no host is called '<name>'. delete takes an exact name, never a description — a description can resolve to a machine you did not picture, and this cannot be undone`**
+
+Every other command takes a description: `go --os windows`, `stamp l4`, `logs
+linux`. `delete` does not, and the reason is that a description resolving to a box
+you had not pictured is survivable for `go` and is not survivable here. `comfy-qat
+list` shows the names.
+
+**`no host is called '<name>'. Did you mean '<other>'?`**
+
+The name differs only in case. It is not acted on — the suggestion is offered and
+you run it yourself.
+
+**`which machine? delete takes a name, never a description`**
+
+No name was given. There is deliberately no default and no "the obvious one".
+
+**`<name> is this machine, not a cloud box`**
+
+`delete` removes cloud instances. The local ComfyUI is not one, and this tool did
+not create it.
+
+**`this needs a terminal to confirm in`**
+
+The confirmation is typing the box's name, which needs somewhere to type. In a
+pipe or a script, pass `--yes` if you have already decided — the refusal is
+deliberate, so that redirecting output can never silently take the destructive
+branch.
+
 ## Rewriting the host list during a move
 
 A move rewrites `hosts.toml` so the box keeps its name, its port and its URL. That
