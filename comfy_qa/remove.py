@@ -39,7 +39,7 @@ from typing import Annotated, Optional
 import typer
 
 from . import say
-from .config import ConfigError, load
+from .config import DEFAULT_CONFIG_PATH, ConfigError, load
 
 app = typer.Typer()
 
@@ -139,6 +139,23 @@ def delete_cmd(
         say.fail(exc, code=1)
     removing.done()
 
-    say.result(f"\n{host.name} and its disk are gone.")
-    say.result(f"it is still in your host list — remove [hosts.{host.name}] by hand, "
-               "or leave it as a note of what was there.")
+    # Taking the entry out is not tidying. `create` refuses a name that a host
+    # list entry holds, and ports come from the same list, so leaving it reserves
+    # both for a machine that does not exist — and the refusal arrives weeks later
+    # with nothing to connect it to tonight.
+    from .hostfile import HostFileError, apply, without
+
+    path = config or DEFAULT_CONFIG_PATH
+    try:
+        text = without(path.read_text(encoding="utf-8"), host.name)
+        apply(path, text, expect={h.name for h in hosts} - {host.name})
+    except (HostFileError, OSError) as exc:
+        say.result(f"\n{host.name} and its disk are gone.")
+        say.warn(f"it is still in your host list and could not be removed: {exc}")
+        say.warn(f"take [hosts.{host.name}] out by hand — while it is there, "
+                 f"`create` will refuse the name {host.name} and its port stays "
+                 "reserved for a machine that no longer exists")
+        raise typer.Exit(code=1) from exc
+
+    say.result(f"\n{host.name} and its disk are gone, and it is out of your host "
+               "list.")

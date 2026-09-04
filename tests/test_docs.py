@@ -54,8 +54,9 @@ PACKAGE = ROOT / "comfy_qa"
 # invisible until it is named here. `HostFileError` subclasses `ConfigError` and
 # was missed on exactly that basis — which left every message in the module that
 # rewrites the host list during a move undocumented and unnoticed.
-ERROR_TYPES = ("ConfigError", "GcloudError", "HostFileError", "LifecycleError",
-               "MoveError", "ProbeError", "SetupStopped", "TunnelError")
+ERROR_TYPES = ("BadParameter", "ConfigError", "GcloudError", "HostFileError",
+               "LifecycleError", "MoveError", "ProbeError", "SetupStopped",
+               "TunnelError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and

@@ -75,6 +75,25 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
     return out.rstrip("\n") + "\n" + added
 
 
+def without(text: str, name: str) -> str:
+    """The host list with one `[hosts.<name>]` block taken out.
+
+    Written for `delete`, which used to finish by inviting the user to remove the
+    entry themselves, or to "leave it as a note of what was there". That advice
+    manufactured a later failure: `create` refuses a name when a host list entry
+    OR an instance on the project holds it, and ports are allocated from the same
+    list. So the note reserves both a name and a port for a machine that no longer
+    exists, and nobody connects the refusal weeks later to tonight's delete.
+    """
+    header = re.compile(rf"^\s*\[hosts\.{re.escape(name)}\]\s*$", re.MULTILINE)
+    start = header.search(text)
+    if start is None:
+        raise HostFileError(f"{name} is not in the host list.")
+    following = re.compile(r"^\s*\[", re.MULTILINE).search(text, start.end())
+    end = following.start() if following else len(text)
+    return (text[:start.start()].rstrip("\n") + "\n\n" + text[end:].lstrip("\n")).rstrip("\n") + "\n"
+
+
 def apply(path: Path, text: str, *, expect: set[str]) -> None:
     """Check the new text, back the old one up, and swap it in atomically.
 

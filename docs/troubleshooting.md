@@ -1017,6 +1017,19 @@ whether you go and start a server or go and find out what is holding the port.
 
 ## Naming the machine you want
 
+**`say the machine once: '<name>' as an argument, or --os/--gpu, not both.`**
+
+Both spellings do the same job, and giving both leaves the tool guessing which
+you meant when they disagree. `comfy-qat go comfy-win` or `comfy-qat go --os
+windows`, not both.
+
+**`which machine? A name, an operating system, a card, or both as os/card — or --os and --gpu.`**
+
+No machine was named. There is deliberately no default and no "the last one you
+used": a local ComfyUI and a tunnel to a cloud box both answer on `127.0.0.1` and
+look identical in a browser, so the machine is always said out loud. `comfy-qat
+list` shows what is declared.
+
 Every command that takes a machine accepts its name, an operating system, a card,
 or both as `os/card` — `host switch windows`, `host go l4`, `host up windows/l4`.
 These are the refusals, and each one is a refusal rather than a guess on purpose:
@@ -1222,6 +1235,17 @@ No name was given. There is deliberately no default and no "the obvious one".
 
 `delete` removes cloud instances. The local ComfyUI is not one, and this tool did
 not create it.
+
+**`it is still in your host list and could not be removed: <reason>`** / **`take [hosts.<name>] out by hand — while it is there, `create` will refuse the name <name> and its port stays reserved for a machine that no longer exists`**
+
+The box and its disk are gone; only the host list entry is left. That matters more
+than tidiness: `create` refuses a name that a host list entry holds, and ports are
+allocated from the same list. So the leftover reserves both a name and a port for a
+machine that does not exist, and the refusal arrives weeks later with nothing to
+connect it back to the delete.
+
+Open the file and remove the `[hosts.<name>]` block. `comfy-qat list` shows the
+path.
 
 **`this needs a terminal to confirm in`**
 

@@ -212,3 +212,41 @@ def test_a_refused_delete_is_reported_as_work_that_failed(cli):
                  input="comfy-linux\n")
 
     assert result.exit_code == 1
+
+
+def test_a_deleted_box_leaves_the_host_list(cli, tmp_path):
+    """The first version ended by inviting the user to remove the entry, or to
+    "leave it as a note of what was there". That advice manufactures a later
+    failure: `create` refuses a name a host list entry holds, and ports come from
+    the same list — so the note reserves both for a machine that does not exist,
+    and the refusal arrives weeks later with nothing to connect it to tonight."""
+    import tomllib
+
+    result = cli("delete", "comfy-linux", input="comfy-linux\n")
+    assert result.exit_code == 0
+
+    path = tmp_path / "hosts.toml"
+    hosts = tomllib.loads(path.read_text(encoding="utf-8"))["hosts"]
+    assert "comfy-linux" not in hosts
+    assert {"local", "comfy-win"} <= set(hosts), "it took something else with it"
+    assert hosts["comfy-win"]["port"] == 8190, "an unrelated host was rewritten"
+
+
+def test_a_host_list_that_cannot_be_written_says_what_it_will_cost(cli, tmp_path):
+    """The machine is already gone by then, so this is a warning, not a failure
+    to act on — but silence would leave a name and a port reserved."""
+
+    def readonly(*a, **k):
+        raise OSError("read-only file system")
+
+    import comfy_qa.hostfile as hostfile_module
+    original = hostfile_module.apply
+    hostfile_module.apply = readonly
+    try:
+        result = cli("delete", "comfy-linux", input="comfy-linux\n")
+    finally:
+        hostfile_module.apply = original
+
+    assert result.cloud.deleted(), "the box was still deleted"
+    assert result.exit_code == 1
+    assert "still in your host list" in result.output
