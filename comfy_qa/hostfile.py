@@ -91,7 +91,44 @@ def without(text: str, name: str) -> str:
         raise HostFileError(f"{name} is not in the host list.")
     following = re.compile(r"^\s*\[", re.MULTILINE).search(text, start.end())
     end = following.start() if following else len(text)
-    return (text[:start.start()].rstrip("\n") + "\n\n" + text[end:].lstrip("\n")).rstrip("\n") + "\n"
+
+    # Stop at the blank line before the next header, not at the header itself.
+    # A block runs to the next `[`, so everything between the end of this one and
+    # that bracket was being taken too — and in a hand-maintained file that is
+    # exactly where the NEXT host's comments live:
+    #
+    #     [hosts.comfy-win]        <- deleting this
+    #     port = 8190
+    #
+    #     # comfy-linux holds the 70B checkpoint. DO NOT DELETE.
+    #     [hosts.comfy-linux]      <- took the comment with it
+    #
+    # Every guard passed: the file parsed, the host names matched `expect`
+    # exactly, config.parse accepted it. The name check cannot see this, because
+    # no name is lost. It ended in "and it is out of your host list" — unqualified
+    # success, having destroyed a line saying DO NOT DELETE.
+    #
+    # This module's own docstring gives "the file is hand-maintained, carries
+    # comments" as the reason the rewrite is textual rather than parse-and-emit.
+    # The textual rewrite was what ate them.
+    # A comment sitting directly above a block describes THAT block, so it goes
+    # with it — otherwise deleting a host strands a note about a machine that no
+    # longer exists. The run stops at the first blank line, which is what
+    # separates one host's notes from the previous host's body.
+    begin = start.start()
+    before = text[:begin].split("\n")
+    while len(before) >= 2 and before[-2].lstrip().startswith("#"):
+        begin -= len(before[-2]) + 1
+        before.pop(-2)
+
+    if following is not None:
+        trailing = text[start.end():end]
+        blank = re.search(r"\n[ \t]*\n(?![\s\S]*\n[ \t]*\n)", trailing)
+        if blank is not None:
+            end = start.end() + blank.end() - 1
+
+    return (text[:begin].rstrip("\n") + "\n\n"
+            + text[end:].lstrip("\n")).rstrip("\n") + "\n"
 
 
 def apply(path: Path, text: str, *, expect: set[str]) -> None:

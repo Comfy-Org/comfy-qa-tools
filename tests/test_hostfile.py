@@ -14,7 +14,7 @@ import tomllib
 
 import pytest
 
-from comfy_qa.hostfile import HostFileError, apply, rename_and_add
+from comfy_qa.hostfile import HostFileError, apply, rename_and_add, without
 
 HOSTS = """\
 # my machines — this comment must survive
@@ -229,3 +229,67 @@ port         = 8199
         apply(path, same_machine,
               expect={"local", "comfy-linux", "comfy-win", "a-different-name"})
     assert path.read_text(encoding="utf-8") == HOSTS
+
+
+# --- removing a host must not take the next one's comments ------------------
+#
+# `without` ran from the block header to the next `[`, so everything between the
+# end of the deleted block and that bracket went too — which in a hand-maintained
+# file is exactly where the NEXT host's comments live. Every guard passed: the
+# file parsed, the host names matched `expect` exactly, config.parse accepted it.
+# The name check cannot see it, because no name is lost. `delete` ended in "and it
+# is out of your host list" — unqualified success, having destroyed a line that
+# said DO NOT DELETE.
+
+ANNOTATED = """\
+[hosts.comfy-win]
+kind         = "gce"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8190
+
+# comfy-linux holds the 70B checkpoint and the PM-630 fixtures.
+# DO NOT DELETE. Ali, 2026-08-14.
+[hosts.comfy-linux]
+kind         = "gce"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-c"
+gce_project  = "proj"
+port         = 8192
+"""
+
+
+def test_removing_a_host_keeps_the_next_one_s_comments():
+    out = without(ANNOTATED, "comfy-win")
+
+    assert "DO NOT DELETE" in out, "a warning the user wrote was destroyed"
+    assert "70B checkpoint" in out
+    assert "comfy-win" not in tomllib.loads(out)["hosts"]
+    assert "comfy-linux" in tomllib.loads(out)["hosts"]
+
+
+def test_removing_the_last_host_keeps_the_ones_above_it():
+    out = without(ANNOTATED, "comfy-linux")
+
+    assert "comfy-linux" not in tomllib.loads(out)["hosts"]
+    assert tomllib.loads(out)["hosts"]["comfy-win"]["port"] == 8190
+    assert "DO NOT DELETE" not in out, (
+        "that comment belonged to the block being removed"
+    )
+
+
+def test_removing_a_host_with_no_blank_line_after_it_still_works():
+    """Not every file is spaced out; the block simply ends at the next header."""
+    tight = ("[hosts.a]\nkind = \"local\"\nport = 8188\n"
+             "[hosts.b]\nkind = \"local\"\nport = 8189\n")
+    out = without(tight, "a")
+    assert set(tomllib.loads(out)["hosts"]) == {"b"}
+
+
+def test_a_comment_directly_above_the_removed_block_goes_with_it():
+    """It describes the host being deleted, so keeping it would strand a note
+    about a machine that no longer exists."""
+    src = ("[hosts.a]\nkind = \"local\"\nport = 8188\n\n"
+           "# b is the windows one\n[hosts.b]\nkind = \"local\"\nport = 8189\n")
+    assert "# b is the windows one" not in without(src, "b")
