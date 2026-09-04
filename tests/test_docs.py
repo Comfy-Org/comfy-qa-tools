@@ -327,6 +327,25 @@ def test_every_exception_this_package_defines_is_named_here():
     )
 
 
+# Raised things that carry no message of their own, written down rather than
+# inferred from a naming pattern. This list started as a suffix match — collect
+# names ending in Error, Stopped or Parameter — which is an allowlist by
+# convention, so an unfamiliar name was SILENTLY SKIPPED. That is the same shape
+# as the tuple which dropped two classes today: a completeness check whose default
+# for the unfamiliar is "fine". `click.ClickException` is the realistic case, since
+# typer is built on click and `typer.BadParameter` is already raised two lines away.
+#
+# Inverted, an unfamiliar name fails and has to be argued for here, and the list
+# becomes the written record of what carries no message — knowledge that was
+# previously held only in a regex.
+EXCUSED = frozenset({
+    "Exit", "Abort",                      # control flow: no message at all
+    "_stopped", "_unregistered", "give_up",  # helpers that BUILD an exception;
+                                          # their literals are caught at the
+                                          # constructor call inside them
+})
+
+
 def test_every_exception_this_package_RAISES_is_named_here():
     """The sibling of the test above, and the hole it cannot see.
 
@@ -350,12 +369,10 @@ def test_every_exception_this_package_RAISES_is_named_here():
             func = call.func
             name = (func.attr if isinstance(func, ast.Attribute)
                     else func.id if isinstance(func, ast.Name) else None)
-            # `typer.Exit` carries no message, and a bare re-raise carries none
-            # of its own either.
-            if name and name.endswith(("Error", "Stopped", "Parameter")):
+            if name:
                 raised.add(name)
 
-    missing = sorted(raised - set(ERROR_TYPES))
+    missing = sorted(raised - set(ERROR_TYPES) - EXCUSED)
     assert not missing, (
         f"{', '.join(missing)} is raised in this package and is not in "
         "ERROR_TYPES, so the messages it carries are invisible here."
