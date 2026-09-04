@@ -1140,6 +1140,29 @@ The new machine is up and in your host list; only the cleanup failed. The snapsh
 is still billing and the message repeats the command that removes it.
 
 
+## A new box and its GPU driver
+
+**`<name> still has no working GPU driver after 900s. The machine is running and billing.`**
+
+A box created by `comfy-qat create` installs its NVIDIA driver from a startup
+script on first boot, and that reboots the machine once or twice. `go` waits for
+that to finish before installing anything, because an install started during a
+reboot dies half-done — the symptom is `client_loop: send disconnect: Broken
+pipe` and an install that reports failure about a box that was merely restarting.
+
+This message means the wait ran out. The driver install has its own log on the
+box:
+
+```
+comfy-qat ssh <name>
+sudo cat /opt/google/cuda-installer/installer.log
+```
+
+Google's installer writes `/opt/google/cuda-installer/cuda_installation` when it
+has finished. If that file is absent and the log has stopped moving, the install
+failed rather than being slow. The machine is billing either way — `comfy-qat
+down <name>` stops it.
+
 ## Stopping machines
 
 **`could not tell whether <name> is running: <error>. Check with `comfy-qat list --live``**

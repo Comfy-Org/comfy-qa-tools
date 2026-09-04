@@ -736,6 +736,41 @@ def test_cleaning_up_never_asks_google_to_delete_a_disk_in_use():
     assert cloud.find_disk("comfy-win-a-b") is not None
 
 
+def test_what_this_move_left_is_a_prefix_of_everything_lying_around():
+    """`host move` prints the two lists as one, then splits them by counting.
+
+    `stray = leftovers(plan, found, unrelated=True)[len(mine):]` is only correct
+    while `unrelated=False` yields a strict prefix of `unrelated=True`. It did
+    not: the unrelated snapshots were emitted *before* the "already exists" line,
+    so once the target instance existed — the half-finished move this reporting
+    is for — the slice ate one line too many. The line naming an unrelated
+    billing snapshot went nowhere, its `gcloud compute snapshots delete` was
+    printed on its own with no subject, and "already exists" was printed twice,
+    the second time under "unrelated to this move".
+
+    Holding the prefix is what makes the arithmetic at the call site true.
+    """
+    made = {"name": "comfy-win", "status": "RUNNING",
+            "zone": f"{URL}/zones/us-central1-b"}
+    _, _, plan, found = prepared(Cloud(
+        disks=[SOURCE, ORPHAN_DISK],
+        snapshots=[ORPHAN_SNAPSHOT, ANCESTOR_SNAPSHOT],
+        instances=[INSTANCE, made],
+    ))
+    assert found.instance is not None, "the case only arises once the box exists"
+
+    mine = leftovers(plan, found, unrelated=False)
+    everything = leftovers(plan, found, unrelated=True)
+
+    assert everything[:len(mine)] == mine
+    stray = everything[len(mine):]
+    assert "comfy-win-snap" in "\n".join(stray)
+    assert any("from a box that no longer exists" in line for line in stray), stray
+    # Nothing said twice, and nothing dropped between the two lists.
+    assert len(set(mine) & set(stray)) == 0, set(mine) & set(stray)
+    assert set(mine) | set(stray) == set(everything)
+
+
 def test_nothing_lying_around_means_nothing_reported():
     _, _, plan, found = prepared()
     assert leftovers(plan, found) == []

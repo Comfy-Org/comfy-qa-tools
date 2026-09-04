@@ -784,3 +784,86 @@ def test_a_box_already_running_is_not_made_to_prove_ssh_again(tmp_path):
              probe_fn=lambda host: STAMP)
 
     assert not asked
+
+
+# --- a new box installs its driver, and reboots doing it ---------------------
+#
+# `create` announces this: "installing the NVIDIA driver from its startup
+# script, which reboots it once or twice. `go` waits that out." It did not. A
+# real zero-setup run began installing prerequisites, the reboot dropped the
+# session mid-apt, and it was reported as "the ComfyUI install did not finish"
+# about a box that was merely restarting.
+
+LINUX_GPU = Host(name="comfy-linux-2", kind="gce", port=8194, os="Ubuntu 22.04",
+                 gpu="L4", gce_instance="comfy-linux-2", gce_zone="europe-west4-c",
+                 gce_project="proj")
+
+
+def _driver(answers):
+    """A box that refuses `nvidia-smi` until the driver install has finished."""
+    seen = iter(answers)
+
+    def runner(args, mode):
+        key = " ".join(args)
+        if "nvidia-smi -L" in key:
+            nxt = next(seen)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+        raise AssertionError(f"unexpected: {key}")
+
+    return Gcloud(runner=runner)
+
+
+def test_a_dropped_connection_means_rebooting_not_broken(tmp_path):
+    """The exact failure: the driver reboot closes the session mid-command."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    dropped = GcloudError(
+        "client_loop: send disconnect: Broken pipe",
+        raw="Connection to compute.129506869159352883 closed by remote host.",
+    )
+    gc = _driver([dropped, dropped, "GPU 0: NVIDIA L4"])
+    lines, say = said()
+    wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None, tunnel_dir=tmp_path)
+
+    assert any("waiting for the NVIDIA driver" in line for line in lines), lines
+
+
+def test_a_box_whose_driver_is_ready_is_not_made_to_wait(tmp_path):
+    from comfy_qa.lifecycle import wait_for_driver
+
+    gc = _driver(["GPU 0: NVIDIA L4"])
+    lines, say = said()
+    wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None, tunnel_dir=tmp_path)
+    assert not any("waiting" in line for line in lines), lines
+
+
+def test_windows_is_not_waited_on_because_its_driver_is_manual(tmp_path):
+    """Google documents no unattended method, so there is nothing to wait for."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    def refuses(args, mode):
+        raise AssertionError("Windows must not be probed for a driver")
+
+    lines, say = said()
+    wait_for_driver(Gcloud(runner=refuses), WIN, say, tunnel_dir=tmp_path)
+    assert lines == []
+
+
+def test_giving_up_on_the_driver_says_the_box_is_billing(tmp_path):
+    """It is running by definition — it was created and started to get here."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    clock = iter([0, 1, 10_000, 10_001, 10_002])
+    dropped = GcloudError("Broken pipe", raw="closed by remote host")
+    gc = _driver([dropped, dropped, dropped])
+    lines, say = said()
+
+    with pytest.raises(LifecycleError) as caught:
+        wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None,
+                        now=lambda: next(clock), tunnel_dir=tmp_path)
+
+    assert "running and billing" in str(caught.value)
+    assert "comfy-qat down comfy-linux-2" in caught.value.fix
+    assert "installer.log" in caught.value.fix, "the installer keeps its own log"

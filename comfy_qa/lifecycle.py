@@ -542,12 +542,95 @@ def wait_for_ssh(
             sleep(POLL_SECONDS)
 
 
+DRIVER_TIMEOUT = 900
+
+
+def wait_for_driver(
+    gc: Gcloud,
+    host: Host,
+    say: Callable[[str], None],
+    *,
+    timeout: int = DRIVER_TIMEOUT,
+    sleep=None,
+    now=None,
+    tunnel_dir: Path | None = None,
+) -> None:
+    """Wait until a freshly created box has finished installing its GPU driver.
+
+    `create` says "installing the NVIDIA driver from its startup script, which
+    reboots it once or twice. `go` waits that out." It did not. A real
+    zero-setup run proved it: `go` waited for sshd, opened a session, began
+    installing prerequisites, and the driver's reboot dropped the connection
+    mid-apt — `client_loop: send disconnect: Broken pipe`, exit 255, reported as
+    "the ComfyUI install did not finish". The box was fine; it was rebooting,
+    exactly as designed and exactly as announced.
+
+    `wait_for_ssh` cannot cover this. It proves sshd answered ONCE, and on a new
+    box the reboots come after that. So this asks the question the install
+    actually depends on — is there a working driver — and treats a dropped
+    connection as "still rebooting" rather than as a failure.
+
+    Windows is skipped: its driver is installed by hand, deliberately, because
+    Google documents no unattended method. A box with no GPU is skipped too.
+    """
+    if is_windows(host) or not host.gpu or host.kind == "local":
+        return
+
+    sleep = sleep or _pause
+    now = now or _clock
+    deadline = now() + timeout
+    waiting = None
+    while True:
+        try:
+            gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                          "nvidia-smi -L")
+            if waiting is not None:
+                waiting.done("ready")
+            return
+        except GcloudError as exc:
+            # An expired credential will not come back on its own, and retrying
+            # it for fifteen minutes is fifteen minutes of GPU time spent on
+            # something that cannot succeed.
+            if is_auth_failure(exc):
+                stand_down(host, tunnel_dir, say)
+                raise LifecycleError(
+                    f"gcloud is not signed in, so {host.name} cannot be reached: "
+                    f"{exc}. The machine is running and billing.",
+                    fix=_with_the_bill(host, exc.fix or "gcloud auth login"),
+                ) from exc
+            if now() >= deadline:
+                stand_down(host, tunnel_dir, say)
+                raise LifecycleError(
+                    f"{host.name} still has no working GPU driver after {timeout}s. "
+                    "The machine is running and billing.",
+                    fix=_with_the_bill(
+                        host,
+                        "look at the installer's own log on the box:",
+                        f"comfy-qat ssh {host.name}",
+                        "then: sudo cat /opt/google/cuda-installer/installer.log",
+                    ),
+                ) from exc
+            if waiting is None:
+                waiting = output.slow(
+                    "waiting for the NVIDIA driver — a new box installs it on "
+                    "first boot and reboots once or twice",
+                    expect=f"up to {timeout}s", emit=say, clock=now,
+                    background=False,
+                ).start()
+            sleep(POLL_SECONDS)
+
+
 def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                      *, tunnel_dir: Path | None = None) -> None:
     """Make sure ComfyUI exists on the box, installing it if it does not."""
     from .provision import (
         check_command, cuda_command, install_command, root_for, torch_index_for,
     )
+
+    # Before anything is asked of the box. An install started during the driver's
+    # reboot dies half-done, and what it leaves behind is a clone with no venv —
+    # which is the state that then reported "ComfyUI is already installed".
+    wait_for_driver(gc, host, say, tunnel_dir=tunnel_dir)
 
     def give_up(message: str, *, egress: bool = False) -> LifecycleError:
         return _give_up(host, tunnel_dir, say, message, egress=egress)
