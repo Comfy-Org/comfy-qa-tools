@@ -42,7 +42,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
-from .config import Host
+from . import say as output
+from .config import ConfigError, Host
 from .gcloud import QUOTA, Gcloud, GcloudError
 
 # The steps a move is made of. They are identifiers rather than free text so the
@@ -532,12 +533,12 @@ def judge_disk(plan: Plan, source_disk: dict | None, snapshot: dict | None,
     wanted_type = _tail((source_disk or {}).get("type"))
     got_type = _tail(disk.get("type"))
     if wanted_type and got_type and wanted_type != got_type:
-        notes.append(
+        notes.append(output.fix(
             f"{plan.new_disk} is {got_type} but {plan.source_disk} is {wanted_type}, "
-            "so the moved box will have a slower boot disk than the one it "
-            "replaces. To get a matching disk instead, delete it and run this "
-            f"again:\n        {delete_disk_command(plan)}"
-        )
+            "so the moved box gets a slower boot disk than the one it replaces.",
+            "for a matching disk, delete it and run this again:",
+            delete_disk_command(plan),
+        ))
     return True, None, tuple(notes)
 
 
@@ -688,24 +689,76 @@ def blocked(plan: Plan, found: Found) -> MoveError | None:
         # this move is not already occupying.
         return MoveError(
             found.blocker,
-            fix=(f"{_tail(users[0])} is using it. Move somewhere else, or deal "
-                 f"with that machine first:\n        "
-                 f"comfy-qat move {plan.host.name} --to <another zone>"),
+            fix=output.fix(
+                f"{_tail(users[0])} is using it. Move somewhere else, or deal "
+                "with that machine first:",
+                f"comfy-qat move {plan.host.name} --to <another zone>"),
         )
     if found.disk is not None:
         return MoveError(
             found.blocker,
-            fix=("check it is not something you want, then remove it and run this "
-                 f"again:\n        {delete_disk_command(plan)}"),
+            fix=output.fix(
+                "check it is not something you want, then remove it and run again:",
+                delete_disk_command(plan)),
             left=(f"the disk {plan.new_disk} in {plan.to_zone}",),
             cleanup=(delete_disk_command(plan),),
         )
     return MoveError(
         found.blocker,
-        fix=("pick a zone that has this machine type:\n        "
-             "gcloud compute machine-types list "
-             f"--filter='name={plan.machine_type}' --project={plan.project}"),
+        fix=output.fix(
+            "pick a zone that has this machine type:",
+            "gcloud compute machine-types list "
+            f"--filter='name={plan.machine_type}' --project={plan.project}"),
     )
+
+
+def would_not_load(hosts: list[Host], plan: Plan) -> MoveError | None:
+    """Would the host list this move is about to write be one the tool can read?
+
+    Free, and it runs before anything exists. The sequence that needs it is the
+    most ordinary one there is: a stockout pushes a box out of a zone, capacity
+    comes back, you move it home. Move one leaves the old zone declared under
+    `<name>-<zone>` so `down` can still reach it. Move two puts the box back in
+    that same zone under its own name — and now two entries name one machine,
+    which `config.load` refuses outright. Not the entry: the whole file. Every
+    command then exits 2, `down` included, while the box runs and bills.
+
+    Checked against the identity `config` itself uses — project, zone, instance —
+    so this refuses exactly what that would refuse, and no more. Nothing is
+    created, so this costs a snapshot, a disk and an instance less than finding
+    out at the end.
+    """
+    def identity(project: str, zone: str, instance: str) -> tuple[str, str, str]:
+        return (project or "", zone or "", instance or "")
+
+    # Everything the move does not touch, then the two entries it writes: the
+    # box under its own name in the new zone, and the one it left behind.
+    prospective = [
+        (h.name, identity(h.gce_project, h.gce_zone, h.gce_instance))
+        for h in hosts if h.is_remote and h.name != plan.host.name
+    ]
+    prospective.append(
+        (plan.host.name, identity(plan.project, plan.to_zone, plan.new_instance)))
+    prospective.append(
+        (plan.retired_name,
+         identity(plan.project, plan.host.gce_zone, plan.host.gce_instance)))
+
+    seen: dict[tuple[str, str, str], str] = {}
+    for name, box in prospective:
+        clash = seen.get(box)
+        if clash is not None:
+            return MoveError(
+                f"this would leave {clash!r} and {name!r} naming one machine — "
+                f"{box[2]} in {box[1]} — and a host list with two entries for one "
+                f"box is one this tool refuses to read, whole. Nothing was created.",
+                fix=output.fix(
+                    f"{clash} is what an earlier move left behind. Check what it "
+                    "points at, then delete that entry and run this again:",
+                    "comfy-qat list --live",
+                ),
+            )
+        seen[box] = name
+    return None
 
 
 def zone_lacks_machine_type(gc: Gcloud, plan: Plan) -> str | None:
@@ -755,6 +808,18 @@ def delete_instance_command(plan: Plan) -> str:
     return (f"gcloud compute instances delete {plan.host.gce_instance} "
             f"--zone={plan.host.gce_zone} --project={plan.project} "
             "--delete-disks=all --quiet")
+
+
+def stop_instance_command(plan: Plan) -> str:
+    """Stop the moved-to box by hand, for when the host list cannot name it.
+
+    `comfy-qat down <name>` reads the host list, so it is useless in exactly the
+    case this exists for: the instance was created and the rewrite failed, which
+    means the entry still points at the old zone. Handed over raw, like the one
+    `create` prints when it cannot record a box it has just made.
+    """
+    return (f"gcloud compute instances stop {plan.new_instance} "
+            f"--zone={plan.to_zone} --project={plan.project}")
 
 
 def delete_snapshot_command(plan: Plan, name: str | None = None) -> str:
@@ -915,8 +980,9 @@ def _create_disk(gc: Gcloud, plan: Plan, snapshot: str,
     if say:
         say(f"no room under this project's SSD allowance for a "
             f"{plan.disk_type} disk — using pd-standard instead")
-        say("  the box will boot and load models more slowly than the original")
-        say("  to get a matching disk: raise SSD_TOTAL_GB, delete "
+        say(f"{output.STEP_INDENT}the box will boot and load models more slowly "
+            "than the original")
+        say(f"{output.STEP_INDENT}for a matching disk: raise SSD_TOTAL_GB, delete "
             f"{plan.new_disk}, and run this again")
     gc.run(build("pd-standard"), parse_json=False, timeout=300)
 
@@ -981,9 +1047,53 @@ def run_move(
                 )
                 continue
             raise _stopped(plan, found, done, action, exc) from exc
+        except (ConfigError, OSError) as exc:
+            # `register` is the only step that reads or writes the host list, and
+            # it is the only step that can raise either of these. It reached the
+            # user as a bare traceback: `run_move` caught GcloudError and nothing
+            # else, `move_cmd` caught MoveError and nothing else, so a comment on
+            # a port line — `port = 8192  # the QA port`, which is what a
+            # hand-maintained file looks like — unwound through both. By then the
+            # instance exists and bills, and every careful sentence this command
+            # has about that went unprinted. HostFileError is a ConfigError, so
+            # both names are covered; OSError is there because a read-only config
+            # directory and a failed os.replace raise PermissionError and OSError
+            # raw, and catching HostFileError alone would close neither.
+            raise _unregistered(plan, found, done, exc) from exc
         done.append(action.kind)
 
     return Outcome(done=tuple(done), warnings=tuple(warnings))
+
+
+def _unregistered(plan: Plan, found: Found, done: list[str],
+                  exc: Exception) -> MoveError:
+    """The box moved and the host list did not. Lead with the bill.
+
+    Everything expensive succeeded: the instance exists in the new zone, it is
+    running, and it is billing. What failed is a text rewrite, which is
+    recoverable at leisure — but not knowing you are paying is not, and the usual
+    way out does not work here, because the entry `comfy-qat down` would read
+    still names the old zone. So the raw stop command for the box that actually
+    exists goes first, and repairing the host list second.
+    """
+    left, cleanup = _state_after(plan, found, done)
+    return MoveError(
+        # The same words a finished move uses for the same event, because it is
+        # the same event — the box really is there and really is billing. Only
+        # the second half differs.
+        f"{plan.new_instance} is now in {plan.to_zone}, running and billing, but "
+        f"your host list could not be updated: {exc}",
+        fix=output.fix(
+            f"stop it now — nothing knows this box yet, so `comfy-qat down "
+            f"{plan.host.name}` would reach the old one:",
+            stop_instance_command(plan),
+            "then fix the host list and run the move again; it finds what already "
+            "exists and carries on:",
+            f"comfy-qat move {plan.host.name} --to {plan.to_zone}",
+        ),
+        left=left,
+        cleanup=cleanup,
+    )
 
 
 def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
@@ -1005,14 +1115,15 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
         )
         return MoveError(
             f"{plan.to_zone} has no {plan.host.gpu or 'GPU'} capacity either, so "
-            f"{plan.new_instance} could not be created. The zone Google named was "
-            "free when it said so and is not now; that is normal and not a fault "
-            "on your side.",
-            fix=(
+            f"{plan.new_instance} could not be created. The zone Google named had "
+            "capacity when it said so and has none now; that is normal, and not a "
+            "fault on your side.",
+            fix=output.fix(
                 "try another zone — the snapshot is kept, so this repeats only the "
-                f"disk, not the 300 GB copy:\n        {retry}"
-                + ("\n        or stop here and take the cost off the bill:\n        "
-                   + "\n        ".join(cleanup) if cleanup else "")
+                "disk, not the 300 GB copy:",
+                retry,
+                *(("or stop here and take the cost off the bill:", *cleanup)
+                  if cleanup else ()),
             ),
             left=left,
             cleanup=cleanup,
@@ -1020,11 +1131,10 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
 
     return MoveError(
         f"the move stopped at: {action.line} ({exc})",
-        fix=(
-            "run the same command again — it will find what already exists and "
-            "carry on from there."
-            + ("\n        to start over instead:\n        "
-               + "\n        ".join(cleanup) if cleanup else "")
+        fix=output.fix(
+            "run the same command again — it finds what already exists and carries "
+            "on from there.",
+            *(("to start over instead:", *cleanup) if cleanup else ()),
         ),
         left=left,
         cleanup=cleanup,

@@ -29,12 +29,15 @@ from comfy_qa import say
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The modules that speak through `say`. `host.py`, `relocate.py`, `gcloud.py`,
-# `setup.py`, `tunnel.py`, `stamp.py` and `discover.py` still write their own
-# output; the rules below are held over the converted ones and this tuple is what
-# grows as the rest follow.
-CONVERTED = ("auth.py", "cli.py", "commands.py", "lifecycle.py", "render.py",
-             "say.py")
+# The modules that speak through `say`. `host.py` was the big one — around two
+# thirds of the tool's output was in it — and it came over with `relocate.py`,
+# which is the only other file `move` prints through. What is left is
+# `tunnel.py`, which still composes fixes with a hand-typed indent, and the
+# modules that never print at all: they raise, or report through a `say` their
+# caller hands them. The rules below are held over the converted ones and this
+# tuple is what grows as the rest follow.
+CONVERTED = ("auth.py", "cli.py", "commands.py", "host.py", "lifecycle.py",
+             "relocate.py", "render.py", "say.py")
 
 
 # --- the stream rule -------------------------------------------------------
@@ -109,11 +112,11 @@ def test_a_multi_line_fix_lines_up_under_its_label(capsys):
 
 
 def test_a_fix_written_the_old_way_by_hand_still_renders_the_same(capsys):
-    """`host.py` and `relocate.py` have not been converted yet.
+    """`tunnel.py` has not been converted yet.
 
-    They print `f"to fix: {exc.fix}"` straight, against fix strings that carry the
-    eight-space indent inside them. Both forms have to come out identical or the
-    conversion could not happen one module at a time.
+    Its fix strings carry the eight-space indent inside them, and they are printed
+    by handlers in modules that *have* converted. Both forms have to come out
+    identical or the conversion could not happen one module at a time.
     """
     say.error("it broke", "first do this:\n        then this")
     by_hand = capsys.readouterr().err
@@ -370,9 +373,9 @@ def test_the_hand_copied_stop_paying_literal_is_gone():
                 if "stop paying for it" in text]
     assert len(carrying) == 1, carrying
 
-    # Held over the converted modules only. `host.py`, `relocate.py` and
-    # `setup.py` still compose fixes by hand; add them here as they convert, and
-    # this becomes the thing that stops the literal coming back.
+    # Held over the converted modules only. `tunnel.py` is the last one still
+    # composing fixes by hand; add it here when it converts, and this becomes the
+    # thing that stops the literal coming back.
     for name in CONVERTED:
         for where, text in _package_string_constants(name):
             assert "\n        " not in text, (
@@ -382,8 +385,10 @@ def test_the_hand_copied_stop_paying_literal_is_gone():
 def test_no_converted_module_still_writes_to_stderr_by_hand():
     """`say` is the only way out, or the vocabulary is advisory.
 
-    `host.py`, `relocate.py`, `setup.py`, `tunnel.py` and the rest are not
-    converted yet and are deliberately not listed. Add a name here when it is.
+    `host.py` is the one that mattered: it held roughly two thirds of the tool's
+    `typer.echo` calls, including every place `move`, `switch` and `go` report a
+    failure. Anything not listed here is a module that has not converted yet. Add
+    a name when it does.
     """
     for name in CONVERTED:
         tree = ast.parse((ROOT / "comfy_qa" / name).read_text(encoding="utf-8"))
@@ -409,3 +414,90 @@ def test_one_spelling_of_a_failure_mark():
     for where, text in _package_string_constants():
         assert "<< MISMATCH" not in text, f"{where}: {text!r}"
         assert not re.search(r"\bFAIL\b", text), f"{where}: {text!r}"
+
+
+# --- the story reaches stderr even where it is handed to somebody else -----
+
+
+def _stdout_writing_lambdas(path: Path) -> list[int]:
+    """Lambdas that write to stdout, which is what a progress sink must not do.
+
+    `lambda line: typer.echo(f"  {line}")` — the shape below — reads as a local
+    formatting detail and is nothing of the sort. It is handed to `lifecycle` as
+    its `emit`, so the whole narrative of `go`, `up`, `down`, `switch`, `move`,
+    `logs` and `create` went out on stdout through it, `say.Slow`'s ticks
+    included. `say.step` is the same two spaces and the right stream.
+    """
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Lambda):
+            continue
+        for call in ast.walk(node.body):
+            if (isinstance(call, ast.Call)
+                    and getattr(call.func, "attr", "") == "echo"
+                    and not any(kw.arg == "err" for kw in call.keywords)):
+                found.append(node.lineno)
+    return found
+
+
+def test_no_progress_sink_writes_to_stdout():
+    """A money defect, and the reason it hid: no test could see a stream.
+
+    Fifteen of these lived in `host.py`. What they cost was not tidiness — it was
+    `comfy-qat down comfy-win 1>/dev/null` silencing "still billing", "left
+    running", and every `gcloud ... delete` command the tool hands over, because
+    all of it was on the stream the user had just thrown away. The suite could not
+    tell: fourteen files cover these commands and every one of them asserts on
+    `result.output`, which merges stdout and stderr back together.
+
+    Held over the whole package rather than the converted modules, because a sink
+    is dangerous wherever it is written.
+    """
+    for path in sorted((ROOT / "comfy_qa").glob("*.py")):
+        found = _stdout_writing_lambdas(path)
+        assert not found, (
+            f"{path.name}:{found} — a progress sink writing to stdout. "
+            f"Pass `say.step`: same indent, and the story belongs on stderr."
+        )
+
+
+def test_the_narrative_of_a_command_that_costs_money_goes_to_stderr(tmp_path,
+                                                                    monkeypatch):
+    """The whole point, measured on the streams themselves rather than on both.
+
+    `down` is the command whose entire purpose is answering "am I still paying".
+    Its progress is the story and belongs on stderr; whatever it concludes is the
+    answer and belongs on stdout. Before the conversion this was the wrong way
+    round in full: stdout carried everything and stderr was empty.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import lifecycle
+    from comfy_qa.cli import app
+
+    config = tmp_path / "hosts.toml"
+    config.write_text(
+        "[hosts.comfy-win]\n"
+        "kind = 'gce'\nos = 'Windows Server 2022'\ngpu = 'L4'\n"
+        "gce_instance = 'comfy-win'\ngce_zone = 'us-central1-a'\n"
+        "gce_project = 'a-project'\nport = 8190\n",
+        encoding="utf-8")
+
+    def put_away(gc, host, say, keep_running=False):
+        say("closing the tunnel")
+        say("stopping the machine")
+        return False
+
+    monkeypatch.setattr(lifecycle, "put_away", put_away)
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: object())
+
+    result = CliRunner().invoke(app, ["down", "comfy-win", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "closing the tunnel" in result.stderr
+    assert "stopping the machine" in result.stderr
+    assert result.stdout == "", (
+        f"the story leaked onto stdout: {result.stdout!r} — a person who "
+        f"redirected it away would lose the progress of a command about money"
+    )

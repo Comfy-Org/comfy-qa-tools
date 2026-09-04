@@ -251,8 +251,8 @@ def test_a_stockout_moves_on_and_says_which_zone_it_is_trying(cli):
                  gc=FakeGcloud(refuse={"europe-west4-a": STOCKOUT}))
     assert result.exit_code == 0
     assert result.gc.created[1] == "europe-west4-b"
-    assert "trying europe-west4-a…" in result.stdout
-    assert "no L4 free right now" in result.stdout
+    assert "trying europe-west4-a…" in result.stderr, "progress goes to stderr"
+    assert "no L4 free right now" in result.stderr
     assert 'gce_zone     = "europe-west4-b"' in result.hosts
 
 
@@ -432,7 +432,7 @@ def test_a_box_that_cannot_be_recorded_leads_with_the_command_that_stops_it(
     stop = output.index("gcloud compute instances stop comfy-linux")
     assert stop < output.index("comfy-qat discover"), (
         "the adoption path is printed before the command that stops the billing")
-    assert stop < output.index("could not be written to"), (
+    assert stop < output.index("could not be added to"), (
         "the write error is printed before the command that stops the billing")
     assert "--zone=europe-west4-a" in output
     assert f"--project={PROJECT}" in output

@@ -270,15 +270,15 @@ and that is not a reason to stop testing:
 Google has no L4 capacity in us-central1-a right now, so comfy-win cannot start.
 This is not a fault on your side, and retrying in the same zone will not help.
 
-comfy-linux is untouched — you still have the machine you were on.
+comfy-linux is untouched — you still have the machine you were on
 
-Where you can test instead, easiest first:
-  comfy-qat host switch comfy-linux   # Ubuntu 22.04, A100
-  comfy-qat host switch local         # local install
+where you can test instead, easiest first:
+    comfy-qat host switch comfy-linux   # Ubuntu 22.04, A100
+    comfy-qat host switch local         # local install
 
-If it has to be comfy-win:
-  Google says us-central1-b has capacity right now.
-  comfy-qat host move comfy-win --to us-central1-b
+if it has to be comfy-win:
+    Google says us-central1-b has capacity right now:
+    comfy-qat host move comfy-win --to us-central1-b
 ```
 
 Same operating system is offered first, because someone who asked for Windows

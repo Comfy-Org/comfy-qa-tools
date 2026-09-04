@@ -184,6 +184,61 @@ def test_rdp_hands_over_the_credentials_before_it_forwards(hosts, execvp,
     assert f"address  localhost:{host_module.RDP_PORT}" in result.output
 
 
+@pytest.mark.parametrize("answered,missing", [
+    ({}, "username"),                                  # exit 0, empty stdout
+    (None, "username"),                                # `run` parsed nothing
+    ({"username": "ali"}, "password"),                 # half a pair
+    ({"password": "hunter2"}, "username"),
+    ({"username": "ali", "password": ""}, "password"),  # present and empty
+    ({"user": "ali", "pass": "hunter2"}, "username"),   # renamed on their side
+    ([{"username": "ali"}], "username"),               # not even a mapping
+])
+def test_rdp_refuses_rather_than_printing_a_credential_pair_it_never_got(
+        answered, missing, hosts, execvp, monkeypatch):
+    """A blank user over a blank password is laid out exactly like a real pair.
+
+    `reset-windows-password` exiting 0 with nothing on stdout raises nothing, so
+    the refusal path never fired; `.get(name, "")` then turned every one of these
+    shapes into an empty string and printed it under "forwarding RDP". The user
+    found out at a Windows login prompt they could not pass, with nothing in our
+    output pointing back at us. Whatever we did not receive, we do not print.
+    """
+    monkeypatch.setattr(
+        gcloud_module.Gcloud, "windows_password",
+        lambda self, instance, zone, project: answered,
+    )
+
+    result = CliRunner().invoke(app, ["rdp", "comfy-win", "--config", hosts])
+
+    assert result.exit_code == 1, result.output
+    assert execvp == [], "the forward must not start on credentials we do not have"
+    assert "forwarding RDP" not in result.output
+    assert missing in result.output, "it names what came back missing"
+    assert "gcloud compute reset-windows-password win-instance" in result.output
+
+    # The danger is the *layout*, not the words: a labelled column reads as a
+    # real pair whatever is in it. The words "user" and "password" are free to
+    # appear in the refusal, which is prose. No line may be laid out as one.
+    laid_out = [line for line in result.output.splitlines()
+                if line.startswith(("user ", "password ", "address "))]
+    assert laid_out == [], laid_out
+
+
+def test_rdp_prints_the_pair_it_did_get(hosts, execvp, monkeypatch):
+    """The guard must not cost the working case its output."""
+    monkeypatch.setattr(
+        gcloud_module.Gcloud, "windows_password",
+        lambda self, instance, zone, project: {
+            "username": "ali", "password": "hunter2"},
+    )
+
+    result = CliRunner().invoke(app, ["rdp", "comfy-win", "--config", hosts])
+
+    assert isinstance(result.exception, Replaced)
+    assert "user     ali" in result.output
+    assert "password hunter2" in result.output
+
+
 # ------------------------------------------------------- gcloud is not there
 
 

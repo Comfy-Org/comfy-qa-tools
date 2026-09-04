@@ -189,7 +189,7 @@ def test_the_url_is_the_last_thing_said(world):
 
     lines = [line for line in result.output.splitlines() if line.strip()]
     assert world.url in lines[-1]
-    assert lines[-1].startswith("Open ")
+    assert lines[-1].startswith("open ")
 
 
 def test_go_still_does_not_return_until_comfyui_answers(world):

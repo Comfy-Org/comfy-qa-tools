@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import pytest
 
-from comfy_qa.config import Host
+from comfy_qa.config import ConfigError, Host
+from comfy_qa.hostfile import HostFileError
 from comfy_qa.gcloud import Gcloud, GcloudError
 from comfy_qa.relocate import (
     accelerator_of,
@@ -43,6 +44,7 @@ from comfy_qa.relocate import (
     prepare,
     remove_leftovers,
     run_move,
+    would_not_load,
     survey,
 )
 
@@ -1053,3 +1055,117 @@ def test_an_unreadable_allowance_changes_nothing():
 
     assert plan.disk_type == "pd-balanced"
     assert plan.disk_note is None
+
+
+# --- the host list rewrite is the last step, and it can fail --------------
+
+@pytest.mark.parametrize("raised", [
+    # HostFileError, which is a ConfigError. An inline comment on the port line
+    # is what a hand-maintained host list actually looks like.
+    HostFileError("comfy-win has no port line, so its port cannot be freed."),
+    ConfigError("the rewritten host list would not parse: bad TOML"),
+    # These two reach the caller raw, which is why catching HostFileError alone
+    # would have closed neither: a read-only config directory, and os.replace.
+    PermissionError(13, "Permission denied"),
+    OSError(18, "Invalid cross-device link"),
+])
+def test_a_host_list_that_cannot_be_rewritten_is_a_bill_not_a_traceback(raised):
+    """The box exists and is billing; only a text rewrite failed.
+
+    `run_move` caught `GcloudError` and nothing else and `move_cmd` caught
+    `MoveError` and nothing else, so anything `register` raised unwound through
+    both and reached the user as a stack trace — at the one moment this command
+    is otherwise careful, with a GPU instance created, running and costing money.
+    """
+    cloud, gc, plan, found = prepared()
+    _, say = recorder()
+
+    def register(_plan):
+        raise raised
+
+    with pytest.raises(MoveError) as caught:
+        run_move(gc, plan, found, say, register=register)
+
+    message = str(caught.value)
+    assert "comfy-win" in message and "us-central1-b" in message
+    assert "running and billing" in message, "the bill leads, whatever else is said"
+    assert str(raised) in message, "gcloud's or the file's own words survive"
+
+    # `comfy-qat down` reads the host list, and the host list is exactly what did
+    # not get written — so the entry it would read still names the old zone. The
+    # raw stop for the box that really exists is the only thing that works.
+    assert "gcloud compute instances stop comfy-win --zone=us-central1-b" in (
+        caught.value.fix or "")
+    assert "the instance comfy-win in us-central1-b" in caught.value.left
+
+
+def test_the_move_is_not_undone_by_a_failed_registration():
+    """Recoverable, and re-running is the recovery. Nothing is torn down."""
+    cloud, gc, plan, found = prepared()
+    _, say = recorder()
+
+    with pytest.raises(MoveError):
+        run_move(gc, plan, found, say,
+                 register=lambda _plan: (_ for _ in ()).throw(OSError("read-only")))
+
+    assert cloud.find_instance("comfy-win"), "the box stays; it is the useful half"
+    assert cloud.ran("compute instances delete") == []
+    assert cloud.ran("compute disks delete") == []
+
+
+# --- moving a box home again ---------------------------------------------
+
+def moved_out() -> list[Host]:
+    """The host list after one move: comfy-win is in b, and a lives on renamed.
+
+    This is what `move` itself writes. The retired entry stays deliberately, so
+    `down` can still reach a box that exists and bills until somebody deletes it.
+    """
+    return [
+        Host(name="local", kind="local", port=8188),
+        Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
+             gpu="L4", gce_instance="comfy-win", gce_zone="us-central1-b",
+             gce_project=PROJECT),
+        Host(name="comfy-win-us-central1-a", kind="gce", port=8194,
+             os="Windows Server 2022", gpu="L4", gce_instance="comfy-win",
+             gce_zone="us-central1-a", gce_project=PROJECT),
+    ]
+
+
+def test_moving_a_box_back_where_it_came_from_is_refused_before_it_costs_anything():
+    """Out of a stocked-out zone, then home when capacity returns.
+
+    Move one leaves `comfy-win-us-central1-a` naming the box in us-central1-a.
+    Move two puts the box back there under its own name, and now two entries name
+    one machine — which `config.load` refuses for the WHOLE file, so every command
+    exits 2, `down` included, while the box runs and bills.
+
+    Caught here it costs nothing. Caught at the end it costs a snapshot, a disk
+    and an instance, all of them already paid for.
+    """
+    home = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
+                gpu="L4", gce_instance="comfy-win", gce_zone="us-central1-b",
+                gce_project=PROJECT)
+    plan = plan_move(home, dict(INSTANCE, zone=f"{URL}/zones/us-central1-b"),
+                     "us-central1-a")
+
+    problem = would_not_load(moved_out(), plan)
+
+    assert problem is not None, "this is the sequence that bricked a host list"
+    assert "comfy-win-us-central1-a" in str(problem)
+    assert "us-central1-a" in str(problem)
+    assert "Nothing was created" in str(problem)
+    assert "comfy-qat list --live" in (problem.fix or "")
+
+
+def test_an_ordinary_move_to_a_zone_nothing_else_claims_is_not_refused():
+    """The check must only refuse what `config.load` would refuse."""
+    plan = plan_move(WIN, INSTANCE, "us-central1-b")
+    assert would_not_load([WIN, Host(name="local", kind="local", port=8188)],
+                          plan) is None
+
+
+def test_the_box_being_moved_is_not_counted_against_itself():
+    """`comfy-win`'s own entry is replaced by this move, not kept beside it."""
+    plan = plan_move(WIN, INSTANCE, "us-central1-b")
+    assert would_not_load([WIN], plan) is None, "it would collide only with itself"
