@@ -59,7 +59,18 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
     body_end = following.start() if following else len(text)
 
     body = text[body_start:body_end]
-    body, swapped = re.subn(r"^(\s*port\s*=\s*)\d+\s*$", rf"\g<1>{renamed_port}",
+    # `[ \t\r]`, not `\s`, for the reason every other pattern in this module now
+    # says: `\s` matches NEWLINES. The trailing `\s*$` swallowed the newline after
+    # the port line, welding it to whatever came next —
+    #
+    #     port         = 8195[hosts.comfy-linux-a]
+    #
+    # which is not valid TOML, so `apply` refused the write and `move` failed on
+    # the real host list while the suite stayed green. The fixtures here are
+    # spaced differently from a file somebody actually maintains, and that
+    # difference is the whole of why this was invisible.
+    body, swapped = re.subn(r"^([ \t]*port[ \t]*=[ \t]*)\d+[ \t\r]*$",
+                            rf"\g<1>{renamed_port}",
                             body, count=1, flags=re.MULTILINE)
     if not swapped:
         # A host with no port line is not something this tool writes, but the

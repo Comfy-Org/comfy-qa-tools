@@ -373,3 +373,73 @@ def test_a_note_below_the_top_still_goes_with_its_own_host():
            "# comfy-win is the PM-630 box\n"
            "[hosts.comfy-win]\nkind = \"gce\"\nport = 8190\n")
     assert "PM-630" not in without(src, "comfy-win")
+
+
+# --- the fixtures were kinder than a real file ------------------------------
+#
+# Every test above uses a host list written for this file. A move against the
+# REAL hosts.toml on this machine failed while all of them passed, because the
+# port pattern's trailing `\s*` ate the newline and welded the port line to the
+# next section header:
+#
+#     port         = 8195[hosts.comfy-linux-a]
+#
+# `apply` then refused the write, correctly, and `move` failed. The suite was
+# green throughout. So this fixture is deliberately shaped like a file somebody
+# maintains rather than one written to pass.
+
+LIVED_IN = """\
+# comfy-qat host list.
+#
+# Rules the tool enforces:
+#   - every host needs its own port
+#   - a cloud host may never use 8188; that is the local ComfyUI's
+
+[hosts.local]
+kind = "local"
+port = 8188
+
+# [hosts.comfy-linux]
+# kind         = "gce"
+# port         = 8190
+
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-c"
+gce_project  = "proj"
+port         = 8192
+[hosts.comfy-linux-a]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux-a"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8193
+"""
+
+
+def test_a_move_against_a_lived_in_file_produces_valid_toml():
+    out = rename_and_add(LIVED_IN, name="comfy-linux",
+                         renamed="comfy-linux-us-central1-c",
+                         renamed_port=8195,
+                         added="\n[hosts.comfy-linux]\nkind = \"gce\"\n"
+                               "gce_instance = \"comfy-linux\"\n"
+                               "gce_zone = \"us-central1-a\"\n"
+                               "gce_project = \"proj\"\nport = 8192\n")
+
+    hosts = tomllib.loads(out)["hosts"]
+    assert hosts["comfy-linux"]["gce_zone"] == "us-central1-a"
+    assert hosts["comfy-linux"]["port"] == 8192
+    assert hosts["comfy-linux-us-central1-c"]["port"] == 8195
+    assert hosts["comfy-linux-a"]["port"] == 8193, "the next host was welded on"
+    assert out.count("#") == LIVED_IN.count("#")
+
+
+def test_removing_from_a_lived_in_file_keeps_everything_else():
+    out = without(LIVED_IN, "comfy-linux-a")
+    assert set(tomllib.loads(out)["hosts"]) == {"local", "comfy-linux"}
+    assert out.count("#") == LIVED_IN.count("#")
