@@ -414,3 +414,90 @@ def test_one_spelling_of_a_failure_mark():
     for where, text in _package_string_constants():
         assert "<< MISMATCH" not in text, f"{where}: {text!r}"
         assert not re.search(r"\bFAIL\b", text), f"{where}: {text!r}"
+
+
+# --- the story reaches stderr even where it is handed to somebody else -----
+
+
+def _stdout_writing_lambdas(path: Path) -> list[int]:
+    """Lambdas that write to stdout, which is what a progress sink must not do.
+
+    `lambda line: typer.echo(f"  {line}")` — the shape below — reads as a local
+    formatting detail and is nothing of the sort. It is handed to `lifecycle` as
+    its `emit`, so the whole narrative of `go`, `up`, `down`, `switch`, `move`,
+    `logs` and `create` went out on stdout through it, `say.Slow`'s ticks
+    included. `say.step` is the same two spaces and the right stream.
+    """
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Lambda):
+            continue
+        for call in ast.walk(node.body):
+            if (isinstance(call, ast.Call)
+                    and getattr(call.func, "attr", "") == "echo"
+                    and not any(kw.arg == "err" for kw in call.keywords)):
+                found.append(node.lineno)
+    return found
+
+
+def test_no_progress_sink_writes_to_stdout():
+    """A money defect, and the reason it hid: no test could see a stream.
+
+    Fifteen of these lived in `host.py`. What they cost was not tidiness — it was
+    `comfy-qat down comfy-win 1>/dev/null` silencing "still billing", "left
+    running", and every `gcloud ... delete` command the tool hands over, because
+    all of it was on the stream the user had just thrown away. The suite could not
+    tell: fourteen files cover these commands and every one of them asserts on
+    `result.output`, which merges stdout and stderr back together.
+
+    Held over the whole package rather than the converted modules, because a sink
+    is dangerous wherever it is written.
+    """
+    for path in sorted((ROOT / "comfy_qa").glob("*.py")):
+        found = _stdout_writing_lambdas(path)
+        assert not found, (
+            f"{path.name}:{found} — a progress sink writing to stdout. "
+            f"Pass `say.step`: same indent, and the story belongs on stderr."
+        )
+
+
+def test_the_narrative_of_a_command_that_costs_money_goes_to_stderr(tmp_path,
+                                                                    monkeypatch):
+    """The whole point, measured on the streams themselves rather than on both.
+
+    `down` is the command whose entire purpose is answering "am I still paying".
+    Its progress is the story and belongs on stderr; whatever it concludes is the
+    answer and belongs on stdout. Before the conversion this was the wrong way
+    round in full: stdout carried everything and stderr was empty.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import lifecycle
+    from comfy_qa.cli import app
+
+    config = tmp_path / "hosts.toml"
+    config.write_text(
+        "[hosts.comfy-win]\n"
+        "kind = 'gce'\nos = 'Windows Server 2022'\ngpu = 'L4'\n"
+        "gce_instance = 'comfy-win'\ngce_zone = 'us-central1-a'\n"
+        "gce_project = 'a-project'\nport = 8190\n",
+        encoding="utf-8")
+
+    def put_away(gc, host, say, keep_running=False):
+        say("closing the tunnel")
+        say("stopping the machine")
+        return False
+
+    monkeypatch.setattr(lifecycle, "put_away", put_away)
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: object())
+
+    result = CliRunner().invoke(app, ["down", "comfy-win", "--config", str(config)])
+
+    assert result.exit_code == 0, result.output
+    assert "closing the tunnel" in result.stderr
+    assert "stopping the machine" in result.stderr
+    assert result.stdout == "", (
+        f"the story leaked onto stdout: {result.stdout!r} — a person who "
+        f"redirected it away would lose the progress of a command about money"
+    )
