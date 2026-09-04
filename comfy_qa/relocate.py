@@ -689,9 +689,10 @@ def blocked(plan: Plan, found: Found) -> MoveError | None:
         # this move is not already occupying.
         return MoveError(
             found.blocker,
-            fix=(f"{_tail(users[0])} is using it. Move somewhere else, or deal "
-                 f"with that machine first:\n        "
-                 f"comfy-qat move {plan.host.name} --to <another zone>"),
+            fix=output.fix(
+                f"{_tail(users[0])} is using it. Move somewhere else, or deal "
+                "with that machine first:",
+                f"comfy-qat move {plan.host.name} --to <another zone>"),
         )
     if found.disk is not None:
         return MoveError(
