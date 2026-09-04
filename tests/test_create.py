@@ -681,3 +681,35 @@ def test_the_created_box_is_recorded_the_way_discovery_would_record_it():
         "guestAccelerators": [{"acceleratorType": ".../nvidia-l4"}],
     }, PROJECT)
     assert made == found
+
+
+# --- a card is spending from allocation, not from RUNNING --------------------
+
+def _box(status, count=1):
+    return {"name": "b", "status": status, "zone": ".../zones/us-central1-a",
+            "guestAccelerators": [{"acceleratorType": ".../nvidia-l4",
+                                   "acceleratorCount": count}]}
+
+
+@pytest.mark.parametrize("state", ["RUNNING", "STAGING", "PROVISIONING",
+                                   "REPAIRING", "STOPPING", "SUSPENDED"])
+def test_a_box_that_is_not_terminated_holds_the_ceiling(state):
+    """Google counts an accelerator against quota from the moment it is
+    allocated, not from the moment the box finishes booting. A GPU box in STAGING
+    holds the single-GPU ceiling and is billing — and skipping it let `create`
+    start a second one against a project whose only slot was already taken.
+
+    That is a start against a full ceiling, which is the one thing this gate
+    exists to prevent, and the window is the first 30-60 seconds of every box.
+    """
+    from comfy_qa.create import _cards_running, _gpu_boxes_running
+
+    assert _cards_running([_box(state)]) == 1, state
+    assert _gpu_boxes_running([_box(state)]) == ["b"], state
+
+
+def test_a_terminated_box_holds_nothing():
+    from comfy_qa.create import _cards_running, _gpu_boxes_running
+
+    assert _cards_running([_box("TERMINATED")]) == 0
+    assert _gpu_boxes_running([_box("TERMINATED")]) == []

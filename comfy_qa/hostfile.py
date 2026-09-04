@@ -38,7 +38,7 @@ class HostFileError(ConfigError):
 
 
 def _sections(text: str) -> list[str]:
-    return re.findall(r"^\s*\[hosts\.([^\]]+)\]", text, flags=re.MULTILINE)
+    return re.findall(r"^[ \t]*\[hosts\.([^\]]+)\]", text, flags=re.MULTILINE)
 
 
 def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
@@ -48,14 +48,14 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
     The renamed block keeps everything else it had — its zone, its comments, any
     key this tool does not know about. Only the header and the port line change.
     """
-    header = re.compile(rf"^(\s*)\[hosts\.{re.escape(name)}\]\s*$", re.MULTILINE)
+    header = re.compile(rf"^([ \t]*)\[hosts\.{re.escape(name)}\][ \t\r]*$", re.MULTILINE)
     if not header.search(text):
         raise HostFileError(f"{name} is not in the host list, so it cannot be moved.")
 
     start = header.search(text)
     assert start is not None
     body_start = start.end()
-    following = re.compile(r"^\s*\[", re.MULTILINE).search(text, body_start)
+    following = re.compile(r"^[ \t]*\[", re.MULTILINE).search(text, body_start)
     body_end = following.start() if following else len(text)
 
     body = text[body_start:body_end]
@@ -85,11 +85,21 @@ def without(text: str, name: str) -> str:
     list. So the note reserves both a name and a port for a machine that no longer
     exists, and nobody connects the refusal weeks later to tonight's delete.
     """
-    header = re.compile(rf"^\s*\[hosts\.{re.escape(name)}\]\s*$", re.MULTILINE)
+    # `\s` matches NEWLINES, so `^\s*\[hosts\.x\]` starts its match on the blank
+    # line ABOVE the header and swallows it. That blank line is the terminator the
+    # comment walk below depends on — so the walk saw the previous host's comment
+    # where it expected the separator, and took it. On the real host list that
+    # destroyed all eight lines of the commented-out example `init` writes into
+    # every new file, and reported success.
+    #
+    # Every pattern here is line-local now: [ \t] never crosses a line, and the
+    # \r is for CRLF files, where `[ \t]*$` still fails because `$` matches before
+    # the \n and the line ends in \r.
+    header = re.compile(rf"^[ \t]*\[hosts\.{re.escape(name)}\][ \t\r]*$", re.MULTILINE)
     start = header.search(text)
     if start is None:
         raise HostFileError(f"{name} is not in the host list.")
-    following = re.compile(r"^\s*\[", re.MULTILINE).search(text, start.end())
+    following = re.compile(r"^[ \t]*\[", re.MULTILINE).search(text, start.end())
     end = following.start() if following else len(text)
 
     # Stop at the blank line before the next header, not at the header itself.
@@ -123,7 +133,7 @@ def without(text: str, name: str) -> str:
 
     if following is not None:
         trailing = text[start.end():end]
-        blank = re.search(r"\n[ \t]*\n(?![\s\S]*\n[ \t]*\n)", trailing)
+        blank = re.search(r"\r?\n[ \t]*\r?\n(?![\s\S]*\r?\n[ \t]*\r?\n)", trailing)
         if blank is not None:
             end = start.end() + blank.end() - 1
 

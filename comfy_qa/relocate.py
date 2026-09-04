@@ -418,6 +418,11 @@ def plan_move(host: Host, instance: dict, to_zone: str,
     """
     disk = boot_disk(instance) or host.gce_instance
     tag = suffix_for(to_zone)
+    # Anything not TERMINATED is running or on its way there — the line this
+    # feeds says whether the box left behind is still billing, and a box in
+    # STAGING is. An absent status is not a claim either way, so it stays False
+    # rather than asserting a bill from a describe that carried nothing.
+    status = instance.get("status") or ""
     # The box keeps its name. GCE names are unique per ZONE, not per project, so
     # `comfy-linux` can exist in both — the suffix was never Google's requirement,
     # only a way to keep the appended host-list key unique. Appending is what
@@ -433,7 +438,9 @@ def plan_move(host: Host, instance: dict, to_zone: str,
         snapshot=f"{disk}-move",
         machine_type=machine_type(instance),
         accelerator=accelerator_of(instance),
-        source_running=(instance.get("status") == "RUNNING"),
+        # Anything not TERMINATED is running or on its way there, and the line
+        # this feeds says whether the box left behind is still billing.
+        source_running=bool(status) and status != "TERMINATED",
         disk_type=_tail((source_disk or {}).get("type")) or None,
         metadata=metadata_pairs(instance),
         **{k: v for k, v in (

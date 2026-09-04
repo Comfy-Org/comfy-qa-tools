@@ -545,10 +545,20 @@ class QuotaCheck:
 
 
 def _gpu_boxes_running(instances: list[dict]) -> list[str]:
-    """Instances that are RUNNING and hold a card, so they are spending the ceiling."""
+    """Instances holding a card, so they are spending the ceiling.
+
+    Not "RUNNING". Google counts an accelerator against quota from the moment it
+    is allocated, not from the moment the box finishes booting — so a GPU box in
+    STAGING or PROVISIONING holds the ceiling and is billing, and skipping it let
+    `create` proceed against a project whose single slot was already taken. That
+    is a start against a full ceiling, which is the one thing this gate exists to
+    prevent, and the window is the first 30-60 seconds of every box's life.
+
+    Only TERMINATED is certainly spending nothing.
+    """
     found = []
     for instance in instances or []:
-        if instance.get("status") != "RUNNING":
+        if instance.get("status") == "TERMINATED":
             continue
         if not instance.get("guestAccelerators"):
             # A G2 or A2 reports its built-in card here too, so this is not just
@@ -578,7 +588,11 @@ def _cards_running(instances: list[dict]) -> int:
     """
     held = 0
     for instance in instances or []:
-        if instance.get("status") != "RUNNING":
+        # See _gpu_boxes_running: a card is spending from allocation, not from
+        # RUNNING. This function already refuses to guess low on an unparseable
+        # accelerator count, for the reason in its docstring — and then dropped
+        # the whole box.
+        if instance.get("status") == "TERMINATED":
             continue
         for accel in instance.get("guestAccelerators") or []:
             try:

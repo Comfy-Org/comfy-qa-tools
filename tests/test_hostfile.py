@@ -293,3 +293,53 @@ def test_a_comment_directly_above_the_removed_block_goes_with_it():
     src = ("[hosts.a]\nkind = \"local\"\nport = 8188\n\n"
            "# b is the windows one\n[hosts.b]\nkind = \"local\"\nport = 8189\n")
     assert "# b is the windows one" not in without(src, "b")
+
+
+# --- the mirror, and CRLF -----------------------------------------------------
+#
+# The first fix stopped `without` taking the NEXT host's comments. It did not stop
+# it taking the PREVIOUS host's, and that is the shape that hits a real file: the
+# header pattern used `\s`, which matches newlines, so the match began on the blank
+# line above the header and swallowed the very terminator the comment walk depends
+# on. Three agents reproduced it independently, and on the real hosts.toml it
+# destroyed all eight lines of the commented-out example `init` writes.
+
+MIRROR = """\
+[hosts.comfy-win]
+kind = "gce"
+port = 8190
+# comfy-win is the PM-630 box. Keep the port, Linear links to it.
+
+[hosts.comfy-linux]
+kind = "gce"
+port = 8191
+"""
+
+
+def test_deleting_a_host_keeps_the_previous_one_s_trailing_note():
+    out = without(MIRROR, "comfy-linux")
+    assert "PM-630 box" in out, "a note belonging to a host we did not touch"
+    assert set(tomllib.loads(out)["hosts"]) == {"comfy-win"}
+
+
+def test_the_same_holds_with_crlf_line_endings():
+    """`[ \\t]*$` still fails on CRLF, because `$` matches before the \\n and the
+    line ends in \\r. Getting that wrong reinstates the original defect in full."""
+    out = without(MIRROR.replace("\n", "\r\n"), "comfy-linux")
+    assert "PM-630 box" in out
+    assert set(tomllib.loads(out)["hosts"]) == {"comfy-win"}
+
+
+def test_the_real_host_lists_worked_example_survives_a_delete():
+    """`init` writes a commented-out [hosts.comfy-linux] block into every file as
+    a worked example. It sits directly above a real host, so it is exactly what
+    the mirror destroys."""
+    src = ("# a cloud host may never use 8188; that is the local ComfyUI's\n\n"
+           "[hosts.local]\nkind = \"local\"\nport = 8188\n\n"
+           "# [hosts.comfy-linux]\n# kind         = \"gce\"\n# port         = 8190\n\n"
+           "[hosts.comfy-win]\nkind = \"gce\"\nport = 8191\n")
+    out = without(src, "comfy-win")
+
+    assert out.count("#") == src.count("#"), "a commented example was destroyed"
+    assert "may never use 8188" in out
+    assert set(tomllib.loads(out)["hosts"]) == {"local"}
