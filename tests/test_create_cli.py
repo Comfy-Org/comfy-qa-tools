@@ -251,8 +251,8 @@ def test_a_stockout_moves_on_and_says_which_zone_it_is_trying(cli):
                  gc=FakeGcloud(refuse={"europe-west4-a": STOCKOUT}))
     assert result.exit_code == 0
     assert result.gc.created[1] == "europe-west4-b"
-    assert "trying europe-west4-a…" in result.output
-    assert "no L4 free right now" in result.output
+    assert "trying europe-west4-a…" in result.stderr, "progress goes to stderr"
+    assert "no L4 free right now" in result.stderr
     assert 'gce_zone     = "europe-west4-b"' in result.hosts
 
 

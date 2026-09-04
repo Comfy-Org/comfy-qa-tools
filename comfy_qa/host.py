@@ -729,8 +729,32 @@ def rdp_cmd(
                                           host.gce_project)
     except GcloudError as exc:
         _refused(exc)
-    say.result(f"user     {credentials.get('username', '')}")
-    say.result(f"password {credentials.get('password', '')}")
+
+    # Read and checked before a single line is printed, because the next thing
+    # after those lines is `execvp` and this process is gone. gcloud exiting 0
+    # with nothing on stdout used to arrive here as an empty mapping, and
+    # `.get(name, "")` laid a blank user over a blank password in exactly the
+    # shape of a real pair, under a line saying the forward was starting — a
+    # failure that looks like success, and whose only symptom is a Windows login
+    # prompt that will not open, with nothing pointing back at us. A key renamed
+    # on Google's side reads identically, so the shape is checked and not
+    # assumed. Never print a credential pair that was not actually received.
+    got = credentials if isinstance(credentials, dict) else {}
+    user, password = got.get("username") or "", got.get("password") or ""
+    if not user or not password:
+        absent = " and no ".join(
+            word for word, value in (("username", user), ("password", password))
+            if not value)
+        say.fail(f"gcloud reset the password on {host.gce_instance} but reported "
+                 f"no {absent}, so there is nothing to sign in with",
+                 fix=say.fix(
+                     "run the reset yourself and read what comes back:",
+                     f"gcloud compute reset-windows-password {host.gce_instance} "
+                     f"--zone={host.gce_zone} --project={host.gce_project}"),
+                 code=1)
+
+    say.result(f"user     {user}")
+    say.result(f"password {password}")
     say.result(f"address  localhost:{RDP_PORT}")
     say.step("forwarding RDP — Ctrl-C closes it")
     argv = gc.rdp_argv(host.gce_instance, host.gce_zone, host.gce_project, RDP_PORT)
@@ -1068,7 +1092,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     there was never anything to move, and it has been reported.
     """
     from .gcloud import GcloudError
-    from .lifecycle import is_capacity_failure, suggested_zones
+    from .lifecycle import is_capacity_failure, stop_paying, suggested_zones
 
     if dry_run:
         say.fail(
@@ -1093,8 +1117,16 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
         say.detail(f"{host.gce_zone} has none free; {zones[0]} does")
         return zones[0]
 
-    say.result(f"{host.name} started in {host.gce_zone} — no move needed.")
-    say.result(f"  comfy-qat go {host.name}")
+    # Reaching this line means the probe succeeded, and the probe IS a start:
+    # nothing answers "where is there an L4 free", so the only way to ask is to
+    # try, and a try that is not refused leaves a GPU box running. "No move
+    # needed" was true and was also the whole message — the one billable start in
+    # this tool that named no way to stop paying, where `create`, `move`'s own
+    # finish and every lifecycle failure through `_with_the_bill` all do.
+    say.result(f"{host.name} started in {host.gce_zone} and is billing — "
+               f"no move needed.")
+    say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+    say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
     return None
 
 
@@ -1126,10 +1158,10 @@ def move_cmd(
     from .lifecycle import stop_paying
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
-        remove_leftovers, run_move,
+        remove_leftovers, run_move, would_not_load,
     )
 
-    host = _host(_selector(name, os_, gpu), config)
+    hosts, host = _lookup(_selector(name, os_, gpu), config)
     if not host.is_remote:
         say.fail(f"{host.name} is local — there is nowhere to move it to", code=2,
                  blank_line=False)
@@ -1178,7 +1210,10 @@ def move_cmd(
             except GcloudError as exc:
                 _refused(exc)
 
-    problem = blocked(plan, found)
+    # Both refuse before anything is created. `would_not_load` is the one that
+    # can see the host list, so it is asked here rather than inside `run_move`,
+    # which is handed a plan and no file.
+    problem = blocked(plan, found) or would_not_load(hosts, plan)
     if problem is not None:
         say.fail(problem, code=1)
 

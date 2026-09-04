@@ -439,7 +439,7 @@ def test_a_zone_google_names_in_a_stockout_jumps_the_queue(cli):
                  gc=FakeGcloud(refuse={"europe-west4-a": SUGGESTS.format(
                      zone="europe-west4-a", other="us-central1-c")}))
     assert result.exit_code == 0
-    assert "Google suggests us-central1-c" in result.output
+    assert "Google suggests us-central1-c" in result.stderr
     assert [made[1] for made in result.gc.created] == [
         "europe-west4-a", "us-central1-c"]
 
@@ -473,7 +473,7 @@ def test_the_number_of_attempts_is_capped_however_many_zones_google_suggests(cli
                  gc=FakeGcloud(refuse=chain))
     assert result.exit_code == 1
     assert len(result.gc.created) == zones_module.MAX_ATTEMPTS
-    assert "stopping after 6 zones" in result.output
+    assert "stopping after 6 zones" in result.stderr
 
 
 def test_only_the_nearest_regions_have_their_zones_looked_up(cli):
@@ -552,8 +552,8 @@ def test_the_first_zone_stocks_out_and_the_second_one_takes_it(cli):
                  gc=FakeGcloud(refuse={
                      "europe-west4-a": STOCKOUT.format(zone="europe-west4-a")}))
     assert result.exit_code == 0
-    assert "trying europe-west4-a…" in result.output
-    assert "europe-west4-a has no L4 free right now" in result.output
+    assert "trying europe-west4-a…" in result.stderr, "progress goes to stderr"
+    assert "europe-west4-a has no L4 free right now" in result.stderr
     assert result.gc.created[-1][1] == "europe-west4-b"
     assert 'gce_zone     = "europe-west4-b"' in result.hosts
 

@@ -557,6 +557,10 @@ def test_move_does_nothing_when_the_box_simply_starts(world):
     assert "no move needed" in result.output
     assert f"comfy-qat go {BOX}" in result.output
     assert not world.gc.did("snapshot_disk")
+    # The probe is a start, so this box is on and costing money — and this was
+    # the only billable start in the tool that named no way to stop paying.
+    assert "is billing" in result.output
+    assert f"comfy-qat down {BOX}" in result.output
 
 
 def test_move_that_fails_partway_says_nothing_was_removed(world):
@@ -576,6 +580,76 @@ def test_move_that_fails_partway_says_nothing_was_removed(world):
     assert "billing" in result.output, "say what this run left running up a bill"
     assert f"{BOX} is untouched in us-central1-a" in result.output
     assert world.gc.did("snapshot_disk"), "the snapshot is where it got to"
+    assert not world.gc.did("create_instance_from_disk")
+
+
+def test_a_move_whose_host_list_cannot_be_rewritten_still_names_the_bill(world):
+    """The last step of a move is a text rewrite, and it can fail.
+
+    `run_move` caught `GcloudError`, `move_cmd` caught `MoveError`, and anything
+    the rewrite raised — a `HostFileError`, or the raw `PermissionError` a
+    read-only config directory gives — went through both and reached the user as
+    a Python traceback. By then the instance is created, running and billing, so
+    the one command that is careful about exactly that said nothing about it.
+
+    The trigger here is not contrived: an inline comment on a port line is what a
+    hand-maintained host list looks like, and the most ordinary move sequence
+    there is — a stockout pushes a box out of a zone, capacity returns, you move
+    it home — walks into it.
+    """
+    world.config.write_text(
+        world.config.read_text(encoding="utf-8").replace(
+            f"port = {world.comfy.port}", f"port = {world.comfy.port}  # the QA port"),
+        encoding="utf-8")
+    world.cloud(describe=INSTANCE)
+
+    result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+
+    no_traceback(result)
+    assert result.exit_code == 1
+    assert world.gc.did("create_instance_from_disk"), "the expensive half happened"
+
+    assert "running and billing" in result.output, "the bill cannot wait"
+    # `comfy-qat down` reads the host list, and the host list is what failed to be
+    # written — so the entry it would read still names the zone the box just left.
+    assert (f"gcloud compute instances stop {BOX} --zone=us-central1-b"
+            in result.output), "the stop that works without a host list"
+    assert "port" in result.output, "the file's own complaint survives"
+
+
+def test_moving_a_box_home_again_is_refused_before_it_spends_anything(world):
+    """The sequence: stockout pushes the box out, capacity returns, move it home.
+
+    The first move leaves the old zone declared under `<name>-<zone>` so `down`
+    can still reach a box that exists and bills. Moving back into that zone makes
+    two entries name one machine, and `config.load` then refuses the whole file —
+    so every command exits 2, `down` included, while the box runs.
+
+    It used to be found at the very end, with the snapshot, the disk and the
+    instance all paid for. `would_not_load` reads the host list and refuses first.
+    """
+    world.config.write_text(
+        world.config.read_text(encoding="utf-8")
+        + "\n[hosts.comfy-win-us-central1-b]\n"
+          "kind = 'gce'\n"
+          "os = 'Windows Server 2022'\n"
+          "gpu = 'L4'\n"
+          "gce_instance = 'comfy-win'\n"
+          "gce_zone = 'us-central1-b'\n"
+          "gce_project = 'comfy-qa'\n"
+          "port = 8194\n",
+        encoding="utf-8")
+    world.cloud(describe=INSTANCE)
+
+    result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+
+    no_traceback(result)
+    assert result.exit_code == 1
+    assert "comfy-win-us-central1-b" in result.output, "it names the entry in the way"
+    assert "Nothing was created" in result.output
+
+    # The whole point of checking first: none of the expensive half happened.
+    assert not world.gc.did("snapshot_disk")
     assert not world.gc.did("create_instance_from_disk")
 
 

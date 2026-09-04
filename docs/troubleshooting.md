@@ -1140,6 +1140,41 @@ Some other step failed. The error names what now exists because of the run, and 
 original box is untouched and still stopped in its old zone. Run the same command
 again: it looks at the project first and carries on from where it stopped.
 
+**`this would leave 'comfy-win-us-central1-a' and 'comfy-win' naming one machine
+— comfy-win in us-central1-a — and a host list with two entries for one box is
+one this tool refuses to read, whole. Nothing was created.`**
+You are moving a box back into a zone it was moved out of. The first move left
+that zone declared under `<name>-<zone>` so `down` could still reach the machine
+it left there; moving home puts the box back under its own name, and now two
+entries name one instance.
+
+`config.load` refuses that for the **whole file**, not just the entry — so every
+command would exit 2, `comfy-qat down` included, while the box runs and bills.
+Checked before anything is created, which is the difference between this message
+and a snapshot, a disk and an instance you have already paid for. Run
+`comfy-qat list --live` to see whether the old box is still there, delete the
+leftover entry, and move again.
+
+**`comfy-win is now in us-central1-b, running and billing, but your host list
+could not be updated: ...`**
+The expensive half of the move worked and the cheap half did not: the instance
+exists in the new zone, it is running, and the text rewrite of your host list
+failed. An inline comment on a port line (`port = 8192  # the QA port`), a config
+directory you cannot write to, and a failed `os.replace` all land here — the
+first is simply what a hand-maintained file looks like, so this is not an exotic
+failure.
+
+**`comfy-qat down <name>` cannot help you here**, and that is why the raw stop
+command leads: `down` reads the host list to find the box, and the host list is
+precisely what did not get written, so the entry it would read still names the
+zone the box has just left. Stop the new box with the printed
+`gcloud compute instances stop`, fix the host list, then run the same `move`
+again — it finds what already exists and carries on from there. Nothing is torn
+down in the meantime; the instance is the useful half and re-running is the
+supported recovery.
+
+Before this was caught, all of the above was a Python traceback.
+
 **`could not delete the snapshot ...`** after a move otherwise succeeded
 The new machine is up and in your host list; only the cleanup failed. The snapshot
 is still billing and the message repeats the command that removes it.
@@ -1253,6 +1288,21 @@ Windows Server boxes are reached over Remote Desktop, not SSH. `comfy-qat rdp
 
 `rdp` is only for Windows. For a Linux box use `comfy-qat ssh <name>`; for the
 local install, open a terminal.
+
+**`gcloud reset the password on win-instance but reported no username and no
+password, so there is nothing to sign in with`**
+
+The reset ran and gcloud exited cleanly, but what came back has no credentials in
+it — an empty response, half a pair, or a field renamed on Google's side. Exit 1;
+nothing is printed and the RDP forward does not start.
+
+This is refused rather than shown because the failure otherwise looks exactly
+like success: a blank user over a blank password is laid out in the same labelled
+column as a real pair, under a line saying the forward is starting, and the only
+symptom is a Windows login prompt you cannot pass — with nothing in this tool's
+output pointing back at it. Run the reset yourself and read what it says; the
+message prints the full `gcloud compute reset-windows-password` command for the
+box, zone and project it used.
 
 ## Stamping a machine
 
