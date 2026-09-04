@@ -13,7 +13,7 @@ import typer
 
 from .gcloud import Gcloud, GcloudError
 
-from . import auth, commands, host, say
+from . import auth, commands, host, remove, say
 from . import setup as setup_mod
 
 app = typer.Typer(
@@ -34,6 +34,10 @@ app = typer.Typer(
 for _command in host.app.registered_commands:
     app.registered_commands.append(_command)
 for _command in auth.app.registered_commands:
+    app.registered_commands.append(_command)
+# Its own module rather than another verb in host.py, because it is the only
+# irreversible command here and its refusals are worth reading on their own.
+for _command in remove.app.registered_commands:
     app.registered_commands.append(_command)
 for _group in auth.app.registered_groups:
     app.add_typer(_group.typer_instance, name=_group.name)

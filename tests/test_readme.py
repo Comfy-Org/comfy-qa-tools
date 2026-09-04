@@ -74,10 +74,28 @@ def test_the_surface_is_not_empty():
 
 @pytest.mark.parametrize("command", COMMANDS)
 def test_every_command_is_in_the_readme(command):
-    text = README.read_text()
-    assert f"comfy-qat {command}" in text, (
-        f"`comfy-qat {command}` exists but the README never mentions it"
+    """Documented, not merely mentioned.
+
+    This was a substring search over the whole file, which a sentence saying a
+    command does NOT exist satisfies just as well as one documenting it — and
+    two commands reached the README's own "still to come" list while shipping,
+    with this test green. The command table is where a reader looks, so that is
+    what has to hold the entry.
+    """
+    rows = [line for line in README.read_text().splitlines()
+            if line.lstrip().startswith("|")]
+    assert any(f"comfy-qat {command}" in row for row in rows), (
+        f"`comfy-qat {command}` exists but no README table row documents it"
     )
+
+
+def test_a_mention_is_not_documentation():
+    """The guard on the guard: prove the assertion above cannot be satisfied by
+    prose, since that is exactly how it used to pass."""
+    prose = "There is no such thing as `comfy-qat nonesuch`, so do not look for it."
+    rows = [line for line in prose.splitlines() if line.lstrip().startswith("|")]
+    assert not any("comfy-qat nonesuch" in row for row in rows)
+    assert "comfy-qat nonesuch" in prose, "the old check would have passed here"
 
 
 def test_the_readme_invents_no_commands():
