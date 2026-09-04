@@ -63,6 +63,18 @@ POLL_SECONDS = 5
 
 RUNNING = "RUNNING"
 
+# The only state in which a machine is certainly not costing anything. GCE has
+# eight — PROVISIONING, STAGING, RUNNING, STOPPING, SUSPENDING, SUSPENDED,
+# TERMINATED, REPAIRING — and code that asks "is it RUNNING?" to decide whether
+# to stop it treats the other six as safe. A box in STAGING is thirty seconds
+# from billing; it is not stopped.
+#
+# So the test for "leave it alone" is an allowlist of this one value, and
+# anything unrecognised counts as running. Being wrong in that direction costs a
+# redundant stop call; being wrong in the other direction leaves a GPU billing
+# while the tool says nothing is.
+TERMINATED = "TERMINATED"
+
 
 # `go` continues past exactly one failure — ComfyUI not being there yet, which is
 # what it is about to fix. Everything else must stop and be shown. Catching them
@@ -1569,7 +1581,7 @@ def put_away(
             say(f"could not tell whether {host.name} is running: {exc}. "
                 "Check with `comfy-qat list --live`")
             return "unknown"
-        if state != RUNNING:
+        if state == TERMINATED:
             say(f"{host.name} was already stopped — nothing left running")
             return "idle"
         say(f"{host.name} left running — it is still billing")
@@ -1590,7 +1602,7 @@ def put_away(
         # anything about what it was doing.
         before = None
 
-    if before is not None and before != RUNNING:
+    if before == TERMINATED:
         say(f"{host.name} was already stopped")
         return "idle"
 
@@ -1598,8 +1610,13 @@ def put_away(
         gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         raise LifecycleError(f"could not stop {host.name}: {exc}", fix=exc.fix) from exc
+    if before is None:
+        say(f"{host.name} stopped, though its state could not be read first")
+        return "unknown"
     if before == RUNNING:
         say(f"{host.name} was running — stopped it")
         return "caught"
-    say(f"{host.name} stopped, though its state could not be read first")
-    return "unknown"
+    # PROVISIONING, STAGING, REPAIRING and the rest: on its way somewhere, and
+    # billing or about to be. Caught, not idle.
+    say(f"{host.name} was {before.lower()} — stopped it")
+    return "caught"

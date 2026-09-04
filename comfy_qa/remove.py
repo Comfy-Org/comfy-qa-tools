@@ -102,10 +102,13 @@ def delete_cmd(
     except GcloudError as exc:
         say.fail(exc, code=2)
 
-    if state == "RUNNING":
+    # An allowlist of one, for the reason lifecycle.TERMINATED spells out: a box
+    # in STAGING is not RUNNING and is not stopped either, and this command's
+    # whole promise is that what you destroy is something you just looked at.
+    if state != "TERMINATED":
         _refuse(
-            f"{host.name} is running. Stop it first, so that what you are "
-            "deleting is something you have just looked at",
+            f"{host.name} is {state.lower()}, not stopped. Stop it first, so that "
+            "what you are deleting is something you have just looked at",
             fix=f"comfy-qat down {host.name}",
         )
 

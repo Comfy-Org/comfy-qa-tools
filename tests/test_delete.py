@@ -91,6 +91,18 @@ def cli(tmp_path, monkeypatch):
 
 # --- the refusals, which are the product ----------------------------------
 
+@pytest.mark.parametrize("state", ["RUNNING", "STAGING", "PROVISIONING",
+                                   "REPAIRING", "SUSPENDED"])
+def test_only_a_terminated_box_may_be_deleted(cli, state):
+    """The promise is that what you destroy is something you just looked at. A
+    box thirty seconds into booting is in STAGING, and nobody has looked at it."""
+    result = cli("delete", "comfy-linux", cloud=Cloud(status=state),
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2
+    assert not result.cloud.deleted(), f"a box in {state} was destroyed"
+
+
 def test_a_running_box_is_refused_and_told_to_stop_first(cli):
     """Not because GCE minds — it will delete a running instance happily — but so
     that what you are destroying is something you looked at seconds ago."""

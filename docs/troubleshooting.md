@@ -1190,11 +1190,17 @@ was, a bad host list has a backup beside it.
 So it refuses more than it warns, and its confirmation is typing the box's name
 rather than `y`. A `[y/N]` is answered by reflex at 2am; a name is not.
 
-**`<name> is running. Stop it first, so that what you are deleting is something you have just looked at`**
+**`<name> is <state>, not stopped. Stop it first, so that what you are deleting is something you have just looked at`**
 
 GCE would delete a running instance quite happily. This refuses so that the state
 of the machine is something you saw seconds ago rather than assumed. `comfy-qat
 down <name>`, then delete it.
+
+The check is for TERMINATED specifically, not for "not RUNNING". A Compute Engine
+instance has eight states — PROVISIONING, STAGING, RUNNING, STOPPING, SUSPENDING,
+SUSPENDED, TERMINATED, REPAIRING — and only one of them means the machine is
+certainly doing nothing. A box thirty seconds into booting is in STAGING, and it
+is not something anyone has just looked at.
 
 **`no host is called '<name>'. delete takes an exact name, never a description — a description can resolve to a machine you did not picture, and this cannot be undone`**
 

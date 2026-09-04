@@ -867,3 +867,46 @@ def test_giving_up_on_the_driver_says_the_box_is_billing(tmp_path):
     assert "running and billing" in str(caught.value)
     assert "comfy-qat down comfy-linux-2" in caught.value.fix
     assert "installer.log" in caught.value.fix, "the installer keeps its own log"
+
+
+# --- a machine has eight states, not two ------------------------------------
+#
+# `down` asked "is it RUNNING?" to decide whether to stop it, which treats the
+# other six states as safe. A box in STAGING is thirty seconds from billing. The
+# suite already knew STAGING existed — three tests feed it to `bring_up` — but
+# nothing had ever fed a transitional state to the STOP path, and that asymmetry
+# is why this survived a commit written specifically about telling the truth
+# about money.
+
+@pytest.mark.parametrize("state", ["STAGING", "PROVISIONING", "REPAIRING",
+                                   "STOPPING", "SUSPENDING"])
+def test_a_box_that_is_not_terminated_is_stopped_not_waved_through(tmp_path, state):
+    lines, say = said()
+    gc = gcloud([state])
+    found = put_away(gc, WIN, say, tunnel_dir=tmp_path)
+
+    assert any(key.startswith("compute instances stop") for key in gc.calls), (
+        f"a box in {state} was left running and called already stopped"
+    )
+    assert found == "caught", found
+    assert not any("already stopped" in line for line in lines), lines
+
+
+@pytest.mark.parametrize("state", ["STAGING", "PROVISIONING", "REPAIRING"])
+def test_keep_running_counts_a_starting_box_as_billing(tmp_path, state):
+    """The under-reporting half, surviving inside the fix for the over-reporting
+    half: this branch was corrected today for claiming a stopped box was billing,
+    and still claimed a starting box was not."""
+    lines, say = said()
+    found = put_away(gcloud([state]), WIN, say, tunnel_dir=tmp_path,
+                     keep_running=True)
+
+    assert found == "billing", found
+    assert any("still billing" in line for line in lines), lines
+
+
+def test_only_terminated_counts_as_already_stopped(tmp_path):
+    lines, say = said()
+    gc = gcloud(["TERMINATED"])
+    assert put_away(gc, WIN, say, tunnel_dir=tmp_path) == "idle"
+    assert not any(key.startswith("compute instances stop") for key in gc.calls)
