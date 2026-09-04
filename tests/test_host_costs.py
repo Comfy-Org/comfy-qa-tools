@@ -523,3 +523,73 @@ def test_a_box_whose_state_could_not_be_read_is_not_an_all_clear(cli):
     assert "could not be checked" in result.output
     assert "comfy-win" in result.output, "the machine has to be named"
     assert "list --live" in result.output
+
+
+# --- the host list is not the project ----------------------------------------
+#
+# `down --all` iterated the host list, so a running box nobody had declared was
+# invisible to every sentence it printed. That was survivable while the closing
+# line read "all N stopped". It stopped being survivable when it became "nothing
+# is now", which is a promise about the project rather than about a file.
+
+
+def test_a_running_box_nobody_declared_is_named(cli):
+    class Wider(Cloud):
+        def instance_status(self, instance, zone, project):
+            self.calls.append("instance_status")
+            return "TERMINATED"
+
+        def list_instances(self, project):
+            self.calls.append("list_instances")
+            return [
+                {"name": "comfy-win", "status": "TERMINATED",
+                 "zone": ".../zones/us-central1-a"},
+                {"name": "somebody-elses-box", "status": "RUNNING",
+                 "zone": ".../zones/europe-west4-c"},
+            ]
+
+    result = cli("down", "--all", cloud=Wider())
+
+    assert "nothing was running" not in result.output, (
+        "an all-clear while a GPU box on the project is up"
+    )
+    assert "somebody-elses-box" in result.output
+    assert "europe-west4-c" in result.output, "the command has to be runnable"
+    assert result.exit_code == 0
+
+
+def test_it_names_them_rather_than_stopping_them(cli):
+    """Stopping a machine this tool does not manage is beyond what `down` was
+    asked to do, and the surprise would be worse than the bill. Saying nothing
+    is what makes the summary a lie."""
+    class Wider(Cloud):
+        def instance_status(self, instance, zone, project):
+            return "TERMINATED"
+
+        def list_instances(self, project):
+            return [{"name": "stranger", "status": "RUNNING",
+                     "zone": ".../zones/us-central1-a"}]
+
+    result = cli("down", "--all", cloud=Wider())
+    stops = [c for c in result.cloud.calls if "stop" in c]
+    assert not any("stranger" in c for c in stops), stops
+
+
+def test_a_project_that_cannot_be_listed_does_not_break_a_good_run(cli):
+    """This runs after the work is done. A project that will not list must not
+    turn a successful `down` into a failure — the summary just says less."""
+    from comfy_qa.gcloud import GcloudError
+
+    class Blind(Cloud):
+        def instance_status(self, instance, zone, project):
+            return "RUNNING"
+
+        def stop_instance(self, instance, zone, project):
+            self.calls.append(f"compute instances stop {instance}")
+
+        def list_instances(self, project):
+            raise GcloudError("credentials expired")
+
+    result = cli("down", "--all", cloud=Blind())
+    assert result.exit_code == 0
+    assert "was billing" in result.output

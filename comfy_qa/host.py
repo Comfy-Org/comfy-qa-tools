@@ -607,6 +607,18 @@ def down_cmd(
                 # that is the whole reason for stopping them in one command.
                 failed.append((host, exc))
                 say.detail(str(exc))
+        # Ask the PROJECT, not just the host list. Everything above surveys
+        # `hosts`, so a running box nobody declared was invisible to every
+        # sentence this command prints — and "nothing is now" is a bigger promise
+        # than the "all N stopped" it replaced, so the blind spot got more
+        # expensive when the wording got better.
+        #
+        # They are named, not stopped. Stopping a machine this tool does not
+        # manage is beyond what `down` was asked to do, and the surprise would be
+        # worse than the bill. Saying nothing about it is what makes the summary
+        # a lie.
+        strangers = _undeclared_and_running(gc, hosts)
+
         if failed:
             say.error(
                 f"{len(failed)} of {len(hosts)} did not stop and may still be billing",
@@ -626,7 +638,7 @@ def down_cmd(
                 say.result(f"\n{say.count(len(billing), 'machine')} left running "
                            f"and billing: {', '.join(h.name for h in billing)}.")
                 say.result("Run without --keep-running to stop them.")
-            elif not unknown:
+            elif not unknown and not strangers:
                 say.result("\nnothing was running, so nothing is billing.")
         else:
             # "all N stopped." was printed whether five GPU boxes had been
@@ -637,7 +649,7 @@ def down_cmd(
             if caught:
                 names = ", ".join(h.name for h in caught)
                 say.result(f"\nwas billing: {names}. Stopped. Nothing is now.")
-            elif not unknown:
+            elif not unknown and not strangers:
                 say.result("\nnothing was running, so nothing was billing.")
             # `unknown` was collected here and never reported, so a run where
             # every read failed and every stop succeeded printed the all-clear —
@@ -652,6 +664,17 @@ def down_cmd(
                     "Everything else was not running."
                 )
                 say.result("  comfy-qat list --live")
+
+        if strangers:
+            say.result(
+                f"\n{say.count(len(strangers), 'machine')} on this project is "
+                f"running and not in your host list: "
+                f"{', '.join(n for n, _ in strangers)}."
+            )
+            say.result("  not stopped — this tool only operates what you declare:")
+            for name, zone in strangers:
+                say.result(f"  gcloud compute instances stop {name} --zone={zone}")
+            say.result("  comfy-qat discover   # or adopt them and use `down --all`")
         return
 
     if not name:
@@ -1356,6 +1379,40 @@ def move_cmd(
         say.result("\nalso on the project, unrelated to this move and billing:")
         for line in stray:
             say.result(f"  {line}")
+
+
+def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]]:
+    """Running instances on the project that no host entry names.
+
+    `down --all` iterates the host list, so a box nobody declared is not merely
+    unstopped — it is unreachable by every sentence the command prints. That was
+    survivable while the closing line read "all N stopped". It is not survivable
+    now that it reads "nothing is now", which is a promise about the project
+    rather than about the file.
+
+    Read-only, and failure is silent by design: this runs after the work is done,
+    and a project that cannot be listed must not turn a successful `down` into an
+    error. The summary simply says less.
+    """
+    from .gcloud import GcloudError
+
+    project = next((h.gce_project for h in hosts if h.gce_project), None)
+    if not project:
+        return []
+    declared = {h.gce_instance for h in hosts if h.gce_instance}
+    try:
+        instances = gc.list_instances(project)
+    except (GcloudError, AttributeError):
+        return []
+    return [
+        (i.get("name", ""), _tail_zone(i.get("zone", "")))
+        for i in instances or []
+        if i.get("name") not in declared and i.get("status") != "TERMINATED"
+    ]
+
+
+def _tail_zone(url: str) -> str:
+    return (url or "").rstrip("/").rsplit("/", 1)[-1]
 
 
 def _probe_fix(host: Host) -> str | None:
