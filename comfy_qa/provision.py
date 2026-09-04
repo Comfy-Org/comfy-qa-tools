@@ -122,16 +122,29 @@ def check_command(host: Host) -> str:
     A venv that cannot run pip is not an environment; it is a directory. If one
     is present it has to work. A portable bundle carries no venv at all, which is
     why this asks rather than requires.
+
+    On Windows the probe is wrapped in `try`, and that is not belt-and-braces.
+    The venv this check exists to catch is one whose `pyvenv.cfg` names an
+    interpreter that is no longer on the box, and a `python.exe` that cannot
+    start is not a native command that exits non-zero — PowerShell cannot launch
+    it at all, which is a *terminating* error even at `Continue`, and a
+    terminating error here aborts the script before it prints anything. The
+    caller reads an empty answer and a non-zero exit as "the box would not answer",
+    so the one case this was written for would have come back as `could not run a
+    command on comfy-win` — a sentence about the network, printed about a broken
+    venv. `$ok` starts false, so every way of not proving pip works says MISSING,
+    and every branch still prints one word and exits 0.
     """
     if is_windows(host):
+        python = f"{WINDOWS_ROOT}\\venv\\Scripts\\python.exe"
         return (
             "powershell -NonInteractive -Command "
             f"\"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
             "{ Write-Output 'MISSING'; exit 0 }; "
-            f"if (Test-Path '{WINDOWS_ROOT}\\venv\\Scripts\\python.exe') "
-            f"{{ & '{WINDOWS_ROOT}\\venv\\Scripts\\python.exe' -m pip --version "
-            "*> $null; "
-            "if ($LASTEXITCODE -ne 0) { Write-Output 'MISSING'; exit 0 } }; "
+            f"if (Test-Path '{python}') {{ $ok = $false; "
+            f"try {{ & '{python}' -m pip --version *> $null; "
+            "$ok = ($LASTEXITCODE -eq 0) } catch { $ok = $false }; "
+            "if (-not $ok) { Write-Output 'MISSING'; exit 0 } }; "
             "Write-Output 'INSTALLED'\""
         )
     return (

@@ -4,6 +4,13 @@ Everything that talks to Google Cloud goes through `Gcloud.run`, for two reasons
 tests replace a single seam rather than patching subprocess everywhere, and every
 failure can be turned into a message that names the command which fixes it.
 
+One seam is also why gcloud's output can be held to the same rule as our own.
+`say` bans colour and anything that redraws, because a run gets read twice — in a
+terminal and in a Slack code block — and only whole plain lines survive the
+second reading. That rule stopped at the edge of this file until a live `go` put
+gcloud's yellow `WARNING:` into the middle of an install log. It does not stop
+there now: see `relay_output` and `Relay` below.
+
 gcloud is already on PATH on a machine that has it. Never prepend the SDK bin
 directory — it bloats the command for no benefit.
 """
@@ -15,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 
 COMPUTE_SERVICE = "compute.googleapis.com"
@@ -156,6 +164,236 @@ def can_prompt() -> bool:
         return False
 
 
+# --- somebody else's output, on its way into a bug report --------------------
+#
+# `say` holds one rule over everything this tool writes: no colour, no cursor
+# movement, nothing that redraws, because the output is read twice — once in a
+# terminal and once in a Slack code block — and only whole plain lines survive
+# the second reading. `test_say.py` proves it over every string constant in the
+# package, which proves it about the half of the output we write and nothing at
+# all about the half we relay.
+#
+# A real `go` run proved the gap. Between "starting ComfyUI" and "STARTED" the
+# terminal carried this, in yellow:
+#
+#     <esc>[1;33mWARNING:<esc>[0m
+#
+#     To increase the performance of the tunnel, consider installing NumPy. For
+#     instructions, please see https://cloud.google.com/iap/docs/...
+#
+# Two separate faults. The escape sequences are ours to fix and there is no
+# argument for them. The advice is gcloud's, it is about gcloud's own transfer
+# speed, and nobody reading it is in a position to act on it — but it lands in
+# the middle of an install and reads like something went wrong.
+
+# CSI (colour, cursor movement, erase), OSC (window titles), and the two-character
+# escapes. Matched per line, so the OSC's lazy body cannot run away.
+_ESCAPE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"
+    r"|\x1b[@-Z\\-_]"
+)
+
+# Whatever the pattern above did not recognise. An escape sequence this tool has
+# never seen still must not reach a paste, so the guarantee is closed by removing
+# every remaining control character rather than by predicting them. Tab stays: it
+# is ordinary in a log and prints as itself.
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+
+# The line ending, and then everything a progress bar redrew over. Greedy, so it
+# reaches the *last* carriage return: what a terminal ends up showing is only ever
+# what came after it.
+_LINE_END = re.compile(r"[\r\n]+\Z")
+_REDRAWN = re.compile(r"^.*\r", re.DOTALL)
+
+# Lines that are true, harmless, and about gcloud rather than about anything a
+# user of this tool can do. Matched on a lowercased prefix of the whole cleaned
+# line. Only advisories go here — never anything that could be a symptom, and
+# never anything on a failure path. See `Relay` for why the list is this short.
+KNOWN_NOISE = (
+    "to increase the performance of the tunnel, consider installing numpy",
+    "please see https://cloud.google.com/iap/docs/using-tcp-forwarding",
+)
+
+# A header with nothing after the colon is not a message, it is a label for the
+# block underneath it. gcloud prints one before the advisory above, so it has to
+# be decided together with what follows — see `Relay.line`. Lowercase because
+# `test_say.py` holds the whole package to one spelling of the word.
+_BARE_HEADER = ("warning:", "warn:")
+
+# How long a finished command waits for the last of its output. Reaching this
+# would mean a reader thread wedged on a pipe that never closed; the exit code is
+# already known by then, and hanging on to it would be worse than the loss.
+PUMP_TIMEOUT = 5.0
+
+
+def plain(text: str) -> str:
+    """One line of someone else's output, made safe to read and to paste.
+
+    Carriage returns are resolved rather than deleted: a progress bar rewrites
+    one line over and over with `\\r`, and what a terminal ends up showing is
+    only ever the part after the last one. Taking that keeps the final state —
+    `100%` — and drops the ninety-nine redraws in front of it, which is the same
+    answer `say` gives for our own long steps.
+
+    Both are patterns rather than the two-character literals they could be,
+    because `test_say.py` holds every string constant in this package to "no
+    escape sequence, no carriage return" — and it is right to: a rule with an
+    exemption for the module that enforces it is not a rule. A raw pattern says
+    the same thing without carrying one.
+    """
+    return _CONTROL.sub("", _ESCAPE.sub("", _REDRAWN.sub("", _LINE_END.sub("", text))))
+
+
+def readable(text: str) -> str:
+    """A whole captured block, cleaned — and complete.
+
+    Every line survives. This is the one used on anything that failed, where the
+    line that explains it could be any of them and dropping the wrong one costs
+    a great deal more than a colour code ever did.
+    """
+    return "\n".join(plain(line) for line in (text or "").splitlines())
+
+
+def is_noise(line: str) -> bool:
+    """Is this one of the lines in `KNOWN_NOISE`?"""
+    lowered = line.strip().lower()
+    return any(lowered.startswith(sign) for sign in KNOWN_NOISE)
+
+
+class Relay:
+    """One stream of someone else's output, cleaned, with its noise dropped.
+
+    Stateful for one reason: gcloud writes the advisory as a block — a bare
+    header, a blank line, then the prose — and whether the header is worth
+    printing is not knowable until the prose arrives. So a contentless header is
+    held back, and the line that follows decides it: dropped with the noise it
+    belonged to, or printed in front of the real message it announced.
+
+    **Nothing on a failure path is ever dropped here.** A silenced error costs
+    more than every coloured one put together, so this filters the live relay
+    only; `explain_failure` cleans gcloud's words and keeps all of them.
+    """
+
+    def __init__(self) -> None:
+        self._held: list[str] = []
+
+    def line(self, text: str) -> list[str]:
+        """What to print for one line in. Usually itself; sometimes nothing."""
+        cleaned = plain(text)
+        if is_noise(cleaned):
+            # The header, if there is one, was this advisory's. It goes with it.
+            self._held = []
+            return []
+        if cleaned.strip().lower() in _BARE_HEADER:
+            self._held = [cleaned]
+            return []
+        if self._held and not cleaned.strip():
+            self._held.append(cleaned)  # the blank line inside the block
+            return []
+        held, self._held = self._held, []
+        return [*held, cleaned]
+
+    def rest(self) -> list[str]:
+        """Anything still held when the stream ended. Held is not dropped."""
+        held, self._held = self._held, []
+        return held
+
+
+def _emit(stream, line: str) -> None:
+    """Write one whole line, now.
+
+    Flushed every time, because the point of streaming an install log is watching
+    it arrive. A closed stream is not an error worth failing a command over:
+    `comfy-qat logs | head` closes the pipe on purpose.
+    """
+    try:
+        stream.write(line + "\n")
+        stream.flush()
+    except (OSError, ValueError):
+        pass
+
+
+# What a reader says when it could not finish. A log that simply stops reads
+# exactly like a command that finished, which is the one thing it must not be
+# mistaken for — a truncated install log has a last line that looks like a
+# result. Lowercase, so `test_say.py`'s one spelling of the word still holds.
+CUT_SHORT = "warning: the rest of this output was lost"
+
+
+def _pump(reader, write, note) -> None:
+    """Read one stream to its end, cleaning it a line at a time.
+
+    `note` is where a failure to finish is reported, and it is always stderr —
+    including for the stdout pump, because a line about our own trouble is the
+    story and not the answer. Swallowing it silently was the earlier version and
+    it was wrong: everything after the break is missing, and nothing said so.
+    """
+    relay = Relay()
+    try:
+        for raw in iter(reader.readline, b""):
+            for line in relay.line(raw.decode("utf-8", "replace")):
+                write(line)
+    except (OSError, ValueError) as exc:
+        for line in relay.rest():
+            write(line)
+        note(f"{CUT_SHORT} ({exc})")
+        return
+    for line in relay.rest():
+        write(line)
+
+
+def _writer(given, name: str):
+    """Where a pumped stream goes.
+
+    `sys.stdout` is looked up at write time rather than captured here, so a
+    caller that replaced it — a test, a pipeline — is the one written to.
+    """
+    def write(line: str) -> None:
+        _emit(given if given is not None else getattr(sys, name), line)
+    return write
+
+
+def relay_output(cmd: list[str], *, out=None, err=None) -> int:
+    """Run `cmd` with its output coming *through* this tool, not past it.
+
+    The alternative, and what this replaces, is letting the child inherit the
+    terminal. That is one line of code and it is why gcloud's yellow reached a
+    bug report: output nobody handles is output nobody can hold to the rule.
+
+    Each stream keeps its own side — the box's log stays on stdout, gcloud's
+    commentary on stderr — because `comfy-qat logs > run.log` has to collect the
+    log and not the story. Two readers rather than one merged pipe, for the same
+    reason.
+
+    Ctrl-C is left exactly as it was. The child shares this terminal's process
+    group, so the signal reaches it directly; all this does is wait for it to
+    finish writing before the exception carries on up, so the last lines of a
+    stopped ComfyUI are not lost.
+    """
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        to_out = _writer(out, "stdout")
+        to_err = _writer(err, "stderr")
+        pumps = [
+            threading.Thread(target=_pump, args=(process.stdout, to_out, to_err),
+                             daemon=True),
+            threading.Thread(target=_pump, args=(process.stderr, to_err, to_err),
+                             daemon=True),
+        ]
+        for pump in pumps:
+            pump.start()
+        try:
+            code = process.wait()
+        except KeyboardInterrupt:
+            code = process.wait()
+            for pump in pumps:
+                pump.join(timeout=PUMP_TIMEOUT)
+            raise
+        for pump in pumps:
+            pump.join(timeout=PUMP_TIMEOUT)
+    return code
+
+
 class GcloudError(Exception):
     """A gcloud call that failed.
 
@@ -207,6 +445,12 @@ class Gcloud:
         `rdp` never reach `run` — they hand an argv to `os.execvp` — so without
         this they turned an absent gcloud into a `FileNotFoundError` traceback
         where every other command prints a sentence and the install link.
+
+        Every site that needs the binary now asks here, which is the difference
+        between one place and the first of several. There were five: two spelled
+        the message with the install link, and two — `ssh` and `ssh_output` —
+        spelled it without, so the same missing binary told two different people
+        two different things and only one of them where to get it.
         """
         exe = self.available()
         if exe is None:
@@ -262,14 +506,7 @@ class Gcloud:
         if self.runner is not None:
             return self.runner(args, "interactive")
 
-        exe = self.available()
-        if exe is None:
-            raise GcloudError(
-                "gcloud is not installed or not on PATH.",
-                fix="https://cloud.google.com/sdk/docs/install",
-                kind=NO_GCLOUD,
-            )
-        return subprocess.run([exe, *args]).returncode
+        return subprocess.run([self.require(), *args]).returncode
 
     # --- is this going to work before we spend money on it? ----------------
 
@@ -288,12 +525,7 @@ class Gcloud:
         if self.proven:
             return
 
-        if self.available() is None:
-            raise GcloudError(
-                "gcloud is not installed or not on PATH.",
-                fix="https://cloud.google.com/sdk/docs/install",
-                kind=NO_GCLOUD,
-            )
+        self.require()
 
         if not self.active_account():
             raise GcloudError(
@@ -452,22 +684,41 @@ class Gcloud:
     def ssh(self, instance: str, zone: str, project: str, remote: str, *, stream: bool = True) -> int:
         """Run a command on the instance over IAP. Returns its exit code.
 
-        Streaming inherits this terminal, so a remote ComfyUI's startup log
-        appears exactly as it would if it were running locally. That is the whole
-        point: a remote launch you cannot watch is a launch you cannot debug.
+        A remote ComfyUI's startup log appears as it arrives, exactly as it would
+        if it were running locally. That is the whole point: a remote launch you
+        cannot watch is a launch you cannot debug.
+
+        It arrives through `relay_output` rather than by handing the child this
+        terminal. Inheriting was simpler and it is what put gcloud's yellow
+        `WARNING:` — its own advice about its own transfer speed — into the middle
+        of an install log that then got pasted into Slack. Output nobody handles
+        is output nobody can hold to the rule in `say`.
+
+        **`--quiet` is not tidiness, it is the condition for piping at all.** On a
+        machine that has never run `gcloud compute ssh`, the first one generates
+        `~/.ssh/google_compute_engine` and asks `Enter passphrase (empty for no
+        passphrase):` — a prompt with no trailing newline, which `_pump` reads by
+        line and would therefore never show, from `ssh-keygen`, which reads the
+        answer from `/dev/tty` and not from anything we could feed. A `go` on a
+        fresh machine would stop dead with no output and no explanation: exactly
+        the "hide the prompt and hang" failure `run_interactive`'s docstring
+        warns about, reintroduced one file over.
+
+        `gcloud compute ssh --help` says what the flag does here, in its own
+        words: "If the user does not have a public SSH key, one is generated
+        using ssh-keygen(1) (if the --quiet flag is given, the generated key will
+        have an empty passphrase)." Nothing in this tool creates that key, and
+        everything in it depends on the key existing.
         """
         args = [
             "compute", "ssh", instance,
             f"--zone={zone}", f"--project={project}",
-            "--tunnel-through-iap", f"--command={remote}",
+            "--tunnel-through-iap", "--quiet", f"--command={remote}",
         ]
         if self.runner is not None:
             return self.runner(args, "stream" if stream else True)
 
-        exe = self.available()
-        if exe is None:
-            raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
-        return subprocess.run([exe, *args]).returncode
+        return relay_output([self.require(), *args])
 
     def ssh_argv(self, instance: str, zone: str, project: str) -> list[str]:
         """The command that opens an interactive shell on a box.
@@ -475,6 +726,16 @@ class Gcloud:
         Returned rather than run: `ssh` replaces this process with it, so the
         shell owns the terminal and Ctrl-C reaches the remote side rather than a
         wrapper around it.
+
+        **Where the output guarantee ends.** `relay_output` can hold gcloud's
+        output to `say`'s rule because it is between the child and the terminal.
+        `execvp` leaves nothing in between — this process is gone and the shell
+        owns the terminal from that line — so colour, progress bars and gcloud's
+        own advisories all reach the screen here, by construction. That is the
+        right trade for an interactive shell, which wants the terminal it is
+        being given; it is worth knowing rather than fixing. `require()` is
+        called before the hand-off because a refusal is the one thing that must
+        still be ours to word.
         """
         return [
             "gcloud", "compute", "ssh", instance,
@@ -483,7 +744,13 @@ class Gcloud:
 
     def rdp_argv(self, instance: str, zone: str, project: str,
                  local_port: int) -> list[str]:
-        """The command that forwards Remote Desktop from the box to this Mac."""
+        """The command that forwards Remote Desktop from the box to this Mac.
+
+        Also handed to `execvp`, so the note on `ssh_argv` applies here too — and
+        with more force, because this is the one IAP forward a tester watches
+        directly, and the NumPy advisory `Relay` drops everywhere else will
+        appear on this screen. It is gcloud's terminal by then.
+        """
         return [
             "gcloud", "compute", "start-iap-tunnel", instance, "3389",
             f"--local-host-port=localhost:{local_port}",
@@ -495,30 +762,65 @@ class Gcloud:
 
         Google documents no way to read the existing one — resetting is the only
         route in, and it is what their own instructions tell you to do.
+
+        Raises rather than answering with something falsy, and that is the whole
+        of the fix. `run` returns `None` when gcloud exits 0 with an empty stdout,
+        and this ended `or {}` — so no exception was raised, `rdp` printed a blank
+        username and a blank password laid out exactly like a real pair, said it
+        was forwarding RDP, and `execvp`'d away. The tester found out at a Windows
+        login prompt they could not get past, with nothing in our output pointing
+        back at us. A password this tool cannot produce is a failure; the only
+        honest shapes to return are the credentials or an exception.
+
+        The message names the keys that came back and never a value. If a
+        password *is* in there, it is the one thing on this box worth not putting
+        into an error that gets pasted somewhere.
         """
-        return self.run([
+        answer = self.run([
             "compute", "reset-windows-password", instance,
             f"--zone={zone}", f"--project={project}", "--quiet",
-        ]) or {}
+        ])
+        if isinstance(answer, dict) and answer.get("username") and answer.get("password"):
+            return answer
+        raise GcloudError(
+            f"gcloud reset the Windows password on {instance} and exited without "
+            f"an error, but the answer carried no credentials: {_shape(answer)}. "
+            f"There is no password to hand over, so nothing was forwarded.",
+            fix=(
+                f"run it yourself and read what comes back: gcloud compute "
+                f"reset-windows-password {instance} --zone={zone} "
+                f"--project={project}"
+            ),
+        )
 
     def ssh_output(self, instance: str, zone: str, project: str, remote: str) -> str:
-        """Run a command on the instance and return what it printed."""
+        """Run a command on the instance and return what it printed.
+
+        Cleaned on the way back, because what a box printed is both branched on
+        and quoted: `INSTALLED`, a CUDA version, the name of the process holding
+        port 8188. A colour code around any of those is a word this tool then
+        fails to recognise and a message it then puts in front of a person.
+
+        `--quiet` for the reason given on `ssh`, and one worse here: this one
+        captures its output, so a first-run key-generation prompt would not be on
+        the screen even in principle. It would sit invisible for the full
+        `INSTANCE_TIMEOUT` and come back as "gcloud timed out", which names the
+        network for a question nobody was shown.
+        """
         args = [
             "compute", "ssh", instance,
             f"--zone={zone}", f"--project={project}",
-            "--tunnel-through-iap", f"--command={remote}",
+            "--tunnel-through-iap", "--quiet", f"--command={remote}",
         ]
         if self.runner is not None:
             return self.runner(args, "output")
 
-        exe = self.available()
-        if exe is None:
-            raise GcloudError("gcloud is not installed or not on PATH.", kind=NO_GCLOUD)
-        proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=INSTANCE_TIMEOUT)
+        proc = subprocess.run([self.require(), *args], capture_output=True,
+                              text=True, timeout=INSTANCE_TIMEOUT)
         if proc.returncode != 0:
             message, fix, raw = explain_failure(proc.stderr, proc.stdout, proc.returncode)
             raise GcloudError(message, fix=fix, raw=raw)
-        return proc.stdout.strip()
+        return readable(proc.stdout).strip()
 
     def describe_instance(self, name: str, zone: str, project: str) -> dict:
         return self.run([
@@ -715,6 +1017,21 @@ def localized_message(text: str) -> str | None:
     return None
 
 
+def _shape(answer: object) -> str:
+    """What came back, described without repeating any of it.
+
+    Used where the answer was the wrong shape and the message has to say so.
+    Names the keys and never the values: the one call this is used on is the one
+    that resets a Windows password, and an error goes into a paste.
+    """
+    if answer is None:
+        return "nothing at all"
+    if isinstance(answer, dict):
+        keys = ", ".join(sorted(str(key) for key in answer)) or "no keys"
+        return f"a table carrying {keys}"
+    return f"a {type(answer).__name__}"
+
+
 def _is_separator(value: str) -> bool:
     return not value.strip("-_= ")
 
@@ -730,8 +1047,13 @@ def explain_failure(stderr: str | None, stdout: str | None, returncode: int):
     Where `classify` recognises the failure, its plainer sentence and its fix
     replace gcloud's. Where it does not, gcloud's own words are kept: they are
     usually specific and this tool has nothing better to say.
+
+    Kept in full and merely cleaned. gcloud does not colour what it writes to a
+    pipe, so in practice there is nothing here to strip — but `message` and `raw`
+    are printed and pasted like everything else, and a guarantee with a hole in
+    it for the failure path is not one.
     """
-    text = (stderr or stdout or "").strip()
+    text = readable(stderr or stdout or "").strip()
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return f"gcloud exited {returncode}", None, text

@@ -1333,20 +1333,37 @@ Windows Server boxes are reached over Remote Desktop, not SSH. `comfy-qat rdp
 `rdp` is only for Windows. For a Linux box use `comfy-qat ssh <name>`; for the
 local install, open a terminal.
 
-**`gcloud reset the password on win-instance but reported no username and no
-password, so there is nothing to sign in with`**
+**`gcloud reset the Windows password on <instance> and exited without an error,
+but the answer carried no credentials: <shape>. There is no password to hand over,
+so nothing was forwarded.`** / **`gcloud reset the password on <instance> but
+reported no username and no password, so there is nothing to sign in with`**
+
+Two messages for one condition, from two layers, and both are deliberate. The
+first comes from the call itself, which knows what shape the answer was. The
+second is `rdp`'s own check, which does not trust its caller to have raised —
+because the cost of being wrong here is a person typing a blank password into a
+machine they cannot reach.
 
 The reset ran and gcloud exited cleanly, but what came back has no credentials in
 it — an empty response, half a pair, or a field renamed on Google's side. Exit 1;
 nothing is printed and the RDP forward does not start.
 
-This is refused rather than shown because the failure otherwise looks exactly
-like success: a blank user over a blank password is laid out in the same labelled
-column as a real pair, under a line saying the forward is starting, and the only
-symptom is a Windows login prompt you cannot pass — with nothing in this tool's
-output pointing back at it. Run the reset yourself and read what it says; the
-message prints the full `gcloud compute reset-windows-password` command for the
-box, zone and project it used.
+This is refused rather than shown because the failure otherwise looks exactly like
+success: a blank user over a blank password is laid out in the same labelled column
+as a real pair, under a line saying the forward is starting, and the only symptom
+is a Windows login prompt you cannot pass — with nothing in this tool's output
+pointing back at it.
+
+Run the reset yourself and read what comes back; the message prints the full
+command for the box, zone and project it used:
+
+```sh
+gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project>
+```
+
+Two causes account for most of it: the box is not RUNNING — the guest agent has to
+be up to accept a reset, so start it first — or the account signed in lacks
+`compute.instances.setMetadata` on that instance.
 
 ## Stamping a machine
 
