@@ -657,13 +657,25 @@ class Gcloud:
             "compute", "instances", "list", f"--project={project}",
         ]) or []
 
+    #: What `instance_status` returns when Google answered but said nothing about
+    #: the machine's state. It is deliberately NOT a state name: callers compare
+    #: against TERMINATED and against RUNNING, and any string that is neither gets
+    #: treated as a real transitional state — so a describe that came back empty
+    #: was reported as "the machine is unknown — it started, and it is billing",
+    #: asserting a bill on no evidence at all.
+    UNKNOWN_STATE = ""
+
     def instance_status(self, name: str, zone: str, project: str) -> str:
-        """RUNNING, TERMINATED, STAGING... TERMINATED is Google's word for stopped."""
+        """RUNNING, TERMINATED, STAGING... TERMINATED is Google's word for stopped.
+
+        An empty string means the read succeeded and told us nothing, which is a
+        third answer and not a state.
+        """
         info = self.run([
             "compute", "instances", "describe", name,
             f"--zone={zone}", f"--project={project}",
         ]) or {}
-        return info.get("status") or "UNKNOWN"
+        return info.get("status") or self.UNKNOWN_STATE
 
     def start_instance(self, name: str, zone: str, project: str) -> None:
         # From here on the project is being charged. Everything below this line

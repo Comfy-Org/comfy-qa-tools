@@ -941,3 +941,22 @@ def test_only_terminated_counts_as_already_stopped(tmp_path):
     gc = gcloud(["TERMINATED"])
     assert put_away(gc, WIN, say, tunnel_dir=tmp_path) == "idle"
     assert not any(key.startswith("compute instances stop") for key in gc.calls)
+
+
+def test_a_describe_that_says_nothing_is_not_evidence_the_box_started(tmp_path):
+    """`instance_status` returned the literal "UNKNOWN" when the describe came
+    back empty, and "UNKNOWN" is neither TERMINATED nor RUNNING — so it was read
+    as a real transitional state and took the CONFIDENT branch: "it started, and
+    it is billing", with "nothing needs retrying". That asserts a bill on a read
+    that told us nothing, and the advice is actively wrong if the box is off.
+
+    The empty answer is a third outcome, not a state."""
+    _, say = said()
+    gc = gcloud(["TERMINATED", ""], fail=GcloudError("gcloud timed out"))
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert "it started, and it is billing" not in str(caught.value)
+    assert "nothing needs retrying" not in (caught.value.fix or "")
+    assert "list --live" in caught.value.fix, "it has to say how to find out"

@@ -385,7 +385,11 @@ def bring_up(
                                            host.gce_project)
             except GcloudError:
                 after = None
-            if after is not None and after != TERMINATED:
+            # An empty status means the read succeeded and said nothing about the
+            # machine. That is a third answer, and treating it as a state took the
+            # confident branch — "it started, and it is billing", with "nothing
+            # needs retrying" — on no evidence.
+            if after not in (None, "", TERMINATED):
                 raise LifecycleError(
                     f"the start of {host.name} did not report back ({exc}), but "
                     f"the machine is {after.lower()} — it started, and it is "
