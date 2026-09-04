@@ -651,6 +651,17 @@ class Gcloud:
                                float(quota.get("limit") or 0))
         return out
 
+    def python_location(self) -> str:
+        """The interpreter gcloud runs itself with.
+
+        Its own virtualenv, not the system python — on this machine
+        `~/.config/gcloud/virtenv/bin/python3.14`. Anything gcloud imports has to
+        be installed there, and because it is a virtualenv the user owns, that
+        needs no sudo.
+        """
+        return (self.run(["info", "--format=value(basic.python_location)"],
+                         parse_json=False) or "").strip()
+
     def list_instances(self, project: str) -> list[dict]:
         """Every Compute Engine instance on the project, across all zones."""
         return self.run([

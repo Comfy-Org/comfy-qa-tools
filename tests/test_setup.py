@@ -39,6 +39,10 @@ def prompts(confirm=True, answer="us-central1", pick=0):
 
 
 READY = {
+    # setup asks where gcloud's own python is, so it can put NumPy there — every
+    # IAP tunnel is faster with it. A path that does not exist makes the step a
+    # no-op, which is what a test wants.
+    "info --format=value(basic.python_location)": "/no/such/python",
     "auth list": [{"account": "ali@comfy.org", "status": "ACTIVE"}],
     "projects list": [{"projectId": "proj-1"}],
     "config get-value project": "proj-1",

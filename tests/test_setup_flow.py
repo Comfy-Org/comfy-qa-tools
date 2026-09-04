@@ -51,6 +51,12 @@ class FakeCloud:
         key = " ".join(args)
         self.calls.append(key)
 
+        if key.startswith("info --format=value(basic.python_location)"):
+            # setup asks where gcloud's own python is, to put NumPy there. A path
+            # that does not exist makes the step a no-op, which is what a flow
+            # test wants — nothing should be installed by running a test.
+            return "/no/such/python"
+
         if key == "auth login":
             assert mode == "interactive", "sign-in must attach the terminal"
             if self.login == 0:

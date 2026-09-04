@@ -1193,6 +1193,25 @@ The new machine is up and in your host list; only the cleanup failed. The snapsh
 is still billing and the message repeats the command that removes it.
 
 
+## Tunnels and NumPy
+
+**`NumPy would not install, so tunnels stay slower than they could be. By hand: <python> -m pip install numpy`**
+
+`setup` puts NumPy into gcloud's own virtualenv, because gcloud asks for it on
+every tunnel it opens:
+
+    To increase the performance of the tunnel, consider installing NumPy.
+
+IAP forwarding does its framing in Python, and NumPy moves that into compiled
+code. This tool opens a tunnel for every `go`, `up`, `open` and `logs`, and pushes
+multi-gigabyte torch downloads through them, so it is worth having.
+
+If the install fails, nothing is broken — tunnels are simply slower. The command
+in the message is the one to run, and the path in it matters: it is gcloud's OWN
+python (`~/.config/gcloud/virtenv/bin/python3.x` on macOS), not the system one.
+Installing NumPy anywhere else leaves gcloud unable to see it, which is the reason
+this advisory goes unactioned for years.
+
 ## Deleting a box
 
 `delete` is the only thing this tool does that cannot be undone. It destroys the

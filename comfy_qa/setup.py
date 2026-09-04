@@ -103,6 +103,59 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
     return chosen
 
 
+def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, interactive: bool = True) -> None:
+    """Put NumPy where gcloud can import it, because every tunnel goes through it.
+
+    gcloud says this itself, on every single tunnel:
+
+        To increase the performance of the tunnel, consider installing NumPy.
+
+    It is advice worth taking rather than noise worth hiding. IAP forwarding does
+    its framing in Python, and NumPy moves that into compiled code — this tool
+    opens a tunnel for every `go`, `up`, `open` and `logs`, and pushes
+    multi-gigabyte torch downloads through them.
+
+    Done without asking, because there is no question here worth a person's
+    attention: it is a dependency of the thing they just asked to have set up, it
+    goes into gcloud's OWN virtualenv rather than any environment of theirs, and
+    it needs no sudo for exactly that reason. The reason nobody has ever done it
+    by hand is that the advisory never says where — and the obvious `pip install
+    numpy` puts it somewhere gcloud cannot see.
+
+    Never fatal. A slower tunnel is a slower tunnel; it is not a reason to fail a
+    setup that has otherwise worked.
+    """
+    import os
+    import subprocess
+
+    python = gc.python_location()
+    # Must be a real interpreter on this machine before anything is run against
+    # it. A fake gcloud answers this question with whatever it likes, and setup
+    # is driven by one in every test.
+    if not python or not os.path.exists(python):
+        return
+    try:
+        if subprocess.run([python, "-c", "import numpy"],
+                          capture_output=True, timeout=60).returncode == 0:
+            return
+    except (OSError, subprocess.SubprocessError):
+        return
+
+    p.say("installing NumPy into gcloud's python — it makes every tunnel faster")
+    try:
+        done = subprocess.run([python, "-m", "pip", "install", "--quiet", "numpy"],
+                              capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as exc:
+        p.say(f"NumPy would not install, so tunnels stay slower than they "
+              f"could be: {exc}")
+        return
+    if done.returncode == 0:
+        p.say("NumPy installed")
+    else:
+        p.say(f"NumPy would not install, so tunnels stay slower than they "
+              f"could be. By hand: {python} -m pip install numpy")
+
+
 def ensure_billing(gc: Gcloud, p: Prompts, project: str) -> None:
     try:
         enabled = gc.billing_enabled(project)
@@ -284,6 +337,7 @@ def run_setup(
     chosen = ensure_project(gc, p, interactive=interactive, wanted=project)
     ensure_billing(gc, p, chosen)
     ensure_gpu_quota(gc, p, chosen, interactive=interactive, region=region)
+    ensure_tunnel_speed(gc, p, interactive=interactive)
     path = ensure_host_list(p, config_path)
     add_discovered_hosts(gc, p, chosen, path)
     return path
