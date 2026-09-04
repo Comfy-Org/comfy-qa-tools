@@ -148,14 +148,14 @@ def test_confirmation_is_the_name_not_a_yes(cli):
     result = cli("delete", "comfy-linux", input="y\n")
 
     assert not result.cloud.deleted(), "'y' must not be enough"
-    assert result.exit_code == 1
+    assert result.exit_code == 2, "nothing was changed, so 2 — not 1"
     assert "nothing was deleted" in result.output
 
 
 def test_a_mistyped_name_deletes_nothing(cli):
     result = cli("delete", "comfy-linux", input="comfy-linx\n")
     assert not result.cloud.deleted()
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_the_right_name_goes_through(cli):

@@ -120,8 +120,12 @@ def delete_cmd(
             _refuse("this needs a terminal to confirm in", fix="add --yes if you are sure")
         typed = typer.prompt(f"\ntype {host.name} to confirm", default="", show_default=False)
         if typed.strip() != host.name:
+            # 2, not 1. The rule this tool states is that 2 means nothing was
+            # changed and 1 means the work started and failed — and declining a
+            # confirmation is the first of those. It exited 1, which reads to a
+            # script as "the delete was attempted and went wrong".
             say.result("nothing was deleted.")
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=2)
 
     removing = say.slow(f"deleting {host.name}", expect="up to a minute").start()
     try:

@@ -87,8 +87,11 @@ def parse(instance: dict, project: str) -> Discovered:
         gce_instance=instance.get("name") or "",
         gce_zone=_tail(instance.get("zone")),
         gce_project=project,
-        # TERMINATED is Google's word for stopped, which reads as broken. It is not.
-        running=(instance.get("status") == "RUNNING"),
+        # TERMINATED is Google's word for stopped, which reads as broken. It is
+        # not. And everything that is not TERMINATED is running or on its way
+        # there — a box in STAGING read as "stopped" here, on the one command
+        # whose job is telling you what exists in a project nothing recorded.
+        running=(instance.get("status") != "TERMINATED"),
     )
 
 

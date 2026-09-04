@@ -1275,6 +1275,27 @@ again. Note this also fires when the port line carries a trailing comment
 (`port = 8192  # the QA port`), which is a limitation of the rewrite rather than a
 problem with your file.
 
+## A start whose answer was lost
+
+**`the start of <name> did not report back (<error>), but the machine is <state> — it started, and it is billing.`**
+
+The request reached Google and the reply did not come back — a timeout, a dropped
+connection. The tool then asked what the machine is actually doing and found it
+running or coming up. So the start worked; only the confirmation was lost.
+
+Nothing needs retrying. `comfy-qat down <name>` stops it if you did not want it.
+
+This is reported rather than swallowed because the obvious reading of a failed
+start — "nothing happened, try again" — is the expensive one. A retry against a box
+that is already coming up does nothing useful, and walking away leaves a GPU
+billing that you believe never started.
+
+**`could not start <name>: <error>`**
+
+The start failed and the machine is stopped, or its state could not be read at all.
+If the error was a timeout, the request may still have landed: `comfy-qat list
+--live` asks Google what is actually running before you retry.
+
 ## A new box and its GPU driver
 
 **`<name> still has no working GPU driver after 900s. The machine is running and billing.`**

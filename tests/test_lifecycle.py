@@ -137,10 +137,40 @@ def test_a_box_that_never_reaches_running_gives_up_rather_than_hanging(tmp_path)
 
 
 def test_a_failure_to_start_names_the_box(tmp_path):
+    """Two reads: the one before the start, and the one that asks whether the
+    box came up anyway after the start reported a failure."""
     _, say = said()
-    gc = gcloud(["TERMINATED"], fail=GcloudError("quota exceeded"))
+    gc = gcloud(["TERMINATED", "TERMINATED"], fail=GcloudError("quota exceeded"))
     with pytest.raises(LifecycleError, match="could not start comfy-win"):
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+
+def test_a_start_whose_answer_was_lost_is_not_reported_as_nothing_happening(tmp_path):
+    """The request reached Google; the reply did not come back. The obvious
+    reading — "nothing happened, try again" — is the expensive one: the box is
+    coming up and the client is the only party that does not know.
+
+    The fixture taught this mistake too. fakes.py asserted in a comment that "a
+    start that raised leaves the box off, and nothing is billing"."""
+    _, say = said()
+    gc = gcloud(["TERMINATED", "STAGING"], fail=GcloudError("gcloud timed out"))
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert "it started, and it is billing" in str(caught.value)
+    assert "comfy-qat down comfy-win" in caught.value.fix
+    assert "nothing needs retrying" in caught.value.fix
+
+
+def test_a_start_that_really_failed_still_says_a_timeout_may_have_landed(tmp_path):
+    _, say = said()
+    gc = gcloud(["TERMINATED", "TERMINATED"], fail=GcloudError("gcloud timed out"))
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert "list --live" in caught.value.fix
 
 
 def test_local_up_means_is_it_answering(tmp_path):
@@ -224,7 +254,8 @@ def test_only_a_missing_comfyui_is_worth_continuing_past(tmp_path):
     assert absent.value.kind == COMFYUI_ABSENT
 
     with pytest.raises(LifecycleError) as failed:
-        bring_up(gcloud(["TERMINATED"], fail=GcloudError("no capacity")), WIN, say,
+        bring_up(gcloud(["TERMINATED", "TERMINATED"],
+                        fail=GcloudError("no capacity")), WIN, say,
                  tunnel_dir=tmp_path, sleep=lambda _: None)
     assert failed.value.kind != COMFYUI_ABSENT, "a failed start must stop `go`"
 

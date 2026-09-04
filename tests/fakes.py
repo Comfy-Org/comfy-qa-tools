@@ -114,9 +114,12 @@ class FakeGcloud:
         self.create_disk = create_disk
         self.create_instance = create_instance
 
-        # Whether a start actually succeeded — a start that raised leaves the box
-        # off, and nothing is billing.
-        self.running_now = bool(statuses) and statuses[0] == "RUNNING"
+        # Whether a start actually succeeded. This used to read "a start that
+        # raised leaves the box off, and nothing is billing", which is false and
+        # taught the defect to every test using this fixture: a start can raise
+        # because the ANSWER was lost — a timeout, a dropped connection — while
+        # the request landed and the machine came up.
+        self.running_now = bool(statuses) and statuses[0] != "TERMINATED"
         self.calls: list[tuple] = []
         self.remote: list[str] = []
         self._ssh_attempts = 0

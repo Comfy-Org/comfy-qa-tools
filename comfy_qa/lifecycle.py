@@ -371,7 +371,36 @@ def bring_up(
                     fix=advice,
                     zones=tuple(elsewhere),
                 ) from exc
-            raise LifecycleError(f"could not start {host.name}: {exc}", fix=exc.fix) from exc
+            # Credentials were checked above, and a stockout took the branch
+            # before this — so what is left is a request that reached Google and
+            # whose ANSWER was lost: a timeout, a dropped connection, an
+            # unclassified error. "could not start" is then exactly wrong. The
+            # box may well be starting, and the client is the only party that
+            # does not know.
+            #
+            # The test fixture taught this mistake too: fakes.py said "a start
+            # that raised leaves the box off, and nothing is billing."
+            try:
+                after = gc.instance_status(host.gce_instance, host.gce_zone,
+                                           host.gce_project)
+            except GcloudError:
+                after = None
+            if after is not None and after != TERMINATED:
+                raise LifecycleError(
+                    f"the start of {host.name} did not report back ({exc}), but "
+                    f"the machine is {after.lower()} — it started, and it is "
+                    "billing.",
+                    fix=_with_the_bill(host, "nothing needs retrying"),
+                ) from exc
+            raise LifecycleError(
+                f"could not start {host.name}: {exc}",
+                fix=_with_the_bill(
+                    host,
+                    "if this was a timeout the request may still have landed — "
+                    "check before retrying:",
+                    "comfy-qat list --live",
+                ),
+            ) from exc
         started = True
 
         # A describe that fails mid-poll is not fatal on its own — the API is
