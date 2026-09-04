@@ -751,9 +751,19 @@ def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
     A part-finished move bills in silence: an unattached 300 GB disk and a 21 GB
     snapshot look like nothing in the console. Naming the size and handing over
     the delete line is the least this can do, whether or not the move carries on.
+
+    A disk with `users` is not one of them, whatever it is called. On a live
+    project this said "attached to nothing" of the boot disk of a running box and
+    offered `gcloud compute disks delete ... --quiet` for it, while `judge_disk`
+    said on the other stream that it was "attached to comfy-win-b. That is a disk
+    in use". The only signal read here was whether *the new instance* existed,
+    which says nothing about who else is booting from the disk — and `--clean`
+    runs the command without asking. `blocked` refuses the move and names the
+    machine, so there is nothing to add and a delete line to withhold.
     """
     lines: list[str] = []
-    if found.disk is not None and found.instance is None:
+    attached = bool((found.disk or {}).get("users"))
+    if found.disk is not None and found.instance is None and not attached:
         note = describe_disk(found.disk)
         lines.append(
             f"disk {plan.new_disk} in {plan.to_zone}"
@@ -794,9 +804,15 @@ def remove_leftovers(gc: Gcloud, plan: Plan, found: Found,
     other disk are reported and left alone. A 300 GB disk is somebody's install,
     and the cost of deleting one that mattered is far above the cost of leaving
     one that did not.
+
+    A disk something is booting from is skipped for the reason `leftovers` does
+    not list it. Google refuses to delete an attached disk, so this never cost
+    anybody their data — it spent a `--clean` run on a request that could only
+    fail, and reported the refusal as "could not clean up".
     """
     removed: list[str] = []
-    if found.disk is not None and found.instance is None:
+    if (found.disk is not None and found.instance is None
+            and not found.disk.get("users")):
         say(f"deleting {plan.new_disk} in {plan.to_zone}")
         gc.run([
             "compute", "disks", "delete", plan.new_disk,

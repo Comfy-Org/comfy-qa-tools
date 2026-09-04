@@ -714,6 +714,28 @@ def test_a_disk_in_use_is_never_reported_as_a_leftover_to_delete():
     assert "gcloud compute disks delete comfy-win-a-b" not in report, report
 
 
+def test_cleaning_up_never_asks_google_to_delete_a_disk_in_use():
+    """`--clean` runs `remove_leftovers` with no prompt at all.
+
+    Google refuses to delete an attached disk, so this could not destroy data —
+    it spent the run on a request that could only fail and surfaced the refusal
+    as "could not clean up". The same `users` check keeps the request unsent.
+    """
+    in_use = disk("comfy-win-a-b", "us-central1-b", kind="pd-standard",
+                  from_snapshot="comfy-win-a-move-b", users=("comfy-win-b",))
+    cloud, gc, plan, found = prepared(Cloud(
+        disks=[SOURCE, in_use], snapshots=[ORPHAN_SNAPSHOT],
+        instances=[INSTANCE],
+    ))
+    _, say = recorder()
+
+    removed = remove_leftovers(gc, plan, found, say)
+
+    assert "comfy-win-a-b" not in removed, removed
+    assert cloud.ran("compute disks delete") == []
+    assert cloud.find_disk("comfy-win-a-b") is not None
+
+
 def test_nothing_lying_around_means_nothing_reported():
     _, _, plan, found = prepared()
     assert leftovers(plan, found) == []
