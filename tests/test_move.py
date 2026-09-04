@@ -974,6 +974,35 @@ def test_a_built_in_card_is_not_asked_for_twice(family, card):
     assert accelerator_of(reported) is None, family
 
 
+@pytest.mark.parametrize("family", [
+    "n1-standard-8", "g6-standard-4", "a5-highgpu-1g", "unknown-1", "",
+])
+def test_an_unfamiliar_family_gets_the_flag_whatever_it_is_called(family):
+    """The asymmetry, pinned rather than the three families we happen to know.
+
+    Removing the guard fails the built-in tests, so the defect is held. But
+    ADDING a family to BUILT_IN_CARD left the whole suite green — so the decision
+    that unknown families get the flag had nothing protecting it, and the failure
+    mode is the original defect: --accelerator omitted, a box with no GPU, the
+    move reporting success.
+
+    BUILT_IN_CARD is a hand-maintained frozenset of Google machine families. That
+    is the second hand-maintained collection in this codebase whose membership
+    nothing checked; ERROR_TYPES was the first, and it silently DROPPED two
+    classes. This one can silently GAIN one — Google ships new families, and
+    adding one you believe is built-in is a plausible edit rather than a careless
+    one.
+    """
+    reported = {
+        "machineType": f"{URL}/zones/us-central1-a/machineTypes/{family}",
+        "guestAccelerators": [{
+            "acceleratorType": f"{URL}/zones/us-central1-a/acceleratorTypes/nvidia-l4",
+            "acceleratorCount": 1,
+        }],
+    }
+    assert accelerator_of(reported) == "type=nvidia-l4,count=1", family
+
+
 def test_an_unfamiliar_family_still_gets_its_card():
     """Wrong in the direction that fails loudly and costs a disk, rather than the
     one that produces a box with no GPU and reports success."""

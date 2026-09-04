@@ -120,6 +120,9 @@ Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
 def setup_cmd(
     project: Annotated[Optional[str], typer.Option(
         "--project", help="Use this Google Cloud project instead of asking.")] = None,
+    no_numpy: Annotated[bool, typer.Option(
+        "--no-numpy",
+        help="Do not install NumPy into gcloud's Python.")] = False,
     region: Annotated[Optional[str], typer.Option(
         "--region", help="Region for a GPU quota request, e.g. us-central1.")] = None,
     non_interactive: Annotated[bool, typer.Option(
@@ -137,7 +140,7 @@ def setup_cmd(
         path = setup_mod.run_setup(
             Gcloud(), prompts,
             interactive=not non_interactive,
-            project=project, region=region,
+            project=project, region=region, no_numpy=no_numpy,
         )
     except (setup_mod.SetupStopped, GcloudError) as exc:
         # One handler, because there was never a difference: both are a message

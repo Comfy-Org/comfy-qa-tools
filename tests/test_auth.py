@@ -27,6 +27,10 @@ def fake(**responses):
     return Gcloud(runner=runner)
 
 
+# `status` reports whether gcloud's own python has numpy, because tunnel speed is
+# readiness. A path that does not exist makes the check a no-op, which is what a
+# test wants — nothing should be installed by running one.
+GCLOUD_PY = {"info --format=value(basic.python_location)": "/no/such/python"}
 SIGNED_IN = {"auth list": [{"account": "ali@comfy.org", "status": "ACTIVE"}]}
 PROJECT = {"config get-value project": "proj-1"}
 BILLED = {"billing projects describe": {"billingEnabled": True}}
@@ -37,8 +41,8 @@ QUOTA = {"quotas info list": [
 
 
 def test_all_green():
-    checks = run_checks(fake(**SIGNED_IN, **PROJECT, **BILLED, **QUOTA))
-    assert [c.name for c in checks] == ["gcloud", "account", "project", "billing", "gpu quota"]
+    checks = run_checks(fake(**GCLOUD_PY, **SIGNED_IN, **PROJECT, **BILLED, **QUOTA))
+    assert [c.name for c in checks] == ["gcloud", "account", "project", "billing", "gpu quota", "numpy"]
     assert all(c.ok for c in checks)
 
 
@@ -50,14 +54,14 @@ def test_stops_at_the_first_failure():
 
 
 def test_unset_project_is_not_a_project():
-    checks = run_checks(fake(**SIGNED_IN, **{"config get-value project": "(unset)"}))
+    checks = run_checks(fake(**GCLOUD_PY, **SIGNED_IN, **{"config get-value project": "(unset)"}))
     assert checks[-1].name == "project"
     assert not checks[-1].ok
 
 
 def test_unbilled_project_stops_before_quota():
     checks = run_checks(fake(
-        **SIGNED_IN, **PROJECT, **{"billing projects describe": {"billingEnabled": False}},
+        **GCLOUD_PY, **SIGNED_IN, **PROJECT, **{"billing projects describe": {"billingEnabled": False}},
     ))
     assert checks[-1].name == "billing"
     assert not checks[-1].ok
@@ -65,7 +69,7 @@ def test_unbilled_project_stops_before_quota():
 
 def test_zero_gpu_quota_is_a_failure_with_the_fix():
     checks = run_checks(fake(
-        **SIGNED_IN, **PROJECT, **BILLED,
+        **GCLOUD_PY, **SIGNED_IN, **PROJECT, **BILLED,
         **{"quotas info list": [{"quotaId": "NVIDIA_L4_GPUS-per-project-region",
                                  "dimensionsInfos": [{"details": {"value": 0}}]}]},
     ))
@@ -183,7 +187,7 @@ def test_empty_output_still_says_something():
 
 
 def test_expired_session_surfaces_its_own_fix_through_the_checks():
-    gc = fake(**SIGNED_IN, **PROJECT,
+    gc = fake(**GCLOUD_PY, **SIGNED_IN, **PROJECT,
               **{"billing projects describe": GcloudError("your gcloud session has expired",
                                                           fix="gcloud auth login")})
     checks = run_checks(gc)

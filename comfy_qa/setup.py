@@ -11,6 +11,7 @@ non-interactively — a prompt-only feature is an incomplete one.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import subprocess
 from pathlib import Path
 from typing import Callable
 
@@ -103,54 +104,85 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
     return chosen
 
 
-def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, interactive: bool = True) -> None:
-    """Put NumPy where gcloud can import it, because every tunnel goes through it.
+def gcloud_numpy(gc: Gcloud) -> tuple[str, str] | None:
+    """gcloud's own interpreter and why NumPy is or is not wanted there.
 
-    gcloud says this itself, on every single tunnel:
-
-        To increase the performance of the tunnel, consider installing NumPy.
-
-    It is advice worth taking rather than noise worth hiding. IAP forwarding does
-    its framing in Python, and NumPy moves that into compiled code — this tool
-    opens a tunnel for every `go`, `up`, `open` and `logs`, and pushes
-    multi-gigabyte torch downloads through them.
-
-    Done without asking, because there is no question here worth a person's
-    attention: it is a dependency of the thing they just asked to have set up, it
-    goes into gcloud's OWN virtualenv rather than any environment of theirs, and
-    it needs no sudo for exactly that reason. The reason nobody has ever done it
-    by hand is that the advisory never says where — and the obvious `pip install
-    numpy` puts it somewhere gcloud cannot see.
-
-    Never fatal. A slower tunnel is a slower tunnel; it is not a reason to fail a
-    setup that has otherwise worked.
+    Returns None when there is nothing to do. Otherwise `(python, reason)`, where
+    reason is "" if it can be installed and a sentence if it cannot.
     """
     import os
-    import subprocess
 
     python = gc.python_location()
-    # Must be a real interpreter on this machine before anything is run against
-    # it. A fake gcloud answers this question with whatever it likes, and setup
-    # is driven by one in every test.
     if not python or not os.path.exists(python):
-        return
+        return None
     try:
         if subprocess.run([python, "-c", "import numpy"],
                           capture_output=True, timeout=60).returncode == 0:
-            return
+            return None
     except (OSError, subprocess.SubprocessError):
+        return None
+
+    # Detect, never assume. gcloud's python is a virtualenv in the user's home on
+    # this machine; other installs put it under /usr/lib, which is root-owned.
+    # A setup command that asks for a root password is a different command, and
+    # teaching people to type one into a QA tool is worth more than a fast tunnel.
+    root = Path(python).resolve().parent.parent
+    if not os.access(root, os.W_OK):
+        return python, f"its Python is not writable by you ({root})"
+    return python, ""
+
+
+def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, skip: bool = False) -> None:
+    """Put NumPy where gcloud can import it, because every tunnel goes through it.
+
+    gcloud says this itself, on every tunnel it opens:
+
+        To increase the performance of the tunnel, consider installing NumPy.
+
+    Nobody acts on it because the advisory never says WHERE. gcloud runs its own
+    virtualenv, so the obvious `pip install numpy` puts it somewhere gcloud
+    cannot import from. This asks gcloud.
+
+    Announced rather than asked. The test that puts this on the other side of the
+    line from, say, the project: ASK when the answer changes WHAT HAPPENS,
+    ANNOUNCE when it only changes HOW FAST. Same tunnels, same boxes, same bill —
+    a duration. A prompt with no wrong answer is a keystroke tax. But it is said
+    out loud and it names the path, because this modifies software the user did
+    not install: if it goes wrong it breaks GCLOUD, not this tool, and nobody
+    would connect the two.
+
+    `--only-binary=:all:` is not tidiness. Without it, an interpreter with no
+    wheel — gcloud ships 3.14 here — falls back to BUILDING NUMPY FROM SOURCE: a
+    compiler, and minutes, at the very front of the command a newcomer meets
+    first. With it, such a machine fails in about two seconds and gets a sentence.
+
+    Never fatal, and never a reason to stop a setup. A slow tunnel is a working
+    tunnel.
+    """
+    if skip:
+        return
+    found = gcloud_numpy(gc)
+    if found is None:
+        return
+    python, blocked = found
+    if blocked:
+        p.say(f"gcloud's tunnels would be faster with NumPy, but {blocked}. "
+              f"Skipping. To do it yourself: sudo {python} -m pip install numpy")
         return
 
-    p.say("installing NumPy into gcloud's python — it makes every tunnel faster")
+    p.say(f"gcloud's tunnel is faster with numpy; installing into its own Python "
+          f"({Path(python).resolve().parent.parent})")
     try:
-        done = subprocess.run([python, "-m", "pip", "install", "--quiet", "numpy"],
-                              capture_output=True, text=True, timeout=600)
+        done = subprocess.run(
+            [python, "-m", "pip", "install", "--quiet", "--only-binary=:all:",
+             "numpy"],
+            capture_output=True, text=True, timeout=600)
     except (OSError, subprocess.SubprocessError) as exc:
         p.say(f"NumPy would not install, so tunnels stay slower than they "
               f"could be: {exc}")
         return
     if done.returncode == 0:
-        p.say("NumPy installed")
+        p.say("numpy installed — every tunnel from here is on the fast path")
     else:
         p.say(f"NumPy would not install, so tunnels stay slower than they "
               f"could be. By hand: {python} -m pip install numpy")
@@ -325,6 +357,7 @@ def run_setup(
     project: str | None = None,
     region: str | None = None,
     config_path: Path | None = None,
+    no_numpy: bool = False,
 ) -> Path:
     """The whole flow. Raises SetupStopped where a human has to act."""
     if gc.available() is None:
@@ -333,11 +366,15 @@ def run_setup(
             fix="https://cloud.google.com/sdk/docs/install",
         )
 
+    # Before the account sequence, because it is the only part of setup that
+    # depends on gcloud alone — no sign-in, no project, no billing, no quota. A
+    # newcomer stopped at billing has still had their tunnels made faster
+    # forever, which is a real outcome from a run that otherwise produced nothing.
+    ensure_tunnel_speed(gc, p, skip=no_numpy)
     ensure_signed_in(gc, p, interactive=interactive)
     chosen = ensure_project(gc, p, interactive=interactive, wanted=project)
     ensure_billing(gc, p, chosen)
     ensure_gpu_quota(gc, p, chosen, interactive=interactive, region=region)
-    ensure_tunnel_speed(gc, p, interactive=interactive)
     path = ensure_host_list(p, config_path)
     add_discovered_hosts(gc, p, chosen, path)
     return path

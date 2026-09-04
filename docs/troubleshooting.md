@@ -1195,6 +1195,13 @@ is still billing and the message repeats the command that removes it.
 
 ## Tunnels and NumPy
 
+**`numpy    not installed — every tunnel is slower than it needs to be`** (in `comfy-qat status`)
+
+`setup` installs it; this row is the catch-up for anyone who ran setup before it
+did. It is the last check and the only one that blocks nothing — `status` prints
+the fix for the first failure, so putting it any earlier would hide a missing
+account behind advice about a slow tunnel.
+
 **`NumPy would not install, so tunnels stay slower than they could be. By hand: <python> -m pip install numpy`**
 
 `setup` puts NumPy into gcloud's own virtualenv, because gcloud asks for it on

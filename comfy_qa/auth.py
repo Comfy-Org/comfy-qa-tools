@@ -149,6 +149,23 @@ def run_checks(gc: Gcloud) -> list[Check]:
         f"{shown} — {say.count(len(summary), 'card')} ready",
     ))
 
+    # LAST, deliberately. Tunnel speed is readiness and belongs here — `setup`
+    # installs NumPy into gcloud's own python now, so this row is the catch-up
+    # for anyone who ran setup before it did. But `status` prints the fix for the
+    # FIRST failing check, so a missing NumPy placed any earlier would mask a
+    # missing account or an unlinked billing project behind advice about a
+    # slower tunnel. It is the only check here that blocks nothing.
+    from .setup import gcloud_numpy
+
+    if gcloud_numpy(gc) is None:
+        results.append(Check("numpy", True, "gcloud's tunnel is on the fast path"))
+    else:
+        results.append(Check(
+            "numpy", False,
+            "not installed — every tunnel is slower than it needs to be",
+            "comfy-qat setup",
+        ))
+
     return results
 
 

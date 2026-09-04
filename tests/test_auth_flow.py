@@ -44,6 +44,11 @@ class FakeCloud:
         return Gcloud(runner=self._run)
 
     def _run(self, args, mode):
+        if " ".join(args).startswith("info --format=value(basic.python_location)"):
+            # `status` reports whether gcloud's own python has numpy. A path that
+            # does not exist makes the check a no-op, which is what a test wants.
+            return "/no/such/python"
+
         key = " ".join(args)
         self.calls.append(key)
 
@@ -168,7 +173,7 @@ def test_status_json_is_the_same_facts_in_a_fixed_shape():
 
     payload = json.loads(result.stdout)
     assert [c["name"] for c in payload] == [
-        "gcloud", "account", "project", "billing", "gpu quota",
+        "gcloud", "account", "project", "billing", "gpu quota", "numpy",
     ]
     for check in payload:
         assert set(check) == {"name", "ok", "detail", "fix"}
