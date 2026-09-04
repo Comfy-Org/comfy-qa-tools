@@ -1275,6 +1275,23 @@ again. Note this also fires when the port line carries a trailing comment
 (`port = 8192  # the QA port`), which is a limitation of the rewrite rather than a
 problem with your file.
 
+## A move that ran out of capacity at the far end
+
+**`<zone> has no <card> capacity either, so <name> could not be created. The zone Google named had capacity when it said so and has none now; that is normal, and not a fault on your side.`**
+
+The worst shape a move can fail in: the slow, paid-for half is done — the snapshot
+was taken and the disk was copied — and there is no machine at the end of it.
+
+The zone came from Google's own refusal when the original start failed, and that
+is a hint rather than a reservation. Minutes pass while a 200-300 GB disk copies,
+and by the time the instance is asked for, the capacity is gone.
+
+Retrying into a different zone is cheap by comparison, because the snapshot is
+kept: only the disk is copied again, not the whole thing. The message names a zone
+to try and, separately, the commands that delete what this attempt left behind if
+you would rather stop. Both are printed, because the disk that already exists is
+billing either way and choosing between them is yours.
+
 ## A start whose answer was lost
 
 **`the start of <name> did not report back (<error>), but the machine is <state> — it started, and it is billing.`**

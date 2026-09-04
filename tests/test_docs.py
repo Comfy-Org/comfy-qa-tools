@@ -55,7 +55,7 @@ PACKAGE = ROOT / "comfy_qa"
 # was missed on exactly that basis — which left every message in the module that
 # rewrites the host list during a move undocumented and unnoticed.
 ERROR_TYPES = ("ConfigError", "GcloudError", "HostFileError", "LifecycleError",
-               "ProbeError", "SetupStopped", "TunnelError")
+               "MoveError", "ProbeError", "SetupStopped", "TunnelError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and
@@ -198,6 +198,23 @@ def _calls_inside_except(tree: ast.AST) -> set[int]:
     return inside
 
 
+# KNOWN GAP, stated rather than left to be discovered. This walk reads the MESSAGE
+# argument and not the `fix=` keyword, so advice that lives in a fix is printed to
+# the user and is not required to appear on the troubleshooting page. The say
+# conversion moved text that way — host.py's covered messages fell from 35 to 25
+# while every one of them was still printed.
+#
+# Collecting `fix=` was tried and reverted: it demands ~64 new entries, most of
+# them command lines, and requiring `gcloud compute instances delete ... --quiet`
+# to appear verbatim in prose is a bar that teaches people to paste commands into
+# documentation to make a test pass. Closing it properly means separating advice
+# from commands and writing the entries deliberately — worth doing, not worth
+# doing badly at the end of a long day.
+#
+# So the guarantee this file provides is: every failure MESSAGE is documented.
+# Not: every word the user sees.
+
+
 def _local_reporters(tree: ast.AST) -> set[str]:
     """Module-level helpers that exist to emit a failure, by name.
 
@@ -245,6 +262,7 @@ def _message_expressions(tree: ast.AST):
                 message = node.args[0]
             if message is not None:
                 yield node.lineno, message
+
         # gcloud's failure classifier builds its message in a local and raises
         # that, so the raise carries no literal at all. Following the variable is
         # the only way those branches are visible here.
@@ -272,6 +290,40 @@ def collect_messages() -> list[Message]:
 
 
 MESSAGES = collect_messages()
+
+
+def test_every_exception_this_package_defines_is_named_here():
+    """The tuple above is hand-maintained, and it has now silently dropped two
+    classes: `HostFileError`, invisible because the walk matches the constructor
+    name and not the base class, and `MoveError` — which meant `relocate.py`
+    contributed ZERO messages while being fully converted to the say vocabulary.
+
+    `move` is the command that takes snapshots, creates disks and creates
+    instances, so its failures are precisely where money gets left behind. One of
+    the messages this exposed says a box is "running and billing, but your host
+    list could not be updated" — an orphan the tool can no longer stop — and it
+    had no required entry.
+
+    So the tuple is no longer trusted to be complete. Every exception defined in
+    this package has to be named in it, or deliberately excused here.
+    """
+    defined = set()
+    for path in PACKAGE.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef) and any(
+                isinstance(base, ast.Name) and (
+                    base.id == "Exception" or base.id in ERROR_TYPES
+                    or base.id.endswith("Error"))
+                for base in node.bases
+            ):
+                defined.add(node.name)
+
+    missing = sorted(defined - set(ERROR_TYPES))
+    assert not missing, (
+        f"{', '.join(missing)} is raised by this package and is not in "
+        "ERROR_TYPES, so every message it carries is invisible to this walk "
+        "and nothing looks wrong anywhere."
+    )
 
 
 def _troubleshooting_text() -> str:
