@@ -598,7 +598,14 @@ def wait_for_ssh(
                     fix=_with_the_bill(host, how_to_get_in(host)),
                 ) from exc
             if not said_waiting:
-                say("waiting for the machine to accept commands — Windows takes a few minutes")
+                # Said on every OS, including a Linux box that takes seconds —
+                # observed on a real run, where an Ubuntu box printed "Windows
+                # takes a few minutes". A sentence about a different operating
+                # system is the tool sounding like it does not know which machine
+                # it is talking to, in the one command whose job is being certain
+                # of that.
+                slow = " — Windows takes a few minutes" if is_windows(host) else ""
+                say(f"waiting for the machine to accept commands{slow}")
                 said_waiting = True
             sleep(POLL_SECONDS)
 

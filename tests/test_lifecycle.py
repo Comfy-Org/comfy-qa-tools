@@ -995,3 +995,30 @@ def test_logs_does_not_claim_a_box_is_off_from_a_read_that_said_nothing(tmp_path
 
     assert "could not tell" in str(caught.value)
     assert "not running" not in str(caught.value)
+
+
+def test_a_linux_box_is_not_told_that_windows_is_slow(tmp_path):
+    """Observed on a real run: an Ubuntu box that came up in nine seconds printed
+    "waiting for the machine to accept commands — Windows takes a few minutes".
+
+    A sentence about a different operating system is the tool sounding like it
+    does not know which machine it is talking to, in the one command whose whole
+    job is being certain of that."""
+    from comfy_qa.gcloud import GcloudError
+    from comfy_qa.lifecycle import wait_for_ssh
+
+    answers = iter([GcloudError("not up yet"), "ok"])
+
+    def runner(args, mode):
+        nxt = next(answers)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    for host, expected in ((LINUX_GPU, False), (WIN, True)):
+        answers = iter([GcloudError("not up yet"), "ok"])
+        lines, say = said()
+        wait_for_ssh(Gcloud(runner=runner), host, say, sleep=lambda _: None,
+                     tunnel_dir=tmp_path)
+        said_windows = any("Windows takes" in line for line in lines)
+        assert said_windows is expected, (host.name, lines)

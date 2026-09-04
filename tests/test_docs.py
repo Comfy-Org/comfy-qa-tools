@@ -81,8 +81,10 @@ NOT_AN_ENTRY = {
     "setup stopped": "prefix on an error raised elsewhere",
     "to fix": "prefix on an error's own fix line",
     # Not a failure: SSH is retried until the box answers, and this says why the
-    # wait is long. Windows takes minutes to start its SSH server.
-    "waiting for the machine to accept commands — Windows takes a few minutes":
+    # wait is long. The Windows half is appended only on Windows, which is the
+    # whole point — this used to tell an Ubuntu box that Windows is slow — so the
+    # exemption is keyed on the part that is always printed.
+    "waiting for the machine to accept commands":
         "progress while retrying, not a failure",
 }
 
