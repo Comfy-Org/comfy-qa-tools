@@ -135,6 +135,11 @@ def machine_type(instance: dict) -> str:
     return _tail(instance.get("machineType")) or "g2-standard-8"
 
 
+#: Machine families whose card is part of the machine type. Asking for it again
+#: with `--accelerator` is an error Google raises at create time.
+BUILT_IN_CARD = frozenset({"g2", "a2", "a3"})
+
+
 def accelerator_of(instance: dict) -> str | None:
     """The `--accelerator` value the source box needs, or None if it carries none.
 
@@ -152,6 +157,19 @@ def accelerator_of(instance: dict) -> str | None:
     `acceleratorType` comes back as a zonal URL, and the zone in it is the one
     being moved away from. Only the last segment travels.
     """
+    # A G2 or A2 REPORTS its built-in card here too, and passing `--accelerator`
+    # alongside one of those machine types is refused by Google — at the last
+    # step, after the snapshot and the disk are made and paid for. The commit
+    # that added this function named that failure and then did not guard it: the
+    # test passed because the fixture omitted `guestAccelerators`, which a real
+    # G2 does not.
+    #
+    # Unknown families get the flag rather than not. Passing it wrongly fails
+    # loudly and costs a disk; omitting it wrongly produces a box with no GPU
+    # that reports success, which is the defect this function exists for.
+    if machine_type(instance).split("-")[0] in BUILT_IN_CARD:
+        return None
+
     cards = instance.get("guestAccelerators") or []
     if not cards:
         return None

@@ -950,6 +950,42 @@ def test_an_attached_card_is_read_off_the_box_not_rebuilt_from_the_name():
     assert accelerator_of(INSTANCE) is None, "a G2 carries its card in the type"
 
 
+@pytest.mark.parametrize("family,card", [
+    ("g2-standard-8", "nvidia-l4"),
+    ("a2-highgpu-1g", "nvidia-tesla-a100"),
+    ("a3-highgpu-8g", "nvidia-h100-80gb"),
+])
+def test_a_built_in_card_is_not_asked_for_twice(family, card):
+    """A REAL G2 reports its built-in card in guestAccelerators, and passing
+    `--accelerator` alongside that machine type is refused by Google — at the
+    LAST step, after the snapshot and the disk are made and paid for.
+
+    The test above passes only because its fixture omits the field. A real one
+    does not, which is the fixture-shaped blind spot this file has produced all
+    day."""
+    reported = {
+        "machineType": f"{URL}/zones/us-central1-a/machineTypes/{family}",
+        "guestAccelerators": [{
+            "acceleratorType": f"{URL}/zones/us-central1-a/acceleratorTypes/{card}",
+            "acceleratorCount": 1,
+        }],
+    }
+    assert accelerator_of(reported) is None, family
+
+
+def test_an_unfamiliar_family_still_gets_its_card():
+    """Wrong in the direction that fails loudly and costs a disk, rather than the
+    one that produces a box with no GPU and reports success."""
+    reported = {
+        "machineType": f"{URL}/zones/us-central1-a/machineTypes/n4-something-8",
+        "guestAccelerators": [{
+            "acceleratorType": f"{URL}/zones/us-central1-a/acceleratorTypes/nvidia-l4",
+            "acceleratorCount": 2,
+        }],
+    }
+    assert accelerator_of(reported) == "type=nvidia-l4,count=2"
+
+
 def test_the_zone_does_not_travel_with_the_card():
     """acceleratorType is a URL naming the zone being moved away from."""
     assert "us-central1-a" not in (accelerator_of(N1_INSTANCE) or "")
