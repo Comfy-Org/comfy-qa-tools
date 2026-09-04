@@ -779,8 +779,22 @@ def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
             + " — from an earlier move, billing"
         )
         lines.append(f"  {delete_snapshot_command(plan, snap.get('name'))}")
+    if found.instance is not None:
+        lines.append(
+            f"{plan.new_instance} already exists in {plan.to_zone} — an earlier "
+            "move got this far."
+        )
     # Someone else's mess, reported away from this move's decision — it used to
     # print a delete command for a different box three lines above "Move X? [y/N]".
+    #
+    # Last, so that `unrelated=False` is a strict prefix of `unrelated=True`.
+    # `host move` prints both lists and separates them by counting — `stray =
+    # leftovers(..., unrelated=True)[len(mine):]` — and with these lines emitted
+    # ahead of "already exists" that arithmetic was wrong by exactly one line
+    # whenever the target instance existed, which is the half-finished move this
+    # reporting is for. It dropped the line naming a billing snapshot, printed
+    # that snapshot's delete command with no subject, and repeated "already
+    # exists" under "unrelated to this move".
     for snap in found.unrelated_snapshots if unrelated else ():
         note = describe_snapshot(snap)
         lines.append(
@@ -788,11 +802,6 @@ def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
             + " — from a box that no longer exists, billing"
         )
         lines.append(f"  {delete_snapshot_command(plan, snap.get('name'))}")
-    if found.instance is not None:
-        lines.append(
-            f"{plan.new_instance} already exists in {plan.to_zone} — an earlier "
-            "move got this far."
-        )
     return lines
 
 
