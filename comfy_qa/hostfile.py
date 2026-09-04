@@ -158,11 +158,20 @@ def without(text: str, name: str) -> str:
     if begin == 0:
         begin = start.start()
 
+    # A comment run directly above a header belongs to THAT header — the same
+    # rule the walk above applies to the block being removed, applied to the
+    # block that follows it. The end used to run to the next `[`, which took the
+    # next host's notes whenever the two blocks touched, and two blocks touching
+    # is how the real host list is written.
+    #
+    # Blank lines are not the discriminator and never were. This tried to stop at
+    # the last blank line in the gap, which works only when there is one; with the
+    # blocks touching there is none, and the run went straight through.
     if following is not None:
-        trailing = text[start.end():end]
-        blank = re.search(r"\r?\n[ \t]*\r?\n(?![\s\S]*\r?\n[ \t]*\r?\n)", trailing)
-        if blank is not None:
-            end = start.end() + blank.end() - 1
+        above = text[:end].split("\n")
+        while len(above) >= 2 and above[-2].lstrip().startswith("#"):
+            end -= len(above[-2]) + 1
+            above.pop(-2)
 
     return (text[:begin].rstrip("\n") + "\n\n"
             + text[end:].lstrip("\n")).rstrip("\n") + "\n"

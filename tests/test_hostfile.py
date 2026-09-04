@@ -10,6 +10,7 @@ So these tests are about the failure, not the feature.
 
 from __future__ import annotations
 
+import itertools
 import tomllib
 
 import pytest
@@ -443,3 +444,58 @@ def test_removing_from_a_lived_in_file_keeps_everything_else():
     out = without(LIVED_IN, "comfy-linux-a")
     assert set(tomllib.loads(out)["hosts"]) == {"local", "comfy-linux"}
     assert out.count("#") == LIVED_IN.count("#")
+
+
+# --- every shape, rather than one fixture per defect --------------------------
+#
+# `without` has now been fixed six times, and the sixth was found the way the
+# first five should have been. Every test above is a hand-written fixture pinning
+# the one shape that broke — so each fix guarded its own case and left the next
+# unseen shape open. Five defects in a row, all in one function, all "the fixtures
+# differ from a real file in exactly the way that hides it".
+#
+# So this stops hand-writing shapes. Five binary axes, chosen because each one has
+# broken this function at least once: a file preamble, a comment above each host,
+# a blank line between blocks, CRLF endings, and a commented-out worked example
+# like the one `init` writes. 32 files, three victims each.
+#
+# It asserts only what the module already promises: remove a host, and what is
+# left is valid TOML holding exactly the other hosts, with their own notes intact.
+
+SHAPES = list(itertools.product([False, True], repeat=5))
+VICTIMS = ("alpha", "beta", "gamma")
+
+
+def _lived_in(preamble, own_comment, blank_between, example, crlf):
+    lines: list[str] = []
+    if preamble:
+        lines += ["# this file is hand maintained", "# mind the comments", ""]
+    if example:
+        lines += ["# [hosts.disabled]", "# port = 9999", ""]
+    for index, name in enumerate(VICTIMS):
+        if own_comment:
+            lines.append(f"# {name} is the {name} box. DO NOT DELETE.")
+        lines += [f"[hosts.{name}]", 'kind = "local"', f"port = {8100 + index}"]
+        if blank_between and index < len(VICTIMS) - 1:
+            lines.append("")
+    text = "\n".join(lines) + "\n"
+    return text.replace("\n", "\r\n") if crlf else text
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("victim", VICTIMS)
+def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
+    text = _lived_in(*shape)
+    out = without(text, victim)
+
+    hosts = tomllib.loads(out)["hosts"]
+    assert set(hosts) == set(VICTIMS) - {victim}, (
+        f"shape={shape} victim={victim}\n{out}"
+    )
+
+    if shape[1]:  # every host carried its own note
+        for other in set(VICTIMS) - {victim}:
+            assert f"# {other} is the {other} box" in out, (
+                f"a note belonging to {other} was destroyed\n"
+                f"shape={shape} victim={victim}\n{out}"
+            )
