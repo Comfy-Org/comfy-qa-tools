@@ -153,7 +153,7 @@ def delete_cmd(
         say.result(f"\n{host.name} and its disk are gone.")
         say.warn(f"it is still in your host list and could not be removed: {exc}")
         say.warn(f"take [hosts.{host.name}] out by hand — while it is there, "
-                 f"`create` will refuse the name {host.name} and its port stays "
+                 f"`create --name {host.name}` will refuse it, and its port stays "
                  "reserved for a machine that no longer exists")
         raise typer.Exit(code=1) from exc
 

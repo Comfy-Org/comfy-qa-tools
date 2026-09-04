@@ -1236,7 +1236,7 @@ No name was given. There is deliberately no default and no "the obvious one".
 `delete` removes cloud instances. The local ComfyUI is not one, and this tool did
 not create it.
 
-**`it is still in your host list and could not be removed: <reason>`** / **`take [hosts.<name>] out by hand — while it is there, `create` will refuse the name <name> and its port stays reserved for a machine that no longer exists`**
+**`it is still in your host list and could not be removed: <reason>`** / **`take [hosts.<name>] out by hand — while it is there, `create --name <name>` will refuse it, and its port stays reserved for a machine that no longer exists`**
 
 The box and its disk are gone; only the host list entry is left. That matters more
 than tidiness: `create` refuses a name that a host list entry holds, and ports are
