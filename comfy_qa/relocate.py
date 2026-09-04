@@ -42,6 +42,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
+from . import say as output
 from .config import Host
 from .gcloud import QUOTA, Gcloud, GcloudError
 
@@ -532,12 +533,12 @@ def judge_disk(plan: Plan, source_disk: dict | None, snapshot: dict | None,
     wanted_type = _tail((source_disk or {}).get("type"))
     got_type = _tail(disk.get("type"))
     if wanted_type and got_type and wanted_type != got_type:
-        notes.append(
+        notes.append(output.fix(
             f"{plan.new_disk} is {got_type} but {plan.source_disk} is {wanted_type}, "
-            "so the moved box will have a slower boot disk than the one it "
-            "replaces. To get a matching disk instead, delete it and run this "
-            f"again:\n        {delete_disk_command(plan)}"
-        )
+            "so the moved box gets a slower boot disk than the one it replaces.",
+            "for a matching disk, delete it and run this again:",
+            delete_disk_command(plan),
+        ))
     return True, None, tuple(notes)
 
 
@@ -695,16 +696,18 @@ def blocked(plan: Plan, found: Found) -> MoveError | None:
     if found.disk is not None:
         return MoveError(
             found.blocker,
-            fix=("check it is not something you want, then remove it and run this "
-                 f"again:\n        {delete_disk_command(plan)}"),
+            fix=output.fix(
+                "check it is not something you want, then remove it and run again:",
+                delete_disk_command(plan)),
             left=(f"the disk {plan.new_disk} in {plan.to_zone}",),
             cleanup=(delete_disk_command(plan),),
         )
     return MoveError(
         found.blocker,
-        fix=("pick a zone that has this machine type:\n        "
-             "gcloud compute machine-types list "
-             f"--filter='name={plan.machine_type}' --project={plan.project}"),
+        fix=output.fix(
+            "pick a zone that has this machine type:",
+            "gcloud compute machine-types list "
+            f"--filter='name={plan.machine_type}' --project={plan.project}"),
     )
 
 
@@ -915,8 +918,9 @@ def _create_disk(gc: Gcloud, plan: Plan, snapshot: str,
     if say:
         say(f"no room under this project's SSD allowance for a "
             f"{plan.disk_type} disk — using pd-standard instead")
-        say("  the box will boot and load models more slowly than the original")
-        say("  to get a matching disk: raise SSD_TOTAL_GB, delete "
+        say(f"{output.STEP_INDENT}the box will boot and load models more slowly "
+            "than the original")
+        say(f"{output.STEP_INDENT}for a matching disk: raise SSD_TOTAL_GB, delete "
             f"{plan.new_disk}, and run this again")
     gc.run(build("pd-standard"), parse_json=False, timeout=300)
 
@@ -1005,14 +1009,15 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
         )
         return MoveError(
             f"{plan.to_zone} has no {plan.host.gpu or 'GPU'} capacity either, so "
-            f"{plan.new_instance} could not be created. The zone Google named was "
-            "free when it said so and is not now; that is normal and not a fault "
-            "on your side.",
-            fix=(
+            f"{plan.new_instance} could not be created. The zone Google named had "
+            "capacity when it said so and has none now; that is normal, and not a "
+            "fault on your side.",
+            fix=output.fix(
                 "try another zone — the snapshot is kept, so this repeats only the "
-                f"disk, not the 300 GB copy:\n        {retry}"
-                + ("\n        or stop here and take the cost off the bill:\n        "
-                   + "\n        ".join(cleanup) if cleanup else "")
+                "disk, not the 300 GB copy:",
+                retry,
+                *(("or stop here and take the cost off the bill:", *cleanup)
+                  if cleanup else ()),
             ),
             left=left,
             cleanup=cleanup,
@@ -1020,11 +1025,10 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
 
     return MoveError(
         f"the move stopped at: {action.line} ({exc})",
-        fix=(
-            "run the same command again — it will find what already exists and "
-            "carry on from there."
-            + ("\n        to start over instead:\n        "
-               + "\n        ".join(cleanup) if cleanup else "")
+        fix=output.fix(
+            "run the same command again — it finds what already exists and carries "
+            "on from there.",
+            *(("to start over instead:", *cleanup) if cleanup else ()),
         ),
         left=left,
         cleanup=cleanup,

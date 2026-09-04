@@ -26,8 +26,8 @@ to write a starter one.**
 You have not set one up yet. `comfy-qat setup` writes one too, along with
 everything else a first run needs.
 
-**`~/.config/comfy-qa-tools/hosts.toml already exists. Use --force to overwrite
-it.`**
+**`~/.config/comfy-qa-tools/hosts.toml already exists`** / **`to fix: --force
+overwrites it`**
 `host init` will not write over a host list you have edited. If you really do want
 the starter file back, `comfy-qat init --force` — and copy your cloud hosts
 out first, because they are not merged back in.
@@ -153,8 +153,8 @@ unrecognisable, `comfy-qat init --force` writes a fresh starter one, and you
 will have to re-add your cloud hosts.
 
 **`could not write a host list to /somewhere/hosts.toml: [Errno 13] Permission
-denied. Give `--config` a path you can write to — the file itself, not the folder
-it goes in.`**
+denied`** / **`to fix: give --config a path you can write to — the file itself,
+not the folder it goes in`**
 `host init` could not create the file. Either the folder is not writable, or
 `--config` was pointed at a directory. It names the path it tried.
 
@@ -434,9 +434,10 @@ Not a capacity problem: Google refused for some other reason, and its own senten
 is quoted. Anything after this point could in principle have left something
 half-made, so the fix line prints the command that lists the project's instances.
 
-**`comfy-linux exists in us-central1-a and is billing. To stop it now: gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
-(printed on two lines, the command on its own)
-**`It could not be written to ~/.config/comfy-qa-tools/hosts.toml: ... Add it by hand, or run `comfy-qat discover` to adopt it.`**
+**`comfy-linux exists in us-central1-a and is billing`** / **`to fix: stop it now:
+gcloud compute instances stop comfy-linux --zone=us-central1-a --project=your-project`**
+**`comfy-linux could not be added to ~/.config/comfy-qa-tools/hosts.toml: ...`** /
+**`to fix: add it by hand, or adopt it: comfy-qat discover`**
 The machine was created and the host list was not. It is the one message in this
 command printed after money is being spent, and the order of it is deliberate:
 the box is real, it is billing, and **your host list has no record of it, so
@@ -488,11 +489,11 @@ started by this tool, so start ComfyUI yourself:
 ~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 --listen 127.0.0.1
 ```
 
-**`ComfyUI is not running locally. Start it with:`** from `host go`
+**`ComfyUI is not running locally`** from `host go`
 The same thing, from the command that would otherwise install ComfyUI for you —
 which it will not do to your own machine. It prints the line above; run it.
 
-**`ComfyUI is not answering and --no-install was given.`**
+**`ComfyUI is not answering and --no-install was given`**
 `host go` found no ComfyUI on the box and you told it not to install one. Drop
 `--no-install`, or get onto the machine and install by hand.
 
@@ -631,7 +632,7 @@ https://console.cloud.google.com/iam-admin/quotas
 
 **`no room under this project's SSD allowance for a pd-balanced disk — using pd-standard instead`**
 Not an error. The move finished, on a slower boot disk than the original, which
-matters if you are comparing load times between machines. To get a matching disk:
+matters if you are comparing load times between machines. For a matching disk:
 raise `SSD_TOTAL_GB`, delete the new disk, and run the move again.
 
 **`that looks like a missing dependency rather than a broken install — installing its requirements and trying once more`**
@@ -783,14 +784,15 @@ The box is up and no ComfyUI has ever been launched on it by this tool. That is 
 different fact from "the box is off", and it has a different fix: `comfy-qat host
 go comfy-win`. The second sentence is the one that matters — the machine is on.
 
-**`stopped reading. ComfyUI is still running on comfy-win, and so is the machine`**
+**`stopped reading. ComfyUI is still running on comfy-win, and so is the machine.`**
 Not an error — what Ctrl-C out of `host logs` says. It ends the reading and
 nothing else. `go --follow` is the other one: there Ctrl-C reaches ComfyUI and
 stops it, and the box carries on billing either way.
 
-**`stopped. The machine is still running`**
+**`stopped. comfy-win is still running.`**
 Ctrl-C out of `host go --follow`. ComfyUI is stopped; the box is not, and a
-stopped ComfyUI on a running box still bills. `comfy-qat down <name>`.
+stopped ComfyUI on a running box still bills. The line under it is
+`comfy-qat down comfy-win   # stop the box, stop paying`.
 
 **`could not read the ComfyUI log on comfy-win: ...`**
 The box would not run the command that reads the log. Usually the same causes as
@@ -890,15 +892,15 @@ a Google Cloud box. `host down` would have closed the tunnel, said "local ComfyU
 left running — this tool did not start it", and left a GPU instance running.
 A cloud box is `kind = "gce"`; fix the entry and run `host down` again.
 
-**`--all stops every machine, so it takes no name.`**
+**`--all stops every machine, so it takes no name`**
 `host down --all` is "stop everything"; naming one as well is a contradiction.
 Drop the name, or drop `--all`.
 
-**`say which machine, or --all for every one of them.`**
+**`say which machine, or --all for every one of them`**
 `host down` with nothing to act on. The question at the end of a session is
 usually "am I still paying for anything", and `--all` is the answer to that one.
 
-**`2 of 3 did not stop and may still be billing:`**
+**`2 of 3 did not stop and may still be billing`**
 `--all` keeps going when one machine refuses, because stopping the rest is the
 whole point — then it lists the ones that failed with what to do about each.
 Exit 1. Anything listed here is still costing money; the console is the
@@ -973,14 +975,13 @@ in the message, fix whatever made the directory unwritable, and open it again.
 `host move` snapshots the boot disk, rebuilds the box elsewhere and leaves the
 original stopped. Nothing is deleted, at any point, by anything here.
 
-**`comfy-win is local — there is nowhere to move it to.`**
+**`comfy-win is local — there is nowhere to move it to`**
 Only cloud hosts have a zone. A local install is where it is.
 
-**`--dry-run cannot work out which zone has capacity. The only way to ask is to
-try to start comfy-win, and if it starts it is billing — so a dry run that did it
-would be the most expensive command here. Say where you want it and the rest of
-the plan is printed without touching anything: comfy-qat move comfy-win --to
-us-central1-b --dry-run.`**
+**`--dry-run cannot find a zone with capacity: the only way to ask is to start
+comfy-win, and a box that starts is billing`** / **`to fix: name the zone yourself
+and the plan prints without touching anything: comfy-qat move comfy-win --to
+us-central1-b --dry-run`**
 Nothing answers "where is there an L4 free". `move` finds out by trying to start
 the machine and reading the zone out of the refusal — and when there is no
 refusal, the box is up and billing. That is fine for a real move, which was going
@@ -989,20 +990,19 @@ promise is that it changes nothing. So the two are refused together: give
 `--dry-run` a `--to` and it prints the full plan, contacting nothing that costs
 money.
 
-**`Google did not name a zone with capacity. Pick one with --to, e.g. --to
-us-central1-b`**
+**`Google did not name a zone with capacity`** / **`to fix: pick one with --to,
+e.g. --to us-central1-b`**
 Asked to find a zone itself, `move` starts the box and reads the zones out of the
 stockout message. This time Google did not suggest any — which happens when the
 card is short everywhere, or when the start failed for some other reason. Name a
 zone yourself, or wait.
 
-**`the move failed: ...`** / **`nothing was removed — comfy-win is untouched in
-us-central1-a.`**
-One of the four steps — snapshot, disk, instance, host list — did not complete. The
-second line is the important one: the original box is exactly as it was, so you can
-retry, or move by hand. Any half-made snapshot or disk is left behind for you to
-look at and is not cleaned up automatically; delete it in the console once you are
-done.
+**`comfy-win is untouched in us-central1-a`**
+Printed under any failed move, last before the fix. One of the four steps —
+snapshot, disk, instance, host list — did not complete, and this is the line that
+says where you stand: the original box is exactly as it was, so you can retry, or
+move by hand. Any half-made snapshot or disk is left behind for you to look at and
+is not cleaned up automatically; delete it in the console once you are done.
 
 **`http://127.0.0.1:8190 refused the request (401)`**
 Something is there and it wants credentials. A stamp reads ComfyUI's own
@@ -1063,23 +1063,23 @@ A GPU stockout is routine, is nothing to do with your account, and is the moment
 tester usually gives up and opens the console. These lines are the tool trying to
 keep you testing instead.
 
-**`comfy-linux is untouched — you still have the machine you were on.`**
-(or `comfy-linux, comfy-win are untouched — you still have the machines you were on.`)
+**`comfy-linux is untouched — you still have the machine you were on`**
+(or `comfy-linux, comfy-win are untouched — you still have the machines you were on`)
 Reassurance, printed when a `switch` fails: the target is brought up *before*
 anything is stopped, so a failed switch leaves you exactly where you started. You
 have lost nothing but the time.
 
-**`Where you can test instead, easiest first:`**
+**`where you can test instead, easiest first:`**
 The boxes that can run right now, same OS first, and a box in the same zone listed
 last and labelled — it may hit the same shortage. Pick one and carry on.
 
-**`No other machine is declared, so there is nowhere to switch to:`**
+**`no other machine is declared, so there is nowhere to switch to:`**
 You have one box and it cannot start. The line under it —
 `comfy-qat discover   # declare a box you already have` — will pick up
 anything already in your project; otherwise your options are to wait for capacity
 or to move the box.
 
-**`If it has to be comfy-win:`**
+**`if it has to be comfy-win:`**
 When only that machine will do — the install on it, the models on it — this is
 followed by the `host move` command for a zone Google says has capacity. Read
 [the move entries](#moving-a-box-to-a-zone-with-capacity) first: the suggested zone
@@ -1311,9 +1311,9 @@ entry that was never repointed after a `host move`. `comfy-qat list` shows
 what is tunnelled; `comfy-qat down comfy-win` then `comfy-qat open
 comfy-win` rebuilds the tunnel.
 
-**`No evidence line was printed, because this one would have named the wrong
-machine. Check the port in your host list and which tunnel is open, then stamp it
-again.`**
+**`no evidence line was printed, because this one would have named the wrong
+machine`** / **`to fix: check the port in your host list and which tunnel is open,
+then stamp it again`**
 Follows the message above. The stamp is refused rather than printed with a
 warning attached, and that is deliberate: this line exists to be copied into a
 bug report as proof of which machine produced a result, and a warning on stderr
@@ -1394,7 +1394,7 @@ one of two accounts is the usual cause.
 **`no active gcloud account`** / **`nobody signed in`**
 Run `gcloud auth login`.
 
-**`no project set`** / **`no project set. Run: comfy-qat setup`**
+**`no project set`** / **`to fix: comfy-qat setup`**
 gcloud has no default project, so there is nothing to look in. `comfy-qat setup`
 picks one and sets it; `gcloud config set project <your-project-id>` does the same
 thing by hand.

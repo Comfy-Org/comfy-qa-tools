@@ -29,12 +29,15 @@ from comfy_qa import say
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# The modules that speak through `say`. `host.py`, `relocate.py`, `gcloud.py`,
-# `setup.py`, `tunnel.py`, `stamp.py` and `discover.py` still write their own
-# output; the rules below are held over the converted ones and this tuple is what
-# grows as the rest follow.
-CONVERTED = ("auth.py", "cli.py", "commands.py", "lifecycle.py", "render.py",
-             "say.py")
+# The modules that speak through `say`. `host.py` was the big one — around two
+# thirds of the tool's output was in it — and it came over with `relocate.py`,
+# which is the only other file `move` prints through. What is left is
+# `tunnel.py`, which still composes fixes with a hand-typed indent, and the
+# modules that never print at all: they raise, or report through a `say` their
+# caller hands them. The rules below are held over the converted ones and this
+# tuple is what grows as the rest follow.
+CONVERTED = ("auth.py", "cli.py", "commands.py", "host.py", "lifecycle.py",
+             "relocate.py", "render.py", "say.py")
 
 
 # --- the stream rule -------------------------------------------------------
@@ -109,11 +112,11 @@ def test_a_multi_line_fix_lines_up_under_its_label(capsys):
 
 
 def test_a_fix_written_the_old_way_by_hand_still_renders_the_same(capsys):
-    """`host.py` and `relocate.py` have not been converted yet.
+    """`tunnel.py` has not been converted yet.
 
-    They print `f"to fix: {exc.fix}"` straight, against fix strings that carry the
-    eight-space indent inside them. Both forms have to come out identical or the
-    conversion could not happen one module at a time.
+    Its fix strings carry the eight-space indent inside them, and they are printed
+    by handlers in modules that *have* converted. Both forms have to come out
+    identical or the conversion could not happen one module at a time.
     """
     say.error("it broke", "first do this:\n        then this")
     by_hand = capsys.readouterr().err
@@ -370,9 +373,9 @@ def test_the_hand_copied_stop_paying_literal_is_gone():
                 if "stop paying for it" in text]
     assert len(carrying) == 1, carrying
 
-    # Held over the converted modules only. `host.py`, `relocate.py` and
-    # `setup.py` still compose fixes by hand; add them here as they convert, and
-    # this becomes the thing that stops the literal coming back.
+    # Held over the converted modules only. `tunnel.py` is the last one still
+    # composing fixes by hand; add it here when it converts, and this becomes the
+    # thing that stops the literal coming back.
     for name in CONVERTED:
         for where, text in _package_string_constants(name):
             assert "\n        " not in text, (
@@ -382,8 +385,10 @@ def test_the_hand_copied_stop_paying_literal_is_gone():
 def test_no_converted_module_still_writes_to_stderr_by_hand():
     """`say` is the only way out, or the vocabulary is advisory.
 
-    `host.py`, `relocate.py`, `setup.py`, `tunnel.py` and the rest are not
-    converted yet and are deliberately not listed. Add a name here when it is.
+    `host.py` is the one that mattered: it held roughly two thirds of the tool's
+    `typer.echo` calls, including every place `move`, `switch` and `go` report a
+    failure. Anything not listed here is a module that has not converted yet. Add
+    a name when it does.
     """
     for name in CONVERTED:
         tree = ast.parse((ROOT / "comfy_qa" / name).read_text(encoding="utf-8"))

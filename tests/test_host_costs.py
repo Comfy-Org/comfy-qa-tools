@@ -310,7 +310,7 @@ def test_no_zone_suggested_is_also_a_refusal(cli):
         raw="ERROR: does not have enough resources available to fulfill the request")))
 
     assert result.exit_code == 2
-    assert "Pick one with --to" in result.output
+    assert "pick one with --to" in result.output
 
 
 def test_moving_a_local_host_was_already_a_refusal_and_stays_one(cli):

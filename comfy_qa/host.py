@@ -124,8 +124,7 @@ def list_cmd(
     try:
         hosts = load(config)
     except ConfigError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2)
+        say.fail(exc, code=2, blank_line=False)
 
     state = _states(hosts, live=live)
     rows = [("NAME", "KIND", "OS", "GPU", "URL", "STATE")] + [
@@ -133,13 +132,13 @@ def list_cmd(
     ]
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
     for row in rows:
-        typer.echo("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+        say.result("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
 
     # Without --live the STATE column knows about tunnels and nothing else, so a
     # cloud box that is running looks the same as one that is off. Say which
     # question was not asked rather than letting the column imply an answer.
     if any(host.is_remote for host in hosts) and not live:
-        typer.echo("\nSTATE is what this machine knows: whether a tunnel is open. "
+        say.result("\nSTATE is what this machine knows: whether a tunnel is open. "
                    "Add --live to ask Google what is actually running.")
 
 
@@ -153,8 +152,8 @@ def init_cmd(
     """Write a starter host list you can edit."""
     path = config or DEFAULT_CONFIG_PATH
     if path.exists() and not force:
-        typer.echo(f"{path} already exists. Use --force to overwrite it.", err=True)
-        raise typer.Exit(code=2)
+        say.fail(f"{path} already exists", fix="--force overwrites it",
+                 code=2, blank_line=False)
     # A folder you cannot write to, and `--force` aimed at a directory, both
     # arrive here as an OSError. This is the command someone runs first, so a
     # traceback is the first thing the tool would ever show them.
@@ -162,12 +161,12 @@ def init_cmd(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(STARTER, encoding="utf-8")
     except OSError as exc:
-        typer.echo(
-            f"could not write a host list to {path}: {exc}. Give `--config` a path you "
-            "can write to — the file itself, not the folder it goes in.", err=True)
-        raise typer.Exit(code=2)
-    typer.echo(f"wrote {path}")
-    typer.echo("Edit it to add your cloud boxes, then run `comfy-qat list`.")
+        say.fail(f"could not write a host list to {path}: {exc}",
+                 fix="give --config a path you can write to — the file itself, "
+                     "not the folder it goes in",
+                 code=2, blank_line=False)
+    say.result(f"wrote {path}")
+    say.result("add your cloud boxes to it, then: comfy-qat list")
 
 
 @app.command("discover")
@@ -189,15 +188,15 @@ def discover_cmd(
     try:
         project = gc.current_project()
         if not project:
-            typer.echo("no project set. Run: comfy-qat setup", err=True)
-            raise typer.Exit(code=2)
+            say.fail("no project set", fix="comfy-qat setup", code=2,
+                     blank_line=False)
         instances = gc.list_instances(project)
     except GcloudError as exc:
         _refused(exc)
 
     found = [parse_instance(instance, project) for instance in instances]
     if not found:
-        typer.echo(f"no cloud boxes on {project}")
+        say.result(f"no cloud boxes on {project}")
         return
 
     try:
@@ -207,15 +206,16 @@ def discover_cmd(
 
     additions = new_hosts(found, existing)
     if not additions:
-        typer.echo(f"{len(found)} cloud box(es), all already in {path}")
+        say.result(f"{say.count(len(found), 'cloud box', 'cloud boxes')}, "
+                   f"all already in {path}")
         return
 
     for box, port in additions:
         state = "running" if box.running else "stopped"
-        typer.echo(f"{box.name}  {box.os}  {box.gpu or 'no GPU'}  {state}  port {port}")
+        say.result(f"{box.name}  {box.os}  {box.gpu or 'no GPU'}  {state}  port {port}")
 
     if dry_run:
-        typer.echo("\n--dry-run: nothing written")
+        say.result("\n--dry-run: nothing written")
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +224,7 @@ def discover_cmd(
     with path.open("a", encoding="utf-8") as handle:
         for box, port in additions:
             handle.write(to_toml(box, port))
-    typer.echo(f"\nadded {len(additions)} to {path}")
+    say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
 
 
 @app.command("create")
@@ -274,8 +274,8 @@ def create_cmd(
     try:
         project = gc.current_project()
         if not project:
-            typer.echo("no project set. Run: comfy-qat setup", err=True)
-            raise typer.Exit(code=2)
+            say.fail("no project set", fix="comfy-qat setup", code=2,
+                     blank_line=False)
         instances = gc.list_instances(project)
         # The first place `create` goes quiet, and long enough that silence reads
         # as a hang. Timed rather than announced once and then nothing.
@@ -291,9 +291,9 @@ def create_cmd(
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
                          taken=taken_names(hosts, instances))
         check = check_quota(blueprint.card, quotas, instances)
-        typer.echo("\nquota checked:")
+        say.result("\nquota checked:")
         for line in check.lines():
-            typer.echo(f"  {line}")
+            say.result(f"  {line}")
         problem = check.problem()
         if problem is not None:
             _refused(problem)
@@ -307,34 +307,27 @@ def create_cmd(
     if not ordering:
         _refused(nowhere(blueprint, ordering, project))
 
-    typer.echo("")
-    for step in blueprint.steps(ordering.zones[0]):
-        typer.echo(f"  - {step}")
-    typer.echo("")
+    say.result("")
+    for line in blueprint.steps(ordering.zones[0]):
+        say.result(f"  - {line}")
+    say.result("")
     for line in summary(blueprint, ordering):
-        typer.echo(line)
+        say.result(line)
     for note in ordering.notes:
-        typer.echo(f"\nnote: {note}")
+        say.result(f"\nnote: {note}")
 
     if dry_run:
-        typer.echo("\n--dry-run: nothing created")
+        say.result("\n--dry-run: nothing created")
         return
     if not yes and not typer.confirm(f"\nCreate {blueprint.name}?"):
-        typer.echo("nothing changed")
+        say.result("nothing changed")
         return
 
-    typer.echo("")
+    say.result("")
     try:
-        made_in = build(gc, blueprint, ordering, project,
-                        lambda line: typer.echo(f"  {line}"))
-    except _reportable() as exc:
-        typer.echo(f"\n{exc}", err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=1)
-    except GcloudError as exc:
-        typer.echo(f"\n{exc}", err=True)
-        raise typer.Exit(code=1)
+        made_in = build(gc, blueprint, ordering, project, say.step)
+    except _reportable() + (GcloudError,) as exc:
+        say.fail(exc, code=1)
 
     # Re-read rather than reusing the list from before the create: this command
     # takes minutes, and a `host discover` in another terminal in the meantime
@@ -359,16 +352,16 @@ def create_cmd(
         # It leads, on its own line, ahead of the adoption path and ahead of the
         # OSError text, which can be long enough on its own to push a command at
         # the end of a paragraph out of sight.
-        typer.echo(f"\n{blueprint.name} exists in {made_in} and is billing. To stop it "
-                   f"now:\n  gcloud compute instances stop {blueprint.name} "
-                   f"--zone={made_in} --project={project}", err=True)
-        typer.echo(f"\nIt could not be written to {path}: {exc}. Add it by hand, or run "
-                   f"`comfy-qat discover` to adopt it.", err=True)
-        raise typer.Exit(code=1)
+        say.error(f"{blueprint.name} exists in {made_in} and is billing",
+                  say.fix("stop it now:",
+                          f"gcloud compute instances stop {blueprint.name} "
+                          f"--zone={made_in} --project={project}"))
+        say.fail(f"{blueprint.name} could not be added to {path}: {exc}",
+                 fix="add it by hand, or adopt it: comfy-qat discover", code=1)
 
-    typer.echo(f"\n{blueprint.name} is up in {made_in}, on port {port}.")
+    say.result(f"\n{blueprint.name} is up in {made_in}, on port {port}.")
     for line in next_steps(blueprint, made_in):
-        typer.echo(line)
+        say.result(line)
 
 
 def _selector(name: str | None, os_: str | None, gpu: str | None) -> str:
@@ -408,10 +401,9 @@ def _lookup(name: str, config: Optional[Path]) -> tuple[list[Host], Host]:
         hosts = load(config)
         chosen = resolve(hosts, name)
     except ConfigError as exc:
-        typer.echo(str(exc), err=True)
-        raise typer.Exit(code=2)
+        say.fail(exc, code=2, blank_line=False)
     if chosen.line() is not None:
-        typer.echo(chosen.line(), err=True)
+        say.step(chosen.line())
     return hosts, chosen.host
 
 
@@ -443,10 +435,7 @@ def _refused(exc, code: int = 2) -> None:
     with no `to fix:` line where `auth quota list` and `host discover` exited 2
     with one, on the same gcloud error.
     """
-    typer.echo(str(exc), err=True)
-    if getattr(exc, "fix", None):
-        typer.echo(f"to fix: {exc.fix}", err=True)
-    raise typer.Exit(code=code)
+    say.fail(exc, code=code, blank_line=False)
 
 
 def _act(action, *args, **kwargs):
@@ -454,10 +443,7 @@ def _act(action, *args, **kwargs):
     try:
         return action(*args, **kwargs)
     except _reportable() as exc:
-        typer.echo(f"\n{exc}", err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=1)
+        say.fail(exc, code=1)
 
 
 @app.command("up")
@@ -479,13 +465,13 @@ def up_cmd(
 
     hosts, host = _lookup(_selector(name, os_, gpu), config)
     try:
-        bring_up(Gcloud(), host, lambda line: typer.echo(f"  {line}"))
+        bring_up(Gcloud(), host, say.step)
     except _reportable() as exc:
         # A box that will not start ends the session unless you are told where
         # else you could work, and a GPU shortage is the usual reason.
         _failed(host, hosts, exc)
         raise typer.Exit(code=1)
-    typer.echo(f"\nOpen {host.url} in your browser.")
+    say.result(f"\nopen {host.url}")
 
 
 @app.command("open")
@@ -515,11 +501,14 @@ def open_cmd(
 
     host = _host(_selector(name, os_, gpu), config)
     if not host.is_remote:
-        typer.echo(f"{host.name} is local — nothing to tunnel. It is at {host.url}.")
+        # Word for word what `tunnel.py` raises for the same host, so there is
+        # one sentence for this and not two spellings of it.
+        say.result(f"{host.name} is local — there is nothing to tunnel. "
+                   f"It is at {host.url}.")
         return
 
     if dry_run:
-        typer.echo(" ".join(tunnel_command(host)))
+        say.result(" ".join(tunnel_command(host)))
         return
 
     # There used to be a `if tunnel_status(host.name).running: return` here, and
@@ -534,14 +523,11 @@ def open_cmd(
     try:
         state = open_tunnel(host)
     except TunnelError as exc:
-        typer.echo(f"\n{exc}", err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=2)
+        say.fail(exc, code=2)
 
     reused = before.running and before.pid == state.pid
     opened = "tunnel already open" if reused else "tunnel open"
-    typer.echo(f"{opened} (pid {state.pid}): {state.url or host.url}")
+    say.result(f"{opened} (pid {state.pid}): {state.url or host.url}")
 
 
 @app.command("down")
@@ -566,15 +552,14 @@ def down_cmd(
 
     if everything:
         if name:
-            typer.echo("--all stops every machine, so it takes no name.", err=True)
-            raise typer.Exit(code=2)
+            say.fail("--all stops every machine, so it takes no name", code=2,
+                     blank_line=False)
         try:
             hosts = [h for h in load(config) if h.is_remote]
         except ConfigError as exc:
-            typer.echo(str(exc), err=True)
-            raise typer.Exit(code=2)
+            say.fail(exc, code=2, blank_line=False)
         if not hosts:
-            typer.echo("no cloud machines are declared, so nothing can be billing.")
+            say.result("no cloud machines are declared, so nothing can be billing")
             return
 
         gc = Gcloud()
@@ -582,10 +567,9 @@ def down_cmd(
         billing: list[Host] = []
         unknown: list[Host] = []
         for host in hosts:
-            typer.echo(f"{host.name}:")
+            say.step(host.name)
             try:
-                still = put_away(gc, host, lambda line: typer.echo(f"  {line}"),
-                                 keep_running=keep_running)
+                still = put_away(gc, host, say.detail, keep_running=keep_running)
                 if still is None:
                     unknown.append(host)
                 elif still:
@@ -594,39 +578,39 @@ def down_cmd(
                 # One machine refusing to stop must not leave the rest running —
                 # that is the whole reason for stopping them in one command.
                 failed.append((host, exc))
-                typer.echo(f"  {exc}", err=True)
+                say.detail(str(exc))
         if failed:
-            typer.echo(f"\n{len(failed)} of {len(hosts)} did not stop and may still "
-                       f"be billing:", err=True)
-            for host, exc in failed:
-                typer.echo(f"  {host.name} — {exc.fix or 'stop it in the console'}",
-                           err=True)
+            say.error(
+                f"{len(failed)} of {len(hosts)} did not stop and may still be billing",
+                say.fix(*[f"{other.name} — {exc.fix or 'stop it in the console'}"
+                          for other, exc in failed]))
             raise typer.Exit(code=1)
         if keep_running:
             # The one command whose purpose is answering "am I still paying" has
             # now been wrong in both directions here: it claimed everything had
             # stopped, then claimed everything was billing. Count what was read.
+            # Three sentences and not one, because "it is off" and "I could not
+            # tell" are different answers and only one of them is free.
             if unknown:
-                typer.echo(f"\n{say.count(len(unknown), 'machine')} could not be "
+                say.result(f"\n{say.count(len(unknown), 'machine')} could not be "
                            "checked — run `comfy-qat list --live`.")
             if billing:
-                typer.echo(f"\n{say.count(len(billing), 'machine')} left running "
+                say.result(f"\n{say.count(len(billing), 'machine')} left running "
                            f"and billing: {', '.join(h.name for h in billing)}.")
-                typer.echo("Run without --keep-running to stop them.")
+                say.result("Run without --keep-running to stop them.")
             elif not unknown:
-                typer.echo("\nnothing was running, so nothing is billing.")
+                say.result("\nnothing was running, so nothing is billing.")
         else:
-            typer.echo("\nstopped." if len(hosts) == 1
+            say.result("\nstopped." if len(hosts) == 1
                        else f"\nall {len(hosts)} stopped.")
         return
 
     if not name:
-        typer.echo("say which machine, or --all for every one of them.", err=True)
-        raise typer.Exit(code=2)
+        say.fail("say which machine, or --all for every one of them", code=2,
+                 blank_line=False)
 
     host = _host(name, config)
-    _act(put_away, Gcloud(), host, lambda line: typer.echo(f"  {line}"),
-         keep_running=keep_running)
+    _act(put_away, Gcloud(), host, say.step, keep_running=keep_running)
 
 
 @app.command("go")
@@ -665,7 +649,7 @@ def go_cmd(
         rest += ["--config", str(config)] if config else []
         rest += ["--no-browser"] if no_browser else []
         rest += ["--no-install"] if no_install else []
-        _act(in_a_new_window, rest, lambda line: typer.echo(f"  {line}"))
+        _act(in_a_new_window, rest, say.step)
         return
     gc = Gcloud()
     # Only `go` offers the rebuild. `up` and `switch` share _bring_up, and switch
@@ -776,17 +760,17 @@ def logs_cmd(
     which is the whole point of it being detached.
     """
     from .gcloud import Gcloud
-    from .lifecycle import read_logs
+    from .lifecycle import read_logs, stop_paying
 
     host = _host(_selector(name, os_, gpu), config)
     try:
-        _act(read_logs, Gcloud(), host, lambda line: typer.echo(f"  {line}"),
+        _act(read_logs, Gcloud(), host, say.step,
              tail=200 if tail is None else tail,
              follow=(tail is None) if follow is None else follow)
     except KeyboardInterrupt:
-        typer.echo(f"\nstopped reading. ComfyUI is still running on {host.name}, "
-                   f"and so is the machine — `comfy-qat down {host.name}` to "
-                   f"stop paying for it.")
+        say.result(f"\nstopped reading. ComfyUI is still running on {host.name}, "
+                   "and so is the machine.")
+        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
 
 
 def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
@@ -799,35 +783,39 @@ def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
     """
     from .lifecycle import alternatives
 
-    typer.echo(f"\n{exc}", err=True)
+    # Every part of this is the one failure being reported, so it all goes where
+    # errors go. The empty fix on each block is deliberate: the exception's own
+    # fix is the rebuild, and it is held back to the end under "if it has to be
+    # <box>" — after the answer to the question actually being asked, which is
+    # where else can I work.
+    say.error(exc, "")
 
     if kept:
         still = ", ".join(other.name for other in kept)
-        typer.echo(f"\n{still} is untouched — you still have the machine you were on."
-                   if len(kept) == 1 else
-                   f"\n{still} are untouched — you still have the machines you were on.",
-                   err=True)
+        say.error(f"{still} is untouched — you still have the machine you were on"
+                  if len(kept) == 1 else
+                  f"{still} are untouched — you still have the machines you were on",
+                  "")
 
     options = alternatives(hosts, host)[:3]
     if options:
         commands = [f"comfy-qat switch {other.name}" for other in options]
         width = max(len(command) for command in commands)
-        typer.echo("\nWhere you can test instead, easiest first:", err=True)
+        say.error("where you can test instead, easiest first:", "")
         for other, command in zip(options, commands):
             note = ""
             if other.gce_zone and other.gce_zone == host.gce_zone:
                 note = ", same zone — it may hit the same shortage"
-            typer.echo(f"  {command.ljust(width)}   # {describe(other)}{note}", err=True)
+            say.detail(f"{command.ljust(width)}   # {describe(other)}{note}")
     else:
-        typer.echo("\nNo other machine is declared, so there is nowhere to switch to:",
-                   err=True)
-        typer.echo("  comfy-qat discover   # declare a box you already have",
-                   err=True)
+        say.error("no other machine is declared, so there is nowhere to switch to:",
+                  "")
+        say.detail("comfy-qat discover   # declare a box you already have")
 
     if exc.fix:
-        typer.echo(f"\nIf it has to be {host.name}:", err=True)
+        say.error(f"if it has to be {host.name}:", "")
         for line in exc.fix.splitlines():
-            typer.echo(f"  {line.strip()}", err=True)
+            say.detail(line.strip())
 
 
 def _failed(host: Host, hosts: list[Host], exc, kept: list[Host] | None = None) -> None:
@@ -837,9 +825,7 @@ def _failed(host: Host, hosts: list[Host], exc, kept: list[Host] | None = None) 
     if getattr(exc, "kind", "") == STOCKOUT:
         _unavailable(host, hosts, exc, kept or [])
         return
-    typer.echo(f"\n{exc}", err=True)
-    if exc.fix:
-        typer.echo(f"to fix: {exc.fix}", err=True)
+    say.error(exc)
 
 
 def _offer_move(host: Host, exc, config: Optional[Path]) -> bool:
@@ -862,10 +848,10 @@ def _offer_move(host: Host, exc, config: Optional[Path]) -> bool:
         return False
 
     target = zones[0]
-    typer.echo("")
+    say.result("")
     if not typer.confirm(
-        f"Rebuild {host.name} in {target}? It copies the boot disk, takes a few "
-        f"minutes, and bills from the moment the new box exists"
+        f"Rebuild {host.name} in {target}? It copies the boot disk, takes minutes, "
+        f"and bills from the moment the new box exists"
     ):
         return False
 
@@ -883,7 +869,7 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
     from .lifecycle import COMFYUI_ABSENT, STOCKOUT, bring_up
 
     try:
-        return bring_up(gc, host, lambda line: typer.echo(f"  {line}"), comfy_timeout=15)
+        return bring_up(gc, host, say.step, comfy_timeout=15)
     except _reportable() as exc:
         # Only "ComfyUI is not there yet" is worth continuing past. Anything else
         # (the box would not start, the tunnel failed) must be shown, not
@@ -894,8 +880,8 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
         if exc.kind == STOCKOUT and offer_move is not False:
             config = offer_move if isinstance(offer_move, Path) else None
             if _offer_move(host, exc, config):
-                typer.echo(f"\n{host.name} has moved. Run the same command again:")
-                typer.echo(f"  comfy-qat go {host.name}")
+                say.result(f"\n{host.name} has moved — run the same command again:")
+                say.result(f"  comfy-qat go {host.name}")
                 raise typer.Exit(code=0)
         raise typer.Exit(code=1)
 
@@ -911,59 +897,55 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     import webbrowser
 
     from .gcloud import GcloudError
-    from .lifecycle import ensure_installed, serve, start_detached, wait_for_ssh
+    from .lifecycle import (
+        ensure_installed, serve, start_detached, stop_paying, wait_for_ssh,
+    )
 
-    say = lambda line: typer.echo(f"  {line}")
     browser = None if no_browser else (lambda url: webbrowser.open(url))
 
     if ready is not None and ready.stamp is not None:
-        typer.echo(f"\n{host.url}")
-        typer.echo(ready.stamp.line())
+        say.result(f"\n{host.url}")
+        say.result(ready.stamp.line())
         if browser:
             browser(host.url)
-        typer.echo(f"\nWhen you are done:  comfy-qat down {host.name}")
+        say.result(f"\n  {stop_paying(host)}   # stop the box, stop paying")
         return
 
     if not host.is_remote:
-        typer.echo("ComfyUI is not running locally. Start it with:", err=True)
-        typer.echo("  ~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 "
-                   "--listen 127.0.0.1", err=True)
-        raise typer.Exit(code=1)
+        say.fail("ComfyUI is not running locally",
+                 fix=say.fix("start it:",
+                             "~/ComfyUI/venv/bin/python ~/ComfyUI/main.py "
+                             "--port 8188 --listen 127.0.0.1"),
+                 code=1, blank_line=False)
 
     if no_install:
-        typer.echo("ComfyUI is not answering and --no-install was given.", err=True)
-        raise typer.Exit(code=1)
+        say.fail("ComfyUI is not answering and --no-install was given", code=1,
+                 blank_line=False)
 
     try:
-        wait_for_ssh(gc, host, say)
-        ensure_installed(gc, host, say)
-        typer.echo("")
+        wait_for_ssh(gc, host, say.step)
+        ensure_installed(gc, host, say.step)
+        say.result("")
         code = (serve if follow else start_detached)(
-            gc, host, say, open_browser=browser)
-    except _reportable() as exc:
-        typer.echo(f"\n{exc}", err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        raise typer.Exit(code=1)
-    except GcloudError as exc:
-        typer.echo(f"\n{exc}", err=True)
-        raise typer.Exit(code=1)
+            gc, host, say.step, open_browser=browser)
+    except _reportable() + (GcloudError,) as exc:
+        say.fail(exc, code=1)
     except KeyboardInterrupt:
-        typer.echo(f"\nstopped. The machine is still running — "
-                   f"`comfy-qat down {host.name}` to stop paying.")
+        say.result(f"\nstopped. {host.name} is still running.")
+        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
         return
 
     if follow:
-        typer.echo(f"\nComfyUI exited ({code}). "
-                   f"`comfy-qat down {host.name}` to stop the machine.")
+        say.result(f"\nComfyUI exited ({code}). {host.name} is still running.")
+        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
         return
 
     # The URL is last on purpose. ComfyUI announces its own address — correct on
     # the box, wrong here — and whatever is said after it is what gets opened.
-    typer.echo(f"\nComfyUI is running on {host.name} and this terminal is free.")
-    typer.echo(f"  comfy-qat logs {host.name}   # follow its log, on the box")
-    typer.echo(f"  comfy-qat down {host.name}   # close the tunnel, stop the box")
-    typer.echo(f"\nOpen {host.url} in your browser.")
+    say.result(f"\nComfyUI is running on {host.name} and this terminal is free.")
+    say.result(f"  comfy-qat logs {host.name}   # follow its log, on the box")
+    say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+    say.result(f"\nopen {host.url}")
 
 
 @app.command("switch")
@@ -1010,19 +992,19 @@ def switch_cmd(
         # is running elsewhere, so it is a refusal (2), not a failed switch (1).
         _refused(exc)
 
-    typer.echo("")
-    typer.echo(f"  - go to {host.name} ({describe(host)}) on {host.url}")
+    say.result("")
+    say.result(f"  - go to {host.name} ({describe(host)}) on {host.url}")
     for other, why in others:
-        typer.echo(f"  - then stop {other.name} ({describe(other)}) — {why}")
+        say.result(f"  - then stop {other.name} ({describe(other)}) — {why}")
     if not others:
-        typer.echo("  - leaving the other machines running (--keep-others)" if keep_others
+        say.result("  - leaving the other machines running (--keep-others)" if keep_others
                    else "  - nothing else is running, so nothing to stop")
 
     if dry_run:
-        typer.echo("\n--dry-run: nothing changed")
+        say.result("\n--dry-run: nothing changed")
         return
 
-    typer.echo("")
+    say.result("")
 
     # Normally the target comes up before anything is stopped, so a failure
     # leaves you on the machine you had. That is exactly backwards when the
@@ -1033,16 +1015,16 @@ def switch_cmd(
     # failure. It was arithmetic, and it was knowable beforehand.
     first = _blocked_by_the_ceiling(gc, host, [other for other, _why in others])
     if first:
-        typer.echo(f"  your quota allows {first} GPU machine at a time, so "
-                   f"{host.name} cannot start until the other one stops")
+        say.step(f"your quota allows {say.count(first, 'GPU machine')} at a time, "
+                 f"so {host.name} cannot start until the other one stops")
         for other, _why in others:
-            _act(put_away, gc, other, lambda line: typer.echo(f"  {line}"))
+            _act(put_away, gc, other, say.step)
         others = []
 
     ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
 
     for other, _why in others:
-        _act(put_away, gc, other, lambda line: typer.echo(f"  {line}"))
+        _act(put_away, gc, other, say.step)
 
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
 
@@ -1089,16 +1071,15 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     from .lifecycle import is_capacity_failure, suggested_zones
 
     if dry_run:
-        typer.echo(
-            f"--dry-run cannot work out which zone has capacity. The only way to ask "
-            f"is to try to start {host.gce_instance}, and if it starts it is billing — "
-            f"so a dry run that did it would be the most expensive command here. Say "
-            f"where you want it and the rest of the plan is printed without touching "
-            f"anything: comfy-qat move {host.name} --to us-central1-b --dry-run.",
-            err=True)
-        raise typer.Exit(code=2)
+        say.fail(
+            f"--dry-run cannot find a zone with capacity: the only way to ask is to "
+            f"start {host.gce_instance}, and a box that starts is billing",
+            fix=say.fix(
+                "name the zone yourself and the plan prints without touching anything:",
+                f"comfy-qat move {host.name} --to us-central1-b --dry-run"),
+            code=2, blank_line=False)
 
-    typer.echo("asking Google where there is capacity…")
+    say.step("asking Google where there is capacity")
     try:
         gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
@@ -1106,14 +1087,14 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
             _refused(exc)
         zones = suggested_zones(exc.raw)
         if not zones:
-            typer.echo("Google did not name a zone with capacity. Pick one with "
-                       "--to, e.g. --to us-central1-b", err=True)
-            raise typer.Exit(code=2)
-        typer.echo(f"  {host.gce_zone} has none free; {zones[0]} does")
+            say.fail("Google did not name a zone with capacity",
+                     fix="pick one with --to, e.g. --to us-central1-b",
+                     code=2, blank_line=False)
+        say.detail(f"{host.gce_zone} has none free; {zones[0]} does")
         return zones[0]
 
-    typer.echo(f"{host.name} started in {host.gce_zone} — no move needed.")
-    typer.echo(f"  comfy-qat go {host.name}")
+    say.result(f"{host.name} started in {host.gce_zone} — no move needed.")
+    say.result(f"  comfy-qat go {host.name}")
     return None
 
 
@@ -1142,6 +1123,7 @@ def move_cmd(
     from .gcloud import Gcloud, GcloudError
     from .gcloud import can_prompt
     from .hostfile import apply, rename_and_add
+    from .lifecycle import stop_paying
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
         remove_leftovers, run_move,
@@ -1149,8 +1131,8 @@ def move_cmd(
 
     host = _host(_selector(name, os_, gpu), config)
     if not host.is_remote:
-        typer.echo(f"{host.name} is local — there is nowhere to move it to.", err=True)
-        raise typer.Exit(code=2)
+        say.fail(f"{host.name} is local — there is nowhere to move it to", code=2,
+                 blank_line=False)
 
     gc = Gcloud()
     target = to
@@ -1175,21 +1157,19 @@ def move_cmd(
     # the end instead.
     mine = leftovers(plan, found, unrelated=False)
     if mine:
-        typer.echo("\nan earlier run left this behind, and it is billing:")
+        say.result("\nan earlier run left this behind, and it is billing:")
         for line in mine:
-            typer.echo(f"  {line}")
+            say.result(f"  {line}")
 
         # Reusing them is the default and usually right — that is what makes a
         # failed move cheap to retry. Deleting them starts the copy from scratch.
         if clean or (not yes and can_prompt()
                      and typer.confirm("\nDelete these and start the move fresh?")):
             try:
-                removed = remove_leftovers(
-                    gc, plan, found, lambda line: typer.echo(f"  {line}"))
+                removed = remove_leftovers(gc, plan, found, say.step)
             except GcloudError as exc:
-                typer.echo(f"\ncould not clean up: {exc}", err=True)
-                raise typer.Exit(code=1)
-            typer.echo(f"\nremoved {len(removed)}.")
+                say.fail(f"could not clean up: {exc}", code=1)
+            say.result(f"\nremoved {len(removed)}.")
             # The plan was built from resources that no longer exist. Carrying on
             # with it would REUSE a deleted disk, or skip a snapshot it now needs,
             # and neither fails loudly — the move just builds from nothing.
@@ -1200,22 +1180,19 @@ def move_cmd(
 
     problem = blocked(plan, found)
     if problem is not None:
-        typer.echo(f"\n{problem}", err=True)
-        if problem.fix:
-            typer.echo(f"to fix: {problem.fix}", err=True)
-        raise typer.Exit(code=1)
+        say.fail(problem, code=1)
 
-    typer.echo("")
-    for step in plan.steps(found):
-        typer.echo(f"  - {step}")
+    say.result("")
+    for line in plan.steps(found):
+        say.result(f"  - {line}")
     for note in found.notes:
-        typer.echo(f"\nnote: {note}")
+        say.result(f"\nnote: {note}")
 
     if dry_run:
-        typer.echo("\n--dry-run: nothing changed")
+        say.result("\n--dry-run: nothing changed")
         return
     if not yes and not typer.confirm(f"\nMove {host.name} to {target}?"):
-        typer.echo("nothing changed")
+        say.result("nothing changed")
         return
 
     path = config or DEFAULT_CONFIG_PATH
@@ -1249,45 +1226,43 @@ def move_cmd(
               expect={h.name for h in hosts} - {host.name} | {retired, host.name})
         ports.append(host.port)
 
-    typer.echo("")
+    say.result("")
     try:
-        outcome = run_move(gc, plan, found, lambda line: typer.echo(f"  {line}"),
-                           register=register)
+        outcome = run_move(gc, plan, found, say.step, register=register)
     except MoveError as exc:
-        typer.echo(f"\n{exc}", err=True)
+        say.error(exc, "")
         for item in exc.left:
-            typer.echo(f"  this run left {item}, and it is billing", err=True)
-        if exc.fix:
-            typer.echo(f"to fix: {exc.fix}", err=True)
-        typer.echo(f"\n{host.gce_instance} is untouched in {host.gce_zone}.", err=True)
+            say.detail(f"this run left {item}, and it is billing")
+        say.detail(f"{host.gce_instance} is untouched in {host.gce_zone}")
+        say.write_fix(exc.fix or "")
         raise typer.Exit(code=1)
 
     for warning in outcome.warnings:
-        typer.echo(f"\nwarning: {warning}", err=True)
+        say.warn(warning)
 
     port = ports[0] if ports else host.port
     # Creating an instance starts it. Saying "now run go" read as "now start it",
     # so a moved box billed silently from the moment the move finished.
-    typer.echo(f"\n{host.name} is now in {target}, running and billing from now. "
+    say.result(f"\n{host.name} is now in {target}, running and billing from now. "
                f"Same name, same port {port}.")
-    typer.echo(f"  comfy-qat go {host.name}     # tunnel to it and serve")
-    typer.echo(f"  comfy-qat down {host.name}   # stop paying")
+    say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+    say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
 
     was = "running and still billing" if plan.source_running else "stopped"
-    typer.echo(f"\nthe old box is still in {host.gce_zone} ({was}), now called "
+    say.result(f"\nthe old box is still in {host.gce_zone} ({was}), now called "
                f"{plan.retired_name}, with its disk {plan.source_disk}.")
     if plan.source_running:
-        typer.echo(f"  comfy-qat down {plan.retired_name}")
-    typer.echo(f"  {delete_instance_command(plan)}")
+        say.result(f"  comfy-qat down {plan.retired_name}")
+    say.result(f"  {delete_instance_command(plan)}")
 
     # Reported here rather than before the confirm: it belongs to a box that no
     # longer exists, this command does not touch it, and it is not part of the
     # decision the user just made.
     stray = leftovers(plan, found, unrelated=True)[len(mine):]
     if stray:
-        typer.echo("\nalso on the project, unrelated to this move and billing:")
+        say.result("\nalso on the project, unrelated to this move and billing:")
         for line in stray:
-            typer.echo(f"  {line}")
+            say.result(f"  {line}")
 
 
 def _probe_fix(host: Host) -> str | None:
@@ -1312,12 +1287,12 @@ def _probe_fix(host: Host) -> str | None:
     if tunnel_status(host.name).running:
         return None
 
-    return (
-        f"no tunnel to {host.name} is open, so nothing on this machine answers "
-        f"{host.url} — and {host.gce_instance} may simply be stopped. "
-        f"`comfy-qat open {host.name}` tunnels to a box that is already "
-        f"running; `comfy-qat go {host.name}` starts it and tunnels in one "
-        f"step. `comfy-qat list --live` says which it is."
+    return say.fix(
+        f"no tunnel to {host.name} is open, so nothing here answers {host.url} — "
+        f"and {host.gce_instance} may simply be stopped.",
+        f"comfy-qat open {host.name}   # tunnel to a box that is already running",
+        f"comfy-qat go {host.name}     # start it and tunnel, in one step",
+        "comfy-qat list --live        # which of the two it is",
     )
 
 
@@ -1343,11 +1318,7 @@ def stamp_cmd(
     try:
         stamp = fetch(host.url, host=host.name)
     except ProbeError as exc:
-        typer.echo(str(exc), err=True)
-        fix = _probe_fix(host) or exc.fix
-        if fix:
-            typer.echo(f"to fix: {fix}", err=True)
-        raise typer.Exit(code=1)
+        say.fail(exc, _probe_fix(host) or exc.fix, code=1, blank_line=False)
 
     # Refused, not warned. This line exists to be copied — it is pasted into a
     # bug report as the proof of which machine produced a result — and a warning
@@ -1356,17 +1327,17 @@ def stamp_cmd(
     # declared, no line is printed and the contradiction is what you get instead.
     problem = mismatch(host, stamp)
     if problem is not None:
-        typer.echo(problem, err=True)
-        typer.echo(
-            "No evidence line was printed, because this one would have named the "
-            "wrong machine. Check the port in your host list and which tunnel is "
-            "open, then stamp it again.", err=True)
-        raise typer.Exit(code=1)
+        say.error(problem, "", blank_line=False)
+        say.fail("no evidence line was printed, because this one would have named "
+                 "the wrong machine",
+                 fix="check the port in your host list and which tunnel is open, "
+                     "then stamp it again",
+                 code=1, blank_line=False)
 
     if as_json:
-        typer.echo(json.dumps(stamp.as_dict(), indent=2))
+        say.result(json.dumps(stamp.as_dict(), indent=2))
     else:
-        typer.echo(stamp.line())
+        say.result(stamp.line())
 
 
 @app.callback(invoke_without_command=True)

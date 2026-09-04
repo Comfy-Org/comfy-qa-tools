@@ -240,9 +240,9 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
     assert "no L4 capacity in us-central1-a" in result.output
     assert "not a fault on your side" in result.output
     assert "comfy-linux is untouched" in result.output
-    assert "Where you can test instead" in result.output
+    assert "where you can test instead" in result.output
     assert "comfy-qat switch comfy-linux   # Ubuntu 22.04, A100" in result.output
-    assert "If it has to be comfy-win:" in result.output
+    assert "if it has to be comfy-win:" in result.output
     assert "comfy-qat move comfy-win --to us-central1-b" in result.output
     assert stops(result) == [], "the machine you were working on was stopped anyway"
 
@@ -262,7 +262,7 @@ def test_the_target_cannot_start_and_there_is_nowhere_else(cli):
 
     assert result.exit_code == 1
     assert "no L4 capacity in us-central1-a" in result.output
-    assert "No other machine is declared" in result.output
+    assert "no other machine is declared" in result.output
     assert "comfy-qat discover" in result.output
     assert "comfy-qat move comfy-win --to us-central1-b" in result.output
 

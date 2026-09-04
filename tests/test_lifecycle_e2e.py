@@ -411,7 +411,7 @@ def test_up_then_open_twice_then_down_twice(world):
     up = run(world, "host", "up", BOX)
     no_traceback(up)
     assert up.exit_code == 0, up.output
-    assert f"Open {world.url}" in up.output
+    assert f"open {world.url}" in up.output
     assert world.pid_file().exists()
     assert len(world.processes) == 1
 
