@@ -495,3 +495,31 @@ def test_switch_never_offers_a_rebuild(cli, monkeypatch):
 
     cli("switch", "comfy-win", cloud=_stuck(monkeypatch, tty=True), input="y\n")
     assert not moved
+
+
+def test_a_box_whose_state_could_not_be_read_is_not_an_all_clear(cli):
+    """`unknown` was collected and never reported in the default branch, so a run
+    where the read failed and the stop succeeded printed "nothing was running, so
+    nothing was billing" — contradicting the honest per-host line three lines
+    above it, and saying it in the one case where the tool could not see.
+
+    The trigger is precise and real: `instance_status` raises, `stop_instance`
+    then succeeds. A stale token, a network blip on a laptop being closed for the
+    night, rate limiting across five sequential calls. `down --all` is by
+    definition the end of a long session and takes one chance per box.
+    """
+    from comfy_qa.gcloud import GcloudError
+
+    class Unreadable(Cloud):
+        def instance_status(self, instance, zone, project):
+            self.calls.append("instance_status")
+            raise GcloudError("credentials expired")
+
+    result = cli("down", "--all", cloud=Unreadable())
+
+    assert "nothing was running" not in result.output, (
+        "an all-clear about a box whose state was never established"
+    )
+    assert "could not be checked" in result.output
+    assert "comfy-win" in result.output, "the machine has to be named"
+    assert "list --live" in result.output

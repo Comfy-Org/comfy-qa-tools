@@ -608,8 +608,21 @@ def down_cmd(
             if caught:
                 names = ", ".join(h.name for h in caught)
                 say.result(f"\nwas billing: {names}. Stopped. Nothing is now.")
-            else:
+            elif not unknown:
                 say.result("\nnothing was running, so nothing was billing.")
+            # `unknown` was collected here and never reported, so a run where
+            # every read failed and every stop succeeded printed the all-clear —
+            # an unearned one, contradicting the per-host line three lines above
+            # it. The --keep-running branch had always said this and the default
+            # branch had not, which is the same asymmetry in its last corner.
+            if unknown:
+                names = ", ".join(h.name for h in unknown)
+                say.result(
+                    f"\n{say.count(len(unknown), 'machine')} could not be checked "
+                    f"before stopping, so it may have been billing: {names}. "
+                    "Everything else was not running."
+                )
+                say.result("  comfy-qat list --live")
         return
 
     if not name:
