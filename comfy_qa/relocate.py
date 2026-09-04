@@ -132,7 +132,17 @@ def boot_disk(instance: dict) -> str | None:
 
 
 def machine_type(instance: dict) -> str:
-    return _tail(instance.get("machineType")) or "g2-standard-8"
+    # NOT a real family as the fallback. "g2-standard-8" is IN BUILT_IN_CARD, so
+    # a describe that came back without a machineType became a KNOWN built-in
+    # family — and `accelerator_of` then omitted `--accelerator`, producing a box
+    # with no GPU that reports success. That is the precise defect that function
+    # exists to prevent, reached by a degraded payload rather than a wrong guess.
+    #
+    # The comment there states the policy: unknown families get the flag, because
+    # passing it wrongly fails loudly and costs a disk while omitting it wrongly
+    # is silent. An absent machineType is the most unknown a family can be, and
+    # it was landing on the wrong side.
+    return _tail(instance.get("machineType")) or "unknown-machine-type"
 
 
 #: Machine families whose card is part of the machine type. Asking for it again

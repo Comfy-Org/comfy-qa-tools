@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -328,3 +329,74 @@ def test_closing_removes_both_the_pid_and_the_record(tmp_path):
 
     assert not pid_file("comfy-win", tmp_path).exists()
     assert not record_file("comfy-win", tmp_path).exists()
+
+
+# --- identity is a process, not a rendering ----------------------------------
+#
+# Every test above models identity as an opaque token — started("boot-A"). The
+# real artefact is `ps -p N -o lstart=,command=`, and `lstart` renders in the
+# CALLER's locale and timezone. One live process, one instant, three answers:
+#
+#     en_GB   Fri  4 Sep 19:34:26
+#     C       Fri Sep  4 19:34:26
+#     TZ=LA   Fri  4 Sep 11:34:26
+#
+# So the equality check was asking "same string", not "same process". Open a
+# tunnel from a terminal and close it from a script, a cron job, a non-login ssh
+# or an agent shell, and `close_tunnel` returns False, does not signal the pid,
+# and still unlinks the records — the forward survives holding the port, silently,
+# because the caller only speaks on True. Measured at 12 of 16 environment pairs.
+#
+# No token fixture can hold this shape, and mutation cannot find it: mutating the
+# equality guard IS killed by boot-A/boot-B. The guard was pinned to the wrong
+# equivalence relation.
+
+
+@pytest.mark.parametrize("environment", [
+    {"LC_ALL": "en_GB.UTF-8"},
+    {"LC_ALL": "C"},
+    {"TZ": "America/Los_Angeles"},
+    {"TZ": "UTC", "LC_ALL": "C"},
+])
+def test_one_process_has_one_identity_whatever_the_shell_looks_like(environment):
+    """Run the probe in a genuinely separate process with a different
+    environment, because that IS the scenario: a tunnel opened from a terminal
+    and closed from a script, a cron job, a non-login ssh or an agent shell.
+
+    Mutating os.environ in-process does not reproduce it faithfully — verified —
+    so this spawns a real interpreter the way the real case does.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    # BOTH sides in real subprocesses. This file has an autouse fixture that
+    # stubs `_identity`, so calling it in-process measures the stub — which is
+    # how the first version of this test passed against the unfixed code.
+    probe = (
+        "import sys; sys.path.insert(0, %r);"
+        "from comfy_qa.tunnel import _identity; print(_identity(%d))"
+    )
+    here = str(Path(__file__).resolve().parent.parent)
+
+    def identity_under(extra):
+        return subprocess.run(
+            [sys.executable, "-c", probe % (here, sleeper.pid)],
+            capture_output=True, text=True, env={**os.environ, **extra},
+        ).stdout.strip()
+
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        time.sleep(0.2)
+        baseline = identity_under({})
+        elsewhere = identity_under(environment)
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+    assert baseline, "the probe returned nothing at all"
+    assert elsewhere == baseline, (
+        f"the same process reads differently under {environment} — a tunnel "
+        "opened in one shell cannot be closed from another"
+    )

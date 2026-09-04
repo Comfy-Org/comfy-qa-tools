@@ -89,7 +89,22 @@ def test_the_plan_is_readable_before_anything_changes():
 def test_an_instance_with_no_disks_still_plans_something():
     plan = plan_move(WIN, {"name": "comfy-win"}, "us-central1-b")
     assert plan.new_instance == "comfy-win"
-    assert plan.machine_type == "g2-standard-8"
+    # NOT "g2-standard-8". That was the old fallback, and g2 is in BUILT_IN_CARD,
+    # so a describe with no machineType became a KNOWN built-in family and
+    # `accelerator_of` omitted the flag — a box with no GPU, reporting success.
+    # An absent machineType is the most unknown a family can be.
+    assert plan.machine_type == "unknown-machine-type"
+
+
+def test_a_describe_with_no_machine_type_still_asks_for_the_card():
+    """The consequence, stated where someone changing the fallback will see it."""
+    from comfy_qa.relocate import accelerator_of
+
+    degraded = {"name": "comfy-win", "guestAccelerators": [
+        {"acceleratorType": ".../acceleratorTypes/nvidia-tesla-t4",
+         "acceleratorCount": 1},
+    ]}
+    assert accelerator_of(degraded) == "type=nvidia-tesla-t4,count=1"
 
 
 # --- what a move leaves behind, stated truthfully -----------------------------

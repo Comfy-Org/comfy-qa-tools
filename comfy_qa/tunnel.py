@@ -253,6 +253,27 @@ def _identity(pid: int) -> str:
         done = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart=,command="],
             capture_output=True, text=True, timeout=10,
+            # `lstart` renders in the CALLER's locale and timezone, and this
+            # string is compared for equality against one recorded earlier. One
+            # live process, one instant, three answers:
+            #
+            #   en_GB   Fri  4 Sep 19:34:26
+            #   C       Fri Sep  4 19:34:26
+            #   TZ=LA   Fri  4 Sep 11:34:26
+            #
+            # So `recorded == now` was asking "same string", not "same process".
+            # Open a tunnel from a terminal and close it from a script, a cron
+            # job, a non-login ssh or an agent shell, and the identities differ:
+            # `close_tunnel` returns False, does NOT signal the pid, and still
+            # unlinks both records — so the forward stays alive holding the port,
+            # nothing is printed because the caller only speaks on True, and the
+            # next `open` reports a stranger on the port and sends you to lsof.
+            # Measured: 12 of 16 environment pairs.
+            #
+            # Pinning both makes the comparison about the process again. It has
+            # to be on every call, not just the recording one, or the two sides
+            # disagree exactly as before.
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
         )
     except (OSError, subprocess.SubprocessError):
         return ""
