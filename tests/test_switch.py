@@ -557,3 +557,27 @@ def test_the_dry_run_shows_the_order_the_real_run_will_use(cli, monkeypatch):
     start = result.output.index("then go to comfy-win")
     assert stop < start, "the preview still shows the wrong order"
     assert "nothing changed" in result.output
+
+
+def test_a_ceiling_switch_that_fails_says_you_are_on_neither_machine(cli, monkeypatch):
+    """Behavioural cover for the handler that exists BECAUSE `kept` is empty here.
+
+    Removing that whole `except typer.Exit` block left the suite GREEN — four
+    tests VANISHED rather than failed, all docs parameters keyed on its own text,
+    so it disappeared along with them. A message that can be deleted in a green
+    suite is not covered, and this is the one that tells someone their session is
+    gone and the new box may be billing.
+    """
+    from comfy_qa import host as host_module
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
+                        lambda gc, host, others: 1)
+    result = cli("switch", "comfy-win", "--no-browser",
+                 statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+                 open_tunnels=("comfy-linux",),
+                 fail=GcloudError("Quota 'NVIDIA_L4_GPUS' exceeded. Limit: 1.0"))
+
+    assert result.exit_code == 1
+    assert "you are on neither" in result.output, result.output
+    assert "may have started and be billing" in result.output
+    assert "list --live" in result.output

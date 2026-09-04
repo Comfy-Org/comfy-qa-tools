@@ -931,3 +931,36 @@ def test_a_dry_run_deletes_nothing_without_clean_either(cli):
     # fix is unconditional (`if dry_run:`) and therefore strictly safer than what
     # it replaced, but this assertion is not the evidence for that. Reported as
     # unpinned rather than left looking covered.
+
+
+# --- Ctrl-C does not cancel the work, and "Aborted!" says it did --------------
+#
+# `Gcloud.run` catches KeyboardInterrupt and calls `process.wait()` a SECOND
+# time, so a start or a create already under way COMPLETES and only then unwinds.
+# Measured against a replica of that pattern: interrupt at 0.4s, return at 2.02s,
+# resource created.
+#
+# KeyboardInterrupt is a BaseException, so it walks past `_reportable()` and every
+# handler in host.py, and Click prints "Aborted!" — a word that means nothing
+# happened, over a GPU box that is running and billing.
+
+
+def test_an_interrupt_while_starting_says_the_box_may_be_billing(cli):
+    class Interrupted(Cloud):
+        def instance_status(self, instance, zone, project):
+            return "TERMINATED"
+
+        def start_instance(self, instance, zone, project):
+            raise KeyboardInterrupt
+
+    result = cli("up", "comfy-win", cloud=Interrupted())
+
+    assert "may have started" in result.output, result.output
+    assert "bills" in result.output
+    assert "comfy-qat down comfy-win" in result.output
+    assert "list --live" in result.output
+
+
+# `create`'s interrupt is tested in test_create_cli.py, which already has a fake
+# that can reach `build` — zone planning needs accelerator-types and
+# machine-types answers this file's Cloud deliberately refuses.

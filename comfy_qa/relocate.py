@@ -132,17 +132,14 @@ def boot_disk(instance: dict) -> str | None:
 
 
 def machine_type(instance: dict) -> str:
-    # NOT a real family as the fallback. "g2-standard-8" is IN BUILT_IN_CARD, so
-    # a describe that came back without a machineType became a KNOWN built-in
-    # family — and `accelerator_of` then omitted `--accelerator`, producing a box
-    # with no GPU that reports success. That is the precise defect that function
-    # exists to prevent, reached by a degraded payload rather than a wrong guess.
+    # The fallback stays a REAL family, because this value is passed to the
+    # create — `plan.machine_type` at plan_move. Defaulting it to a sentinel
+    # would ask Google to build "unknown-machine-type".
     #
-    # The comment there states the policy: unknown families get the flag, because
-    # passing it wrongly fails loudly and costs a disk while omitting it wrongly
-    # is silent. An absent machineType is the most unknown a family can be, and
-    # it was landing on the wrong side.
-    return _tail(instance.get("machineType")) or "unknown-machine-type"
+    # The degraded-payload problem is real and belongs one function down: see
+    # `accelerator_of`, which must not read this default as evidence of a
+    # built-in card.
+    return _tail(instance.get("machineType")) or "g2-standard-8"
 
 
 #: Machine families whose card is part of the machine type. Asking for it again
@@ -177,7 +174,18 @@ def accelerator_of(instance: dict) -> str | None:
     # Unknown families get the flag rather than not. Passing it wrongly fails
     # loudly and costs a disk; omitting it wrongly produces a box with no GPU
     # that reports success, which is the defect this function exists for.
-    if machine_type(instance).split("-")[0] in BUILT_IN_CARD:
+    # RAW, not `machine_type()`. That function defaults to "g2-standard-8"
+    # because its value is passed to the create — and g2 is in BUILT_IN_CARD, so
+    # a describe that came back WITHOUT a machineType became a KNOWN built-in
+    # family here, the flag was omitted, and the move produced a box with no GPU
+    # reporting success. The most unknown a family can be was landing on the
+    # confident side.
+    #
+    # Absent, empty or None is not-built-in, which is the same direction the
+    # comment below argues for: wrong that way costs a disk and fails loudly,
+    # wrong the other way is silent.
+    family = _tail(instance.get("machineType") or "")
+    if family and family.split("-")[0] in BUILT_IN_CARD:
         return None
 
     cards = instance.get("guestAccelerators") or []

@@ -478,3 +478,30 @@ def test_it_refuses_before_it_reads_anything_from_google(cli):
 
     assert billable(result) == []
     assert "quota" not in result.output.lower(), result.output
+
+
+def test_an_interrupt_during_create_names_the_gcloud_stop(cli):
+    """Ctrl-C does not cancel the gcloud child — `Gcloud.run` waits a SECOND time,
+    so a create already under way completes and only then unwinds. Measured:
+    interrupt at 0.4s, return at 2.02s, resource created.
+
+    `create` is the one where `comfy-qat down` cannot help. The host list entry is
+    written eighteen lines after the instance exists, so an interrupt in between
+    leaves a running, billing box that `list` cannot see — under the word
+    "Aborted!", which means nothing happened.
+    """
+    from comfy_qa import create as create_module
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    original = create_module.build
+    create_module.build = interrupted
+    try:
+        result = cli("--os", "linux", "--gpu", "l4", "--yes")
+    finally:
+        create_module.build = original
+
+    assert "may already exist and be billing" in result.output, result.output
+    assert "gcloud compute instances stop" in result.output
+    assert "comfy-qat discover" in result.output

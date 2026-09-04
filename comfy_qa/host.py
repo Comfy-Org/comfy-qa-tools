@@ -357,6 +357,33 @@ def create_cmd(
         made_in = build(gc, blueprint, ordering, project, say.step)
     except _reportable() + (GcloudError,) as exc:
         say.fail(exc, code=1)
+    except KeyboardInterrupt:
+        # Ctrl-C does NOT cancel the gcloud child. `Gcloud.run` catches the
+        # interrupt and calls `process.wait()` a SECOND time, so the create
+        # completes and only then unwinds — measured: interrupt at 0.4s, the
+        # pattern returns at 2.02s, and the resource exists.
+        #
+        # KeyboardInterrupt is a BaseException, so it walks past every handler in
+        # this file and Click prints "Aborted!". A GPU box is then running,
+        # billing, and in no host list — invisible to `list`, reachable only by
+        # `down --all`, `discover` or the console, none of which anyone runs after
+        # a screen that said the command was aborted.
+        #
+        # "may" is the honest word: at the moment of the interrupt this tool does
+        # not know how far the create got. Both outcomes are named because the
+        # cost of checking is one read and the cost of not checking is a GPU.
+        say.error(
+            f"interrupted — {blueprint.name} may already exist and be billing",
+            say.fix(
+                "check, and stop it if it is there:",
+                f"gcloud compute instances list --project={project}",
+                f"gcloud compute instances stop {blueprint.name} "
+                f"--zone={ordering.zones[0]} --project={project}",
+                "it is not in your host list, so `comfy-qat down` cannot reach "
+                "it — `comfy-qat discover` adopts it if you want to keep it",
+            ),
+        )
+        raise
 
     # Re-read rather than reusing the list from before the create: this command
     # takes minutes, and a `host discover` in another terminal in the meantime
@@ -495,6 +522,9 @@ def up_cmd(
     hosts, host = _lookup(_selector(name, os_, gpu), config)
     try:
         bring_up(Gcloud(), host, say.step)
+    except KeyboardInterrupt:
+        _interrupted_while_starting(host)
+        raise
     except _reportable() as exc:
         # A box that will not start ends the session unless you are told where
         # else you could work, and a GPU shortage is the usual reason.
@@ -1051,6 +1081,9 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
 
     try:
         return bring_up(gc, host, say.step, comfy_timeout=15)
+    except KeyboardInterrupt:
+        _interrupted_while_starting(host)
+        raise
     except _reportable() as exc:
         # Only "ComfyUI is not there yet" is worth continuing past. Anything else
         # (the box would not start, the tunnel failed) must be shown, not
@@ -1572,6 +1605,27 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | No
 
 def _tail_zone(url: str) -> str:
     return (url or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _interrupted_while_starting(host: Host) -> None:
+    """Say what a Ctrl-C during a start actually left behind.
+
+    Ctrl-C does not cancel the gcloud child: `Gcloud.run` catches the interrupt
+    and waits a SECOND time, so the start completes and only then unwinds —
+    measured at interrupt 0.4s, return 2.02s, resource created. And
+    KeyboardInterrupt is a BaseException, so it walks past `_reportable()` and
+    every handler in this file, and Click prints "Aborted!".
+
+    A box that is running and billing, under a word that means nothing happened,
+    is the most expensive sentence this tool can print. `_serve` and `logs`
+    already get this right for their own phase; the boot phase had nothing.
+    """
+    say.error(
+        f"interrupted — {host.name} may have started before you stopped it, "
+        "and a started box bills",
+        say.fix("check what is actually running:", "comfy-qat list --live",
+                f"comfy-qat down {host.name}"),
+    )
 
 
 def _probe_fix(host: Host) -> str | None:

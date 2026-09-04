@@ -89,11 +89,10 @@ def test_the_plan_is_readable_before_anything_changes():
 def test_an_instance_with_no_disks_still_plans_something():
     plan = plan_move(WIN, {"name": "comfy-win"}, "us-central1-b")
     assert plan.new_instance == "comfy-win"
-    # NOT "g2-standard-8". That was the old fallback, and g2 is in BUILT_IN_CARD,
-    # so a describe with no machineType became a KNOWN built-in family and
-    # `accelerator_of` omitted the flag — a box with no GPU, reporting success.
-    # An absent machineType is the most unknown a family can be.
-    assert plan.machine_type == "unknown-machine-type"
+    # A REAL family: this value is passed to the create, so a sentinel here would
+    # ask Google to build "unknown-machine-type". The degraded-payload guard
+    # lives in `accelerator_of`, which reads the raw field — see below.
+    assert plan.machine_type == "g2-standard-8"
 
 
 def test_a_describe_with_no_machine_type_still_asks_for_the_card():

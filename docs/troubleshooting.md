@@ -1380,6 +1380,32 @@ did: the box you were working on is down, and the new one may be up and billing.
 `comfy-qat list --live` asks Google what is actually running, which is the only
 answer worth having before retrying.
 
+## Ctrl-C while a machine is starting
+
+**`interrupted — <name> may have started before you stopped it, and a started box bills`** / **`interrupted — <name> may already exist and be billing`**
+
+Ctrl-C does not cancel the work. gcloud's own child process is waited on a second
+time when the interrupt arrives, so a start or a create that was already under way
+COMPLETES, and only then does the command unwind. Measured: the interrupt lands at
+0.4s, the call returns at 2.02s, and the machine exists.
+
+Without these messages the screen said `Aborted!`, which means nothing happened.
+Something did, and it bills.
+
+"may" is the honest word — at the moment of the interrupt this tool does not know
+how far the call got. Both outcomes are named because checking costs one read and
+not checking costs a GPU.
+
+For `go`, `up` and `switch` the box is in your host list, so `comfy-qat down
+<name>` reaches it. For `create` it is NOT: the host list entry is written after
+the instance exists, so an interrupt in between leaves a running box that `list`
+cannot see. The raw `gcloud compute instances stop` is then the only thing that
+works, and `comfy-qat discover` adopts it if you would rather keep it.
+
+`switch` is the one to check twice. On the GPU-ceiling path the box you were
+working on is stopped BEFORE the new one starts, so an interrupt there can leave
+you with the old one down and the new one up.
+
 ## A read that said nothing
 
 **`could not tell whether <name> is running, so there is no saying whether it has a log.`**
