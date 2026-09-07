@@ -11,6 +11,7 @@ import pytest
 
 from comfy_qa import inflight
 from comfy_qa.config import Host
+from comfy_qa.gcloud import GcloudError
 from comfy_qa.relocate import (
     CREATE_DISK,
     CREATE_INSTANCE,
@@ -20,6 +21,7 @@ from comfy_qa.relocate import (
     Action,
     Found,
     _inflight,
+    blocked,
     boot_disk,
     machine_type,
     metadata_pairs,
@@ -296,3 +298,135 @@ def test_a_clean_that_finishes_leaves_nothing_registered():
     gc = _CleanGcloud()
     assert clean_up(gc) == ["comfy-win-a-b", "comfy-win-a-move"]
     assert inflight.pending() == []
+
+
+# --- the ceiling move never checked ----------------------------------------
+#
+# `create` gates on GPUS_ALL_REGIONS and `switch` gates on it. `move` starts a
+# GPU box too, and had no gate at all — so on a project whose ceiling is 1, a
+# move of a running box took the snapshot, built the disk, and was refused by
+# Google at the instance. The last and most expensive step.
+
+
+def gpu_instance(name, zone="us-central1-a", status="RUNNING", cards=1):
+    return {
+        "name": name,
+        "status": status,
+        "zone": f"https://x/projects/p/zones/{zone}",
+        "guestAccelerators": [{"acceleratorType": "https://x/nvidia-l4",
+                               "acceleratorCount": cards}],
+    }
+
+
+def ceiling_quota(value):
+    return [{"quotaId": "GPUS-ALL-REGIONS-per-project",
+             "dimensionsInfos": [{"details": {"value": str(value)},
+                                  "applicableLocations": ["global"]}]}]
+
+
+class _Project:
+    """The two reads `survey` makes, plus the quota read the gate may add."""
+
+    def __init__(self, instances, ceiling=1):
+        self.instances = instances
+        self.ceiling = ceiling
+        self.quota_reads = 0
+
+    def run(self, args, **kwargs):
+        # The target zone offers the machine type, so the only blocker these
+        # tests can produce is the one under test.
+        if "machine-types" in args:
+            return [{"name": "g2-standard-8"}]
+        return []
+
+    def list_instances(self, project):
+        return self.instances
+
+    def gpu_quotas(self, project):
+        self.quota_reads += 1
+        if self.ceiling is None:
+            raise GcloudError("quota could not be read")
+        return ceiling_quota(self.ceiling)
+
+
+def survey_with(gc):
+    from comfy_qa.relocate import survey
+
+    return survey(gc, moving())
+
+
+def test_a_move_of_a_running_box_under_a_ceiling_of_one_is_refused_up_front():
+    """The incident this whole module's acceptance pack was written around.
+
+    The new box exists alongside the old one for the length of the move, so a
+    running source needs two of an allowance of one. Google refuses that at the
+    instance create — after the snapshot and a 300 GB disk are made and paid for.
+    """
+    gc = _Project([gpu_instance("comfy-win")], ceiling=1)
+    problem = blocked(moving(), survey_with(gc))
+
+    assert problem is not None
+    assert "GPUS_ALL_REGIONS is 1" in str(problem)
+    assert "comfy-win already holds 1 of it" in str(problem)
+    assert "Nothing was created" in str(problem)
+    assert "comfy-qat down comfy-win" in problem.fix
+
+
+def test_a_move_of_a_stopped_box_under_the_same_ceiling_is_allowed():
+    """The case the gate must not refuse. A stopped source spends nothing, so
+    one of one is enough — and refusing it would block the ordinary move."""
+    gc = _Project([gpu_instance("comfy-win", status="TERMINATED")], ceiling=1)
+
+    assert blocked(moving(), survey_with(gc)) is None
+
+
+def test_something_else_holding_the_ceiling_is_handed_raw_gcloud():
+    """A GCE instance name, and `config.resolve` never matches on one — the box
+    holding the slot is typically one started in the console."""
+    gc = _Project([gpu_instance("comfy-win", status="TERMINATED"),
+                   gpu_instance("console-box", zone="us-west4-b")], ceiling=1)
+    problem = blocked(moving(), survey_with(gc))
+
+    assert problem is not None
+    assert ("gcloud compute instances stop console-box --zone=us-west4-b"
+            in problem.fix)
+    assert "comfy-qat down console-box" not in problem.fix
+
+
+def test_a_ceiling_that_could_not_be_read_refuses_nothing():
+    """"Not read" is not "zero" — the rule `create`'s own gate states. Refusing
+    on a number nobody has blocks a move the project is entitled to."""
+    gc = _Project([gpu_instance("comfy-win")], ceiling=None)
+
+    assert blocked(moving(), survey_with(gc)) is None
+
+
+def test_an_unlimited_ceiling_refuses_nothing():
+    gc = _Project([gpu_instance("comfy-win")], ceiling=-1)
+
+    assert blocked(moving(), survey_with(gc)) is None
+
+
+def test_the_minute_long_quota_read_is_skipped_when_nothing_holds_a_card():
+    """`gpu_quotas` is the ~58-second call and `move` is slow already. Nothing
+    can be over the ceiling while nothing holds any of it, so the free half —
+    counting cards in the list `survey` has already fetched — decides first."""
+    gc = _Project([gpu_instance("comfy-win", status="TERMINATED")], ceiling=1)
+    survey_with(gc)
+
+    assert gc.quota_reads == 0
+
+
+def test_the_quota_is_read_when_the_answer_could_be_no():
+    gc = _Project([gpu_instance("comfy-win")], ceiling=1)
+    survey_with(gc)
+
+    assert gc.quota_reads == 1
+
+
+def test_a_box_with_no_card_at_all_is_not_gated_on_a_gpu_ceiling():
+    gc = _Project([{"name": "comfy-win", "status": "RUNNING",
+                    "zone": "https://x/projects/p/zones/us-central1-a"}], ceiling=0)
+
+    assert blocked(moving(), survey_with(gc)) is None
+    assert gc.quota_reads == 0

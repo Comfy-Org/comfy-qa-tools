@@ -524,6 +524,13 @@ class Found:
     reuse_disk: bool = False
     blocker: str | None = None
     notes: tuple[str, ...] = ()
+    # The GPU ceiling, read only when something could actually be holding it.
+    # `ceiling` is None when it was not read or the project does not report one,
+    # which is "not known" and never a reason to refuse.
+    ceiling: int | None = None
+    cards_held: int = 0
+    cards_needed: int = 0
+    holders: tuple[tuple[str, str], ...] = ()
 
     @property
     def snapshot_name(self) -> str | None:
@@ -671,7 +678,69 @@ def survey(gc: Gcloud, plan: Plan) -> Found:
         missing = zone_lacks_machine_type(gc, plan)
         if missing:
             found = replace(found, blocker=missing)
-    return found
+    return _with_the_ceiling(gc, plan, found, instances)
+
+
+def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
+                      instances: list[dict]) -> Found:
+    """Read what the project-wide GPU ceiling would say about the new box.
+
+    `move` creates a GPU instance and had no ceiling check at all: `create` has
+    one and `switch` has one, and the third command that starts a card — the one
+    that has ALREADY taken a snapshot and built a disk by the time it gets
+    there — did not. On a project whose GPUS_ALL_REGIONS is 1, a move of a
+    RUNNING box is refused by Google at the create, which is the last and most
+    expensive step. That is not hypothetical: it is the incident this module's
+    acceptance pack was written around — a move that snapshotted, built a 300 GB
+    disk, failed at the instance, said nothing, and billed for weeks.
+
+    **The source counts, and only when it is running.** The new box exists
+    alongside the old one for the length of the move, so a running source needs
+    two of the allowance and a stopped source needs one. That falls out of
+    reading the live list rather than being a special case: `_cards_running`
+    skips TERMINATED, so the source is in `held` exactly when it is spending.
+
+    **The expensive read is not always paid.** `gpu_quotas` is the ~58-second
+    call and `move` is slow enough already. Nothing can be over the ceiling
+    while nothing holds any of it, so the free half — counting cards in the
+    instance list `survey` has already fetched — is done first, and the quota is
+    asked for only when the answer could be "no".
+    """
+    # `create` owns the arithmetic for "how much of the ceiling is that", cards
+    # and not boxes, with the reasoning in its own docstring. One implementation
+    # rather than a second that drifts from it.
+    from .create import _cards_running
+
+    source = next(
+        (i for i in instances
+         if i.get("name") == plan.host.gce_instance
+         and _in_zone(i, plan.host.gce_zone)),
+        None,
+    )
+    # What the NEW box will hold, which is what the source holds when it runs —
+    # asked of the source with its status overridden, because a stopped source
+    # still tells you how many cards its copy will need.
+    needed = _cards_running([{**source, "status": "RUNNING"}]) if source else 0
+    held = _cards_running(instances)
+    if not needed or not held:
+        return found
+
+    holders = tuple(
+        (i.get("name") or "", _tail(i.get("zone")))
+        for i in instances
+        if i.get("status") != "TERMINATED" and i.get("guestAccelerators")
+    )
+    try:
+        from .quota import global_allowance
+
+        ceiling = global_allowance(gc.gpu_quotas(plan.project))
+    except (GcloudError, AttributeError):
+        # Not read is not zero. Refusing on a number nobody has is how a move
+        # the project is entitled to gets blocked, and the create still refuses
+        # at the far end if allowing it was wrong.
+        return found
+    return replace(found, ceiling=ceiling, cards_held=held,
+                   cards_needed=needed, holders=holders)
 
 
 def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str) -> tuple[Plan, Found]:
@@ -728,12 +797,71 @@ def _within_the_allowance(gc: Gcloud, plan: Plan, source_disk: dict) -> Plan:
                    ))
 
 
+def _over_the_ceiling(plan: Plan, found: Found) -> MoveError | None:
+    """Refuse a move the project-wide GPU allowance cannot fit, before anything
+    is created.
+
+    Certain arithmetic only. A ceiling that was not read is None and refuses
+    nothing — the rule `create`'s own gate states, because "not read" is not
+    "zero" and refusing on it blocks a move the project is entitled to. Google's
+    -1 is "no explicit limit" and is not a number to compare against either.
+    """
+    ceiling = found.ceiling
+    if ceiling is None or ceiling < 0:
+        return None
+    if found.cards_held + found.cards_needed <= ceiling:
+        return None
+
+    source = plan.host.gce_instance
+    others = [(name, zone) for name, zone in found.holders if name != source]
+    running_source = any(name == source for name, _ in found.holders)
+
+    advice: list[str] = []
+    if running_source:
+        # The move does not need the source running, and stopping it is the one
+        # action that frees exactly the allowance the new box needs. Said first
+        # because it is this tool's own command and it always works here: the
+        # source is by definition the declared host being moved.
+        advice += [
+            "stop the box you are moving — the move does not need it running, "
+            "and stopping it frees the allowance the new one needs:",
+            f"comfy-qat down {plan.host.name}",
+        ]
+    for name, zone in others:
+        # Raw gcloud with the zone, never `comfy-qat down <instance>`: these are
+        # GCE instance names, `config.resolve` never matches on `gce_instance`,
+        # and the box holding the ceiling is typically one started in the
+        # console — precisely the box absent from the host list.
+        advice += [
+            f"{'or stop' if advice else 'stop'} the one you are not using:",
+            f"gcloud compute instances stop {name} --zone={zone} "
+            f"--project={plan.project}",
+        ]
+    advice += ["then run the same move again:",
+               f"comfy-qat move {plan.host.name} --to {plan.to_zone}"]
+
+    holding = ", ".join(name for name, _ in found.holders) or "another box"
+    return MoveError(
+        f"GPUS_ALL_REGIONS is {ceiling} on this project and {holding} already "
+        f"holds {found.cards_held} of it, so the {found.cards_needed}-card box "
+        f"this move creates cannot start. Nothing was created.",
+        fix=output.fix(*advice),
+    )
+
+
 def blocked(plan: Plan, found: Found) -> MoveError | None:
     """The reason this move cannot start, if there is one. Nothing has happened yet.
 
     Shared by the preview and the run so a dry run cannot report a plan the real
     run would refuse to carry out.
     """
+    # First, because it is the only reason here that is about what the move
+    # would CREATE rather than about something already lying in its way — and
+    # the only one whose alternative is finding out from Google after the
+    # snapshot and the disk have been made and paid for.
+    over = _over_the_ceiling(plan, found)
+    if over is not None:
+        return over
     if not found.blocker:
         return None
     users = (found.disk or {}).get("users") or []
