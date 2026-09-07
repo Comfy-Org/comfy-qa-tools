@@ -531,7 +531,7 @@ http://127.0.0.1:8190. The machine is up and billing; ComfyUI is not installed o
 not started.`**
 The machine and the tunnel are both fine — ComfyUI itself is not serving. **The box
 is billing while this is true**, which is why the fix line ends with
-`or stop paying for it: comfy-qat host down comfy-win`. The error prints how to get
+`or stop paying for it: comfy-qat down comfy-win`. The error prints how to get
 onto it, which differs
 by OS: Windows needs a password reset and Remote Desktop over the tunnel, anything
 else takes SSH through IAP.
@@ -1834,7 +1834,7 @@ with no billing history — Google frequently will not grant GPU quota until a p
 has been billed at least once. Retrying will not change that.
 
 **`still pending: l4, a100. Approval can take days — run this again to keep
-waiting, or `comfy-qat auth quota` to check.`** (exit code 75)
+waiting, or `comfy-qat quota` to check.`** (exit code 75)
 Not an error. The requests went in but have not been approved within the wait window.
 Approval can take days. Run the same command again to keep waiting, or
 `comfy-qat quota` to check. The console link printed with the request shows the

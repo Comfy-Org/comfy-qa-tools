@@ -40,7 +40,9 @@ import typer
 
 from comfy_qa.cli import app
 
-DOCS = Path(__file__).resolve().parent.parent / "docs"
+ROOT = Path(__file__).resolve().parent.parent
+DOCS = ROOT / "docs"
+PACKAGE = ROOT / "comfy_qa"
 COMMANDS_PAGE = DOCS / "commands.md"
 PACK = DOCS / "test-criteria.md"
 
@@ -251,3 +253,84 @@ def test_troubleshooting_names_the_tunnel_the_tool_actually_builds():
         "troubleshooting.md asserts a tunnel command the tool stopped using")
     assert "-L 127.0.0.1:" in page, (
         "troubleshooting.md never shows the forward, which is what to look for in `ps`")
+
+
+# --------------------------------------------------------------------------
+# The direction `test_docs` does not check.
+#
+# `test_docs` walks the SOURCE and requires every message to appear in
+# troubleshooting.md, so an undocumented error fails. Nothing walks the PAGE and
+# asks whether what it quotes is still a thing the tool says. A message that
+# CHANGES therefore leaves a correct-looking entry behind, and the entry heading
+# is what a pasted error is matched against — so the paste finds nothing, or
+# finds the wrong entry.
+#
+# Two lived here until today, both quoting the retired `comfy-qat host …` /
+# `comfy-qat auth …` spellings:
+#
+#   "or stop paying for it: comfy-qat host down comfy-win"  — `stop_paying`
+#       returns f"comfy-qat down {name}" and this path has never printed the
+#       other form.
+#   "…or `comfy-qat auth quota` to check." — the heading said `auth quota`
+#       while its own body two lines below said `comfy-qat quota`, which is what
+#       auth.py prints. The half a reader searches was the wrong half.
+#
+# THIS CHECK CATCHES THE FIRST AND NOT THE SECOND, and the limit is worth stating
+# rather than discovering. It compares COMMAND SPELLINGS: `comfy-qat host down`
+# appears nowhere in the package, so it is caught. `comfy-qat auth quota` DOES
+# appear — it is the live prefix of `comfy-qat auth quota request` — so a message
+# that merely says something different around a real command reads as fine here.
+# Catching that needs the whole quoted message compared against the whole source
+# message, which is `test_docs`'s machinery pointed the other way, and is a bigger
+# job than this file. A guard that looked like it covered both would be worse than
+# this one, because the next person would stop looking.
+
+OLD_SPELLING = re.compile(r"comfy-qat (?:host|auth)(?: (?!--)[a-z][a-z-]*)+")
+
+
+def _package_source() -> str:
+    return "\n".join(path.read_text() for path in sorted(PACKAGE.glob("*.py")))
+
+
+def test_troubleshooting_quotes_no_command_the_tool_has_stopped_printing():
+    """Every old spelling on this page must still be one the tool emits.
+
+    troubleshooting.md is the one page made entirely of quoted tool output, so
+    the bar is exact: an old spelling here is either a real message we have not
+    fixed yet — in which case A8 in the acceptance pack is the check that says
+    so — or it is a stale quotation, which is strictly worse than a missing
+    entry, because it reads as current.
+
+    Deliberate deprecation prose lives on the other pages (commands.md's table,
+    README, getting-started, machines.md) and is deliberately not held to this;
+    those pages are explaining that the old spellings work, which is true.
+    """
+    page = (DOCS / "troubleshooting.md").read_text()
+    source = _package_source()
+    stale = [phrase for phrase in OLD_SPELLING.findall(page)
+             if phrase.strip() not in source]
+    assert not stale, (
+        "troubleshooting.md quotes commands the tool no longer prints: "
+        + "; ".join(sorted(set(stale)))
+    )
+
+
+def test_that_check_would_have_caught_the_one_it_can():
+    """The guard on the guard, and it pins the limit as well as the catch.
+
+    Run against `troubleshooting.md` as it stood before this commit, the check
+    reports exactly one phrase: `comfy-qat host down comfy-win`. It stays silent
+    on `comfy-qat auth quota`, and the second assertion here is what stops that
+    silence being mistaken for coverage later.
+    """
+    source = _package_source()
+
+    caught = "comfy-qat host down comfy-win"
+    assert OLD_SPELLING.findall(caught)[0] not in source, (
+        "the package now prints this, so it is no longer a valid example")
+
+    # The one it cannot see, asserted as a limit rather than left implicit.
+    missed = "comfy-qat auth quota"
+    assert missed in source, (
+        "`comfy-qat auth quota` is no longer a live prefix — if that is true, this "
+        "check has become strictly stronger and this test should be revisited")
