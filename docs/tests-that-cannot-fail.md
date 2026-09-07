@@ -523,13 +523,23 @@ default **unreachable** rather than overridden — a tripwire armed before the
 package is imported, so `subprocess` and non-loopback sockets raise:
 
 ```python
-import tripwire; tripwire.arm()      # before importing comfy_qa
+from tests import tripwire; tripwire.arm()   # before importing comfy_qa
 ```
 
-**Loopback has to pass through.** A strict-everything version fired on the first
-honest ComfyUI port check and would have been switched off within the hour, which
-is the failure mode of every detector that cannot tell the honest case from the
-leak.
+It lives at `tests/tripwire.py`, with `tests/test_tripwire.py` beside it. **The
+path is a convenience, not the record** — the contract above is the whole of it,
+and rewriting thirty lines from that description beats following a link that has
+gone stale.
+
+**Loopback has to pass through, and that exemption is itself pinned.** The test
+for the honest case asserts an `OSError` — a refused connection to a port with
+nothing on it — and specifically **not** an `AssertionError`. What is being held
+in place is the guard *standing aside*, not merely the guard firing.
+
+That matters because a strict-everything version fired on the first honest
+ComfyUI port check and would have been switched off within the hour. **A detector
+that cannot tell the honest case from the leak gets disabled, and then it
+protects nothing** — so the exemption needs a test as much as the alarm does.
 
 **Closed in `caa0640`.** `conftest.py` now carries the tripwire the safety
 fixture's name had been promising: outbound sockets and writes to the real config
