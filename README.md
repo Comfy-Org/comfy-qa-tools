@@ -354,7 +354,8 @@ That only ever happens on a declared `gce` host, never locally.
 [the everyday loop](docs/machines.md) · [the host list](docs/hosts.md) ·
 [troubleshooting](docs/troubleshooting.md) · [cost](docs/cost.md) ·
 [when your session expires](docs/session-expiry.md) ·
-[test criteria](docs/test-criteria.md)
+[test criteria](docs/test-criteria.md) ·
+[tests that cannot fail](docs/tests-that-cannot-fail.md)
 
 ## Design
 

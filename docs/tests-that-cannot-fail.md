@@ -118,9 +118,38 @@ shell. Match the anchored, uppercase form pytest prints one per failure:
 grep -c '^FAILED tests/'
 ```
 
-or read the integers out of the summary. **Never the bare word.** The same trap
-sits in `passed` vs `xpassed`, which has not bitten anyone yet only because
-nobody has grepped for it.
+or read the integers out of the summary. **Never the bare word.**
+
+It has now been demonstrated on a real run rather than argued: a summary of
+`3859 passed, 66 xfailed`, exit code 0, zero `^FAILED` lines — and
+`'failed' in summary` is `True`. A fully green suite that a substring match
+calls a failure.
+
+### The same trap with the sign flipped
+
+**`passed` is a substring of `xpassed`.** This one has bitten nobody yet, and is
+written down *because* nobody has met it.
+
+`xfail_strict = true` is set here, so an `xfail` that unexpectedly passes is
+reported as `FAILED` with `[XPASS(strict)]` — it lands in the `^FAILED` lines,
+where the recommended grep finds it. That is why `xpassed` does not appear in
+this repo today. It reappears the moment somebody writes `strict=False`, which
+is exactly the escape hatch a future maintainer reaches for when an xfail is
+inconvenient. Verified directly:
+
+```
+$ pytest test_xp.py -q      # one strict xfail that passes, one non-strict
+FAILED test_xp.py::test_passes_under_strict_xfail - [XPASS(strict)] ...
+1 failed, 1 xpassed
+```
+
+A check for `passed` is satisfied by that line — by a test that was expected to
+fail, did not, and is therefore a genuine problem. The first trap reports failure
+on success; this one reports **success on a failure**.
+
+**The family is: a status word that is a substring of another status word.** The
+next one will not be either of these two, so match anchored forms and read
+integers, rather than learning the two words.
 
 ## 5. A guard that matches `Exception` but not `BaseException`
 
@@ -200,11 +229,25 @@ and the assertion then clears a command whose body contains any of:
 | `disconnect_cmd` | `put_away` | `comfy-qat down`, `put_away` |
 | `down_cmd` | `put_away` | **`put_away`** |
 
-`up_cmd` is genuinely independent. `down_cmd` is cleared *only* by the token that
-included it — so every money sentence in it could be deleted and the test would
-stay green. That is one command rather than three, but it is the `--keep-running`
-branch, which this suite has already been wrong about twice in opposite
-directions.
+`up_cmd` is genuinely independent. `down_cmd` was cleared *only* by the token
+that included it — so every money sentence in it could have been deleted and the
+test would have stayed green. One command rather than three, but it was the
+`--keep-running` branch, which this suite has already been wrong about twice in
+opposite directions.
+
+**Closed.** The two vocabularies are now disjoint: the clearing set is
+`("comfy-qat down", "stop_paying", "_with_the_bill")`, with `_serve(` and
+`put_away` removed, and a test named
+`test_no_token_that_makes_a_command_billable_can_also_clear_it` asserts the
+disjointness directly — so the shape cannot come back by someone adding a
+convenient token to the wrong set.
+
+Two things about *how* it closed are worth more than the fix. It was found twice
+within an hour, independently, from opposite directions — once by reading the
+test and once by auditing the commands — which is the evidence that this shape is
+discoverable rather than lucky. And the guard that now exists is a guard **on the
+relationship between two lists**, not on either list. That is the general remedy
+for class 7: assert the disjointness, not the membership.
 
 **The tell:** write down the token that puts a member *on* the list and the token
 that takes it *off*. If they intersect, the test cannot fail for that member.
@@ -248,6 +291,34 @@ through the seam between two correct tests.
 
 ---
 
+## The same shapes turn up where a human is the runner
+
+`docs/test-criteria.md` is the acceptance pack — a person runs it by hand and
+ticks boxes. It has the same disease, which is the strongest evidence that these
+are shapes rather than Python problems. An audit of it found:
+
+| in the pack | the shape |
+|---|---|
+| Five `--dry-run` criteria asserting "nothing was created", in blocks with no step that could detect creation | class 4 — an instrument with one branch. The plan prints identically in both worlds |
+| `G1` and `G6a` graded on the tool's own sentence about what it stopped | the tool's claim accepted as its own evidence. Phase M gets this right — `M4` makes the claim, `M5` reads `gcloud` and checks it. Same page, same author, one has the observation |
+| Phase I says in bold "run this before the run and after it, and compare" — and never runs it before | a comparison with no baseline. It is also the designated backstop for every unobserved negative in the pack, so it compounds rather than sits beside them |
+| `G5` "does not fail on an already-stopped box" | unfalsifiable: a `down` that does nothing at all and exits 0 passes identically to one that handles the case |
+
+The sharpest observation from that audit is one my seven did not have, and it
+generalises back to the suite: **not a remedy that defeats the check, but a check
+with no observation attached.** The tick costs nothing because nothing was ever
+looked at. None of those needs a tester to cut a corner — following the words
+exactly produces the tick.
+
+Two of those are genuinely new shapes rather than restatements — *the comparison
+with no baseline*, and *the expected result is also what the failure produces*.
+Both apply to unit tests as readily as to a checklist.
+
+One more, smaller, and it is why this page had to be linked by hand: **nothing
+tests the docs index in the README.** A page can be added and never linked, which
+is how `session-expiry.md` went missing from it for as long as it did. A free
+edit is an unguarded one.
+
 ## The only standard that survived contact
 
 **After writing a test, delete the fix and watch it fail by name.**
@@ -283,13 +354,34 @@ the remedy from the rule rather than from the error string.
 
 ---
 
+## A finding needs a commit hash attached
+
+Three times in one day a finding here went stale within the hour of being
+written: a defect fixed underneath its own report, a count that moved, a
+criterion that changed. Twice the report was re-sent without re-checking, and
+the reader was handed something that had stopped being true.
+
+**Verify at the working tree as well as at HEAD**, and say which you read. Both
+are edited live when more than one person is working, and a claim about
+`tests/` or `comfy_qa/` with no sha attached cannot be checked by whoever reads
+it next. That is not pedantry about citation — it is the difference between a
+finding somebody can act on and one they have to re-derive.
+
+The class-7 instance on this page is the worked example: correct when found,
+already being fixed while it was being written up, and closed before anyone
+could read it. The *shape* is what the page records. The instance is dated.
+
 ## Provenance
 
-Classes 1–6 are drawn from the commits that introduced and closed them; class 7
-and the composition case were found by a verification pass and re-measured
-against the source before being written here. The class-7 table was produced by
-walking `host.py` at the time of writing — if the token sets have since changed,
-re-measure rather than trusting the table.
+Classes 1–6 are drawn from the commits that introduced and closed them. Class 7
+and the composition case came from a verification pass and were re-measured
+against `host.py` before being written here, then re-checked against the working
+tree — which is how the fix in flight was caught. The status-word demonstration
+in class 4 was reproduced directly rather than transcribed: `xfail_strict` turns
+an unexpected pass into `FAILED`, so `xpassed` needs a `strict=False` to appear
+at all, and that correction is why the section says what it says.
 
-The `bench_cmd` demonstration in the last section is reported from that same
-verification pass and has not been reproduced by the author of this page.
+The acceptance-pack section is another agent's audit, quoted rather than
+re-derived. The `bench_cmd` demonstration in the section above it is reported
+from the verification pass and has **not** been reproduced by the author of this
+page.
