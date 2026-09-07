@@ -832,7 +832,8 @@ def _stop_ours(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
 
 def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
              *, egress: bool = False,
-             stop_first: tuple[str, str] | None = None) -> LifecycleError:
+             stop_first: tuple[str, str] | None = None,
+             advice: str | None = None) -> LifecycleError:
     """Stop, close the tunnel, and say what to do — the one place that decides.
 
     Written once because it was written twice: the second copy grew the egress
@@ -845,6 +846,13 @@ def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
     # the egress command was followed straight by the RDP recipe, so three
     # unrelated commands read as one four-step procedure.
     blocks: list[str] = []
+    if advice:
+        # gcloud's own advice about its own failure, carried ALONGSIDE this
+        # tool's rather than instead of it. "Run gcloud auth login" is the right
+        # first move and says nothing about the GPU box that is on and billing
+        # while you make it; the two are additive, and a fix that picks one is
+        # the one that costs money.
+        blocks.append(output.fix(advice))
     if egress and host.is_remote:
         # Not guessable from the box: everything reaches it fine, so nobody
         # thinks to check whether it can reach anything. IAP gets you in; an
@@ -1014,9 +1022,10 @@ def serve(
     watcher.start()
 
     def give_up(message: str, *, egress: bool = False,
-                stop_first: tuple[str, str] | None = None) -> LifecycleError:
+                stop_first: tuple[str, str] | None = None,
+                advice: str | None = None) -> LifecycleError:
         return _give_up(host, tunnel_dir, say, message, egress=egress,
-                        stop_first=stop_first)
+                        stop_first=stop_first, advice=advice)
 
     holder = _port_holder(gc, host)
     if holder is not None:
@@ -1053,17 +1062,29 @@ def serve(
         say(f"when it says 127.0.0.1:{COMFYUI_PORT}, on this machine that is "
             f"{host.url}")
     try:
-        code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                      launch_command(host), stream=True)
-    finally:
-        # Otherwise the watcher outlives a failed launch and opens a browser onto
-        # a URL that never answered.
-        done.set()
-        # And otherwise the ComfyUI we started outlives us: a launch that dies
-        # after binding leaves a process holding port 8188 on the box, and every
-        # later launch fails with a port conflict that names neither the process
-        # nor the tool that left it. Only ever a process we started ourselves.
-        _stop_ours(gc, host, say)
+        try:
+            code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                          launch_command(host), stream=True)
+        finally:
+            # Otherwise the watcher outlives a failed launch and opens a browser
+            # onto a URL that never answered.
+            done.set()
+            # And otherwise the ComfyUI we started outlives us: a launch that
+            # dies after binding leaves a process holding port 8188 on the box,
+            # and every later launch fails with a port conflict that names
+            # neither the process nor the tool that left it. Only ever a process
+            # we started ourselves.
+            _stop_ours(gc, host, say)
+    except (GcloudError, OSError) as exc:
+        # The tidy-up above is not the same as giving up: it stops the remote
+        # process and leaves the tunnel open, the box on, and nothing said about
+        # either. A local gcloud fault here — the binary gone from PATH, an
+        # expired session, an OSError out of subprocess — is the one failure in
+        # this module that reached the caller as a bare gcloud message, so `go`
+        # printed it, exited 1, and left a GPU box billing behind a forwarded
+        # port. Every other failure past this point goes through `give_up`.
+        raise give_up(f"ComfyUI on {host.name} could not be launched: {exc}",
+                      advice=getattr(exc, "fix", None)) from exc
 
     if code == NO_PYTHON_EXIT:
         raise give_up(
@@ -1260,9 +1281,10 @@ def start_detached(
     probe_fn = probe_fn or probe
 
     def give_up(message: str, *, egress: bool = False,
-                stop_first: tuple[str, str] | None = None) -> LifecycleError:
+                stop_first: tuple[str, str] | None = None,
+                advice: str | None = None) -> LifecycleError:
         return _give_up(host, tunnel_dir, say, message, egress=egress,
-                        stop_first=stop_first)
+                        stop_first=stop_first, advice=advice)
 
     holder = _port_holder(gc, host)
     if holder is not None:
@@ -1295,8 +1317,17 @@ def start_detached(
         say(f"when it says 127.0.0.1:{COMFYUI_PORT}, on this machine that is "
             f"{host.url}")
 
-    code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                  launch_detached_command(host), stream=True)
+    try:
+        code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                      launch_detached_command(host), stream=True)
+    except (GcloudError, OSError) as exc:
+        # Same fault as the one `serve` guards, and worse here: this is the
+        # everyday launch, the tunnel is already open by the time it can happen,
+        # and a bare gcloud message on the way out says nothing about the box it
+        # leaves running.
+        raise give_up(f"ComfyUI on {host.name} could not be launched: {exc}",
+                      advice=getattr(exc, "fix", None)) from exc
+
     if code == NO_PYTHON_EXIT:
         raise give_up(
             f"there is no Python on {host.name} to run ComfyUI with (NO_PYTHON), so "

@@ -703,11 +703,11 @@ class _SshRaises:
         raise self.exc
 
 
-# `serve` and `start_detached` call `gc.ssh` with no `except`, so a local gcloud
-# fault at the launch escapes both. `serve`'s call is inside a try/FINALLY, which
-# tidies the remote process and does not catch. The other two `gc.ssh` calls in
-# the module, in `ensure_installed` and in `read_logs`, ARE wrapped — this is a
-# pattern already right in two places of four.
+# `serve` and `start_detached` both wrap their `gc.ssh` launch, so a local gcloud
+# fault at the launch goes through `_give_up` like every other failure past the
+# point the machine is on: tunnel closed, and the bill named. `serve`'s call is
+# also inside a try/FINALLY, which tidies the remote process; the catch is
+# outside that, so the tidy-up runs first and the refusal is still ours.
 #
 # Reachable by a LOCAL fault only: `Gcloud.ssh` raises GcloudError when the binary
 # has left PATH mid-session, or OSError out of subprocess.run. A failed REMOTE ssh
@@ -716,12 +716,11 @@ class _SshRaises:
 
 @pytest.mark.parametrize("launch", (serve, start_detached))
 def test_a_gcloud_failure_at_the_launch_leaves_the_tunnel_open(tmp_path, launch):
-    """PINS: a launch that raises still closes the tunnel it opened.
-    FAILS ON: the `assert pid_file(...).exists()` below — invert it to
-    `assert not ...` once the two `gc.ssh` calls are wrapped in `_give_up`.
+    """A launch that raises still closes the tunnel it opened.
 
-    The box is running and billing with a local port held open onto it, and the
-    exception carries gcloud's own advice rather than this tool's.
+    Otherwise the box is left running and billing with a local port held open
+    onto it, and the exception carries gcloud's own advice rather than this
+    tool's.
     """
     from comfy_qa import tunnel as tunnel_module
 
@@ -729,32 +728,33 @@ def test_a_gcloud_failure_at_the_launch_leaves_the_tunnel_open(tmp_path, launch)
     tunnel_module.open_tunnel(WIN, tmp_path)
     assert tunnel_module.pid_file("comfy-win", tmp_path).exists()
 
-    with pytest.raises(GcloudError):
+    with pytest.raises(LifecycleError):
         launch(_SshRaises(GcloudError("gcloud is not installed or not on PATH.")),
                WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
                tunnel_dir=tmp_path)
 
-    # CURRENT: the tunnel outlives the failure. Invert this line with the fix.
-    assert tunnel_module.pid_file("comfy-win", tmp_path).exists()
+    assert not tunnel_module.pid_file("comfy-win", tmp_path).exists()
 
 
 @pytest.mark.parametrize("launch", (serve, start_detached))
 def test_a_gcloud_failure_at_the_launch_never_says_how_to_stop_paying(tmp_path, launch):
-    """PINS: every failure after the machine is on names `stop_paying(host)` —
-    the rule this module's own docstring states.
-    FAILS ON: the `not in` below. With the fix the raised error is a
-    LifecycleError whose `.fix` contains `comfy-qat down comfy-win`, so change
-    both the expected type and this assertion.
+    """Every failure after the machine is on names `stop_paying(host)` — the
+    rule this module's own docstring states.
+
+    And gcloud's own advice survives alongside it: signing in again is the right
+    first move, and it says nothing about the box that is on while you make it.
     """
     lines, say = said()
-    with pytest.raises(GcloudError) as caught:
-        launch(_SshRaises(GcloudError("your gcloud session has expired")),
+    with pytest.raises(LifecycleError) as caught:
+        launch(_SshRaises(GcloudError("your gcloud session has expired",
+                                      fix="gcloud auth login")),
                WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
                tunnel_dir=tmp_path)
 
-    whole = "\n".join(lines) + f"\n{caught.value}\n{getattr(caught.value, 'fix', '')}"
-    # CURRENT: nothing in the run mentions the bill. Invert with the fix.
-    assert stop_paying(WIN) not in whole
+    whole = "\n".join(lines) + f"\n{caught.value}\n{caught.value.fix}"
+    assert stop_paying(WIN) in whole
+    assert "gcloud auth login" in whole
+    assert "your gcloud session has expired" in str(caught.value)
 
 
 def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):
