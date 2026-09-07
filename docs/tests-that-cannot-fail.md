@@ -101,6 +101,27 @@ every mutant looked like a survivor and the sweep was meaningless.
 **The tell:** ask what the instrument prints when the thing it looks for is
 *absent*. If you cannot point at that branch, it does not have one.
 
+### Presence, where you meant value
+
+The sharpest small version, and it reads as a real check right up until you test
+it. A guard asked whether a sink had an `err` keyword — **not what it was set
+to**. So `typer.echo(line, err=False)`, which says *stdout* out loud, satisfied a
+guard whose entire purpose was catching stdout sinks.
+
+Measured one shape at a time against a real module: of seven ways to write a
+stdout sink, it caught **one**. `print`, `sys.stdout.write`, `say.result` as a
+sink, a nested `def`, a `functools.partial` and the explicit `err=False` all
+walked through.
+
+Fixed in `ce359a9` by reading the keyword's *value* and four write routes — and
+the widened guard **found a real defect on its first run**, which is the whole
+argument for this page in one line. An instrument that cannot fail is not
+protecting anything; the moment it can, it has something to tell you.
+
+Whenever an assertion asks whether a thing is *there*, ask what it should be
+asserting about the thing's *value*, and whether the difference is the entire
+point of the check.
+
 ### The six characters that cost the most
 
 **`xfailed` contains `failed`.**
@@ -181,7 +202,14 @@ Related, and worth knowing in any Click or Typer program: Click catches the real
 anything of ours runs. A `BaseException` it does not recognise walks through to
 us — which is why the interrupt is re-raised under our own name.
 
-## 6. A walk blind to indirection
+## 6. A walk that silently skips what it does not recognise
+
+Any scan — an AST walk, a regex over a document — that has a notion of what it is
+looking for, meets something outside that notion, and **passes over it without
+saying so**. Two routes in, both seen here: indirection the walk cannot follow,
+and a pattern too narrow to express what it is matching.
+
+### Route one: indirection
 
 An AST walk that recognises `say.fail(...)` and `typer.echo(..., err=True)` and
 nothing else. A module that routes its own output through a local helper —
@@ -202,6 +230,31 @@ wrapper* is documented", and nobody had written that down.
 The fix follows one level of local indirection — a wrapper calling a wrapper is
 deliberately not followed, because at that point the module should be using the
 shared vocabulary directly.
+
+### Route two: a pattern too narrow to say what it means
+
+The guard that audits the acceptance pack matched criterion ids with
+`[A-Za-z0-9.]+`. That omits `/`, so the nine combined ids — `A5a/A5b`,
+`J2/J3/J4`, `N8/N9` and the rest — **were skipped in silence** while the suite
+reported success. The auditor was checking 148 of 157 boxes, and its author
+reported "147 criteria" twice on the strength of it.
+
+Nothing new was flagged when the pattern was widened, so the blind spot was
+benign in outcome. It was not benign in principle, and it would not have stayed
+benign.
+
+**The remedy is the transferable part, and it is not "widen the pattern":**
+
+> The cure is the assertion, not the wider pattern.
+
+A second test now counts `- [ ] **` lines — no regex worth getting wrong — and
+compares that count against what the walk saw. A scan whose coverage is asserted
+against an independent count cannot quietly shrink. Widening the regex fixes
+today; counting the boxes fixes the next narrowing too.
+
+This is the same move as class 7's remedy one domain over: **assert the
+relationship between two things rather than trusting either one.** Closed in
+`be171f5`.
 
 ### Its sibling: a non-strict xfail
 
