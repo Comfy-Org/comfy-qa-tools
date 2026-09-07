@@ -876,3 +876,39 @@ def test_a_zone_in_an_ungranted_region_says_where_the_grant_does_apply():
     # The cheap check first, and never a quota request for a region that may not
     # exist as the opening move.
     assert "gcloud compute zones list --filter=name=us-central9-a" in caught.value.fix
+
+
+def test_a_real_region_with_no_grant_is_not_accused_of_being_a_typo():
+    """The refusal reads the same for `me-west1-a` as for `us-central9-a`, and
+    that sameness is the fix, not a gap in it.
+
+    The standing idea for telling them apart is to treat the union of
+    `applicableLocations` across the quota records as a live list of Google's
+    real regions and call anything missing from it a typo. This pins why that is
+    wrong: `Gcloud.gpu_quotas` keeps only GPU-mentioning records, and the
+    region-scoped record lists where the grant APPLIES — so `me-west1`, a real
+    region and the docs' own example of a genuine gap, is absent from the whole
+    payload. Reading absence as "no such region" would tell someone their
+    correct spelling is wrong, which is worse than saying nothing about it.
+    """
+    payload_mentions = {
+        location
+        for quota in LIVE
+        for info in quota["dimensionsInfos"]
+        for location in info.get("applicableLocations") or []
+    }
+    assert not any(place.startswith("me-west1") for place in payload_mentions), (
+        "a real region the project holds no grant in is absent from the payload, "
+        "so absence cannot mean the region does not exist")
+
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, zone="me-west1-a")
+
+    message = str(caught.value)
+    assert "no L4 quota in me-west1" in message
+    assert "It holds L4 in" in message, message
+    # Nothing in here may claim the zone or region is unreal. That claim is only
+    # ever a guess, and it is wrong in exactly this case.
+    for wrong in ("does not exist", "no such", "not a region", "typo"):
+        assert wrong not in message.lower(), message

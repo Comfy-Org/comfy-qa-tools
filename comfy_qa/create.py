@@ -982,6 +982,21 @@ def order_zones(
             # a list containing `us-central1` is its own diagnosis. For a real
             # gap it is the answer to the question the refusal raises, which is
             # "then where?". Three, because forty-three is not a sentence.
+            #
+            # And the payload cannot be made to separate them either, which is
+            # the next idea and a worse message than this one. The tempting move
+            # is to treat the union of `applicableLocations` across the quota
+            # records as a live list of Google's real regions — no staleness,
+            # derived from this project tonight — and call a zone whose region is
+            # absent from it a typo. It does not hold: `Gcloud.gpu_quotas` keeps
+            # only records whose id mentions GPUs, and the region-scoped record
+            # lists the regions the grant APPLIES in, not every region Google
+            # has. On the payload recorded off the live project, `me-west1` — a
+            # real region, and the docs' own example of a genuine gap — appears
+            # nowhere at all. So absence means "no grant here", the thing already
+            # known, and reading it as "no such region" would tell someone their
+            # correct spelling is wrong. Ambiguous and true beats specific and
+            # backwards; there is a test for both zones below.
             granted = ", ".join(check.regions[:3])
             others = len(check.regions) - 3
             elsewhere = f"{granted}{f' and {others} more' if others > 0 else ''}"
