@@ -1,6 +1,6 @@
 # Tests that cannot fail
 
-Seven shapes a test in this repo has taken that made it **incapable of failing**.
+Nine shapes a test in this repo has taken that made it **incapable of failing**.
 Not slow, not flaky, not weak — incapable. Each one was written by somebody who
 was sure, each was green, and each was found later by accident.
 
@@ -235,12 +235,11 @@ test would have stayed green. One command rather than three, but it was the
 `--keep-running` branch, which this suite has already been wrong about twice in
 opposite directions.
 
-**Closed.** The two vocabularies are now disjoint: the clearing set is
-`("comfy-qat down", "stop_paying", "_with_the_bill")`, with `_serve(` and
-`put_away` removed, and a test named
-`test_no_token_that_makes_a_command_billable_can_also_clear_it` asserts the
-disjointness directly — so the shape cannot come back by someone adding a
-convenient token to the wrong set.
+**Closed in `e698b63`.** The two vocabularies are now disjoint — the clearing set
+is `("comfy-qat down", "stop_paying", "_with_the_bill")`, with `_serve(` and
+`put_away` removed — and `test_no_token_that_makes_a_command_billable_can_also_clear_it`
+asserts the disjointness directly, so the shape cannot come back by someone
+adding a convenient token to the wrong set.
 
 Two things about *how* it closed are worth more than the fix. It was found twice
 within an hour, independently, from opposite directions — once by reading the
@@ -249,12 +248,86 @@ discoverable rather than lucky. And the guard that now exists is a guard **on th
 relationship between two lists**, not on either list. That is the general remedy
 for class 7: assert the disjointness, not the membership.
 
+**The cure has its own failure mode, and it is the same disease from the other
+side.** The obvious way to make the alibi honest is to follow calls: if a command
+delegates, look at what it delegates to. Followed to exhaustion, that reaches the
+shared ending helpers from almost anywhere in these modules, clears every command,
+and hands back a guard that cannot fail. So the alibi is **one hop**, not the
+transitive closure. Class 7 is the failure mode of class 2's cure; this is the
+failure mode of class 7's. Two turns of the same screw, in one file, in one day.
+
+## 8. The ambient default
+
+A test whose subject is decided by an environment value it never sets: the
+platform, an environment variable, the presence of a binary, a file in `$HOME`,
+the network.
+
+**Not a face of 7 — file them separately.** These were briefly treated as one
+class and they are not: the disjointness assertion that closes 7 does nothing
+whatever for 8. In 7 the test names its own subject and the naming is circular;
+in 8 the test never names its subject at all, and the room decides.
+
+**The tell:** ask what this test does on a machine unlike yours — a different OS,
+no network, a fresh checkout, a cleared cache. If you cannot answer, the test has
+a hidden parameter.
+
+The measured example is worth walking through, because one green result was
+hiding three different mechanisms.
+
+Two tests call the zone-ordering helper without passing `probe=` or a cache
+`path=`. Neither asserts anything about latency — one checks a fall-through flag,
+the other case normalisation. The network call is purely incidental to what they
+are for. But the defaults are a real socket probe and
+`~/.config/comfy-qa-tools/zone-latency.json`, so:
+
+| the machine | what happens | result |
+|---|---|---|
+| online, no cache | two real TCP connections to Google, a file written into `$HOME` | green |
+| online, cache present | zero sockets, ten times faster | green |
+| offline | every region unreachable | green |
+
+The artefact is real — 1801 bytes of live per-region latencies, written into a
+developer's home directory beside their hand-maintained host list, by running the
+unit tests.
+
+**The ambient default is created by the suite itself.** The first run on a machine
+and every run after it exercise different code, and nobody would ever see the
+difference, because all three are green. Whether those tests measure anything is
+decided by whether a previous run left a file in your home directory.
+
+A second instance has the **opposite polarity** and is worth contrasting: a test
+read the real production host list, because a monkeypatch that appears in the very
+next test was not applied to it. That one *fails* on a fresh machine rather than
+passing vacuously — the honest direction. Same class, and the difference between
+the two is luck, not design.
+
+Both are found and being closed. Neither is a defect in the code under test;
+both are the test borrowing something from the room it runs in.
+
+## 9. A proxy for the question, instead of the question
+
+The assertion checks something that *correlates* with what you meant, and the
+correlation is maintained somewhere else.
+
+The clean example: `stopped_first = bool(first)`, standing in for "is this list
+non-empty". It agreed with the real question only because a guard in a *different
+function* kept them in step. Change that guard and the assertion goes on passing
+while meaning something else.
+
+**The tell:** name the thing you want to be true, out loud. Then read the
+assertion. If it is a different sentence, ask what keeps the two agreeing — and
+whether that thing is in this file.
+
+Three instances turned up in a single day. The strongest fact about this class is
+that the third was written by the person who had just read and fixed the other
+two. **A shape that survives knowing about it earns its own entry.**
+
 **The tell:** write down the token that puts a member *on* the list and the token
 that takes it *off*. If they intersect, the test cannot fail for that member.
 
 ---
 
-## Seven is a mechanism, not a cure
+## Nine is a mechanism, not a cure
 
 The temptation on reading this page is to treat it as a list of fixed bugs. It is
 a list of **shapes**, and every fix has a new one.
@@ -304,7 +377,7 @@ are shapes rather than Python problems. An audit of it found:
 | Phase I says in bold "run this before the run and after it, and compare" — and never runs it before | a comparison with no baseline. It is also the designated backstop for every unobserved negative in the pack, so it compounds rather than sits beside them |
 | `G5` "does not fail on an already-stopped box" | unfalsifiable: a `down` that does nothing at all and exits 0 passes identically to one that handles the case |
 
-The sharpest observation from that audit is one my seven did not have, and it
+The sharpest observation from that audit is one the first seven did not have, and it
 generalises back to the suite: **not a remedy that defeats the check, but a check
 with no observation attached.** The tick costs nothing because nothing was ever
 looked at. None of those needs a tester to cut a corner — following the words
@@ -319,17 +392,42 @@ tests the docs index in the README.** A page can be added and never linked, whic
 is how `session-expiry.md` went missing from it for as long as it did. A free
 edit is an unguarded one.
 
+## Where we looked and found nothing
+
+A page listing only what was found reads as a catalogue of disasters. This
+section is the other half, and it is the more useful one, because it puts a
+**bound** on class 8 rather than leaving an absence of evidence.
+
+The opposite pole was injected globally, one at a time, and the suite re-run:
+
+| forced to the other value | result |
+|---|---|
+| `sys.platform` | green |
+| `shutil.which` (binary absent) | green |
+| `COLUMNS` | green |
+| `TERM` / `NO_COLOR` | green |
+
+No test depended on any of those ambient values. That is a real measurement, and
+it is only meaningful because **the same instrument reported both outcomes** — the
+zone-latency probe was found by exactly this method, so the method demonstrably
+detects what it is looking for. An instrument that had only ever returned "clean"
+would be class 4.
+
+When you extend this page, extend this section too. "We checked and it was fine"
+is worth writing down only if you can say what would have happened had it not
+been.
+
 ## The only standard that survived contact
 
 **After writing a test, delete the fix and watch it fail by name.**
 
 Not "run the suite". The suite was green for every single item on this page.
-Green is the condition under which all seven of these were introduced, and every
+Green is the condition under which all nine of these were introduced, and every
 author was sure.
 
 Deleting the fix is the only step that distinguishes a test that checks something
 from a test that is merely present. It costs about a minute. Every one of these
-seven would have been caught by it, at the moment it was written, by the person
+nine would have been caught by it, at the moment it was written, by the person
 who wrote it.
 
 If the fix cannot be deleted cleanly — it is one line inside a function you need
@@ -361,15 +459,31 @@ written: a defect fixed underneath its own report, a count that moved, a
 criterion that changed. Twice the report was re-sent without re-checking, and
 the reader was handed something that had stopped being true.
 
-**Verify at the working tree as well as at HEAD**, and say which you read. Both
-are edited live when more than one person is working, and a claim about
-`tests/` or `comfy_qa/` with no sha attached cannot be checked by whoever reads
-it next. That is not pedantry about citation — it is the difference between a
-finding somebody can act on and one they have to re-derive.
+**A reading of the working tree is not a reading of HEAD**, and neither is a
+reading of the other one. Say which you read. Both are edited live when more than
+one person is working, and a claim about `tests/` or `comfy_qa/` with no sha
+attached cannot be checked by whoever reads it next. That is not pedantry about
+citation — it is the difference between a finding somebody can act on and one
+they have to re-derive.
 
-The class-7 instance on this page is the worked example: correct when found,
-already being fixed while it was being written up, and closed before anyone
-could read it. The *shape* is what the page records. The instance is dated.
+The class-7 instance is the worked example, and it went through **three readings
+that disagreed, none of them wrong**:
+
+1. measured live and found real — one command, `down_cmd`, cleared only by its
+   own inclusion token;
+2. read again in the working tree, where a fix was in flight, and reported
+   **closed** — true of the tree, not yet of `HEAD`;
+3. read a third time at `HEAD`, which did not have it yet, and reported **still
+   open** — a correction that was itself about to go stale, because `e698b63`
+   landed the fix minutes later.
+
+Every reading was accurate at the moment it was taken. Every one of them would
+have misled somebody an hour later. The only thing that makes any of them useful
+a day on is the sha, which is why this page names `e698b63` rather than saying
+"fixed".
+
+The *shape* is what a page records. The instance is dated, and dating it is the
+whole job.
 
 ## Provenance
 
