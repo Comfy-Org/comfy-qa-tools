@@ -1249,3 +1249,63 @@ def test_a_snapshot_leads_with_the_number_that_bills():
     })
     assert phrase.index("stored") < phrase.index("300 GB"), phrase
     assert "of a 300 GB disk" in phrase, "the disk size has to say what it is"
+
+
+# --- the split survives a --clean, because it is not arithmetic ---------------
+#
+# `move` printed both leftover lists and separated them by counting:
+# `leftovers(..., unrelated=True)[len(mine):]`. That is only correct while both
+# calls see the same `found` — and `--clean` REPLACES `found` without recomputing
+# `mine`, so the slice removed a stale number of lines and ate the front of the
+# unrelated section: the billing resources the report exists to name.
+#
+# It errs one way only. The slice can remove lines, never invent them, so every
+# line printed was true and the omissions were the whole defect.
+
+
+def test_the_two_reports_do_not_depend_on_a_remembered_length():
+    """The property the caller needs, stated so it cannot drift: what belongs to
+    this move and what does not, from ONE `found`, at one moment."""
+    from comfy_qa.relocate import split_leftovers
+
+    cloud = Cloud(disks=[SOURCE, ORPHAN_DISK],
+                  snapshots=[ORPHAN_SNAPSHOT, ANCESTOR_SNAPSHOT],
+                  instances=[INSTANCE])
+    gc = cloud.gcloud()
+    plan, found = prepare(gc, WIN, INSTANCE, "us-central1-b")
+
+    mine, stray = split_leftovers(plan, found)
+    everything = leftovers(plan, found, unrelated=True)
+
+    assert mine + stray == everything, "a line went missing between the two"
+    assert not set(mine) & set(stray), "a line was reported twice"
+    assert all("no longer exists" in line or line.startswith("  gcloud")
+               for line in stray), stray
+
+
+def test_a_clean_does_not_shorten_the_unrelated_report():
+    """The defect itself: `mine` computed before the clean, the split after it.
+
+    An odd-length `mine` is the NORMAL case — every resource is two lines except
+    the "already exists" instance line, which is one, and an instance that got
+    created is exactly what `--clean` is for. So the old cut landed between a
+    resource and its delete command."""
+    from comfy_qa.relocate import split_leftovers
+
+    littered = Cloud(disks=[SOURCE, ORPHAN_DISK],
+                     snapshots=[ORPHAN_SNAPSHOT, ANCESTOR_SNAPSHOT],
+                     instances=[INSTANCE])
+    gc = littered.gcloud()
+    plan, before = prepare(gc, WIN, INSTANCE, "us-central1-b")
+    stale_length = len(leftovers(plan, before, unrelated=False))
+
+    remove_leftovers(gc, plan, before, lambda line: None)
+    plan, after = prepare(gc, WIN, INSTANCE, "us-central1-b")
+
+    _, stray = split_leftovers(plan, after)
+    counted = leftovers(plan, after, unrelated=True)[stale_length:]
+
+    assert "comfy-win-snap" in "\n".join(stray), stray
+    assert len(stray) > len(counted), (
+        "the remembered length still hides lines the split keeps"
+    )

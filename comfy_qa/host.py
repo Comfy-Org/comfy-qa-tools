@@ -1379,7 +1379,7 @@ def move_cmd(
     from .lifecycle import stop_paying
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
-        remove_leftovers, run_move, would_not_load,
+        remove_leftovers, run_move, split_leftovers, would_not_load,
     )
 
     hosts, host = _lookup(_selector(name, os_, gpu), config)
@@ -1556,7 +1556,10 @@ def move_cmd(
     # Reported here rather than before the confirm: it belongs to a box that no
     # longer exists, this command does not touch it, and it is not part of the
     # decision the user just made.
-    stray = leftovers(plan, found, unrelated=True)[len(mine):]
+    # Both lists from ONE `found`, at the moment of printing. `mine` above was
+    # computed before `--clean` replaced `found`, and reusing its length here is
+    # what hid billing snapshots.
+    _, stray = split_leftovers(plan, found)
     if stray:
         say.result("\nalso on the project, unrelated to this move and billing:")
         for line in stray:

@@ -880,6 +880,35 @@ def delete_snapshot_command(plan: Plan, name: str | None = None) -> str:
             f"--project={plan.project} --quiet")
 
 
+def split_leftovers(plan: Plan, found: Found) -> tuple[list[str], list[str]]:
+    """This move's leftovers and everybody else's, split HERE rather than counted.
+
+    `move` printed both lists and separated them by arithmetic —
+    `leftovers(..., unrelated=True)[len(mine):]` — which is only correct while
+    both calls see the same `found`. `--clean` replaces `found` and does not
+    recompute `mine`, so the slice removed a stale number of lines from a list
+    that no longer began with them, and ate the front of the UNRELATED section:
+    the billing resources that report exists to name.
+
+    It errs one way only — the slice can remove lines, never invent them — so
+    every line printed was true and the omissions were the whole defect. These
+    are precisely the resources this module's own docstring calls the ones that
+    "look like nothing at all in a console".
+
+    Worse, every resource is two lines except the "already exists" instance line,
+    which is one — and a half-finished move that got as far as creating the
+    instance is exactly what `--clean` is for. So an odd-length `mine` is the
+    NORMAL case, and the cut then landed BETWEEN a resource and its delete
+    command, leaving a bare `gcloud compute snapshots delete ...` under a heading
+    saying it was unrelated, with nothing naming what it would delete.
+
+    Returning the two lists removes the arithmetic. The bug was never the
+    ordering; it was a length remembered across a state change.
+    """
+    mine = leftovers(plan, found, unrelated=False)
+    return mine, leftovers(plan, found, unrelated=True)[len(mine):]
+
+
 def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
     """What earlier runs left behind, what it is, and what removes it.
 
