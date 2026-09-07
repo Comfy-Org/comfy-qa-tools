@@ -466,9 +466,54 @@ while meaning something else.
 assertion. If it is a different sentence, ask what keeps the two agreeing — and
 whether that thing is in this file.
 
-Three instances turned up in a single day. The strongest fact about this class is
-that the third was written by the person who had just read and fixed the other
-two. **A shape that survives knowing about it earns its own entry.**
+**A readable signal, from someone who wrote one of these knowingly:** the proxy
+and the question usually live in **different scopes**. In every instance below
+the proxy came from another function or an earlier state, while the question was
+local and one line away.
+
+> This condition is computed further away than the thing it decides.
+
+That is greppable by eye in a way "is this a proxy" is not.
+
+**Three instances, all one day, all with the same one-sentence fix — *ask the
+list the answer is built from*:**
+
+| where | the proxy | the question it should have asked |
+|---|---|---|
+| `b8db71d` | "is there anything to delete", re-derived from `plan` plus two of `found`'s five fields | `mine`, computed on the line above |
+| `0891903` | `leftovers(...)[len(mine):]` — a length standing in for "where does my section end" | `split_leftovers` |
+| `ed6513f` | `stopped_first = bool(first)` | `bool(others_stopped)` |
+
+The first was wrong in **both** directions at once: it missed `spare_snapshots`,
+so a dry run asked a destructive question, and it named a disk unconditionally,
+so it announced one that did not exist. The third was not merely a bad report —
+the registration below it did `others_stopped[0][0]`, and the two agreed only
+because a guard in another function returned `None` for an empty list. An
+`IndexError`, on every ceiling switch, taking the whole command down.
+
+The strongest fact about this class is the order those three landed in: **the
+third was written by the person who had just read and fixed the other two**, the
+same afternoon, knowing the shape. That is the argument for giving it an entry
+rather than filing it under carelessness. **A shape that survives knowing about
+it earns its own entry.**
+
+### The one sub-property you can actually grep for
+
+Most of class 9 needs judgement. This part does not, and it is worth a standing
+check: **a test double whose return type the subject no longer produces.**
+
+A stub returned `False`. The function it stood for had moved to returning one of
+four strings, because a bool could not tell a stopped box from an
+already-stopped one. The caller then did `.get(found, [])` — so `False` matched
+nothing, every host fell into a throwaway list, and the test drove a branch **the
+real function can no longer produce**. The assertion it made about that branch
+was not merely unearned; it was wrong.
+
+That is the proxy shape with a mechanical signature: the double is a correlate
+that has **drifted** from its subject, and drift in a *type* is greppable where
+drift in a *meaning* is not. Whenever a function's return type changes, the
+doubles standing in for it are the second site — see the note on corrections
+landing in one place, further down.
 
 ### The fourth instance is a safety fixture, and it is the worst one
 
