@@ -1471,8 +1471,26 @@ is not a blocker for release 1. That is a release decision and it is written her
 so that it is one — an earlier version of this page told the tester not to report
 the defect at all, which is not the same thing and is worse.
 
-**What the next run is actually for.** A–D, G, H, I, E4, F1, F2, J1–J9 and J12–J14
-were ticked on 2026-08-27 and do not need repeating unless the build changed under
-them. `create` and `logs` have never been run at all, and the detached `go` has
-never been run in the form E3 now describes. Those are phases K, L and E, and they
-are the point. If time runs out, run those and record the rest as carried forward.
+**What the next run is actually for.** `create` and `logs` have never been run at
+all, and the detached `go` has never been run in the form E3 now describes. Those
+are phases K, L and E, and they are the point. **If time runs out, run those and
+record the rest as carried forward.**
+
+**What can no longer be carried forward, and why.** The 2026-08-27 pass covered
+A–D, G, H, I, E4, F1, F2, J1–J9 and J12–J14, and that used to be the list you
+could skip. **21 of those boxes are not the same boxes any more** — the criteria
+themselves were rewritten, so a 2026-08-27 tick is a tick against different
+words:
+
+| | |
+|---|---|
+| **A3, A6, A8** | A3 listed 17 commands where the binary has 21; A6 quoted guide text that no longer exists — both failed a correct build. A8 is new and **expected to fail** |
+| **B2, B2b, B0b** | "Nothing overwritten" had no step that could notice; B0b stops the page teaching invented project ids |
+| **C8, C9** | C8 says when it is unreachable; C9 covers `quota request`, which the pack never ran |
+| **G1, G2, G4, G5, G6a–G6d** | G4 checked one instance and phase R makes two; G5 passed on a `down` that did nothing; G6 required behaviour no block ran |
+| **I1, I2, I3, I3b, I5** | **the whole phase.** It said "compare" and never captured a before. Q0 is now that before, and it must be run before phase K |
+
+Everything else on the 2026-08-27 list still carries forward: **D, H, E4, F1, F2,
+J1–J6 and J12–J14**. If you carry a box forward, say which pass you are carrying
+it from — a tick against wording that has since changed is the thing this table
+exists to stop.
