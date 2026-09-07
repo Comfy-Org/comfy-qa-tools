@@ -147,7 +147,14 @@ UNRUNNABLE = ("needs", "need ", "interactive", "only reachable", "only exists",
               "not arrangeable", "same precondition", "run at ", "run between",
               "cannot be forced", "not something to arrange", "window is seconds")
 
-CRITERION = re.compile(r"- \[ \] \*\*([A-Za-z0-9.]+)\*\*(.*?)(?=\n- \[ \]|\n\n|\n#)", re.S)
+# `/` belongs in the id class. Without it this walk silently skipped the nine
+# combined criteria — `A5a/A5b`, `J2/J3/J4`, `N8/N9` and the rest — so the guard
+# below was enforcing over 148 of the pack's 157 boxes and reporting success.
+# That is class 6 of docs/tests-that-cannot-fail.md, in the guard written to
+# catch the pack's version of the same disease. `test_the_walk_sees_every_box`
+# is the cure: assert the walk's own count against a dumb line count, so a
+# narrowed pattern fails loudly instead of quietly checking less.
+CRITERION = re.compile(r"- \[ \] \*\*([A-Za-z0-9./]+)\*\*(.*?)(?=\n- \[ \]|\n\n|\n#)", re.S)
 
 
 def _criteria() -> list[tuple[str, str]]:
@@ -161,6 +168,22 @@ def _markers() -> set[str]:
 
 def test_the_pack_has_criteria_at_all():
     assert len(_criteria()) > 100
+
+
+def test_the_walk_sees_every_box():
+    """The guard on the guard, and it is here because this walk has already lied.
+
+    A checkbox line is `- [ ] **<id>** …`, so counting them needs no regex worth
+    getting wrong. If the structured walk returns fewer, the pattern has narrowed
+    and some criteria are going unchecked — which is exactly what happened: the id
+    class omitted `/`, and nine combined ids were skipped in silence.
+    """
+    dumb = len([line for line in PACK.read_text().splitlines()
+                if line.startswith("- [ ] **")])
+    assert len(_criteria()) == dumb, (
+        f"the walk sees {len(_criteria())} criteria but the file has {dumb} "
+        f"checkboxes — the pattern has narrowed and the difference is unchecked"
+    )
 
 
 @pytest.mark.parametrize("criterion", [c for c, _ in _criteria()])
@@ -189,7 +212,13 @@ def test_every_criterion_is_runnable_or_says_why_not(criterion):
     """
     body = dict(_criteria())[criterion]
     markers = _markers()
-    runnable = any(criterion[:n] in markers for n in range(len(criterion), 0, -1))
+    # `A5a/A5b` is one line grading two commands, and each half has its own marker.
+    # Checking the joined string would match nothing and fail every combined id.
+    parts = criterion.split("/")
+    runnable = all(
+        any(part[:n] in markers for n in range(len(part), 0, -1))
+        for part in parts
+    )
     if runnable:
         return
     aside = " ".join(re.findall(r"\*\((.*?)\)\*", body, re.S)).lower()

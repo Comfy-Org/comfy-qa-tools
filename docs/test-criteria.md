@@ -160,7 +160,9 @@ can pass for the wrong reason.
 T=$(mktemp -d); echo "=== B0 scratch $T"
 P=$(gcloud config get-value project 2>/dev/null); echo "=== B0b project $P — read, never invented"
 echo "=== B1 init"; qat init --config $T/hosts.toml; head -14 $T/hosts.toml
+cp $T/hosts.toml $T/hosts.before
 echo "=== B2 init refuses to clobber"; qat init --config $T/hosts.toml; echo "exit $?"
+echo "=== B2b and the file is byte-for-byte what it was"; diff $T/hosts.before $T/hosts.toml && echo "unchanged"
 echo "=== B3 list"; qat list --config $T/hosts.toml
 echo "=== B4 bare host == list (the old spelling, still there)"; qat host --config $T/hosts.toml
 gce() { printf '[hosts.%s]\nkind = "gce"\nos = "Ubuntu 22.04"\ngpu = "L4"\ngce_instance = "%s"\ngce_zone = "us-central1-a"\ngce_project = "%s"\nport = %s\n\n' "$1" "$1" "$P" "$2"; }
@@ -183,7 +185,13 @@ echo "=== B10 missing file"; qat list --config $T/nope.toml; echo "exit $?"
       it for the phases that do reach Google. Read it with `gcloud config
       get-value project`, never type one.
 - [ ] **B1** — writes the file and says where; the starter has `local` on 8188.
-- [ ] **B2** — refuses, names `--force`, exit 2. Nothing overwritten.
+- [ ] **B2** — refuses, and names `--force` as the way to do it deliberately. Exit 2.
+- [ ] **B2b** — **the file is unchanged, and you looked.** `diff` prints nothing
+      and says `unchanged`. This was one clause of B2 — "Nothing overwritten" —
+      with no step that could have noticed if it had been: a tester read the
+      refusal and ticked the claim about the file, which the refusal is not
+      evidence for. It is free, offline, and it is the difference between
+      believing `init` and checking it.
 - [ ] **B3** — a table with NAME KIND OS GPU URL.
 - [ ] **B4** — bare `host` prints the same table as B3, and accepts `--config`.
 - [ ] **B5** — names host `bad` and port 8188 and the local ComfyUI. Exit 2.
