@@ -173,7 +173,8 @@ def init_cmd(
 
 @app.command("discover")
 def discover_cmd(
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Show what would be added without writing anything.")] = False,
 ) -> None:
@@ -243,7 +244,8 @@ def create_cmd(
         "--region", help="Narrow to one region; the zone inside it is still chosen.")] = None,
     disk: Annotated[int, typer.Option(
         "--disk", help="Boot disk in GB. Models live on it.")] = 200,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before creating.")] = False,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the plan, the quota and the zone order. Create nothing.")] = False,
@@ -555,7 +557,8 @@ def _known_verdict(host: Host, found: str) -> str:
 @app.command("up")
 def up_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -590,7 +593,8 @@ def up_cmd(
 @app.command("open")
 def open_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -646,7 +650,8 @@ def open_cmd(
 @app.command("disconnect")
 def disconnect_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -687,7 +692,8 @@ def down_cmd(
     name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4. "
              "Omit it with --all.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     # `down` was the only machine-taking command without these — go, up, open,
     # switch, logs, stamp, ssh, rdp and move all take them — so a session spent
     # typing `go --os windows` ended at `down --os windows`, which was refused
@@ -921,7 +927,8 @@ def down_cmd(
 @app.command("go")
 def go_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -970,7 +977,8 @@ def go_cmd(
 @app.command("ssh")
 def ssh_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — linux, l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1040,7 +1048,8 @@ def ssh_cmd(
 @app.command("rdp")
 def rdp_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1101,7 +1110,8 @@ def rdp_cmd(
 @app.command("logs")
 def logs_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1342,7 +1352,8 @@ def switch_cmd(
     # mandatory made the flags on the same help panel unusable.
     name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1602,7 +1613,8 @@ def move_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")] = None,
     to: Annotated[Optional[str], typer.Option(
         "--to", help="Zone to move it to. Default: whichever one Google says has capacity.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1914,7 +1926,8 @@ def _probe_fix(host: Host) -> str | None:
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(

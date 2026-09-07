@@ -86,7 +86,8 @@ def _boot_disk_phrase(gc, host) -> str:
 @app.command("delete")
 def delete_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine to delete: its name.")] = None,
-    config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     yes: Annotated[bool, typer.Option(
         "--yes", help="Skip the name confirmation. You have already decided.")] = False,
 ) -> None:
