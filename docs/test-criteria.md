@@ -680,7 +680,7 @@ it spent it on.** Silence is the defect.
 is now a second command that spends money, so it is a second thing that can leave
 something behind, and it has never been through this phase.*
 
-## Phase N — deleting a box *(this destroys a machine; run it last)*
+## Phase N — deleting a box *(this destroys a machine; run it after H and J)*
 
 **Nothing in this phase has ever been run, and until now nothing in this pack
 mentioned `delete` at all.** It is the only command here that cannot be undone:
@@ -688,10 +688,15 @@ it removes the instance *and* its boot disk, and the ComfyUI on it, the models o
 it and whatever a test run left behind go with them. Nothing brings any of it
 back.
 
-It is placed after phase I on purpose. Delete the box phase K made, then **run
-phase I again** — a delete that leaves a 300 GB disk behind is the exact leak
-phase I exists to catch, and this is the one command guaranteed to produce it if
-it is wrong.
+It is written after phase I on purpose, so that the pairing is on the page: delete
+the box phase K made, then **run phase I again**. A delete that leaves a 300 GB
+disk behind is the exact leak phase I exists to catch, and this is the one command
+guaranteed to produce it if it is wrong.
+
+**Run it after H and J, not here.** N1–N7 are refusals and can be run at any point
+— they are the cheapest checks in the pack. But N9 takes the box out of your host
+list, and J2–J4 resolve `windows`, `l4` and `windows/l4` against the hosts that
+are declared. Delete first and those checks have nothing to resolve to.
 
 N1–N7 are refusals. They cost nothing and destroy nothing, and they are most of
 the value of this phase: everything worth protecting here is protected before the
