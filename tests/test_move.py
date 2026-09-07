@@ -1309,3 +1309,80 @@ def test_a_clean_does_not_shorten_the_unrelated_report():
     assert len(stray) > len(counted), (
         "the remembered length still hides lines the split keeps"
     )
+
+
+# --- an abandoned move, not just a resumed one ----------------------------
+#
+# `relocate` is the one place in this tool designed for being interrupted — "a
+# half-finished move is resumable, not a wall" — and its leftovers report was
+# reachable only on the NEXT `move` run, which is the run somebody who has just
+# pressed Ctrl-C is least likely to make. So "nothing is left billing in
+# silence" was true of a resumed move and false of an abandoned one.
+#
+# No new wording for any of this: the record is handed the same `_state_after`
+# the MoveError path uses, with the step in progress counted as done. Counting it
+# as done is the honest reading — the request has reached Google by then, and
+# Ctrl-C reaches only the local gcloud, so assuming it did NOT happen is the
+# assumption that costs money.
+
+
+def test_an_interrupted_move_names_the_snapshot_it_had_already_paid_for(capsys):
+    from comfy_qa import inflight
+
+    cloud, gc, plan, found = prepared()
+    cloud.fail["compute disks create"] = KeyboardInterrupt()
+    _, say = recorder()
+    added, register = registrations()
+
+    with pytest.raises(inflight.Interrupted):
+        run_move(gc, plan, found, say, register=register)
+
+    assert inflight.report() is True
+    report = capsys.readouterr().err
+
+    assert plan.snapshot in report, report
+    assert plan.new_disk in report, "the disk in flight is counted as made"
+    assert "snapshots delete" in report
+    assert "disks delete" in report
+    assert f"comfy-qat move {plan.host.name} --to {plan.to_zone}" in report, (
+        "resuming is the cheap way out and it has to be on the same screen as "
+        "the delete commands"
+    )
+    assert added == [], "nothing reached the host list"
+
+
+def test_an_interrupt_at_the_instance_leads_with_the_stop_not_the_delete():
+    """The instance is the only part billing by the minute, and `_state_after`
+    deliberately lists it with no cleanup command — on the failure paths a move
+    that got this far is a move that succeeded, and the finished-move output
+    hands the stop and the delete over separately. An interrupted run has nothing
+    printing them, so the record adds them, stop first."""
+    from comfy_qa import inflight
+
+    cloud, gc, plan, found = prepared()
+    cloud.fail["compute instances create"] = KeyboardInterrupt()
+    _, say = recorder()
+    added, register = registrations()
+
+    with pytest.raises(inflight.Interrupted):
+        run_move(gc, plan, found, say, register=register)
+
+    undo = [line for item in inflight.pending() for line in item.undo]
+    inflight.clear()
+
+    stop = next(i for i, line in enumerate(undo) if "instances stop" in line)
+    delete = next(i for i, line in enumerate(undo) if "instances delete" in line)
+    assert stop < delete, undo
+
+
+def test_a_move_that_finishes_leaves_the_record_empty():
+    """Every step registers, and every step that returns clears."""
+    from comfy_qa import inflight
+
+    cloud, gc, plan, found = prepared()
+    _, say = recorder()
+    added, register = registrations()
+
+    run_move(gc, plan, found, say, register=register)
+
+    assert inflight.pending() == []

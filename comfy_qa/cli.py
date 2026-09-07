@@ -210,5 +210,30 @@ def register(parent: typer.Typer, name: str = "qa") -> None:
     parent.add_typer(app, name=name)
 
 
+# An interrupt is not a failure, and 1 is the code a failure uses. 130 is what a
+# shell reports for a process killed by SIGINT (128 + 2), so `echo $?` after a
+# Ctrl-C says what happened rather than saying the command broke.
+INTERRUPTED = 130
+
+
 def main() -> None:
-    app()
+    """The entry point, and the one place an interrupt is reported.
+
+    Everything a mutating call may have left behind is registered by `inflight`
+    at the call site and read back here — one handler rather than a
+    `except KeyboardInterrupt` per command, because those drift and the fifth
+    command written next month gets none.
+
+    `Interrupted` and not `KeyboardInterrupt`: Click catches the real thing
+    inside its own `main()` and turns it into a blank line, `Aborted!` and exit
+    1, before anything here runs. `KeyboardInterrupt` is caught as well, for the
+    paths that do not go through Click — `register()` hands this surface to
+    another app, and an embedder may not be Click at all.
+    """
+    from . import inflight
+
+    try:
+        app()
+    except (inflight.Interrupted, KeyboardInterrupt):
+        inflight.report()
+        raise SystemExit(INTERRUPTED) from None

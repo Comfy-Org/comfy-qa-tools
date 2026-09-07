@@ -480,28 +480,87 @@ def test_it_refuses_before_it_reads_anything_from_google(cli):
     assert "quota" not in result.output.lower(), result.output
 
 
-def test_an_interrupt_during_create_names_the_gcloud_stop(cli):
-    """Ctrl-C does not cancel the gcloud child — `Gcloud.run` waits a SECOND time,
-    so a create already under way completes and only then unwinds. Measured:
-    interrupt at 0.4s, return at 2.02s, resource created.
+def test_an_interrupt_during_create_names_the_gcloud_stop(monkeypatch, tmp_path,
+                                                          run_main):
+    """Ctrl-C does not cancel the create. What the interrupt reaches is the local
+    gcloud; the request it made has already gone, and Compute Engine builds the
+    instance server-side whether or not the client that asked for it is alive.
 
     `create` is the one where `comfy-qat down` cannot help. The host list entry is
     written eighteen lines after the instance exists, so an interrupt in between
     leaves a running, billing box that `list` cannot see — under the word
     "Aborted!", which means nothing happened.
+
+    Driven through `cli.main` rather than `CliRunner`, because the report lives in
+    `main` and `CliRunner` never reaches it. That is also what makes the exit code
+    assertable, and the code is half the message: 130 says interrupted, 1 says the
+    command broke, and Click's `Abort` said the second about the first.
     """
-    from comfy_qa import create as create_module
+    from comfy_qa.cli import INTERRUPTED
 
-    def interrupted(*args, **kwargs):
-        raise KeyboardInterrupt
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
 
-    original = create_module.build
-    create_module.build = interrupted
-    try:
-        result = cli("--os", "linux", "--gpu", "l4", "--yes")
-    finally:
-        create_module.build = original
+    class Interrupted(FakeGcloud):
+        """Ctrl-C lands inside the create call itself, which is the real shape.
 
-    assert "may already exist and be billing" in result.output, result.output
-    assert "gcloud compute instances stop" in result.output
-    assert "comfy-qat discover" in result.output
+        Not a stubbed-out `build`: the registration lives at the call site inside
+        `build`, so replacing `build` would remove the thing under test and leave
+        a green assertion about nothing.
+        """
+
+        def create_instance_from_image(self, *args, **kwargs):
+            self.calls.append("create_instance_from_image")
+            raise KeyboardInterrupt
+
+    cloud = Interrupted()
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    code, output = run_main(
+        ["create", "--os", "linux", "--gpu", "l4", "--yes", "--config", str(path)])
+
+    assert code == INTERRUPTED, output
+    assert "Aborted!" not in output
+    assert "gcloud compute instances stop" in output, output
+    assert "comfy-qat discover" in output
+    assert "may exist and be billing" in output
+
+
+def test_an_interrupt_names_the_zone_the_create_was_actually_in(monkeypatch, tmp_path,
+                                                               run_main):
+    """The zone in the message has to be the zone of the attempt, not the first
+    zone in the ordering.
+
+    Stockouts are why this matters and why it was wrong: `build` falls through
+    the ranked list a zone at a time, and a stockout-heavy day is exactly when
+    the loop runs long enough to be interrupted. The old handler lived in
+    `create_cmd`, which only ever knew `ordering.zones[0]`, so it named the FIRST
+    zone — a `gcloud compute instances stop --zone=` pointed at a zone with
+    nothing in it, handed to somebody who has just been told they may be paying.
+    """
+    from comfy_qa.cli import INTERRUPTED
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+
+    class StockoutThenInterrupt(FakeGcloud):
+        """The first zone is out of L4s; the second is interrupted mid-create."""
+
+        attempts = 0
+
+        def create_instance_from_image(self, *args, **kwargs):
+            StockoutThenInterrupt.attempts += 1
+            self.calls.append("create_instance_from_image")
+            if StockoutThenInterrupt.attempts == 1:
+                raise GcloudError("stockout", raw=STOCKOUT)
+            raise KeyboardInterrupt
+
+    cloud = StockoutThenInterrupt()
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    code, output = run_main(
+        ["create", "--os", "linux", "--gpu", "l4", "--yes", "--config", str(path)])
+
+    assert code == INTERRUPTED, output
+    assert StockoutThenInterrupt.attempts == 2, output
+    second = [zone for zone in ZONES if f"trying {zone}" in output][1]
+    assert f"the instance comfy-linux in {second}" in output, output
+    assert f"--zone={second}" in output

@@ -581,3 +581,71 @@ def test_a_ceiling_switch_that_fails_says_you_are_on_neither_machine(cli, monkey
     assert "you are on neither" in result.output, result.output
     assert "may have started and be billing" in result.output
     assert "list --live" in result.output
+
+
+# --- Ctrl-C on the ceiling path -------------------------------------------
+#
+# `switch` is the only command that can lose two things at once, and on this
+# project it is the normal path: with GPUS_ALL_REGIONS at 1 the machine you were
+# on is STOPPED before the one you asked for is started. An interrupt inside the
+# start then leaves you on neither — the new box possibly up and billing, the old
+# one down, and the session you were mid-way through gone.
+#
+# The failure case already says this, in the `except typer.Exit` handler under
+# `_bring_up`. The interrupt case gets the same clause from the record rather
+# than from a second `except`, because two frames writing the same sentence about
+# the same event is how it drifts. The interrupt is put where a real one lands —
+# inside `compute instances start` — so the registration under test is the real
+# one and not a stub standing in for it.
+
+
+def test_an_interrupt_after_the_ceiling_stop_reports_both_losses(
+        cli, monkeypatch, capsys):
+    from comfy_qa import host as host_module
+    from comfy_qa import inflight
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
+                        lambda gc, host, others: 1)
+
+    with pytest.raises(inflight.Interrupted):
+        cli("switch", "comfy-win", "--no-browser",
+            statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+            open_tunnels=("comfy-linux",), fail=KeyboardInterrupt())
+
+    assert inflight.report() is True
+    report = capsys.readouterr().err
+
+    assert "may exist and be billing" in report, report
+    assert "comfy-win" in report
+    assert "comfy-qat down comfy-win" in report
+    # The half only `switch` knows, and the half that is not a bill.
+    assert "comfy-linux already stopped" in report
+    assert "already happened when you stopped it" in report
+    assert "comfy-qat up comfy-linux" in report
+    assert report.index("may exist and be billing") < report.index("already stopped"), (
+        "the bill leads. It is the half that costs money while somebody reads"
+    )
+
+
+def test_a_switch_that_stopped_nothing_reports_only_the_bill(cli, monkeypatch,
+                                                             capsys):
+    """On the ordinary path the target comes up first, so an interrupt leaves you
+    exactly where you were and there is no second clause to print. Reporting one
+    anyway would tell somebody their session is gone when it is not."""
+    from comfy_qa import host as host_module
+    from comfy_qa import inflight
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
+                        lambda gc, host, others: None)
+
+    with pytest.raises(inflight.Interrupted):
+        cli("switch", "comfy-win", "--no-browser",
+            statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+            open_tunnels=("comfy-linux",), fail=KeyboardInterrupt())
+
+    assert inflight.report() is True
+    report = capsys.readouterr().err
+
+    assert "may exist and be billing" in report, report
+    assert "already happened when you stopped it" not in report, report
+    assert "comfy-linux" not in report

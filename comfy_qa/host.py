@@ -30,7 +30,9 @@ from .config import (
     load,
     resolve,
 )
-from . import say
+from contextlib import ExitStack
+
+from . import inflight, say
 from .lifecycle import LifecycleError, is_windows
 from .provision import RDP_PORT
 from .stamp import ProbeError, fetch, mismatch
@@ -357,33 +359,14 @@ def create_cmd(
         made_in = build(gc, blueprint, ordering, project, say.step)
     except _reportable() + (GcloudError,) as exc:
         say.fail(exc, code=1)
-    except KeyboardInterrupt:
-        # Ctrl-C does NOT cancel the gcloud child. `Gcloud.run` catches the
-        # interrupt and calls `process.wait()` a SECOND time, so the create
-        # completes and only then unwinds — measured: interrupt at 0.4s, the
-        # pattern returns at 2.02s, and the resource exists.
-        #
-        # KeyboardInterrupt is a BaseException, so it walks past every handler in
-        # this file and Click prints "Aborted!". A GPU box is then running,
-        # billing, and in no host list — invisible to `list`, reachable only by
-        # `down --all`, `discover` or the console, none of which anyone runs after
-        # a screen that said the command was aborted.
-        #
-        # "may" is the honest word: at the moment of the interrupt this tool does
-        # not know how far the create got. Both outcomes are named because the
-        # cost of checking is one read and the cost of not checking is a GPU.
-        say.error(
-            f"interrupted — {blueprint.name} may already exist and be billing",
-            say.fix(
-                "check, and stop it if it is there:",
-                f"gcloud compute instances list --project={project}",
-                f"gcloud compute instances stop {blueprint.name} "
-                f"--zone={ordering.zones[0]} --project={project}",
-                "it is not in your host list, so `comfy-qat down` cannot reach "
-                "it — `comfy-qat discover` adopts it if you want to keep it",
-            ),
-        )
-        raise
+    # No `except KeyboardInterrupt` here, and that is the fix rather than an
+    # omission. `create.build` registers the instance with `inflight` around the
+    # one call that creates it, so the interrupt is reported by `cli.main` with
+    # the zone the attempt was ACTUALLY in. This frame only ever knew
+    # `ordering.zones[0]`, which is right until the first stockout moves the
+    # create down the list — and a stockout-heavy day is exactly when the loop is
+    # long enough to be interrupted, so the handler here was most likely to be
+    # wrong precisely when it was most likely to fire.
 
     # Re-read rather than reusing the list from before the create: this command
     # takes minutes, and a `host discover` in another terminal in the meantime
@@ -522,9 +505,6 @@ def up_cmd(
     hosts, host = _lookup(_selector(name, os_, gpu), config)
     try:
         bring_up(Gcloud(), host, say.step)
-    except KeyboardInterrupt:
-        _interrupted_while_starting(host)
-        raise
     except _reportable() as exc:
         # A box that will not start ends the session unless you are told where
         # else you could work, and a GPU shortage is the usual reason.
@@ -1079,11 +1059,12 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
     """
     from .lifecycle import COMFYUI_ABSENT, STOCKOUT, bring_up
 
+    # No `except KeyboardInterrupt`, in either this or `up_cmd`: `bring_up`
+    # registers the start with `inflight` around `start_instance` itself, and
+    # `cli.main` reports it. Two frames asking the same question of the same
+    # event is how a leftovers block came to be printed twice.
     try:
         return bring_up(gc, host, say.step, comfy_timeout=15)
-    except KeyboardInterrupt:
-        _interrupted_while_starting(host)
-        raise
     except _reportable() as exc:
         # Only "ComfyUI is not there yet" is worth continuing past. Anything else
         # (the box would not start, the tunnel failed) must be shown, not
@@ -1242,11 +1223,17 @@ def switch_cmd(
     # Watched that happen — the switch started the target, was refused with
     # "Quota 'NVIDIA_L4_GPUS' exceeded. Limit: 1.0", and reported it as a
     # failure. It was arithmetic, and it was knowable beforehand.
+    others_stopped: list = []
     if first:
         say.step(f"your quota allows {say.count(first, 'GPU machine')} at a time, "
                  f"so {host.name} cannot start until the other one stops")
         for other, _why in others:
             _act(put_away, gc, other, say.step)
+        # `others` is emptied on the next line and the record needs the names, so
+        # what was stopped is kept rather than re-derived. `_failed` is handed the
+        # same empty list and cannot say where to work instead; this is the half
+        # of that gap an interrupt can close.
+        others_stopped = list(others)
         others = []
 
     # `stopped_first` is not bookkeeping. On the ceiling path the old box is
@@ -1256,17 +1243,37 @@ def switch_cmd(
     # `_failed` is handed an empty `kept` for the same reason and cannot say
     # where to work instead.
     stopped_first = bool(first)
-    try:
-        ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
-    except typer.Exit:
+    # The interrupt case needs the same clause as the failure case below, and
+    # gets it from the record rather than from a second `except`: `_bring_up`
+    # already registers the start, so this adds the half only `switch` knows —
+    # that the machine you were on is down already. `billing=False` because it
+    # is not a bill, it is a session; reporting it under the bill heading would
+    # replace one false claim with another.
+    #
+    # Registered only on the ceiling path, because that is the only path where
+    # anything has been stopped by now. On the ordinary path the target comes up
+    # first and an interrupt leaves you exactly where you were.
+    with ExitStack() as registered:
         if stopped_first:
-            say.error(
-                f"the machines you had are stopped and {host.name} did not come "
-                f"up, so you are on neither. Check what is running before "
-                f"retrying — {host.name} may have started and be billing",
-                say.fix("ask Google what is up:", "comfy-qat list --live"),
-            )
-        raise
+            names = ", ".join(other.name for other, _why in others_stopped)
+            registered.enter_context(inflight.may_leave(
+                f"{names} already stopped to make room under the GPU ceiling",
+                undo=[f"comfy-qat up {others_stopped[0][0].name}"],
+                note=f"nothing is serving until one of them is up, and "
+                     f"`comfy-qat switch {host.name}` retries the whole thing",
+                billing=False,
+            ))
+        try:
+            ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
+        except typer.Exit:
+            if stopped_first:
+                say.error(
+                    f"the machines you had are stopped and {host.name} did not come "
+                    f"up, so you are on neither. Check what is running before "
+                    f"retrying — {host.name} may have started and be billing",
+                    say.fix("ask Google what is up:", "comfy-qat list --live"),
+                )
+            raise
 
     for other, _why in others:
         _act(put_away, gc, other, say.step)
@@ -1608,27 +1615,6 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | No
 
 def _tail_zone(url: str) -> str:
     return (url or "").rstrip("/").rsplit("/", 1)[-1]
-
-
-def _interrupted_while_starting(host: Host) -> None:
-    """Say what a Ctrl-C during a start actually left behind.
-
-    Ctrl-C does not cancel the gcloud child: `Gcloud.run` catches the interrupt
-    and waits a SECOND time, so the start completes and only then unwinds —
-    measured at interrupt 0.4s, return 2.02s, resource created. And
-    KeyboardInterrupt is a BaseException, so it walks past `_reportable()` and
-    every handler in this file, and Click prints "Aborted!".
-
-    A box that is running and billing, under a word that means nothing happened,
-    is the most expensive sentence this tool can print. `_serve` and `logs`
-    already get this right for their own phase; the boot phase had nothing.
-    """
-    say.error(
-        f"interrupted — {host.name} may have started before you stopped it, "
-        "and a started box bills",
-        say.fix("check what is actually running:", "comfy-qat list --live",
-                f"comfy-qat down {host.name}"),
-    )
 
 
 def _probe_fix(host: Host) -> str | None:

@@ -342,6 +342,13 @@ def test_every_exception_this_package_defines_is_named_here():
 # previously held only in a regex.
 EXCUSED = frozenset({
     "Exit", "Abort",                      # control flow: no message at all
+    # Ctrl-C, and the code it exits with. Also control flow with no message:
+    # `Interrupted` is deliberately empty, because what an interrupt has to say
+    # is not a property of the exception — it is whatever `inflight` had
+    # registered at the moment it was raised, which is different for a create,
+    # a start and a move. `cli.main` prints that, and `report`'s own wording is
+    # documented in troubleshooting.md like any other message.
+    "Interrupted", "SystemExit",
     "_stopped", "_unregistered", "give_up",  # helpers that BUILD an exception;
                                           # their literals are caught at the
                                           # constructor call inside them

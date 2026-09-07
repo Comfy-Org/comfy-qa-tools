@@ -42,6 +42,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
 
+from . import inflight
 from . import say as output
 from .config import ConfigError, Host
 from .gcloud import QUOTA, Gcloud, GcloudError
@@ -1096,29 +1097,43 @@ def run_move(
     for action in plan.actions(found):
         say(action.line)
         try:
-            if action.kind == SNAPSHOT:
-                gc.snapshot_disk(plan.source_disk, host.gce_zone, project, plan.snapshot)
-            elif action.kind == CREATE_DISK:
-                _create_disk(gc, plan, snapshot_name, say)
-            elif action.kind == CREATE_INSTANCE:
-                gc.create_instance_from_disk(
-                    plan.new_instance, plan.to_zone, project, plan.new_disk,
-                    plan.machine_type, plan.metadata,
-                    accelerator=plan.accelerator,
-                    external_ip=plan.external_ip,
-                    network=plan.network, subnet=plan.subnet,
-                )
-            elif action.kind == DELETE_SNAPSHOT:
-                gc.delete_snapshot(snapshot_name, project)
-            elif action.kind == REGISTER:
-                register(plan)
-            elif action.kind == LEAVE:
-                # Deliberately nothing. A move leaves the source alone, and the
-                # user may still be working on it. Before this branch existed the
-                # step fell through the dispatch and was recorded as done, which
-                # is how "leave comfy-win stopped" came to be printed about a box
-                # that was running.
-                pass
+            # Registered with the step counted as done, because at the moment of
+            # an interrupt that is the honest reading: the request has reached
+            # Google and Ctrl-C reaches only the local gcloud. So the record
+            # holds what a MoveError would have said had the step failed here —
+            # the same `_state_after`, the same cleanup commands.
+            #
+            # This is what makes "a half-finished move is resumable, not a wall"
+            # true of an ABANDONED move as well as a resumed one. The leftovers
+            # report has always existed; it was only reachable on the next `move`
+            # run, which is the run somebody who has just pressed Ctrl-C is least
+            # likely to make.
+            what, how = _inflight(plan, found, done, action)
+            with inflight.may_leave(what, **how):
+                if action.kind == SNAPSHOT:
+                    gc.snapshot_disk(plan.source_disk, host.gce_zone, project,
+                                     plan.snapshot)
+                elif action.kind == CREATE_DISK:
+                    _create_disk(gc, plan, snapshot_name, say)
+                elif action.kind == CREATE_INSTANCE:
+                    gc.create_instance_from_disk(
+                        plan.new_instance, plan.to_zone, project, plan.new_disk,
+                        plan.machine_type, plan.metadata,
+                        accelerator=plan.accelerator,
+                        external_ip=plan.external_ip,
+                        network=plan.network, subnet=plan.subnet,
+                    )
+                elif action.kind == DELETE_SNAPSHOT:
+                    gc.delete_snapshot(snapshot_name, project)
+                elif action.kind == REGISTER:
+                    register(plan)
+                elif action.kind == LEAVE:
+                    # Deliberately nothing. A move leaves the source alone, and
+                    # the user may still be working on it. Before this branch
+                    # existed the step fell through the dispatch and was recorded
+                    # as done, which is how "leave comfy-win stopped" came to be
+                    # printed about a box that was running.
+                    pass
         except GcloudError as exc:
             # The box exists by this point, so a snapshot that will not delete is
             # a bill to hand over, not a reason to call a finished move a failure.
@@ -1145,6 +1160,41 @@ def run_move(
         done.append(action.kind)
 
     return Outcome(done=tuple(done), warnings=tuple(warnings))
+
+
+def _inflight(plan: Plan, found: Found, done: list[str], action: Action):
+    """What this run may have left, if it is interrupted inside `action`.
+
+    Built from the same `_state_after` the MoveError path uses, with the step in
+    progress counted as done — the request has reached Google by then, and Ctrl-C
+    reaches only the local gcloud, so assuming it did NOT happen is the assumption
+    that costs money.
+
+    The instance gets its own hand-over line, because `_state_after` deliberately
+    lists it without a cleanup command: on the failure paths a move that got that
+    far is a move that succeeded, and the finished-move output hands over the stop
+    and the delete separately. An interrupted run has nothing printing them, so
+    they are added here.
+    """
+    left, cleanup = _state_after(plan, found, [*done, action.kind])
+    if not left:
+        return "", {"undo": (), "note": ""}
+    undo = list(cleanup)
+    if CREATE_INSTANCE in done or REUSE_INSTANCE in done or action.kind == CREATE_INSTANCE:
+        undo = [
+            "stop the box first — it is the only part billing by the minute:",
+            stop_instance_command(plan),
+            "then, if you do not want it, the disk and the snapshot go with it:",
+            *cleanup,
+            delete_instance_command(plan),
+        ]
+    elif undo:
+        undo = ["take it off the bill:", *undo]
+    return "\n".join(left), {
+        "undo": tuple(undo),
+        "note": f"or run the same command again — it finds what already exists and "
+                f"carries on: comfy-qat move {plan.host.name} --to {plan.to_zone}",
+    }
 
 
 def _unregistered(plan: Plan, found: Found, done: list[str],

@@ -266,3 +266,41 @@ def test_the_grace_outlasts_gcloud_own_connection_test():
     from comfy_qa.tunnel import SPAWN_GRACE
 
     assert SPAWN_GRACE >= 5, "gcloud's own check takes seconds against Windows"
+
+
+def test_an_interrupt_between_the_spawn_and_the_record_closes_the_tunnel(
+        tmp_path, monkeypatch, processes):
+    """The one leftover in this tool that cannot be handed over as a command.
+
+    `open_tunnel` spawns ssh and then writes the record, and the OSError branch
+    between them already says why the gap matters: "a tunnel nobody has a record
+    of cannot be closed by `down`" — it holds the local port, points at a box
+    that is billing, and nothing on screen says it is there. A Ctrl-C in the
+    milliseconds between the two produces exactly that state and walked past the
+    branch built to prevent it.
+
+    Undone rather than reported, and that is why it needs no `inflight`
+    registration: the pid is the only handle on the process and it is about to be
+    lost, so there is nothing left to register by the time the exception carries
+    on.
+    """
+    from comfy_qa import tunnel as tunnel_module
+
+    process = _something_else(processes)
+    real_write = tunnel_module._write
+
+    def interrupt_the_first_write(path, text):
+        if path.suffix == ".json":
+            raise KeyboardInterrupt
+        return real_write(path, text)
+
+    monkeypatch.setattr(tunnel_module, "_write", interrupt_the_first_write)
+
+    with pytest.raises(KeyboardInterrupt):
+        open_tunnel(WIN, tmp_path, launcher=lambda cmd, log: process.pid)
+
+    process.wait(timeout=5)
+    assert process.poll() is not None, (
+        "a live ssh with no record is unreachable by every command this tool has"
+    )
+    assert not pid_file("comfy-win", tmp_path).exists()

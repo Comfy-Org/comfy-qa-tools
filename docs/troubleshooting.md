@@ -1389,31 +1389,53 @@ did: the box you were working on is down, and the new one may be up and billing.
 `comfy-qat list --live` asks Google what is actually running, which is the only
 answer worth having before retrying.
 
-## Ctrl-C while a machine is starting
+## Ctrl-C while something is being created, started or moved
 
-**`interrupted — <name> may have started before you stopped it, and a started box bills`** / **`interrupted — <name> may already exist and be billing`**
+**`interrupted — Ctrl-C stops this tool, it does not cancel a request Google has already accepted. This may exist and be billing:`**
 
-Ctrl-C does not cancel the work. gcloud's own child process is waited on a second
-time when the interrupt arrives, so a start or a create that was already under way
-COMPLETES, and only then does the command unwind. Measured: the interrupt lands at
-0.4s, the call returns at 2.02s, and the machine exists.
+Followed by what was in flight, and by the exact commands that take it off the
+bill. The command exits **130**, which is what a shell reports for a process
+stopped by Ctrl-C. It used to exit 1 under the word `Aborted!` — a failure code
+over a sentence meaning nothing happened, printed over a GPU box that was running.
 
-Without these messages the screen said `Aborted!`, which means nothing happened.
-Something did, and it bills.
+**What actually happens, because the obvious reading is wrong in both
+directions.** Ctrl-C reaches the local `gcloud` process and kills it. It does
+*not* reach Compute Engine: the API request has already gone, and the instance is
+built on Google's side whether or not the client that asked for it is still
+alive. So the resource is at risk, and the tool learns nothing from the interrupt
+about whether it succeeded — `subprocess.run` re-raises without returning an exit
+code. Measured against the real call path with a stand-in for gcloud: the
+interrupt reaches the caller at 0.41s and nothing comes back.
 
-"may" is the honest word — at the moment of the interrupt this tool does not know
-how far the call got. Both outcomes are named because checking costs one read and
-not checking costs a GPU.
+That is why every line says **may**. What makes it useful is not a claim of
+certainty it cannot support, but the exact resource and the exact command:
 
-For `go`, `up` and `switch` the box is in your host list, so `comfy-qat down
-<name>` reaches it. For `create` it is NOT: the host list entry is written after
-the instance exists, so an interrupt in between leaves a running box that `list`
-cannot see. The raw `gcloud compute instances stop` is then the only thing that
-works, and `comfy-qat discover` adopts it if you would rather keep it.
+* **`create`** names the instance and the zone *the attempt was actually in* —
+  `build` falls through the ranked zones one at a time, so on a stockout-heavy
+  day that is rarely the first one. Its box is NOT in your host list: the entry is
+  written after the instance exists, so `comfy-qat list` cannot see it and
+  `comfy-qat down` cannot reach it. The raw `gcloud compute instances stop` is the
+  only thing that works, and `comfy-qat discover` adopts it if you would rather
+  keep it.
+* **`go`, `up` and `switch`** name the machine, and it is declared, so
+  `comfy-qat down <name>` reaches it. `comfy-qat list --live` settles whether it
+  needs to.
+* **`switch`** adds a second line under *and this had already happened when you
+  stopped it*. On the GPU-ceiling path — the normal path when `GPUS_ALL_REGIONS`
+  is 1 — the machine you were working on is stopped BEFORE the new one starts, so
+  an interrupt in between leaves you on neither. That half is not a bill, and it
+  is not reported as one.
+* **`move`** lists whatever the run had made by then — the snapshot, the new disk,
+  the new instance — with the delete commands, and with the resume: running the
+  same `comfy-qat move` again finds what exists and carries on. This is the same
+  report a *failed* move prints. Before, it was reachable only on the next `move`
+  run, which is the run somebody who has just pressed Ctrl-C is least likely to
+  make.
 
-`switch` is the one to check twice. On the GPU-ceiling path the box you were
-working on is stopped BEFORE the new one starts, so an interrupt there can leave
-you with the old one down and the new one up.
+Two interrupts are deliberately not reported here, because they are not failures
+and leave nothing behind: Ctrl-C out of `comfy-qat logs` ends the reading, and
+Ctrl-C out of `go --follow` stops ComfyUI on the box. Both say so themselves, and
+both leave the machine running and say that too.
 
 ## A read that said nothing
 

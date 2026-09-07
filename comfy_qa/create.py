@@ -46,6 +46,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import inflight
 from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .lifecycle import LifecycleError, is_capacity_failure, suggested_zones
@@ -722,7 +723,33 @@ def build(
         tried.append(zone)
         say(f"trying {zone}…")
         try:
-            create_in(gc, blueprint, zone, project)
+            # Registered around the one call that can bring a billing GPU box
+            # into existence, and registered HERE rather than in `create_cmd`
+            # because this is the only frame that knows which zone the attempt
+            # is in. `create_cmd` knows `ordering.zones[0]`, which is the right
+            # answer only until the first stockout pushes the create down the
+            # list — and a stockout-heavy day is exactly when this loop is long
+            # enough to be interrupted.
+            #
+            # The wording is the OSError branch's, twenty lines below the caller,
+            # which has said the right thing about this exact state since before
+            # anything could reach it: the box is not in the host list, so
+            # `comfy-qat down` cannot reach it and the raw gcloud stop is the
+            # only thing that works. Stopping the bill comes first and adoption
+            # second, in that order, for the same reason it does there.
+            with inflight.may_leave(
+                f"the instance {blueprint.name} in {zone}",
+                undo=[
+                    "stop it now:",
+                    f"gcloud compute instances stop {blueprint.name} "
+                    f"--zone={zone} --project={project}",
+                    "or check first, if you would rather look:",
+                    f"gcloud compute instances list --project={project}",
+                ],
+                note="it is in no host list, so `comfy-qat down` cannot reach it "
+                     "— `comfy-qat discover` adopts it if you want to keep it",
+            ):
+                create_in(gc, blueprint, zone, project)
         except GcloudError as exc:
             if not is_capacity_failure(exc.raw):
                 raise LifecycleError(

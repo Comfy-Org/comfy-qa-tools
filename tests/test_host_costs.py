@@ -961,7 +961,19 @@ def test_a_dry_run_deletes_nothing_without_clean_either(cli):
 # happened, over a GPU box that is running and billing.
 
 
-def test_an_interrupt_while_starting_says_the_box_may_be_billing(cli):
+def test_an_interrupt_while_starting_says_the_box_may_be_billing(
+        monkeypatch, tmp_path, run_main):
+    """Driven through `cli.main`, because that is where the report is.
+
+    `CliRunner` calls the command with `standalone_mode=False` and stops short of
+    `main`, so a test written against it can only see what the command printed on
+    its way past — which for an interrupt is nothing. It also cannot see the exit
+    code the shell would get, and that code is half the claim: 130 for an
+    interrupt, not the 1 Click's `Abort` gave it.
+    """
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.cli import INTERRUPTED
+
     class Interrupted(Cloud):
         def instance_status(self, instance, zone, project):
             return "TERMINATED"
@@ -969,12 +981,17 @@ def test_an_interrupt_while_starting_says_the_box_may_be_billing(cli):
         def start_instance(self, instance, zone, project):
             raise KeyboardInterrupt
 
-    result = cli("up", "comfy-win", cloud=Interrupted())
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Interrupted())
 
-    assert "may have started" in result.output, result.output
-    assert "bills" in result.output
-    assert "comfy-qat down comfy-win" in result.output
-    assert "list --live" in result.output
+    code, output = run_main(["up", "comfy-win", "--config", str(path)])
+
+    assert code == INTERRUPTED, output
+    assert "Aborted!" not in output
+    assert "may exist and be billing" in output, output
+    assert "comfy-qat down comfy-win" in output
+    assert "list --live" in output
 
 
 # `create`'s interrupt is tested in test_create_cli.py, which already has a fake

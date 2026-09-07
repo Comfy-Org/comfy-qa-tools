@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import inflight
 from . import say as output
 from .config import Host
 from .gcloud import Gcloud, GcloudError
@@ -358,7 +359,20 @@ def bring_up(
             emit=say, clock=now, background=False,
         ).start()
         try:
-            gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
+            # A start is as billable as a create and interrupts the same way: the
+            # request has reached Google, and Ctrl-C reaches only the local
+            # gcloud. Unlike a create the box is already declared, so the undo is
+            # this tool's own command and not a raw gcloud one — `down` can find
+            # it, and `list --live` settles whether it needs to.
+            with inflight.may_leave(
+                f"{host.name} ({host.gce_instance} in {host.gce_zone}), started",
+                undo=[
+                    f"comfy-qat down {host.name}",
+                    "or check first, if you would rather look:",
+                    "comfy-qat list --live",
+                ],
+            ):
+                gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
         except GcloudError as exc:
             waking.give_up()
             # Classify on everything gcloud printed. The one-line summary for a

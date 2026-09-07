@@ -106,3 +106,49 @@ def never_start_a_real_tunnel(monkeypatch, request):
 def never_write_to_the_real_config(monkeypatch, tmp_path):
     """The tunnel directory defaults beside the user's own host list."""
     monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
+
+
+@pytest.fixture(autouse=True)
+def an_empty_inflight_record():
+    """The record is module state, and an interrupt is what leaves it non-empty.
+
+    A test that interrupts a command and does not report leaves its leftover
+    registered, and the next test's report would name a resource from a run that
+    is already over. Cleared on the way in as well as the way out, so the order
+    tests happen to run in cannot decide what one of them prints.
+    """
+    from comfy_qa import inflight
+
+    inflight.clear()
+    yield
+    inflight.clear()
+
+
+@pytest.fixture
+def run_main(monkeypatch, capsys):
+    """Drive the real entry point, which is where an interrupt is reported.
+
+    `CliRunner` calls the Click command with `standalone_mode=False` and never
+    reaches `cli.main`, so it cannot see the one handler this tool has for
+    Ctrl-C — and it is the handler, not the command, that has to be right. This
+    is also the only way to assert on the exit CODE the shell would see, which
+    for an interrupt is the whole point: 130, not the 1 a failure uses.
+
+    Returns `(code, combined output)`. Combined because the report is on stderr
+    and everything leading up to it is on both, and a test that split them would
+    be asserting on `say`'s stream rule rather than on the message. `test_say.py`
+    owns that rule.
+    """
+    from comfy_qa.cli import main
+
+    def run(argv):
+        monkeypatch.setattr(sys, "argv", ["comfy-qat", *argv])
+        code = 0
+        try:
+            main()
+        except SystemExit as exit_:
+            code = exit_.code if isinstance(exit_.code, int) else 1
+        captured = capsys.readouterr()
+        return code, captured.out + captured.err
+
+    return run

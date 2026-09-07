@@ -557,6 +557,14 @@ def _claim(host: str, directory: Path, now=time.time) -> Path:
     return lock
 
 
+def _abandon(pid: int) -> None:
+    """Close a tunnel we started and could not record. Never raises."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError, PermissionError):
+        pass
+
+
 def open_tunnel(
     host: Host,
     directory: Path | None = None,
@@ -630,15 +638,27 @@ def open_tunnel(
             # A tunnel nobody has a record of cannot be closed by `down`: it holds
             # the local port, and points at a machine you are still paying for,
             # until someone finds it by hand. Better to not have started it.
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError, PermissionError):
-                pass
+            _abandon(pid)
             raise TunnelError(
                 f"the tunnel to {host.name} started (pid {pid}) but could not be "
                 f"recorded: {exc}, so it was closed again.",
                 fix=f"check the permissions on {directory}",
             ) from exc
+        except BaseException:
+            # The same reasoning, through the door the OSError branch left open:
+            # a Ctrl-C in the milliseconds between the spawn above and the two
+            # writes here produces exactly the state that branch exists to
+            # prevent — a live ssh holding the port, pointing at a box that is
+            # billing, and no file naming it, so `down` cannot close it and
+            # nothing on screen says it is there.
+            #
+            # Narrow window, and the only one in this tool where the leftover
+            # cannot be handed over as a command: the pid is the only handle and
+            # it is about to be lost. So it is undone here rather than reported,
+            # which is why this needs no `inflight` registration — there is
+            # nothing left to register by the time the exception carries on.
+            _abandon(pid)
+            raise
     finally:
         lock.unlink(missing_ok=True)
 
