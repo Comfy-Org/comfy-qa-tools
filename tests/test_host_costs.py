@@ -341,6 +341,13 @@ def test_down_all_stops_every_cloud_machine(cli):
     # and cannot tell "was already stopped" from "was running — stopped it",
     # which is the distinction this command exists to make.
     assert "was running — stopped it" in result.output
+    # That line is `put_away`'s, printed once per host, so this test named for
+    # `down --all` still held nothing `down --all` writes. Its own summary is
+    # the answer to the question the command exists for — am I still paying for
+    # anything — and it names the boxes that were costing money.
+    assert "was billing: comfy-win. Stopped. Nothing is now." in result.output, (
+        "the closing summary is the command's own line; put_away cannot write it"
+    )
 
 
 def test_down_all_keeps_going_when_one_refuses(cli):
@@ -680,9 +687,46 @@ def test_disconnect_leaves_the_machine_running_and_says_so(cli):
     # — the only place it says how to stop paying — was asserted by nothing, in
     # nine tests that ran it.
     assert "still billing" in result.output
-    assert "comfy-qat down comfy-win" in result.output, (
-        "disconnect's own stop-paying line is unasserted"
+    # And the substring `comfy-qat down comfy-win` did not fix that, because
+    # `put_away` writes it too, four words earlier, as `when the work is
+    # finished: comfy-qat down comfy-win`. Deleting host.py's line left this
+    # test GREEN — and left no failure anywhere, because the only other thing
+    # holding that line was a docs test parametrised over the string constants
+    # in the package, which loses a CASE when one goes. A count that drops from
+    # 118 to 117 with nothing red is the bug, not the alarm.
+    #
+    # So pin the rendering, not the words in it. `  <command>   # <why>` is this
+    # tool's own shape for an offered command and is host.py's; `<why>:
+    # <command>` is lifecycle's per-host prose. Nothing else can satisfy this.
+    assert "comfy-qat down comfy-win   # when the work is finished" in result.output, (
+        "disconnect's own stop-paying line, in its own shape — not put_away's"
     )
+    assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
+
+
+def test_disconnect_says_how_to_stop_paying_when_the_state_is_unreadable(cli):
+    """The path that is the whole reason the command writes its own line.
+
+    `put_away` offers the way to stop paying only where it has established that
+    the box is RUNNING. Where the read comes back empty it says so and stops —
+    and that is exactly the case where someone may be paying for a box nobody
+    can confirm. `disconnect`'s own closing line is then the ONLY stop-paying
+    advice in the output, so the duplication on the RUNNING path is the price of
+    covering this one.
+    """
+    class Unreadable(Cloud):
+        def instance_status(self, instance, zone, project):
+            self.calls.append("instance_status")
+            return ""
+
+    result = cli("disconnect", "comfy-win", cloud=Unreadable())
+
+    assert result.exit_code == 0
+    assert "could not tell whether comfy-win is running" in result.output
+    assert "when the work is finished: " not in result.output, (
+        "put_away says nothing about the bill here — that is what this covers"
+    )
+    assert "comfy-qat down comfy-win   # when the work is finished" in result.output
     assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
 
 
