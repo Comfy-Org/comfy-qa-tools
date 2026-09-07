@@ -976,10 +976,19 @@ def order_zones(
         # gcloud instead, a minute and a confirmation prompt later. Skipped when
         # the grant names no region at all, which `problem()` refuses on its own.
         if check.regions and region_of(zone) not in set(check.regions):
+            # Naming where the grant DOES apply is what separates the two
+            # readings, and it costs nothing — `check.regions` is already read.
+            # For a typo the list settles it at a glance: `us-central9` next to
+            # a list containing `us-central1` is its own diagnosis. For a real
+            # gap it is the answer to the question the refusal raises, which is
+            # "then where?". Three, because forty-three is not a sentence.
+            granted = ", ".join(check.regions[:3])
+            others = len(check.regions) - 3
+            elsewhere = f"{granted}{f' and {others} more' if others > 0 else ''}"
             raise LifecycleError(
                 f"this project has no {blueprint.card.name} quota in "
-                f"{region_of(zone)}, so nothing can start in {zone}. Nothing was "
-                f"created.",
+                f"{region_of(zone)}, so nothing can start in {zone}. It holds "
+                f"{blueprint.card.name} in {elsewhere}. Nothing was created.",
                 # The zone name is checked FIRST, and that ordering is the
                 # whole of this fix. `--zone us-central9-a` is a typo, not a
                 # quota gap: `region_of` turns it into `us-central9`, this

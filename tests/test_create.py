@@ -850,3 +850,29 @@ def test_a_terminated_box_holds_nothing():
 
     assert _cards_running([_box("TERMINATED")]) == 0
     assert _gpu_boxes_running([_box("TERMINATED")]) == []
+
+
+def test_a_zone_in_an_ungranted_region_says_where_the_grant_does_apply():
+    """A mistyped `--zone` and a real quota gap read identically, and nothing
+    offline can tell them apart — so the message names the regions that DO work.
+
+    `--zone us-central9-a` becomes `us-central9`, which this project genuinely
+    holds no quota in: the sentence is true either way. There is deliberately no
+    built-in list of Google's regions to check against, because Google adds
+    regions and a stale list would refuse a real one. Naming the grant's own
+    regions costs nothing — they are already read — and settles it at a glance:
+    `us-central9` beside a list containing `us-central1` is its own diagnosis.
+    """
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, zone="us-central9-a")
+
+    message = str(caught.value)
+    assert "no L4 quota in us-central9" in message
+    assert "It holds L4 in" in message, message
+    assert check.regions[0] in message, "a region it does hold, named"
+    assert f"and {len(check.regions) - 3} more" in message, (
+        "forty-three regions is not a sentence; three and a count is")
+    # The cheap check first, and never a quota request for a region that may not
+    # exist as the opening move.
+    assert "gcloud compute zones list --filter=name=us-central9-a" in caught.value.fix

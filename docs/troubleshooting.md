@@ -415,10 +415,27 @@ machine type. They are different problems and used to print the same sentence.
 `--region` narrows the choice without naming a zone, and it can narrow it to
 nothing. Ask for the card in that region, or drop `--region`.
 
-**`this project has no L4 quota in me-west1, so nothing can start in me-west1-a. Nothing was created.`**
+**`this project has no L4 quota in me-west1, so nothing can start in me-west1-a. It holds L4 in us-central1, europe-west1, europe-west4 and 40 more. Nothing was created.`**
 The same gate, reached through `--zone` instead of `--region`. A zone in a region
 you hold no grant in cannot start the box, and this is a cheaper way to find that
 out than a create that fails a minute later.
+
+**It reads the same for a mistyped zone, and that is deliberate.** `--zone
+us-central9-a` becomes `us-central9`, which this project genuinely holds no
+quota in — the sentence is true either way, and nothing offline can tell a typo
+from a real gap. There is no built-in list of Google's regions to check against
+on purpose: Google adds regions, and a stale list would refuse a real one.
+
+So the message names where the grant DOES apply, which settles it at a glance —
+`us-central9` beside a list containing `us-central1` is its own diagnosis — and
+the fix line puts `gcloud compute zones list --filter=name=<zone>` first,
+because the cheap check should come before the slow one.
+
+**Why the zone is not simply looked up first:** the two reads that would
+diagnose it properly come later in the same function, and
+`gcloud compute machine-types list --zones=<a zone that does not exist>` is
+refused by gcloud on the argument. Moving them ahead of this would swap a clear
+refusal for a raw gcloud error in exactly the case being diagnosed.
 
 ### While it is being created
 
