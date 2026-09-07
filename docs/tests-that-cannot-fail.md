@@ -785,7 +785,41 @@ different direction. **Three independent instances make it a principle rather
 than a trick:** when a rule is supposed to hold across a set, derive the set and
 assert the rule over it — never enumerate the members and trust the list.
 
-*Being fixed; the commit will be named here when it lands.*
+*Closed in `cdeeddd`: the check now runs before anything is created, so a move
+that cannot fit is refused up front and costs nothing.*
+
+### The same shape again, four lines apart
+
+The second instance is smaller and much easier to see, which is why it is worth
+having: **an external contract pinned on one line and not on the next.**
+
+```python
+WINDOWS_ROOT = r"C:\ComfyUI"      # provision.py:34
+LINUX_ROOT = "/opt/comfyui"       # provision.py:35
+```
+
+Both are paths this tool creates on somebody else's machine, so both are
+contracts a person could be depending on. `test_provision.py:189` asserts
+`WINDOWS_ROOT == r"C:\ComfyUI"`. **Nothing anywhere asserts what `LINUX_ROOT`
+is.** Change it in a refactor and the suite agrees with you. Four of these
+constants are unpinned against seven that are held, and nobody wrote down which
+list a new one joins.
+
+And the near-miss is the instructive part. Two lines *look* like they cover both:
+
+```python
+assert root_for(WIN) == WINDOWS_ROOT
+assert root_for(LINUX) == LINUX_ROOT
+```
+
+They pin neither. They compare a function against the constant it returns, so
+they hold for **any** value the constants take — the assertion is circular, which
+is class 7 in two lines. A reader scanning for "is this covered" sees the
+constant's name in an assertion and stops looking.
+
+Two independent instances, in unrelated parts of the codebase, with the same
+remedy: **derive the set the rule applies to, then assert the rule over it.**
+That is what makes this a claim rather than an anecdote.
 
 ## A guard whose printed remedy defeats it
 
