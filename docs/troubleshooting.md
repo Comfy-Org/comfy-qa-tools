@@ -314,11 +314,19 @@ A quota can carry a limit and name no places. The API leaves the per-entry
 that parses the number and not the locations lands here — and the grant size is
 printed precisely so you can tell that apart from having no quota at all.
 
-This used to be reported as "this project has no L4 quota", because the empty-limit
-question was asked first and an unparsed limit looks like a zero one. That sent
-people to request quota they already held.
 A grant exists but covers no named region, which is what an empty or malformed
 quota record looks like. Ask for the card in a region by name.
+
+**This is the last refusal `create` reaches, not the first.** If the ceiling is
+also full you get the `GPUS_ALL_REGIONS` message above instead, and you will see
+this one on the retry. That is deliberate: an empty region set is an absence and
+can equally mean the payload was not read, while a full ceiling is a number that
+was read and a box that was seen — and the ceiling refusal is the only one that
+tells you a GPU box is running right now.
+
+It was once claimed that this used to be reported as "this project has no L4
+quota". It was not: the two conditions cannot both be true, so the order between
+them changes nothing. Running the older code says so directly.
 
 ### Choosing the zone
 

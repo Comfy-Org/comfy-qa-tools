@@ -469,12 +469,61 @@ def test_an_unlimited_ceiling_never_refuses():
     assert "unlimited" in " ".join(check.lines())
 
 
+# A grant whose limit parses and whose region set comes back empty. Two things
+# look like this: a project that really holds a grant covering nowhere, and a
+# payload whose shape was not read — which is why the refusals built on a number
+# that WAS read are asked before it.
+ORPHAN_L4 = {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
+             "dimensionsInfos": [{"details": {"value": "1"},
+                                  "applicableLocations": []}]}
+
+
 def test_a_grant_that_names_no_region_is_refused_rather_than_searched():
-    orphan = {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
-              "dimensionsInfos": [{"details": {"value": "1"},
-                                   "applicableLocations": []}]}
-    problem = check_quota(CARDS["l4"], [orphan, ceiling(1)], []).problem()
+    problem = check_quota(CARDS["l4"], [ORPHAN_L4, ceiling(1)], []).problem()
     assert "names no region" in str(problem)
+    assert "The grant itself is 1" in str(problem), (
+        "the grant size is what tells this apart from holding no quota at all")
+
+
+def test_a_box_holding_the_ceiling_is_named_even_when_the_grant_names_no_region():
+    """Both are true and only one gets printed, so which one is a money decision.
+
+    The ceiling refusal is the only sentence in `problem()` that says a GPU box
+    is running right now, and its fix stops it tonight. The region wording sends
+    you to Google to wait for a grant. Hiding the first behind the second loses
+    the mention of a live box, and this project's ceiling is 1, so that is the
+    refusal a tester meets most.
+
+    Order-only, and deliberately not a docs echo: moving the missing-region
+    block back to the front of `problem()` — the wording untouched, which is how
+    it got there — turns this red.
+    """
+    problem = check_quota(CARDS["l4"], [ORPHAN_L4, ceiling(1)],
+                          [instance("console-box")]).problem()
+
+    assert "console-box is already running on it" in str(problem)
+    assert "names no region" not in str(problem)
+    assert "gcloud compute instances stop console-box" in problem.fix
+
+
+def test_the_ceiling_itself_is_named_even_when_the_grant_names_no_region():
+    """The same decision with no box running: GPUS_ALL_REGIONS is a number that
+    was read, an empty region set is an absence, and the number wins."""
+    problem = check_quota(CARDS["l4"], [ORPHAN_L4, ceiling(0)], []).problem()
+
+    assert "GPUS_ALL_REGIONS is 0" in str(problem)
+    assert "names no region" not in str(problem)
+
+
+def test_a_project_with_no_record_of_the_card_still_says_so():
+    """The case 3e6feb0 moved the region block to the front to fix, which was
+    never broken. `not regions and card_limit` and `not card_limit` cannot both
+    be true, so the two orderings are indistinguishable here — running the
+    parent commit says exactly this. Pinned so the premise is not re-derived.
+    """
+    problem = check_quota(CARDS["l4"], [ceiling(1)], []).problem()
+
+    assert "this project has no L4 quota" in str(problem)
 
 
 @pytest.mark.parametrize("instances,expected", [

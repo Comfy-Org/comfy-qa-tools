@@ -498,27 +498,38 @@ class QuotaCheck:
     def problem(self) -> LifecycleError | None:
         """The reason this cannot be created, or None. Nothing has happened yet.
 
-        Order matters here. A quota payload can carry a LIMIT and no LOCATIONS —
-        the live API leaves the per-entry `dimensions` null and puts the places
-        in `applicableLocations`, which quota.py's own docstring says — and a
-        limit of zero is indistinguishable from an unparsed one at this point.
-        So the missing-region case is asked FIRST, because it names what is
-        actually absent.
+        Order matters here, and the rule is one line: a refusal built on
+        something READ beats a refusal built on something MISSING.
 
-        It was asked last, so such a payload produced "this project has no L4
-        quota" — a wrong cause, sending someone to request quota they already
-        hold. It misled the agent that owns argument surfaces twice in one
-        session, which is the argument for the reorder rather than a reword.
+        The missing thing is the region set. A quota payload can carry a LIMIT
+        and no LOCATIONS — the live API leaves the per-entry `dimensions` null
+        and puts the places in `applicableLocations`, which quota.py's own
+        docstring says — so an empty region set has two explanations: a project
+        that really holds a grant covering nowhere, and a payload whose shape
+        this did not read. The ceiling refusals have one. GPUS_ALL_REGIONS is a
+        number that was read, and a box holding it is a box that was seen.
+
+        And the ceiling refusal is the one that costs money to hide. It is the
+        only sentence here that says a GPU box is running RIGHT NOW, and it hands
+        over a stop command that works tonight; the region wording hands over a
+        request to Google and a wait. Leading with the ceiling costs nothing even
+        when the region gap is real too — the retry says so — while leading with
+        the region gap loses the mention of the live box altogether. On a project
+        whose ceiling is 1, that is the refusal a tester meets most.
+
+        So the missing-region case is asked LAST, and there is a behavioural test
+        for that in `test_create.py`. It was moved to the FRONT in 3e6feb0, to
+        stop a limit-parses-no-regions payload reporting "this project has no L4
+        quota". That payload never reported it: `not self.regions and
+        self.card_limit` and `not self.card_limit` are mutually exclusive by
+        construction, so those two can be in either order and neither can reach
+        the other's case. Running the parent proves it. What the move did reach
+        was the ceiling, which it hid — untested, and unmentioned in the commit.
+
+        The `and self.card_limit` guard is redundant where this block now stands;
+        nothing arrives here with a falsy limit. It is kept so that moving the
+        block can never again resurrect the wrong cause.
         """
-        if not self.regions and self.card_limit:
-            return LifecycleError(
-                f"this project's {self.card} grant names no region, so there is "
-                f"nowhere to put the box. The grant itself is "
-                f"{self.card_limit}. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.typed} "
-                    f"--region us-central1",
-                kind=NO_QUOTA,
-            )
         if not self.card_limit:
             return LifecycleError(
                 f"this project has no {self.card} quota, so a {self.card} box cannot "
@@ -563,6 +574,18 @@ class QuotaCheck:
                 f"boxes are already running on it, holding {self.held} of it between "
                 f"them: {', '.join(self.running_names)}. Nothing was created.",
                 fix=f"{first} — stop the ones you are not using, then run this again",
+                kind=NO_QUOTA,
+            )
+        # Last, and read the docstring before moving it: everything above is a
+        # number this read, and an empty region set is also what an unread
+        # payload looks like.
+        if not self.regions and self.card_limit:
+            return LifecycleError(
+                f"this project's {self.card} grant names no region, so there is "
+                f"nowhere to put the box. The grant itself is "
+                f"{self.card_limit}. Nothing was created.",
+                fix=f"comfy-qat quota request --gpu {self.typed} "
+                    f"--region us-central1",
                 kind=NO_QUOTA,
             )
         return None
