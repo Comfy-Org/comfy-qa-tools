@@ -98,36 +98,62 @@ def test_a_block_with_no_port_line_is_refused_rather_than_silently_colliding():
                        renamed_port=8193, added=ADDED)
 
 
-def test_a_rename_drops_the_line_ending_on_the_header_it_rewrites():
-    """The port line's defect, on the header line, and still open.
+def test_a_crlf_file_comes_back_uniformly_crlf_from_a_rename():
+    """A CRLF file in, a CRLF file out — every line, including the rewritten one.
 
-    PINS: current behaviour. `_HEADER` ends `[ \t\r]*$`, so a CRLF header's `\r`
-    is CONSUMED by the match and `body_start` falls after it. The body then
-    begins with a bare `\n`, and the reconstruction writes back group 1 (the
-    indentation) but never the line ending — so the rewritten header is the one
-    LF line in a file whose every other line ends CRLF. It parses, so `apply`
-    does not refuse it, and git then reports the whole file as changed.
+    Three sites had to be right for this, and they are one defect wearing three
+    hats. The header match consumes the trailing `\r`, so the one line a rename
+    rewrites was the one LF line in the file. `without`'s separator was
+    hard-coded `\n\n`. And `discover.to_toml` hard-codes `\n` for the block
+    appended here, so on the real path — the one `move` takes — nine more LF
+    lines arrived from the caller.
 
-    Found by running a read-only copy of the real host list through
-    `rename_and_add` in CRLF. The only other CRLF test in this file exercises
-    `without`, which never rebuilds a header and so cannot show this.
+    All three parse, so `apply` refuses none of them, and each is a whole-file
+    diff in git for a change to one host.
 
-    FAILS ON: the `== 1` below. The fix is the one the port line already has —
-    capture the ending and put it back — after which this is 0. `added` is CRLF
-    here deliberately, so the count is this module's seam and not the caller's.
+    `added` is deliberately LF here, because that is what `to_toml` hands over.
     """
     text = HOSTS.replace("\n", "\r\n")
-    added = ADDED.replace("\n", "\r\n")
     assert lone_line_feeds(text) == 0, "the input is uniformly CRLF"
 
     out = rename_and_add(text, name="comfy-linux", renamed="comfy-linux-z",
-                         renamed_port=8195, added=added)
+                         renamed_port=8195, added=ADDED)
 
-    assert "[hosts.comfy-linux-z]" in out
-    # CURRENT: exactly one, and it is the header this rename rewrote.
-    assert lone_line_feeds(out) == 1
-    assert "[hosts.comfy-linux-z]\n" in out
-    assert "[hosts.comfy-linux-z]\r\n" not in out
+    assert lone_line_feeds(out) == 0
+    assert "[hosts.comfy-linux-z]\r\n" in out
+    assert "\r\nport         = 8195\r\n" in out, "the port line too"
+    assert "[hosts.comfy-linux]\r\n" in out, "and the block appended by the caller"
+    assert tomllib.loads(out)["hosts"]["comfy-linux-z"]["port"] == 8195
+
+
+def test_a_crlf_file_comes_back_uniformly_crlf_from_a_removal():
+    """The same rule in the sibling function, whose separator was hard-coded."""
+    text = HOSTS.replace("\n", "\r\n")
+    out = without(text, "comfy-linux")
+
+    assert lone_line_feeds(out) == 0
+    assert set(tomllib.loads(out)["hosts"]) == {"local", "comfy-win"}
+    assert "# the windows one" in out, "the comment still survives"
+
+
+def test_an_lf_file_is_never_given_carriage_returns():
+    """The other direction, which is the ordinary case and must not move."""
+    out = rename_and_add(HOSTS, name="comfy-linux", renamed="comfy-linux-z",
+                         renamed_port=8195, added=ADDED)
+    assert "\r" not in out
+    assert "\r" not in without(HOSTS, "comfy-linux")
+
+
+def test_a_file_that_already_mixes_line_endings_is_not_guessed_at():
+    """Mixed endings are not something this can repair, and picking a side
+    rewrites lines nobody asked it to touch. So it is treated as LF and the
+    rewrite adds nothing new rather than normalising the whole file."""
+    text = HOSTS.replace("\n", "\r\n").replace(
+        '[hosts.local]\r\n', '[hosts.local]\n')
+    assert lone_line_feeds(text) == 1, "the input is genuinely mixed"
+
+    out = without(text, "comfy-win")
+    assert set(tomllib.loads(out)["hosts"]) == {"local", "comfy-linux"}
 
 
 def lone_line_feeds(text: str) -> int:
@@ -507,7 +533,7 @@ def test_removing_from_a_lived_in_file_keeps_everything_else():
 # D75's root cause (`\s` in `without`'s header pattern) and the generated cases
 # fire ZERO — the named tests are the only thing that catches it.
 
-SHAPES = list(itertools.product([False, True], repeat=7))
+SHAPES = list(itertools.product([False, True], repeat=8))
 VICTIMS = ("alpha", "beta", "gamma")
 
 # A note on a host's BODY, below its port line, rather than above its header.
@@ -517,7 +543,12 @@ TRAILING = "# {name} is the PM-630 box. Linear links to this port."
 
 
 def _lived_in(preamble, own_comment, blank_between, example, crlf,
-              example_in_gap, trailing_note):
+              example_in_gap, trailing_note, indented=False):
+    # TOML allows a table header to be indented, this module matches one on
+    # purpose (`^[ \t]*\[hosts`), and D10 was the defect of not writing that
+    # indentation back. Without this axis the matrix cannot generate the shape:
+    # measured by mutation, reinstating D10 left every generated case passing.
+    pad = "  " if indented else ""
     lines: list[str] = []
     if preamble:
         lines += ["# this file is hand maintained", "# mind the comments", ""]
@@ -525,10 +556,11 @@ def _lived_in(preamble, own_comment, blank_between, example, crlf,
         lines += ["# [hosts.disabled]", "# port = 9999", ""]
     for index, name in enumerate(VICTIMS):
         if own_comment:
-            lines.append(f"# {name} is the {name} box. DO NOT DELETE.")
-        lines += [f"[hosts.{name}]", 'kind = "local"', f"port = {8100 + index}"]
+            lines.append(f"{pad}# {name} is the {name} box. DO NOT DELETE.")
+        lines += [f"{pad}[hosts.{name}]", f'{pad}kind = "local"',
+                  f"{pad}port = {8100 + index}"]
         if trailing_note:
-            lines.append(TRAILING.format(name=name))
+            lines.append(pad + TRAILING.format(name=name))
         if blank_between and index < len(VICTIMS) - 1:
             lines.append("")
         # The worked example in the GAP between two hosts, not only at the top.
@@ -573,6 +605,15 @@ def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
                 f"shape={shape} victim={victim}\n{out}"
             )
 
+    # A CRLF file comes back uniformly CRLF here too. This function's separator
+    # was hard-coded `\n\n` until today, and without this assertion the matrix
+    # cannot see it go back: measured, that mutation passed 832 of 832.
+    if shape[4]:
+        assert lone_line_feeds(out) == 0, (
+            f"a CRLF file came back with LF lines\nshape={shape} victim={victim}\n{out!r}")
+    else:
+        assert "\r" not in out, f"shape={shape} victim={victim}\n{out!r}"
+
 
 # The gap-example assertion is its own test because at HEAD it FAILS, and only
 # for the host the example sits under. `without` runs the removal to the next
@@ -581,6 +622,80 @@ def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
 # it is open, and the fix is a change to which side of a gap a comment run
 # belongs to, not a line. Recorded here as a strict xfail so it is not lost and
 # so closing D93 turns this red rather than silently green.
+
+# --- the same shapes, through the other function ------------------------------
+#
+# `without` had all of this and `rename_and_add` had none of it, which is not a
+# defensible split: measured by mutation, reinstating D9 or D10 left the
+# generated cases at 448 passed — the matrix could not see either, because both
+# live here. The two functions are now covered by the same shapes.
+#
+# And this is the more expensive half. `without` runs after a box is already
+# destroyed; `rename_and_add` is the write a MOVE makes, after the new instance
+# exists and is billing. A rewrite that loses the block, or gives two hosts one
+# port, strands a machine the tool can no longer name — which is the failure
+# `move` was written to stop, arriving by a different road.
+
+ADDED_HOST = "\n[hosts.added]\nkind = \"local\"\nport = 8200\n"
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("victim", VICTIMS)
+def test_renaming_any_host_in_any_shaped_file_keeps_the_others(shape, victim):
+    text = _lived_in(*shape)
+    crlf = shape[4]
+    retired = f"{victim}-us-central1-c"
+
+    # LF, always: `discover.to_toml` hard-codes it and cannot know what file the
+    # block is going into. Handing this test a CRLF block instead would make the
+    # whole caller-side half of the line-ending fix untestable — measured, that
+    # mutation passed 832 of 832 before this line was written this way.
+    out = rename_and_add(text, name=victim, renamed=retired,
+                         renamed_port=8195, added=ADDED_HOST)
+    why = f"shape={shape} victim={victim}\n{out!r}"
+
+    hosts = tomllib.loads(out)["hosts"]
+    assert set(hosts) == (set(VICTIMS) - {victim}) | {retired, "added"}, why
+
+    # The renamed block took the new port, and nothing else moved. Two hosts on
+    # one port is a config the loader refuses, and it lands at the REGISTER step
+    # of a move — after the box is built and billing.
+    assert hosts[retired]["port"] == 8195, why
+
+    # The renamed header keeps its own indentation. TOML does not care, so the
+    # parse above cannot see this go wrong — measured, reinstating D10 passed
+    # every generated case until this assertion existed.
+    pad = "  " if shape[7] else ""
+    ending = "\r\n" if crlf else "\n"
+    assert f"{pad}[hosts.{retired}]{ending}" in out, why
+    if not pad:
+        assert f" [hosts.{retired}]" not in out, why
+    for index, name in enumerate(VICTIMS):
+        if name != victim:
+            assert hosts[name]["port"] == 8100 + index, why
+    assert len({host["port"] for host in hosts.values()}) == len(hosts), why
+
+    # A rename rewrites one header and one port line. It is not a delete, so
+    # EVERY comment survives — no gate here, unlike `without`.
+    if shape[1]:
+        for name in VICTIMS:
+            assert f"# {name} is the {name} box" in out, why
+    if shape[6]:
+        for name in VICTIMS:
+            assert TRAILING.format(name=name) in out, why
+    if shape[5]:
+        assert "# [hosts.spare]" in out, why
+    if shape[3]:
+        assert "# [hosts.disabled]" in out, why
+    if shape[0]:
+        assert "# this file is hand maintained" in out, why
+
+    # A CRLF file comes back uniformly CRLF, the caller's LF block included.
+    if crlf:
+        assert lone_line_feeds(out) == 0, why
+    else:
+        assert "\r" not in out, why
+
 
 GAP_SHAPES = [shape for shape in SHAPES if shape[5] and shape[2]]
 

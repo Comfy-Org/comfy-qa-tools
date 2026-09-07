@@ -57,10 +57,13 @@ class HostFileError(ConfigError):
 # trailing `[ \t]*$` alone fails, because `$` matches before the `\n` and the line
 # still ends in `\r`.
 
-# `{name}` is filled in by `_header_of`. Group 1 is the header's own indentation:
-# matched so that an indented `[hosts.x]` is found at all, and captured so that
-# `rename_and_add` can put it back rather than flattening the block to column 0.
-_HEADER = r"^([ \t]*)\[hosts\.{name}\][ \t\r]*$"
+# `{name}` is filled in by `_header_of`. Both groups exist so `rename_and_add`
+# can put back what the match consumed: group 1 is the header's own indentation,
+# without which an indented block came back at column 0, and group 2 is the
+# trailing run including the `\r`, without which the one line this function
+# rewrites is the one LF line in a CRLF file. The port line carries the same two
+# groups for the same two reasons.
+_HEADER = r"^([ \t]*)\[hosts\.{name}\]([ \t]*\r?)$"
 
 # Where the block being read ends: the next line opening a table of any kind.
 FOLLOWING = re.compile(r"^[ \t]*\[", re.MULTILINE)
@@ -83,8 +86,33 @@ PORT_LINE = re.compile(r"^([ \t]*port[ \t]*=[ \t]*)\d+([ \t]*\r?)$", re.MULTILIN
 
 
 def _header_of(name: str) -> re.Pattern[str]:
-    """The `[hosts.<name>]` line, with its own indentation as group 1."""
+    """The `[hosts.<name>]` line: indentation as group 1, ending as group 2."""
     return re.compile(_HEADER.format(name=re.escape(name)), re.MULTILINE)
+
+
+def _line_ending(text: str) -> str:
+    """The line ending this file uses — LF unless it is uniformly CRLF.
+
+    A file that already mixes the two is not something this can repair, and
+    guessing which half to follow makes it worse, so it is left as LF and the
+    rewrite adds nothing new.
+
+    This module is the only one in `comfy_qa` that writes the host list as TEXT.
+    `discover.to_toml`, which builds the block appended below, takes structured
+    input and hard-codes `\n` — it has no idea what file it is destined for and
+    should not. So the line ending is decided here, once, and everything this
+    module emits is put into it.
+    """
+    if "\r\n" not in text:
+        return "\n"
+    mixed = any(char == "\n" and (index == 0 or text[index - 1] != "\r")
+                for index, char in enumerate(text))
+    return "\n" if mixed else "\r\n"
+
+
+def _in(ending: str, text: str) -> str:
+    """`text` with every line ending rewritten to `ending`."""
+    return text.replace("\r\n", "\n").replace("\n", ending)
 
 
 def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
@@ -113,14 +141,18 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
 
     out = (
         text[:start.start()]
-        # Group 1 is the header's own indentation; not writing it back flattened
-        # the block to column 0 on the way out.
+        # Everything the header match consumed and this rewrite must restore:
+        # the indentation, then the trailing run and its `\r`. Dropping either
+        # one is a silent whole-file diff — the block moves to column 0, or the
+        # line stops being CRLF in a CRLF file.
         + start.group(1)
         + f"[hosts.{renamed}]"
+        + start.group(2)
         + body
         + text[body_end:]
     )
-    return out.rstrip("\n") + "\n" + added
+    ending = _line_ending(text)
+    return out.rstrip(ending) + ending + _in(ending, added)
 
 
 def without(text: str, name: str) -> str:
@@ -207,8 +239,12 @@ def without(text: str, name: str) -> str:
             end -= len(above[-2]) + 1
             above.pop(-2)
 
-    return (text[:begin].rstrip("\n") + "\n\n"
-            + text[end:].lstrip("\n")).rstrip("\n") + "\n"
+    # The separator and the final newline are the file's own, not `\n`. Hard-coded
+    # they put a lone LF into a CRLF file exactly as the header did — the same
+    # defect in the sibling function, found the same way.
+    ending = _line_ending(text)
+    return (text[:begin].rstrip(ending) + ending * 2
+            + text[end:].lstrip(ending)).rstrip(ending) + ending
 
 
 def apply(path: Path, text: str, *, expect: set[str]) -> None:
