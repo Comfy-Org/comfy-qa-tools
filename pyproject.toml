@@ -52,3 +52,17 @@ ignore = [
     # it with a `def` is noise, not clarity.
     "E731",
 ]
+
+[tool.pytest.ini_options]
+# An xfail that is not strict PASSES whether the defect is there or not. That is
+# the shape this suite has spent a day finding under other names — a substring
+# match over a whole file, a hand-maintained list nothing derives, a test that
+# vanishes rather than fails, a mutation detector with one branch — and
+# tests/test_config_hostile.py's header records the codebase already meeting it
+# once: "was once a strict xfail recording a rule it did not check".
+#
+# Every xfail here sets `strict=True` by hand today, so this changes nothing now.
+# It changes the DEFAULT, so the next one written without it fails when the
+# defect it records is fixed, rather than going quietly green and staying in the
+# file as decoration.
+xfail_strict = true
