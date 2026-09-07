@@ -57,13 +57,27 @@ class HostFileError(ConfigError):
 # trailing `[ \t]*$` alone fails, because `$` matches before the `\n` and the line
 # still ends in `\r`.
 
+# What may follow the significant part of a line, captured so it can be put back
+# exactly: spaces or tabs, an optional TOML comment, and the `\r` of a CRLF file.
+#
+# The comment is the reason this exists. Both patterns used to end at the value,
+# so `port = 8195  # main box` did not match and `move` refused with "comfy-win
+# has no port line, so its port cannot be freed" — about a line that is right
+# there. The header had it worse: `[hosts.comfy-win]  # the windows one` matched
+# nothing, so BOTH `move` and `delete` answered "comfy-win is not in the host
+# list" about a host that plainly is.
+#
+# Both are valid TOML, and the file's own preamble tells people to annotate their
+# hosts. Captured rather than skipped: a rewrite must not eat the note.
+_TRAILING = r"([ \t]*(?:#[^\r\n]*)?\r?)$"
+
 # `{name}` is filled in by `_header_of`. Both groups exist so `rename_and_add`
 # can put back what the match consumed: group 1 is the header's own indentation,
 # without which an indented block came back at column 0, and group 2 is the
 # trailing run including the `\r`, without which the one line this function
 # rewrites is the one LF line in a CRLF file. The port line carries the same two
 # groups for the same two reasons.
-_HEADER = r"^([ \t]*)\[hosts\.{name}\]([ \t]*\r?)$"
+_HEADER = r"^([ \t]*)\[hosts\.{name}\]" + _TRAILING
 
 # Where the block being read ends: the next line opening a table of any kind.
 FOLLOWING = re.compile(r"^[ \t]*\[", re.MULTILINE)
@@ -82,7 +96,7 @@ FOLLOWING = re.compile(r"^[ \t]*\[", re.MULTILINE)
 #
 # Both were invisible to the fixtures, which are spaced differently from a file
 # somebody actually maintains. That difference is the whole of why.
-PORT_LINE = re.compile(r"^([ \t]*port[ \t]*=[ \t]*)\d+([ \t]*\r?)$", re.MULTILINE)
+PORT_LINE = re.compile(r"^([ \t]*port[ \t]*=[ \t]*)\d+" + _TRAILING, re.MULTILINE)
 
 
 def _header_of(name: str) -> re.Pattern[str]:

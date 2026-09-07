@@ -533,7 +533,7 @@ def test_removing_from_a_lived_in_file_keeps_everything_else():
 # D75's root cause (`\s` in `without`'s header pattern) and the generated cases
 # fire ZERO — the named tests are the only thing that catches it.
 
-SHAPES = list(itertools.product([False, True], repeat=8))
+SHAPES = list(itertools.product([False, True], repeat=9))
 VICTIMS = ("alpha", "beta", "gamma")
 
 # A note on a host's BODY, below its port line, rather than above its header.
@@ -542,8 +542,17 @@ VICTIMS = ("alpha", "beta", "gamma")
 TRAILING = "# {name} is the PM-630 box. Linear links to this port."
 
 
+# A comment on the END of a significant line, rather than on a line of its own.
+# Both patterns used to stop at the value, so a host annotated this way was
+# unmovable ("has no port line") and, with the note on its header, invisible to
+# both move and delete ("is not in the host list"). The file's own preamble
+# invites exactly this annotation.
+INLINE_HEADER = "# {name} is pinned"
+INLINE_PORT = "# {name}'s port, do not reuse"
+
+
 def _lived_in(preamble, own_comment, blank_between, example, crlf,
-              example_in_gap, trailing_note, indented=False):
+              example_in_gap, trailing_note, indented=False, inline_comment=False):
     # TOML allows a table header to be indented, this module matches one on
     # purpose (`^[ \t]*\[hosts`), and D10 was the defect of not writing that
     # indentation back. Without this axis the matrix cannot generate the shape:
@@ -557,8 +566,12 @@ def _lived_in(preamble, own_comment, blank_between, example, crlf,
     for index, name in enumerate(VICTIMS):
         if own_comment:
             lines.append(f"{pad}# {name} is the {name} box. DO NOT DELETE.")
-        lines += [f"{pad}[hosts.{name}]", f'{pad}kind = "local"',
-                  f"{pad}port = {8100 + index}"]
+        header = f"{pad}[hosts.{name}]"
+        port = f"{pad}port = {8100 + index}"
+        if inline_comment:
+            header += "  " + INLINE_HEADER.format(name=name)
+            port += "  " + INLINE_PORT.format(name=name)
+        lines += [header, f'{pad}kind = "local"', port]
         if trailing_note:
             lines.append(pad + TRAILING.format(name=name))
         if blank_between and index < len(VICTIMS) - 1:
@@ -598,6 +611,15 @@ def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
     # asserts a preference, not a promise. Ungated, the two new axes report 112
     # failures, most of them the module behaving as designed. Gated, 32, and
     # every one of those is real.
+    if shape[8]:  # every host's header and port line carried an inline note
+        for other in set(VICTIMS) - {victim}:
+            assert INLINE_HEADER.format(name=other) in out, (
+                f"{other}'s inline header note was destroyed\n"
+                f"shape={shape} victim={victim}\n{out}")
+            assert INLINE_PORT.format(name=other) in out, (
+                f"{other}'s inline port note was destroyed\n"
+                f"shape={shape} victim={victim}\n{out}")
+
     if shape[6] and shape[2]:  # a trailing note on a body, blocks separated
         for other in set(VICTIMS) - {victim}:
             assert TRAILING.format(name=other) in out, (
@@ -667,7 +689,12 @@ def test_renaming_any_host_in_any_shaped_file_keeps_the_others(shape, victim):
     # every generated case until this assertion existed.
     pad = "  " if shape[7] else ""
     ending = "\r\n" if crlf else "\n"
-    assert f"{pad}[hosts.{retired}]{ending}" in out, why
+    # The whole rewritten header line, including any inline note it carried:
+    # both halves of what the match consumed have to come back, and in order.
+    rewritten = f"{pad}[hosts.{retired}]"
+    if shape[8]:
+        rewritten += "  " + INLINE_HEADER.format(name=victim)
+    assert rewritten + ending in out, why
     if not pad:
         assert f" [hosts.{retired}]" not in out, why
     for index, name in enumerate(VICTIMS):
@@ -683,6 +710,13 @@ def test_renaming_any_host_in_any_shaped_file_keeps_the_others(shape, victim):
     if shape[6]:
         for name in VICTIMS:
             assert TRAILING.format(name=name) in out, why
+    if shape[8]:
+        # The renamed host's OWN notes survive the rewrite — this is the pair of
+        # lines the rewrite touches, so it is the only place they can be lost.
+        assert INLINE_HEADER.format(name=victim) in out, why
+        assert INLINE_PORT.format(name=victim) in out, why
+        for name in VICTIMS:
+            assert INLINE_PORT.format(name=name) in out, why
     if shape[5]:
         assert "# [hosts.spare]" in out, why
     if shape[3]:

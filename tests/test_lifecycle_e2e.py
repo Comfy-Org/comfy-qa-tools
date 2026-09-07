@@ -592,18 +592,29 @@ def test_a_move_whose_host_list_cannot_be_rewritten_still_names_the_bill(world):
     a Python traceback. By then the instance is created, running and billing, so
     the one command that is careful about exactly that said nothing about it.
 
-    The trigger here is not contrived: an inline comment on a port line is what a
-    hand-maintained host list looks like, and the most ordinary move sequence
-    there is — a stockout pushes a box out of a zone, capacity returns, you move
-    it home — walks into it.
-    """
-    world.config.write_text(
-        world.config.read_text(encoding="utf-8").replace(
-            f"port = {world.comfy.port}", f"port = {world.comfy.port}  # the QA port"),
-        encoding="utf-8")
-    world.cloud(describe=INSTANCE)
+    The trigger is a config DIRECTORY that cannot be written: `apply` copies the
+    original to `hosts.toml.bak` and writes a temp file beside it before the
+    atomic replace, and both need to create a file in that directory. The host
+    list itself loads perfectly, which is the point — the failure has to arrive
+    at the last step, after the instance exists and is billing, or it is testing
+    something else.
 
-    result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+    This used to be triggered with an inline comment on a port line, which was a
+    real defect (`port = 8190  # the QA port` did not match the port pattern, so
+    a move refused with "has no port line" about a line that was right there).
+    That defect is fixed, so the trigger stopped triggering. Worth stating,
+    because a test whose premise is somebody else's open bug expires the day it
+    is closed — and this one asserts a rule that has nothing to do with commenting
+    style. A directory nobody can write cannot be fixed out from under it.
+    """
+    world.cloud(describe=INSTANCE)
+    directory = world.config.parent
+    original_mode = directory.stat().st_mode
+    directory.chmod(0o500)          # r-x: the file is readable, nothing new lands
+    try:
+        result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+    finally:
+        directory.chmod(original_mode)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -614,7 +625,7 @@ def test_a_move_whose_host_list_cannot_be_rewritten_still_names_the_bill(world):
     # written — so the entry it would read still names the zone the box just left.
     assert (f"gcloud compute instances stop {BOX} --zone=us-central1-b"
             in result.output), "the stop that works without a host list"
-    assert "port" in result.output, "the file's own complaint survives"
+    assert world.config.name in result.output, "the file's own complaint survives"
 
 
 def test_moving_a_box_home_again_is_refused_before_it_spends_anything(world):
