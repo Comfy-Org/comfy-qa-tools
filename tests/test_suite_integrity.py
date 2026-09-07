@@ -19,6 +19,29 @@ the thing this suite avoids — `test_docs.py` exists partly to get rid of a
 hand-maintained list. The difference is what maintenance costs: this list changes
 only when a file is deliberately added or renamed, the fix is one line, and the
 failure it catches is one that no amount of reading the numbers will.
+
+---
+
+**READING THE RESULT IS ITS OWN HAZARD, AND IT HAS NOW COST TWO SWEEPS.**
+`xfailed` CONTAINS `failed`. Any shell test that matches the substring —
+`grep failed`, `case "$out" in *failed*)`, `[[ $out == *failed* ]]` — matches a
+run in which NOTHING failed, because the summary line always ends
+`N passed, M xfailed`. It reports failure on a green suite, and if the habit is
+inverted it reports success on a red one.
+
+Both instances were mutation sweeps, where the whole method is "delete the fix
+and watch the count move", so a result-reader that always says the same thing
+voids the entire run rather than one case of it. The first void'd a day of
+mutation results; the second cost verify3 a sweep. Neither was a Python problem
+— `pytest`'s own `-q` summary is what is being read, and it is read in a shell.
+
+Match the ANCHORED, uppercase form pytest prints one per failure:
+
+    grep -c '^FAILED tests/'
+
+or read the integers out of the summary. Never the bare word. The same trap sits
+in `passed` vs `xpassed`, which has not bitten anyone yet only because nobody has
+grepped for it.
 """
 
 from __future__ import annotations

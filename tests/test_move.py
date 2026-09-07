@@ -1386,3 +1386,79 @@ def test_a_move_that_finishes_leaves_the_record_empty():
     run_move(gc, plan, found, say, register=register)
 
     assert inflight.pending() == []
+
+
+# --- the closing report, driven through the command ------------------------
+#
+# 0891903 fixed `move`'s closing report and pinned only the helper: both its
+# tests call `split_leftovers` directly, and NOTHING in the suite drove
+# `move_cmd` far enough to print it. Putting the defect back at the call site —
+# `stray = leftovers(plan, found, unrelated=True)[len(mine):]`, with `mine` still
+# in scope from before `--clean` replaced `found` — left the whole suite green.
+# So the report that names a billing snapshot could regress to the arithmetic
+# tomorrow and nothing would say so.
+#
+# `--clean` is not incidental. It is the state change the arithmetic cannot
+# survive: it replaces `found` and does not recompute `mine`, so the stale length
+# is subtracted from a list that no longer begins with those lines and eats the
+# front of the unrelated section — the resources the report exists to name.
+
+
+def _cli_move(tmp_path, monkeypatch, cloud, *args, hosts=None):
+    """Drive `move` itself, rather than `run_move`.
+
+    Everything else in this file tests the engine directly, which is why the
+    closing report went unpinned: it is printed by the COMMAND, after `run_move`
+    has returned, and no test in the suite had ever reached it.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.host import app
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(hosts or CLI_HOSTS, encoding="utf-8")
+    gc = cloud.gcloud()
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: gc)
+    return CliRunner().invoke(app, ["move", *args, "--config", str(path)])
+
+
+CLI_HOSTS = f"""\
+[hosts.comfy-win]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "{PROJECT}"
+port         = 8190
+"""
+
+# A snapshot of THIS move's disk that is not usable — status CREATING — so it is
+# a spare rather than the one to reuse. That makes `mine` non-empty before
+# `--clean` and empty after it, which is the whole mechanism.
+SPARE = snapshot("comfy-win-a-move-old", "comfy-win-a", status="CREATING",
+                 created="2026-08-01T07:33:34.373-07:00")
+
+
+def test_the_closing_report_names_a_billing_snapshot_that_is_not_this_moves(
+        tmp_path, monkeypatch):
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE],
+                  snapshots=[SPARE, ANCESTOR_SNAPSHOT])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud,
+                       "comfy-win", "--to", "us-central1-b", "--clean", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "also on the project, unrelated to this move and billing" in result.output, (
+        "the whole heading went missing, not just its contents"
+    )
+    assert "comfy-win-snap" in result.output, (
+        f"a billing snapshot from a box that no longer exists was not named: "
+        f"{result.output}"
+    )
+    # The delete command has to arrive WITH its subject. The arithmetic could cut
+    # between a resource and its command, leaving a bare `gcloud compute snapshots
+    # delete` under a heading, with nothing saying what it would delete.
+    named = result.output.index("comfy-win-snap")
+    assert "snapshots delete comfy-win-snap" in result.output[named:], result.output

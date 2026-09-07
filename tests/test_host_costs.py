@@ -905,7 +905,7 @@ def test_a_dry_run_deletes_nothing_even_with_clean(cli):
     assert "these would be deleted first, and are not" in result.output
 
 
-def test_a_dry_run_deletes_nothing_without_clean_either(cli):
+def test_a_dry_run_deletes_nothing_without_clean_either(cli, monkeypatch):
     """The other route, which `--clean` never touched.
 
     The old guard re-derived "is there anything to delete" from `plan` and two of
@@ -933,6 +933,23 @@ def test_a_dry_run_deletes_nothing_without_clean_either(cli):
                 return [{"name": "g2-standard-8"}]
             raise AssertionError(f"unexpected: {joined}")
 
+    # THE LINE THAT MAKES THIS TEST DO ANY WORK, and without it the whole thing
+    # was vacuous. Under `CliRunner` neither stdin nor stderr is a tty, so
+    # `can_prompt()` is False, and the destructive `elif` — `clean or (not yes
+    # and can_prompt() and typer.confirm(...))` — is unreachable whatever the
+    # guard above it says. `assert "Delete these" not in output` was then true
+    # because of the terminal, not because of the fix: the old guard passed this
+    # test too, which the note that used to sit here recorded as an honest limit
+    # rather than closed.
+    #
+    # `comfy_qa.gcloud.can_prompt`, NOT `host.can_prompt`. `move_cmd` imports the
+    # name INSIDE the function, so the module attribute is looked up at call time
+    # and patching the host module silently does nothing — the test goes on
+    # passing and looks closed.
+    from comfy_qa import gcloud as gcloud_module
+
+    monkeypatch.setattr(gcloud_module, "can_prompt", lambda: True)
+
     result = cli("move", "comfy-win", "--to", "us-central1-b", "--dry-run",
                  cloud=Spare(), input="y\n")
 
@@ -941,12 +958,6 @@ def test_a_dry_run_deletes_nothing_without_clean_either(cli):
     assert "Delete these" not in result.output, (
         "a dry run must not ask a destructive question"
     )
-    # HONEST LIMIT: this test passes against the OLD guard too — I could not get
-    # the fixture into the spare-snapshots-only state through the CLI, so it
-    # demonstrates the property without yet pinning the route that broke it. The
-    # fix is unconditional (`if dry_run:`) and therefore strictly safer than what
-    # it replaced, but this assertion is not the evidence for that. Reported as
-    # unpinned rather than left looking covered.
 
 
 # --- Ctrl-C does not cancel the work, and "Aborted!" says it did --------------
