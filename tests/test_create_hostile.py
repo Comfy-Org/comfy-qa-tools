@@ -471,17 +471,39 @@ def test_a_ceiling_that_really_is_unlimited_still_reads_unlimited():
     assert global_allowance([]) is None
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "lifecycle.suggested_zones matches case-insensitively but appends the zone in "
-    "the case Google wrote it, so 'US-CENTRAL1-C' comes back verbatim. A GCE zone "
-    "argument is lowercase, and the string also defeats any case-sensitive "
-    "already-tried check downstream. Fix in comfy_qa/lifecycle.py: append "
-    "zone.lower() and dedupe on the lowered form. comfy_qa/create.py now lowers "
-    "defensively, so this is cosmetic there and would not be anywhere else. "
-    "Owned by another agent; recorded here rather than edited."))
 def test_suggested_zones_returns_a_zone_google_can_be_given_back():
+    """Google echoes the zone in whatever case the request used, and every
+    caller takes the string at its word.
+
+    This matched case-insensitively and then appended VERBATIM, so a stockout
+    naming `US-CENTRAL1-C` produced a string that `host` hands straight back to
+    gcloud as a zone, that `lifecycle` and `relocate` put in a `comfy-qat move
+    --to` line for somebody to run, and that `zones.region_of` turns into
+    `US-CENTRAL1`, which matches no quota. Only `create` lowered defensively,
+    which is why it looked cosmetic.
+    """
     message = "stockout. Consider trying your request in the US-CENTRAL1-C zone."
     assert suggested_zones(message) == ["us-central1-c"]
+
+
+def test_one_zone_named_twice_in_two_cases_is_one_zone():
+    """The dedupe was case-sensitive too, for the same reason: it compared the
+    strings Google wrote rather than the zones they name. Two spellings of one
+    zone came back as two suggestions, and the advice offered the second as an
+    alternative to the first."""
+    message = ("stockout. Consider trying your request in the US-CENTRAL1-C, "
+               "us-central1-c zone.")
+    assert suggested_zones(message) == ["us-central1-c"]
+
+
+def test_a_suggested_zone_survives_region_of():
+    """The downstream that fails silently rather than loudly: an upper-case zone
+    gives an upper-case region, and a quota lookup keyed on the region name then
+    finds nothing while looking like it asked."""
+    from comfy_qa.zones import region_of
+
+    zone = suggested_zones("trying your request in the US-CENTRAL1-C zone.")[0]
+    assert region_of(zone) == "us-central1"
 
 
 # --- the latency cache, written by something that is not this ---------------

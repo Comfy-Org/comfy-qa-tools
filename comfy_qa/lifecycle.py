@@ -207,7 +207,18 @@ def suggested_zones(message: str | None) -> list[str]:
         return []
     found = []
     for zone in re.split(r"[,\s]+", match.group(1)):
-        if _ZONE.fullmatch(zone.lower()) and zone not in found:
+        # Lowered before it is matched, kept, or compared. Google echoes the zone
+        # in whatever case the request used, so a stockout can name
+        # `US-CENTRAL1-C` — which this used to test case-insensitively and then
+        # append VERBATIM. Everything downstream takes the string at its word:
+        # `host` hands it straight back to gcloud as a zone, `lifecycle` and
+        # `relocate` put it in a `comfy-qat move --to` line for someone to run,
+        # `zones.region_of` turns it into `US-CENTRAL1` and matches no quota, and
+        # `relocate` compares it to the zone that just failed with `!=`, so the
+        # advice can be "retry the zone you just came from". A GCE zone is
+        # lowercase; there is no case in which the original is the useful string.
+        zone = zone.lower()
+        if _ZONE.fullmatch(zone) and zone not in found:
             found.append(zone)
     return found
 

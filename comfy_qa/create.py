@@ -829,9 +829,12 @@ def build(
             say(f"  {zone} has no {blueprint.card.name} free right now")
             if ordering.fall_through:
                 for named in suggested_zones(exc.raw):
-                    # Lowered because `suggested_zones` hands the zone back in the
-                    # case Google wrote it, and `US-CENTRAL1-C` is neither a zone
-                    # gcloud accepts nor a string `tried` recognises.
+                    # `suggested_zones` lowers what it returns, so this is belt
+                    # and braces rather than the repair it once was. Kept because
+                    # `tried` and `queue` are compared with `in`: a zone arriving
+                    # in the wrong case would not merely be an argument gcloud
+                    # rejects, it would defeat the already-tried check and be
+                    # attempted twice.
                     suggested = named.lower()
                     if suggested in tried or suggested in queue:
                         continue
