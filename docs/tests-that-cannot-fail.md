@@ -442,8 +442,15 @@ next test was not applied to it. That one *fails* on a fresh machine rather than
 passing vacuously — the honest direction. Same class, and the difference between
 the two is luck, not design.
 
-Both are found and being closed. Neither is a defect in the code under test;
-both are the test borrowing something from the room it runs in.
+Neither is a defect in the code under test; both are the test borrowing
+something from the room it runs in.
+
+**Closed in `caa0640`.** `conftest.py` now carries the tripwire the safety
+fixture's name had been promising: outbound sockets and writes to the real config
+directory both fail loudly from inside the suite, rather than succeeding quietly.
+The two leaking call sites were repaired with it, and `tests/test_tripwires.py`
+exists to prove the tripwire itself can fire — which is class 4's lesson applied
+to the guard rather than to the code.
 
 ## 9. A proxy for the question, instead of the question
 
@@ -635,6 +642,38 @@ If the fix cannot be deleted cleanly — it is one line inside a function you ne
 — break the thing it asserts instead: change the message, flip the comparison,
 return the wrong constant. The point is to see the failure *by name*, and to
 confirm the name is the one you expected.
+
+## A test whose premise is somebody else's open bug
+
+**Deliberately not numbered.** The nine are ways a test cannot *fail*; this one
+fails loudly, at the wrong time, at the wrong person. It is recorded here because
+it is the same underlying mistake — **a test whose subject is a defect rather
+than a behaviour** — and because it has a cost the nine do not: it makes the
+person who fixed something look like they broke it.
+
+A test needed a host-list write to fail at the last step, after the instance
+exists and is billing. It got there by using a real open defect as the trigger:
+an inline comment on a port line, which the port pattern did not match, so a move
+refused with "has no port line" about a line that was right there.
+
+Then somebody fixed that defect. The trigger stopped triggering, the test went
+red, and the redness pointed at the fixer.
+
+The rule the test asserts — *a move that cannot write the host list still says
+what is billing* — has nothing to do with commenting style. It was re-pointed at
+a cause that **cannot be fixed out from under it**: a directory nobody can write.
+
+> A test whose premise is somebody else's open bug expires the day it is closed.
+
+**This is the mirror of the non-strict xfail in class 6**, and the pair is worth
+holding together. An xfail pinned to a defect goes *quietly green* when the
+defect is fixed and lives on describing something untrue. A test *triggered* by a
+defect goes *loudly red* and accuses the fixer. Both are a test resting on a bug
+instead of a behaviour; they differ only in which direction the failure points.
+
+When you need a failure to test a failure path, reach for a cause nobody will
+ever fix — an unwritable directory, a closed port, a missing file — rather than
+one that is on somebody's list.
 
 ## A guard whose printed remedy defeats it
 
