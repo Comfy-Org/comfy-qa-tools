@@ -485,6 +485,52 @@ the two is luck, not design.
 Neither is a defect in the code under test; both are the test borrowing
 something from the room it runs in.
 
+### The sharper version: the guard existed, and the probe was outside it
+
+Worse than an unwritten default is one **somebody already wrote down** — correctly,
+in a fixture, for exactly this reason — where the knowledge does not travel.
+
+Driving `comfy-qat go` in-process against a fake `Gcloud`, to verify an unrelated
+fix, executed a real `gcloud compute ssh` and appended about twenty lines to the
+developer's real `~/.config/comfy-qa-tools/tunnels/comfy-win.log`. It died at
+local credential refresh without reaching Google — nothing created, nothing
+modified, no stray process — but it ran, and it wrote where it should not have.
+
+Two ambient defaults, and the second is the nastier:
+
+1. `tunnel.TUNNEL_DIR` defaults to the **real** config directory.
+2. **`tunnel.py` does not go through the `Gcloud` class at all.** It builds its
+   own argv and spawns the binary, so patching `gcloud.Gcloud` — the seam every
+   other module uses, and the one any careful person would reach for — covered
+   nothing.
+
+**And the suite already guards both.** `tests/test_host_costs.py`'s `cli` fixture
+opens by patching `TUNNEL_DIR` into `tmp_path`; every test in that file gets it.
+The probe did not, because **a probe is not a test**.
+
+> A fixture is not documentation. It is a local fact that protects only the code
+> that happens to ask for it.
+
+Every ad-hoc probe, every `python -c`, every triage script starts outside it. And
+this instance was walked into by the person who had named the class and built the
+socket tripwire for it — while driving in-process rather than through the harness
+that puts `HOME` and `--config` in scratch precisely so it cannot happen. Worth
+stating rather than tidying away: knowing the class does not put you inside the
+guard.
+
+**The remedy is not "remember to patch `TUNNEL_DIR`."** It is to make the ambient
+default **unreachable** rather than overridden — a tripwire armed before the
+package is imported, so `subprocess` and non-loopback sockets raise:
+
+```python
+import tripwire; tripwire.arm()      # before importing comfy_qa
+```
+
+**Loopback has to pass through.** A strict-everything version fired on the first
+honest ComfyUI port check and would have been switched off within the hour, which
+is the failure mode of every detector that cannot tell the honest case from the
+leak.
+
 **Closed in `caa0640`.** `conftest.py` now carries the tripwire the safety
 fixture's name had been promising: outbound sockets and writes to the real config
 directory both fail loudly from inside the suite, rather than succeeding quietly.
@@ -730,6 +776,13 @@ would be class 4, and its silence would mean nothing.
 When you extend this page, extend this section too. "We checked and it was fine"
 is worth writing down only if you can say what would have happened had it not
 been.
+
+**A detector that fires on the honest case teaches people to disable it.** The
+socket tripwire caught a legitimate loopback connection to `127.0.0.1:8190` on
+the very next run after it was armed — a real local port check, not a leak. That
+is why the instrument has to separate *reached the outside world* from *did I/O
+at all*. An alarm nobody can distinguish from noise gets switched off, and then
+the bound in this section is worth nothing.
 
 **And treat a moving count as a question, not a footnote.** Class 2's correction
 was found because someone noticed the suite's *skip* count go from two to seven
