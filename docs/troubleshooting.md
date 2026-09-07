@@ -1126,6 +1126,23 @@ someone who had just typed `windows/l4`, which is advice to retype the failing
 command. When there is no half left to add, the names are the answer, so it lists
 them.
 
+**This tool manufactures that collision itself, and it is worth knowing before
+you meet it.** `create` names boxes `comfy-linux`, then `comfy-linux-2`, so a
+second box of the same kind is identical on both axes a description matches on —
+same OS, same card. Every description that worked with one box is refused from
+the second onward. It is not a corner case; it is the day you have two Linux
+boxes.
+
+It is refused rather than guessed at **on purpose**, and there is no tie-break
+coming. Two machines identical on both axes are not ambiguous by accident, they
+are indistinguishable, and every rule that could pick one — the newest, the
+first declared, the one that happens to be running — invents a preference you
+never expressed. This is the same lookup `delete` uses.
+
+If you expect to keep several boxes of a kind, name them when you make them:
+`comfy-qat create --os linux --gpu l4 --name linux-cuda12`. A name you chose is
+the only thing that stays usable as the list grows.
+
 **`'windows-l4' is two descriptions run together. The separator is '/': windows/l4`**
 A hyphen reads as part of a name, and host names contain hyphens, so the two
 cannot both be separators. Use `/`.

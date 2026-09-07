@@ -216,3 +216,64 @@ def test_saying_it_not_at_all_names_every_way_of_saying_it():
 
     assert result.exit_code != 0
     assert "os/card" in result.output and "--os" in result.output
+
+
+# --- the collision the tool manufactures for itself ------------------------
+
+
+def test_creates_own_naming_makes_a_second_box_undescribable():
+    """`resolve` degrades as the tool succeeds, and `create` is what degrades it.
+
+    Nothing in the suite joined these two ends: the ambiguity tests above
+    hand-write `comfy-win` and `comfy-win-b`, names `choose_name` would never
+    produce. So the fact that this tool manufactures its own collision was true,
+    reachable on the SECOND box of a kind, and recorded nowhere executable.
+
+    `create --os linux --gpu l4` twice gives `comfy-linux` and `comfy-linux-2`,
+    both `Ubuntu 22.04` and `L4`. They are the same on both axes that `resolve`
+    matches on, so from the second box onward every description that used to
+    work is refused. It bites the day someone has two Linux boxes, which is the
+    ordinary case, not a corner.
+
+    **This pins the refusal deliberately.** A tie-break would be the wrong fix:
+    two boxes identical on both axes are not ambiguous by accident, they are
+    indistinguishable, and every candidate rule — newest, first declared, the
+    one that is running — invents a preference the user never expressed. This is
+    the shared lookup behind `delete`, which is the command that once resolved
+    `windows` to `comfy-win` and would have destroyed it. A rule safe for `logs`
+    is not safe there, and making it depend on the command puts a destructive
+    distinction inside a name lookup.
+    """
+    from comfy_qa.create import plan
+
+    taken: set[str] = set()
+    blueprints = []
+    for _ in range(2):
+        made = plan(os_choice="linux", gpu="l4", taken=taken)
+        taken.add(made.name)
+        blueprints.append(made)
+
+    assert [b.name for b in blueprints] == ["comfy-linux", "comfy-linux-2"], (
+        "if the naming scheme changes, the reachability of this changes with it")
+
+    boxes = [
+        Host(name=b.name, kind="gce", port=8190 + n, os=b.image.os, gpu=b.card.name,
+             gce_instance=b.name, gce_zone="us-central1-a", gce_project="proj")
+        for n, b in enumerate(blueprints)
+    ]
+
+    # One box: every description works. This is what the second one takes away.
+    assert resolve(boxes[:1], "linux").host.name == "comfy-linux"
+    assert resolve(boxes[:1], "linux/l4").host.name == "comfy-linux"
+
+    for selector in ("linux", "l4", "linux/l4"):
+        with pytest.raises(ConfigError) as caught:
+            resolve(boxes, selector)
+        message = str(caught.value)
+        assert "same operating system and the same card" in message, selector
+        # Refused, and never quietly resolved to either one.
+        assert "comfy-linux, comfy-linux-2" in message, selector
+
+    # And the names still work, which is why refusing costs a keystroke rather
+    # than a machine.
+    assert resolve(boxes, "comfy-linux-2").host.name == "comfy-linux-2"
