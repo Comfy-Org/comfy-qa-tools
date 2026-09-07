@@ -253,7 +253,16 @@ def test_billing_not_linked_stops_and_links_that_exact_project(hosts):
     assert result.exit_code == 1
     assert "no billing account is linked to proj-2" in result.stderr
     assert "linkedaccount?project=proj-2" in result.stderr
-    assert not hosts.exists(), "nothing is written once setup has stopped"
+    # The host list IS written, and that is the fix rather than a regression.
+    # It depends on the config path and nothing else — not the project, not
+    # billing, not quota — and getting-started.md tells the reader "`setup` has
+    # already written your host list", which was false for exactly the person
+    # most likely to be reading it: the newcomer setup stopped. A run that ends
+    # in a refusal should still leave behind the one thing it could always have
+    # produced. Nothing project-scoped is written, which is what "stopped"
+    # has to keep meaning.
+    assert hosts.exists(), "the local starter host list survives a stop at billing"
+    assert "quota" not in result.output.lower(), "nothing past billing ran"
 
 
 def test_a_billing_read_that_fails_stops_with_its_own_fix(hosts):
@@ -518,3 +527,24 @@ def test_missing_gcloud_stops_before_it_asks_for_anything(hosts, monkeypatch):
     assert result.exit_code == 1
     assert "gcloud is not installed or not on PATH" in result.stderr
     assert "sdk/docs/install" in result.stderr
+
+
+def test_the_project_line_says_whose_choice_it_was(hosts):
+    """`setup` adopts gcloud's current project without asking, which is right —
+    but it used to announce it as a bare noun, `project proj-1`, indistinguishable
+    from a report.
+
+    Everything after that line happens on that project: the billing check, the
+    GPU quota request, every box. Somebody who has spent the week in another
+    project gets quota requested somewhere they did not intend, and the only
+    clue was a word. The adoption is fine; the silence was not.
+    """
+    cloud = FakeCloud(projects=["proj-1"], project="proj-1")
+    result = run(cloud)
+
+    assert "gcloud's current project" in result.output, (
+        "the line must say whose choice this was, not just name it"
+    )
+    assert "comfy-qat setup --project" in result.output, (
+        "and how to choose a different one"
+    )

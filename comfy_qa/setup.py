@@ -80,7 +80,14 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
 
     current = gc.current_project()
     if current:
-        p.say(f"project {current}")
+        # Say WHOSE choice this is. Everything after this line — the billing
+        # check, the quota request, the boxes — happens on this project, and a
+        # bare "project proj-1" reads as a report rather than as a decision the
+        # tool just made on the user's behalf. Somebody who has been working in
+        # another project all week gets their GPU quota requested somewhere they
+        # did not intend, and the only clue was a noun.
+        p.say(f"project {current} — gcloud's current project, used as-is. "
+              f"To use another: comfy-qat setup --project <id>")
         return current
 
     projects = [proj.get("projectId") for proj in gc.list_projects() if proj.get("projectId")]
@@ -415,8 +422,13 @@ def run_setup(
     ensure_tunnel_speed(gc, p, skip=no_numpy)
     ensure_signed_in(gc, p, interactive=interactive)
     chosen = ensure_project(gc, p, interactive=interactive, wanted=project)
+    # Before billing and quota, for the same reason NumPy goes before the account
+    # sequence: it depends on nothing but the config path, and a newcomer stopped
+    # at billing should still end the run owning something. They did not — and
+    # getting-started.md:64 tells them "`setup` has already written your host
+    # list", which was false for exactly the person most likely to be reading it.
+    path = ensure_host_list(p, config_path)
     ensure_billing(gc, p, chosen)
     ensure_gpu_quota(gc, p, chosen, interactive=interactive, region=region)
-    path = ensure_host_list(p, config_path)
     add_discovered_hosts(gc, p, chosen, path)
     return path
