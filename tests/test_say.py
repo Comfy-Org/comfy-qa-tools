@@ -430,7 +430,49 @@ def test_one_spelling_of_a_failure_mark():
 # --- the story reaches stderr even where it is handed to somebody else -----
 
 
-def _writes_to_stdout(call: ast.Call) -> bool:
+def _false_names(tree: ast.AST) -> frozenset[str]:
+    """Every name this module binds to a falsy constant.
+
+    Collected across the whole module, not per-scope: a guard should rather
+    flag a name that a nearer binding would have made true than miss one, and
+    the `err=` value is the whole subject here. Nothing in the package binds a
+    name to False today, so the widening is free of false positives now — the
+    parametrized cases below are what keep it honest.
+    """
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+            targets = [node.target]
+        else:
+            continue
+        value = getattr(node, "value", None)
+        if not isinstance(value, ast.Constant) or value.value:
+            continue
+        bound.update(t.id for t in targets if isinstance(t, ast.Name))
+    return frozenset(bound)
+
+
+def _means_stderr(node: ast.AST, false_names: frozenset[str]) -> bool:
+    """Can we SEE that this `err=` value sends the line to stderr?
+
+    THE LIMIT, stated rather than left silent: only a literal and a name bound
+    to a falsy constant in this module are readable. `err=flag` where `flag` is
+    a parameter, an import, a call or an expression is unknowable without
+    running the code, so it is read as stderr and the call goes unflagged. A
+    sink can still hide there. `KNOWN LIMIT` in SINK_SHAPES below pins that
+    exact shape, so the day someone closes it the case turns red and says so.
+    """
+    if isinstance(node, ast.Constant):
+        return bool(node.value)
+    if isinstance(node, ast.Name):
+        return node.id not in false_names
+    return True
+
+
+def _writes_to_stdout(call: ast.Call,
+                      false_names: frozenset[str] = frozenset()) -> bool:
     """Does this call put something on stdout?
 
     Four routes, because the guard that only knew the first one let the other
@@ -438,14 +480,20 @@ def _writes_to_stdout(call: ast.Call) -> bool:
 
     `err` is read for its VALUE, not its presence. The old test asked
     `not any(kw.arg == "err")`, so `typer.echo(line, err=False)` — which says
-    stdout out loud — satisfied a guard whose whole subject is the stream.
+    stdout out loud — satisfied a guard whose whole subject is the stream. The
+    value is read through `_means_stderr`, which also resolves a name bound to
+    False and names what it still cannot see.
+
+    `secho` sits beside `echo` because it is the same function with colour and
+    the same `err` keyword. Nothing in the package calls it today; a guard that
+    only covers the spellings already in use is a guard the next commit gets
+    past for free.
     """
     func = call.func
     name = getattr(func, "attr", None) or getattr(func, "id", None)
-    if name == "echo":
+    if name in ("echo", "secho"):
         return not any(
-            kw.arg == "err"
-            and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+            kw.arg == "err" and _means_stderr(kw.value, false_names)
             for kw in call.keywords
         )
     if name in ("print", "result"):
@@ -501,10 +549,11 @@ def _stdout_writing_sinks(path: Path) -> list[int]:
     """
     tree = ast.parse(path.read_text(encoding="utf-8"))
     lambdas, names, partials = _handed_over(tree)
+    falsy = _false_names(tree)
     found: list[int] = []
 
     for lam in lambdas:
-        if any(isinstance(call, ast.Call) and _writes_to_stdout(call)
+        if any(isinstance(call, ast.Call) and _writes_to_stdout(call, falsy)
                for call in ast.walk(lam.body)):
             found.append(lam.lineno)
 
@@ -516,13 +565,13 @@ def _stdout_writing_sinks(path: Path) -> list[int]:
     }
     for node in nested:
         if node.name in names and any(
-                isinstance(call, ast.Call) and _writes_to_stdout(call)
+                isinstance(call, ast.Call) and _writes_to_stdout(call, falsy)
                 for stmt in node.body for call in ast.walk(stmt)):
             found.append(node.lineno)
 
     for made in partials:
         if made.args and _writes_to_stdout(
-                ast.Call(func=made.args[0], args=[], keywords=[])):
+                ast.Call(func=made.args[0], args=[], keywords=[]), falsy):
             found.append(made.lineno)
 
     return sorted(found)
@@ -530,7 +579,10 @@ def _stdout_writing_sinks(path: Path) -> list[int]:
 
 # Every way of writing a sink that the old guard let through, kept as data so the
 # test below can prove the guard still catches each one. Each was measured
-# evading it before this list existed; the two controls were measured passing.
+# evading it before this list existed; the controls were measured passing. Ten
+# shapes are caught, four controls must not be, and one row is a KNOWN LIMIT —
+# a sink the guard still misses, written down so the miss is asserted rather
+# than implied, and so closing it turns that row red.
 SINK_SHAPES = {
     "echo without err": ("run(lambda line: typer.echo(line))", True),
     "echo with err=False": ("run(lambda line: typer.echo(line, err=False))", True),
@@ -540,8 +592,20 @@ SINK_SHAPES = {
     "a nested def, not a lambda":
         ("def sink(line):\n        typer.echo(line)\n    run(sink)", True),
     "functools.partial": ("run(partial(typer.echo))", True),
+    "err=a name bound to False":
+        ("quiet = False\n    run(lambda line: typer.echo(line, err=quiet))", True),
+    "secho without err": ("run(lambda line: typer.secho(line))", True),
+    "secho with err=False": ("run(lambda line: typer.secho(line, err=False))", True),
     "CONTROL: err=True is correct": ("run(lambda line: typer.echo(line, err=True))", False),
+    "CONTROL: secho with err=True": ("run(lambda line: typer.secho(line, err=True))", False),
+    "CONTROL: err=a name bound to True":
+        ("loud = True\n    run(lambda line: typer.echo(line, err=loud))", False),
     "CONTROL: say.step is the answer": ("run(say.step)", False),
+    # Not a control — a limit. `_means_stderr` cannot read a value it never
+    # sees bound, so this sink evades the guard, and this case says so out
+    # loud. Close the limit and it goes red: that is the point of pinning it.
+    "KNOWN LIMIT: err=a name bound elsewhere":
+        ("run(lambda line: typer.echo(line, err=_verbosity))", False),
 }
 
 
@@ -549,12 +613,17 @@ SINK_SHAPES = {
 def test_the_sink_guard_can_actually_fire(shape, tmp_path):
     """The guard, held to the standard it holds the package to.
 
-    It passed for a year while catching exactly ONE of the seven shapes below —
-    green, specific, and unable to fail for the reason it exists. A guard that
-    has never been shown to fire is a guard nobody has tested, so its own
-    detection is the thing under test here, and the two controls are as
-    load-bearing as the seven: a rule that flagged everything would also be
+    It passed for a year while catching exactly ONE of the ten catching shapes
+    below — green, specific, and unable to fail for the reason it exists. A
+    guard that has never been shown to fire is a guard nobody has tested, so
+    its own detection is the thing under test here, and the four controls are
+    as load-bearing as the ten: a rule that flagged everything would also be
     green.
+
+    The last row is neither. It is the one evasion left standing — an `err=`
+    value bound out of sight — and it is here so the guard states its own edge
+    instead of implying it. A limit asserted is a limit that tells you when it
+    is gone.
     """
     source, should_catch = SINK_SHAPES[shape]
     module = tmp_path / "sample.py"
