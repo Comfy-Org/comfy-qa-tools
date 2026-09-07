@@ -493,8 +493,12 @@ somebody deletes it. It stays in the host list renamed by where it is —
 
 The host list is rewritten in place to do this. It is checked before it lands —
 the result must parse and must hold exactly the machines it should — the previous
-file is copied to `hosts.toml.bak`, and the swap is atomic. Comments and hosts
-this tool does not manage are preserved.
+file is copied to `hosts.toml.bak`, read back and compared before anything is
+written, and the swap is atomic and flushed to the disk. A copy that superseded
+an earlier one is archived to `backups/`, five deep, rather than overwritten, so
+a second move does not destroy the first one's backup. If the copy cannot be
+made, the rewrite does not happen. Comments and hosts this tool does not manage
+are preserved.
 
 ## Which machine am I actually on?
 

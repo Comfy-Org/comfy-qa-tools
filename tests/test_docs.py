@@ -441,6 +441,135 @@ def test_every_error_has_a_troubleshooting_entry(message):
     )
 
 
+# --- and the other direction: an entry that describes nothing real -----------
+#
+# The guard above checks that every message the package can print has an entry.
+# Nothing checked the reverse, and the reverse fails too: A FIX CAN LEAVE THE
+# PAGE ASSERTING THE DEFECT. troubleshooting.md went on telling people that a
+# trailing comment on a port line "is a limitation of the rewrite rather than a
+# problem with your file" for six commits after that was fixed — advertising a
+# defect that no longer existed, and telling people to work around something
+# that had started working.
+#
+# So: every entry heading has to quote something the package can still say.
+# Matching is against the LITERAL RUNS of real messages — the constant parts of
+# the f-strings the tool builds — not against the package text at large. That
+# distinction is the whole guard. Measured: matching entries against any
+# sufficiently long run of package source catches one deleted message in three,
+# because entries are long and a large package repeats its vocabulary. Matching
+# against identified message runs catches five in six.
+#
+# WHAT THIS DOES NOT CATCH, because a guard that looks complete and is not is
+# worse than one that admits its edges:
+#
+#   - PROSE INSIDE AN ENTRY. The stale sentence above was body text under a
+#     heading that is still perfectly valid, so this would not have caught the
+#     instance that prompted it. Only the heading is mechanical.
+#   - A light reword. Removing a message is caught; rewording it while keeping
+#     twelve characters of any one run is not.
+#   - Whether the entry's ADVICE is still right. Only that the message exists.
+
+# A run this long identifies a message, the same threshold the forward guard
+# uses on the same strings.
+ENTRY_RUN = IDENTIFYING
+
+# Entries that legitimately quote something this package does not say. Four are
+# other people's words; three are our own messages built so heavily from
+# interpolation that no single run reaches ENTRY_RUN. Both tests below keep this
+# honest — an allowlist nobody prunes is the hand-maintained list coming back.
+NOT_OUR_MESSAGE = {
+    "comfy-qat: command not found":
+        "the shell says this, not this tool",
+    "NO_PYTHON":
+        "a sentinel this tool makes a remote script print, not a message it prints",
+    "AssertionError: Torch not compiled with CUDA enabled":
+        "torch's own words, quoted from a ComfyUI log",
+    "Required 'compute.instances.start' permission":
+        "gcloud's own refusal, quoted so it can be recognised",
+    "request for l4 failed":
+        "f-string: 'request for ' is 11 characters, ' failed: ' is 9",
+    "testcloud serves 4f2a1b9c":
+        "f-string: ' serves ' and ', expected ' are 8 and 11",
+    "us-central1-b has no L4 capacity either":
+        "the entry truncates the message before its one long run",
+}
+
+
+def _message_runs() -> set[str]:
+    """Every literal run of every string the package builds, ENTRY_RUN or longer.
+
+    The constant parts of an f-string are what survive into what a user sees, so
+    they are what an entry can be checked against.
+    """
+    found: set[str] = set()
+    for path in sorted(PACKAGE.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            pieces: list[str] = []
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                pieces = [node.value]
+            elif isinstance(node, ast.JoinedStr):
+                pieces = [part.value for part in node.values
+                          if isinstance(part, ast.Constant)
+                          and isinstance(part.value, str)]
+            for piece in pieces:
+                for run in re.split(r"\{[^}]*\}", piece):
+                    run = _normalise(run)
+                    if len(run) >= ENTRY_RUN:
+                        found.add(run)
+    return found
+
+
+def _entry_headings() -> list[str]:
+    """The quoted message at the head of each troubleshooting entry."""
+    raw = (DOCS / "troubleshooting.md").read_text(encoding="utf-8")
+    return [_normalise(entry)
+            for entry in re.findall(r"^\*\*`(.+?)`\*\*", raw, flags=re.M | re.S)]
+
+
+ENTRIES = _entry_headings()
+MESSAGE_RUNS = _message_runs()
+
+
+def test_the_entry_list_was_actually_found():
+    """A parse that silently matched nothing would pass the test below it."""
+    assert len(ENTRIES) > 150, f"only found {len(ENTRIES)} entries — the parse is broken"
+    assert len(MESSAGE_RUNS) > 500, f"only {len(MESSAGE_RUNS)} runs — the walk is broken"
+
+
+@pytest.mark.parametrize("entry", ENTRIES, ids=lambda e: e[:40])
+def test_every_troubleshooting_entry_still_describes_something_real(entry):
+    if any(key in entry for key in NOT_OUR_MESSAGE):
+        pytest.skip("not one of our messages; see NOT_OUR_MESSAGE")
+    assert any(run in entry for run in MESSAGE_RUNS), (
+        f"troubleshooting.md documents {entry!r}, and nothing in comfy_qa/ can "
+        f"still say it. Either it was reworded — quote the new wording verbatim "
+        f"— or it is gone, and this entry describes a defect that no longer "
+        f"exists. Delete it rather than leaving it to be believed."
+    )
+
+
+def test_no_exempted_entry_has_quietly_become_checkable():
+    """The allowlist is the part that rots. A message that grows a longer run
+    should rejoin the check rather than stay exempt for ever."""
+    stale = sorted(
+        key for key, _ in NOT_OUR_MESSAGE.items()
+        if any(key in entry and any(run in entry for run in MESSAGE_RUNS)
+               for entry in ENTRIES))
+    assert not stale, (
+        f"{', '.join(stale)} now quotes something the package says, so it no "
+        f"longer needs an exemption. Remove it from NOT_OUR_MESSAGE."
+    )
+
+
+def test_no_exempted_entry_has_left_the_page():
+    """And an exemption for an entry nobody has any more is just clutter."""
+    absent = sorted(key for key in NOT_OUR_MESSAGE
+                    if not any(key in entry for entry in ENTRIES))
+    assert not absent, (
+        f"{', '.join(absent)} is exempted but is not in troubleshooting.md."
+    )
+
+
 # --- the commands our own messages tell people to run ---------------------
 
 

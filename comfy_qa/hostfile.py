@@ -15,12 +15,18 @@ So the rewrite is textual, not a parse-and-re-emit — tomllib would return dict
 and the comments would not come back. And it is checked before it lands:
 
   1. transform the text
-  2. parse the result and compare it to what was expected
-  3. copy the original to `hosts.toml.bak`
-  4. write a temp file and `os.replace` it, which is atomic on one filesystem
+  2. parse the result, compare it to what was expected, and load it with the
+     real loader — whatever the tool will refuse to read, this refuses to write
+  3. copy the original to `hosts.toml.bak`, fsync it, and READ IT BACK; archive
+     the copy it supersedes to `backups/` rather than overwriting it. A backup
+     that cannot be written, or that does not read back, stops the rewrite here
+  4. write a temp file, fsync it, `os.replace` it — atomic on one filesystem —
+     and fsync the directory, because atomic in ordering is not durable
 
-Step 2 is the one that matters. A transform that produced a duplicate section, or
-dropped a host, or renamed the wrong one, never reaches the file.
+Step 2 is the one that catches a bad transform: a duplicate section, a dropped
+host, a renamed wrong one, none of it reaches the file. Step 3 is the one that
+makes the whole thing reversible, and it is why this refuses rather than
+proceeds — the file is hand-maintained and has no other copy.
 """
 
 from __future__ import annotations
