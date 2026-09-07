@@ -359,6 +359,17 @@ def test_nothing_in_the_package_prints_an_escape_sequence_or_a_carriage_return()
     """
     for where, text in _package_string_constants():
         assert "\x1b" not in text, f"{where}: an escape sequence"
+        # A constant that IS a line ending is not output — `hostfile` composes
+        # file content and has to write `\r\n` back into a CRLF host list, or the
+        # rewritten line is the one LF in the file. This rule is about what gets
+        # PRINTED, and the walk cannot tell printing from writing.
+        #
+        # The exemption is on the VALUE, not on a module or a name. A message can
+        # never be exactly "\r\n", so this cannot widen by accident — which a
+        # module list would, and this codebase has five hand-maintained lists
+        # that each drifted before someone made them derive or fail.
+        if text in ("\r\n", "\r"):
+            continue
         assert "\r" not in text, f"{where}: a carriage return"
 
 
