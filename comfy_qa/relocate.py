@@ -60,6 +60,12 @@ DELETE_SNAPSHOT = "delete-snapshot"
 REGISTER = "register"
 LEAVE = "leave"
 
+# The steps that REMOVE something rather than make it. One, today, and it is
+# named rather than special-cased at the site because the rule it changes —
+# `_inflight`'s — is stated in general terms and would be inverted again by the
+# second one.
+DELETING = (DELETE_SNAPSHOT,)
+
 # gcloud's own default when `--type` is omitted. Naming it here is the reason the
 # default is never reached: the source disk's type is always passed through.
 GCLOUD_DEFAULT_DISK_TYPE = "pd-standard"
@@ -983,22 +989,71 @@ def remove_leftovers(gc: Gcloud, plan: Plan, found: Found,
     not list it. Google refuses to delete an attached disk, so this never cost
     anybody their data — it spent a `--clean` run on a request that could only
     fail, and reported the refusal as "could not clean up".
+
+    **The whole list is worked out before any of it runs, so an interrupt can be
+    told apart into its three states.** Deleting one at a time out of a `for`
+    over `found` meant a Ctrl-C at item two of three exited 130 in silence, and
+    the answer was right there and thrown away with the frame: item one is
+    certainly gone, item two is in doubt, item three was never reached and is
+    still billing. Each delete is registered with the items it has not got to
+    yet, so what `inflight` holds at any moment is exactly "this may still be
+    there" — and what is certainly gone goes in the note, where a heading about
+    things that may exist cannot misdescribe it.
     """
-    removed: list[str] = []
+    targets: list[tuple[str, str, str, Callable[[], None], str]] = []
     if (found.disk is not None and found.instance is None
             and not found.disk.get("users")):
-        say(f"deleting {plan.new_disk} in {plan.to_zone}")
-        gc.run([
-            "compute", "disks", "delete", plan.new_disk,
-            f"--zone={plan.to_zone}", f"--project={plan.project}", "--quiet",
-        ], parse_json=False)
-        removed.append(plan.new_disk)
+        targets.append((
+            plan.new_disk,
+            f"the disk {plan.new_disk} in {plan.to_zone}",
+            delete_disk_command(plan),
+            lambda: gc.run([
+                "compute", "disks", "delete", plan.new_disk,
+                f"--zone={plan.to_zone}", f"--project={plan.project}", "--quiet",
+            ], parse_json=False),
+            f"deleting {plan.new_disk} in {plan.to_zone}",
+        ))
     for snap in ([found.snapshot] if found.snapshot is not None else []) + list(found.spare_snapshots):
         name = snap.get("name")
-        say(f"deleting the snapshot {name}")
-        gc.delete_snapshot(name, plan.project)
+        targets.append((
+            name,
+            f"the snapshot {name}",
+            delete_snapshot_command(plan, name),
+            lambda name=name: gc.delete_snapshot(name, plan.project),
+            f"deleting the snapshot {name}",
+        ))
+
+    removed: list[str] = []
+    for index, (name, _described, _command, delete, announcement) in enumerate(targets):
+        say(announcement)
+        rest = targets[index:]
+        with inflight.may_leave(
+            "\n".join(item[1] for item in rest),
+            undo=["take these off the bill:", *(item[2] for item in rest)],
+            note=_still_to_clean(plan, removed),
+        ):
+            delete()
         removed.append(name)
     return removed
+
+
+def _still_to_clean(plan: Plan, removed: list[str]) -> str:
+    """The note under an interrupted `--clean`: what is certainly gone, and the
+    one command that settles the rest.
+
+    Said in the note rather than in `what`, because `what` is printed under a
+    heading about things that may exist and these certainly do not. Re-running
+    is the real answer either way — it re-surveys and carries on, so it both
+    finishes the cleaning and reports what it finds.
+    """
+    lines = []
+    if removed:
+        lines.append(f"already deleted before you stopped it, and not coming "
+                     f"back: {', '.join(removed)}")
+    lines.append(f"or run the same command again — it re-reads the project and "
+                 f"carries on: comfy-qat move {plan.host.name} --to {plan.to_zone} "
+                 f"--clean")
+    return "\n".join(lines)
 
 
 # --- doing it ------------------------------------------------------------
@@ -1162,6 +1217,21 @@ def run_move(
     return Outcome(done=tuple(done), warnings=tuple(warnings))
 
 
+def _and_these_go_too(left: tuple[str, ...]) -> str:
+    """The line introducing the cleanup commands, naming only what they remove.
+
+    `_state_after` adds a cleanup command for the snapshot and for the disk
+    exactly when it lists them, so what it listed is what the commands beneath
+    this line will delete.
+    """
+    also = [noun for noun in ("the disk", "the snapshot")
+            if any(item.startswith(f"{noun} ") for item in left)]
+    if not also:
+        return "then, if you do not want it:"
+    goes = "goes" if len(also) == 1 else "go"
+    return f"then, if you do not want it, {' and '.join(also)} {goes} with it:"
+
+
 def _inflight(plan: Plan, found: Found, done: list[str], action: Action):
     """What this run may have left, if it is interrupted inside `action`.
 
@@ -1170,21 +1240,38 @@ def _inflight(plan: Plan, found: Found, done: list[str], action: Action):
     reaches only the local gcloud, so assuming it did NOT happen is the assumption
     that costs money.
 
+    **That reasoning is sound and its scope is creates.** For a step that DELETES,
+    counting it as done points the other way: it drops the resource out of
+    `_state_after` and therefore out of the report, which is the one outcome that
+    leaves something billing unmentioned. Interrupted inside `DELETE_SNAPSHOT`
+    this listed the disk and the instance and not the snapshot — the very
+    resource the interrupted step was in the middle of, and the only one whose
+    fate was in doubt. An interrupted delete carries the same doubt as an
+    interrupted create; the safe reading of doubt is always "it may still be
+    there", and for a delete that means NOT counting it as done.
+
     The instance gets its own hand-over line, because `_state_after` deliberately
     lists it without a cleanup command: on the failure paths a move that got that
     far is a move that succeeded, and the finished-move output hands over the stop
     and the delete separately. An interrupted run has nothing printing them, so
     they are added here.
     """
-    left, cleanup = _state_after(plan, found, [*done, action.kind])
+    in_flight = [] if action.kind in DELETING else [action.kind]
+    left, cleanup = _state_after(plan, found, [*done, *in_flight])
     if not left:
         return "", {"undo": (), "note": ""}
     undo = list(cleanup)
     if CREATE_INSTANCE in done or REUSE_INSTANCE in done or action.kind == CREATE_INSTANCE:
+        # Named from what `cleanup` actually removes. This sentence was fixed
+        # text, so an interrupt that had already deleted the snapshot printed
+        # "the disk and the snapshot go with it:" above a disk delete and an
+        # instance delete and no snapshot delete — a resource named in the
+        # report whose whole job is naming what is billing, by a line whose own
+        # commands do not touch it.
         undo = [
             "stop the box first — it is the only part billing by the minute:",
             stop_instance_command(plan),
-            "then, if you do not want it, the disk and the snapshot go with it:",
+            _and_these_go_too(left),
             *cleanup,
             delete_instance_command(plan),
         ]

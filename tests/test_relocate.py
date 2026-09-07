@@ -7,12 +7,24 @@ bugs.
 
 from __future__ import annotations
 
+import pytest
+
+from comfy_qa import inflight
 from comfy_qa.config import Host
 from comfy_qa.relocate import (
+    CREATE_DISK,
+    CREATE_INSTANCE,
+    DELETE_SNAPSHOT,
+    REGISTER,
+    SNAPSHOT,
+    Action,
+    Found,
+    _inflight,
     boot_disk,
     machine_type,
     metadata_pairs,
     plan_move,
+    remove_leftovers,
     suffix_for,
 )
 
@@ -136,3 +148,151 @@ def test_leaving_the_source_alone_is_a_step_the_dispatch_knows_about():
 
     body = inspect.getsource(relocate.run_move)
     assert "LEAVE" in body, "the one step with no branch is the one that lied"
+
+
+# --- interrupting a move, and interrupting a clean --------------------------
+#
+# Two separate defects with one root: the record of what a run may have left is
+# built on rules written for steps that CREATE, and a move has one step that
+# deletes and a `--clean` pass that is nothing but deletes.
+
+MOVE_INSTANCE = {
+    "name": "comfy-win",
+    "machineType": "https://x/projects/p/zones/us-central1-a/machineTypes/g2-standard-8",
+    "disks": [{"boot": True, "source": "https://x/disks/comfy-win-a",
+               "deviceName": "persistent-disk-0"}],
+}
+
+
+def moving() -> object:
+    return plan_move(WIN, MOVE_INSTANCE, "us-central1-b")
+
+
+def interrupted_at(kind: str, done: list[str]):
+    return _inflight(moving(), Found(), list(done), Action(kind=kind, line=""))
+
+
+def test_a_snapshot_whose_delete_was_interrupted_is_still_reported():
+    """The in-flight step is counted as done, which is right for a create and
+    inverted for the one step that deletes.
+
+    Counting a delete as done drops the resource out of the report — so the
+    resource the interrupted step was in the middle of, the only one whose fate
+    was actually in doubt, was the one thing not mentioned. Ctrl-C reaches the
+    local gcloud, not the request, so an interrupted delete carries the same
+    doubt as an interrupted create; the safe reading is "it may still be there".
+    """
+    left, extra = interrupted_at(
+        DELETE_SNAPSHOT, [SNAPSHOT, CREATE_DISK, CREATE_INSTANCE])
+
+    assert "the snapshot comfy-win-a-move" in left
+    assert any("snapshots delete comfy-win-a-move" in line
+               for line in extra["undo"])
+
+
+def test_a_snapshot_delete_that_finished_is_not_reported():
+    """The other direction, and the guard on the fix: not counting a delete as
+    done must not mean never counting it."""
+    left, extra = interrupted_at(
+        REGISTER, [SNAPSHOT, CREATE_DISK, CREATE_INSTANCE, DELETE_SNAPSHOT])
+
+    assert "the snapshot" not in left
+    assert not any("snapshots delete" in line for line in extra["undo"])
+
+
+def test_a_created_instance_is_still_counted_the_moment_its_step_begins():
+    """The rule the fix narrows rather than reverses. A create in flight has
+    reached Google, and assuming it did not is the assumption that costs money."""
+    left, _ = interrupted_at(CREATE_INSTANCE, [SNAPSHOT, CREATE_DISK])
+
+    assert "the instance comfy-win in us-central1-b" in left
+
+
+@pytest.mark.parametrize("done,kind", [
+    ([SNAPSHOT, CREATE_DISK], CREATE_INSTANCE),
+    ([SNAPSHOT, CREATE_DISK, CREATE_INSTANCE], DELETE_SNAPSHOT),
+    ([SNAPSHOT, CREATE_DISK, CREATE_INSTANCE, DELETE_SNAPSHOT], REGISTER),
+])
+def test_the_undo_block_names_only_what_its_own_commands_remove(done, kind):
+    """The sentence introducing the cleanup was fixed text — "the disk and the
+    snapshot go with it:" — above whatever commands happened to follow.
+
+    Interrupted after the snapshot had gone, it named a snapshot and handed over
+    a disk delete and an instance delete and nothing that touches a snapshot: a
+    resource named in the one report whose whole job is naming what is billing,
+    by a line whose commands do not remove it.
+    """
+    _, extra = interrupted_at(kind, done)
+    undo = "\n".join(extra["undo"])
+    lead = next((line for line in extra["undo"]
+                 if line.startswith("then, if you do not want it")), None)
+    assert lead is not None, undo
+
+    assert ("the snapshot" in lead) == ("snapshots delete" in undo), undo
+    assert ("the disk" in lead) == ("disks delete" in undo), undo
+
+
+class _CleanGcloud:
+    """A gcloud whose second delete is the one that never comes back."""
+
+    def __init__(self, interrupt_at: int | None = None):
+        self.calls: list[str] = []
+        self.interrupt_at = interrupt_at
+
+    def _step(self, what: str) -> None:
+        self.calls.append(what)
+        if self.interrupt_at is not None and len(self.calls) == self.interrupt_at:
+            raise KeyboardInterrupt
+
+    def run(self, args, **kwargs):
+        self._step(" ".join(args))
+
+    def delete_snapshot(self, name, project):
+        self._step(f"snapshots delete {name}")
+
+
+def clean_up(gc) -> list[str]:
+    found = Found(disk={"name": "comfy-win-a-b"},
+                  snapshot={"name": "comfy-win-a-move"})
+    return remove_leftovers(gc, moving(), found, lambda line: None)
+
+
+def test_a_clean_that_is_interrupted_says_which_of_the_three_it_was():
+    """`--clean` deleted a list one item at a time and kept the answer in a
+    local that went with the frame.
+
+    Interrupted at item two of two, the tool KNOWS item one is gone and item two
+    is in doubt — and it exited 130 in silence. Unlike the create paths, where
+    "may" is the honest word because nothing has read the project back, here the
+    precise answer already exists and was simply not printed.
+    """
+    with pytest.raises(inflight.Interrupted):
+        clean_up(_CleanGcloud(interrupt_at=2))
+
+    left = inflight.pending()
+    assert [item.what for item in left] == ["the snapshot comfy-win-a-move"]
+    assert any("snapshots delete comfy-win-a-move" in line
+               for line in left[0].undo)
+    # Certain, and in the note rather than in `what`, where a heading about
+    # things that may exist would misdescribe it.
+    assert "already deleted before you stopped it" in left[0].note
+    assert "comfy-win-a-b" in left[0].note
+    assert "--clean" in left[0].note, "re-running is the answer that settles it"
+
+
+def test_a_clean_interrupted_on_the_first_delete_names_the_one_it_never_reached():
+    """The item still queued is not in doubt at all — it is certainly there and
+    certainly billing, and nothing was going to mention it."""
+    with pytest.raises(inflight.Interrupted):
+        clean_up(_CleanGcloud(interrupt_at=1))
+
+    left = inflight.pending()
+    assert [item.what for item in left] == [
+        "the disk comfy-win-a-b in us-central1-b\nthe snapshot comfy-win-a-move"]
+    assert "already deleted" not in left[0].note
+
+
+def test_a_clean_that_finishes_leaves_nothing_registered():
+    gc = _CleanGcloud()
+    assert clean_up(gc) == ["comfy-win-a-b", "comfy-win-a-move"]
+    assert inflight.pending() == []
