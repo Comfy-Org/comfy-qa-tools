@@ -675,6 +675,20 @@ grep -n "" ~/move-before/hosts.toml | head -40      # the file with line numbers
 cat ~/move-before/instances.txt ~/move-before/disks.txt ~/move-before/snapshots.txt
 ```
 
+**Before you capture, annotate.** Put a comment on the moved host's header line
+and another on its port line, exactly as the host list's own preamble invites:
+
+```toml
+[hosts.comfy-win]  # the windows box
+port = 8190        # do not reuse this port
+```
+
+A hand-maintained file has notes in it — that is the ordinary case here, not an
+exotic one — and until an hour ago both of those annotations made the host
+**unmovable**, with a message that was not merely unhelpful but false: `comfy-win
+is not in the host list`, about a host on the screen. Do this before R0 so every
+step below runs against a realistic file.
+
 - [ ] **R0** — you have five files in `~/move-before/` and you have looked at them.
       Everything below is a **comparison**, and a comparison without a before is
       the commonest broken check in this pack. If you skip R0 you cannot tell a
@@ -776,6 +790,16 @@ echo "=== R5d backup"; ls -l ~/.config/comfy-qa-tools/hosts.toml.bak
       `comfy-qat` command works at all until you hand-edit it.
 - [ ] **R5f** — a backup of the previous file is at `hosts.toml.bak`, and it
       matches `~/move-before/hosts.toml`.
+- [ ] **R5g** — **the annotated host moved at all.** A note on the header line
+      used to make it invisible to both `move` and `delete` — "not in the host
+      list", about a host right there — and a note on the port line produced "has
+      no port line, so its port cannot be freed" about a line one row below. If
+      either message appears, stop: the file is fine and the tool is wrong.
+- [ ] **R5h** — **and your notes are still there, both of them**, on the renamed
+      header and beside the port. The wrong fix for R5g is a pattern that swallows
+      the comment; a rewrite that silently ate `# do not reuse this port` would be
+      worse than the refusal it replaced. Check the `diff` — the comments move
+      with their lines and are not consumed by them.
 
 ### R6 — did the box survive the move?
 
@@ -809,6 +833,27 @@ echo "=== R7c snapshots";diff ~/move-before/snapshots.txt <(gcloud compute snaps
 - [ ] **R7c** — now run **phase I** in full. R is the only phase that creates the
       kind of leak I detects, so this is the first time that phase has ever been
       pointed at its own reason for existing.
+
+### R9 — what is billing now, read from Google and not from the tool
+
+```sh
+echo "=== R9 what is actually running"; gcloud compute instances list --project $P --filter="status=RUNNING"
+echo "=== R9b what the tool thinks"; qat list --live
+```
+
+- [ ] **R9** — **you have two GPU boxes running, and you read that from Google.**
+      The new one in the target zone, and the old one retired to
+      `<name>-<old-zone>` — `move` does not stop it, it stays declared so `down`
+      can reach it, and it bills until somebody acts. If you expected one box,
+      that expectation has been costing money since R4 finished.
+- [ ] **R9b** — `qat list --live` agrees with the line above, name for name. This
+      is the one place in the phase where the tool's account and Google's can be
+      set side by side, and a disagreement here is worth more than either alone.
+- [ ] **R9c** — **you have decided what to do with the old box before moving on.**
+      Stop it (`comfy-qat down <name>-<old-zone>`), or delete it and its disk with
+      the `gcloud` line R4b printed. Phase G's `down --all` will stop it because it
+      is declared — but "something later will probably catch it" is how a box runs
+      all night, and this is the moment you know it exists.
 
 ### R8 — if it goes wrong halfway
 
@@ -859,13 +904,21 @@ G=$(mktemp -d); printf '[hosts.local]\nkind = "local"\nport = 8188\n' > $G/noclo
 echo "=== G6c --all with no cloud box declared"; qat down --all --config $G/nocloud.toml; echo "exit $?"
 ```
 
-- [ ] **G1** — says it closed the tunnel and stopped the machine.
+- [ ] **G1** — says it closed the tunnel and stopped the machine. **If you ran
+      phase R, this stops ONE of the two boxes you now have** — `down` takes a
+      name, and the retired `<name>-<old-zone>` is a different declared host.
 - [ ] **G2** — **all three** of that host's tunnel files are gone: `.pid`, `.log`
       and `.json`. Checking only the `.pid` is the same blind spot as E5 running the
       other way — `list` reads the `.json`, so one left behind reports a tunnel that
       is not there.
 - [ ] **G3** — nothing answered on that port. Exit 1.
-- [ ] **G4** — the instance shows TERMINATED. **If it does not, the tool has left you billing and that is a blocker.**
+- [ ] **G4** — **every instance on the project that you are not deliberately
+      running shows TERMINATED** — not just the one you named. Read the whole
+      list. If you ran phase R there are two of yours, and G1 stopped one; if you
+      ran phase K there may be a box from a half-finished create. **Anything still
+      RUNNING here that you did not mean to leave running is a blocker.** This
+      criterion said "the instance" while the pack could only make one box; phase R
+      makes two, and one TERMINATED line is no longer an answer.
 - [ ] **G5** — does not fail on an already-stopped box.
 - [ ] **G6a** — `qat down --all` takes no name and stops every declared cloud box.
       **Read which of three closing sentences you got — not how many it counted.**
@@ -1084,6 +1137,13 @@ echo "=== N13 the tool still reads it"; qat list; echo "exit $?"
       two seconds, a destroyed one is gone. *(Needs a second box to delete, or a
       second run. Record as **not run** rather than assuming it from N12b — this
       is the branch, not a repeat of it.)*
+- [ ] **N12g** — **a note ON the header line does not make the host invisible.**
+      Give the box you are deleting a `[hosts.<name>]  # something` comment before
+      N9. Until an hour ago that produced `no host is called '<name>'` from
+      `delete` — and the same annotation took `move` out too, so this is the same
+      defect reaching two commands. The refusal is the failure; a rewrite that
+      deletes the note instead is the other one. The block goes, the note goes
+      with its own block, and nothing else moves.
 - [ ] **N12f** — **a host list that arrived with Windows line endings comes back
       with them.** The rewrite is textual, and the separator it writes used to be a
       hard-coded `\n`, which puts a lone LF into a CRLF file. That is not cosmetic
