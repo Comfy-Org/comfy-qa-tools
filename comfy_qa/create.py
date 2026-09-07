@@ -211,7 +211,7 @@ ALIASES = {
 #
 # Two things it does not promise, and neither should this file. The install
 # reboots the box at least once and continues on the next boot, so a fresh box is
-# not ready the moment `create` returns — `host go` waits for SSH and then for
+# not ready the moment `create` returns — `comfy-qat go` waits for SSH and then for
 # ComfyUI, which is the wait that covers it. And Google states the script does
 # not work on instances with Secure Boot enabled; nothing here turns Secure Boot
 # on, and the images used are not Shielded-by-default in a way that would.
@@ -910,7 +910,8 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
     else:
         lines.append(
             f"{blueprint.name} is installing the NVIDIA driver from its startup "
-            f"script, which reboots it once or twice. `host go` waits that out.")
+            f"script, which reboots it once or twice. `comfy-qat go` waits that "
+            f"out.")
     lines.append(f"  comfy-qat go {blueprint.name}     # install ComfyUI and serve it")
     lines.append(f"  comfy-qat down {blueprint.name}   # stop the machine, stop paying")
     return lines
@@ -976,9 +977,25 @@ def order_zones(
                 f"this project has no {blueprint.card.name} quota in "
                 f"{region_of(zone)}, so nothing can start in {zone}. Nothing was "
                 f"created.",
-                fix=(f"comfy-qat quota request --gpu "
-                     f"{blueprint.card.key} --region {region_of(zone)}, or "
-                     f"drop --zone and let this pick"),
+                # The zone name is checked FIRST, and that ordering is the
+                # whole of this fix. `--zone us-central9-a` is a typo, not a
+                # quota gap: `region_of` turns it into `us-central9`, this
+                # refusal says the project holds no quota there — true, and
+                # unhelpful — and the advice used to lead with a quota request
+                # for a region Google has never had. Asking Google for a region
+                # that does not exist is a slow way to learn you mistyped.
+                #
+                # Deliberately not reordered against the two zone reads below,
+                # which would diagnose it properly: `machine-types list
+                # --zones=<bogus>` makes gcloud refuse the argument outright, so
+                # moving them ahead of this would replace a clear refusal with a
+                # raw gcloud error for exactly the case this is about.
+                fix=(f"check the zone name first — a typo reads as a region "
+                     f"this project has no quota in: gcloud compute zones list "
+                     f"--filter=name={zone}; then either drop --zone and let "
+                     f"this pick, or ask for the card there: comfy-qat quota "
+                     f"request --gpu {blueprint.card.key} "
+                     f"--region {region_of(zone)}"),
                 kind=NO_QUOTA,
             )
         offered = zones_with_machine_type(
