@@ -245,7 +245,14 @@ def test_only_the_newest_few_superseded_copies_are_kept(tmp_path):
 
     archived = list((tmp_path / "backups").glob("hosts.toml.*.bak"))
     contents = [item.read_text(encoding="utf-8") for item in archived]
-    assert len(archived) == BACKUP_GENERATIONS
+    # The literal 5, not BACKUP_GENERATIONS: a count checked against the very
+    # constant that produced it moves with it, so it cannot fail. The cap is
+    # part of the promise, not an implementation detail, and this is the line
+    # that goes red when somebody changes it.
+    assert len(archived) == 5, (
+        f"the cap is 5 archived generations; {len(archived)} survived "
+        f"{BACKUP_GENERATIONS + 3} writes"
+    )
 
     # Oldest-first: the very first state is gone, the recent ones are not. A
     # copy is archived one write AFTER it stops being live — it spends that
