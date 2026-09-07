@@ -92,6 +92,11 @@ numbers will.
 This shape has been found three separate times, most recently inside a commit
 written to eliminate it.
 
+**One caveat when you go looking for it: a strict `xfail` that has disappeared is
+not proof the defect was fixed.** The test may simply have been deleted, which is
+this class exactly. Confirm the test still exists and now passes, rather than
+reading its absence from the failure list as good news.
+
 ## 4. An instrument with only one branch
 
 A detector that can report one outcome. The mutation detector that could only
@@ -861,6 +866,42 @@ anything.
 
 ---
 
+## A correction that lands in one place reads as done
+
+From the diff, a fix applied at the site where the problem was noticed looks
+finished. **Whoever writes the fix is the worst-placed person to find the second
+site, because they know where they were looking.** Four times in one day, in four
+different kinds of thing:
+
+| the fix landed in | the site it missed |
+|---|---|
+| one of two code sites | a leftovers block repaired while the plan note still leaked |
+| one of two prose sites | a provenance paragraph corrected, and the same claim left standing eighty lines below, contradicting it |
+| one of six modules | a scan widened exactly where the narrow pattern had been spotted |
+| **the copy rather than the original** | a generated export edited, and the next run of the generator silently put the old text back |
+
+**The fourth is the one that proves the class is structural.** That fix was
+correct. It was applied. It was *verified* — the export was re-read afterwards
+and the bad references were gone. Every step was done properly and the fix was
+still lost, because it landed in the artefact instead of in the thing that
+produces the artefact. Nothing about it was hurried.
+
+**The detection rule:**
+
+> Ask whether the thing you just edited is *derived* from something else. If it
+> is, your edit is provisional until the source has it.
+
+The tell is that an artefact and its generator both exist and only one of them is
+in front of you.
+
+**And the repair is not "remember to fix the source."** Nobody remembers. The
+audit became a step inside the export itself, so the next run re-checks and the
+failure cannot recur quietly. Fixing the generator is the first half; **building
+the check into the pipeline is the half that holds**, because a discipline that
+depends on remembering has an expiry date. That is the same move as every other
+remedy on this page: put the guarantee somewhere that runs, not somewhere that is
+recalled.
+
 ## A finding needs a commit hash attached
 
 Three times in one day a finding here went stale within the hour of being
@@ -901,6 +942,13 @@ what you read, at which sha, and whether the tree was dirty.**
 
 Three true statements. Only the third is still true, and only because it names
 where it looked.
+
+**And do not take the reasoning from the commit that touched the file.** A fix's
+explanation can sit in a *different* commit's message than the one that changed
+the line — one commit swept an entry belonging to another's work under its own
+heading, leaving `git log -- <file>` pointing at the wrong reasoning for a change
+that is genuinely there. Which argues for the rule this page already applies
+everywhere else: **read the code, and use the message only for why.**
 
 The *shape* is what a page records. The instance is dated, and dating it is the
 whole job.
