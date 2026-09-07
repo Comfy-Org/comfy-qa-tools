@@ -430,25 +430,140 @@ def test_one_spelling_of_a_failure_mark():
 # --- the story reaches stderr even where it is handed to somebody else -----
 
 
-def _stdout_writing_lambdas(path: Path) -> list[int]:
-    """Lambdas that write to stdout, which is what a progress sink must not do.
+def _writes_to_stdout(call: ast.Call) -> bool:
+    """Does this call put something on stdout?
 
-    `lambda line: typer.echo(f"  {line}")` — the shape below — reads as a local
-    formatting detail and is nothing of the sort. It is handed to `lifecycle` as
-    its `emit`, so the whole narrative of `go`, `up`, `down`, `switch`, `move`,
-    `logs` and `create` went out on stdout through it, `say.Slow`'s ticks
-    included. `say.step` is the same two spaces and the right stream.
+    Four routes, because the guard that only knew the first one let the other
+    three past — measured, one shape at a time, against a real package module.
+
+    `err` is read for its VALUE, not its presence. The old test asked
+    `not any(kw.arg == "err")`, so `typer.echo(line, err=False)` — which says
+    stdout out loud — satisfied a guard whose whole subject is the stream.
     """
-    found = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-        if not isinstance(node, ast.Lambda):
+    func = call.func
+    name = getattr(func, "attr", None) or getattr(func, "id", None)
+    if name == "echo":
+        return not any(
+            kw.arg == "err"
+            and not (isinstance(kw.value, ast.Constant) and kw.value.value is False)
+            for kw in call.keywords
+        )
+    if name in ("print", "result"):
+        # `say.result` is the answer and belongs on stdout — from a COMMAND. As a
+        # progress sink it is the same defect wearing the vocabulary's own name.
+        return True
+    if name == "write":
+        target = getattr(func, "value", None)
+        return isinstance(target, ast.Attribute) and target.attr == "stdout"
+    return False
+
+
+def _handed_over(tree: ast.AST):
+    """Callables passed to somebody else. That is what a sink IS.
+
+    The distinction matters and the first attempt at widening this got it wrong:
+    checking every function that writes to stdout flags all 26 commands, because
+    printing the answer is their job. What makes a callable a progress sink is
+    not what it writes, it is that it was handed to `lifecycle` to be called
+    later — which is exactly what this section's heading has always said.
+
+    Named functions are only counted when NESTED, for the same reason. Typer
+    passes module-level commands around as values — `ctx.invoke(host.list_cmd)`,
+    `callback=_version_callback`, `choose=_choose` — and every one of those is a
+    command doing its job, not a sink. Measured: unrestricted, those four are the
+    entire false-positive set.
+    """
+    lambdas, names, partials = [], set(), []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
             continue
-        for call in ast.walk(node.body):
-            if (isinstance(call, ast.Call)
-                    and getattr(call.func, "attr", "") == "echo"
-                    and not any(kw.arg == "err" for kw in call.keywords)):
-                found.append(node.lineno)
-    return found
+        for arg in list(node.args) + [kw.value for kw in node.keywords]:
+            if isinstance(arg, ast.Lambda):
+                lambdas.append(arg)
+            elif isinstance(arg, ast.Name):
+                names.add(arg.id)
+            elif isinstance(arg, ast.Call) and (
+                    getattr(arg.func, "attr", None)
+                    or getattr(arg.func, "id", None)) == "partial":
+                partials.append(arg)
+    return lambdas, names, partials
+
+
+def _stdout_writing_sinks(path: Path) -> list[int]:
+    """Every progress sink in one file that would write to stdout.
+
+    `lambda line: typer.echo(f"  {line}")` — the shape this started with — reads
+    as a local formatting detail and is nothing of the sort. It is handed to
+    `lifecycle` as its `emit`, so the whole narrative of `go`, `up`, `down`,
+    `switch`, `move`, `logs` and `create` went out on stdout through it,
+    `say.Slow`'s ticks included. `say.step` is the same two spaces and the right
+    stream.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    lambdas, names, partials = _handed_over(tree)
+    found: list[int] = []
+
+    for lam in lambdas:
+        if any(isinstance(call, ast.Call) and _writes_to_stdout(call)
+               for call in ast.walk(lam.body)):
+            found.append(lam.lineno)
+
+    nested = {
+        inner
+        for outer in ast.walk(tree) if isinstance(outer, ast.FunctionDef)
+        for inner in ast.walk(outer)
+        if isinstance(inner, ast.FunctionDef) and inner is not outer
+    }
+    for node in nested:
+        if node.name in names and any(
+                isinstance(call, ast.Call) and _writes_to_stdout(call)
+                for stmt in node.body for call in ast.walk(stmt)):
+            found.append(node.lineno)
+
+    for made in partials:
+        if made.args and _writes_to_stdout(
+                ast.Call(func=made.args[0], args=[], keywords=[])):
+            found.append(made.lineno)
+
+    return sorted(found)
+
+
+# Every way of writing a sink that the old guard let through, kept as data so the
+# test below can prove the guard still catches each one. Each was measured
+# evading it before this list existed; the two controls were measured passing.
+SINK_SHAPES = {
+    "echo without err": ("run(lambda line: typer.echo(line))", True),
+    "echo with err=False": ("run(lambda line: typer.echo(line, err=False))", True),
+    "print": ("run(lambda line: print(line))", True),
+    "sys.stdout.write": ("run(lambda line: sys.stdout.write(line))", True),
+    "say.result as a sink": ("run(lambda line: say.result(line))", True),
+    "a nested def, not a lambda":
+        ("def sink(line):\n        typer.echo(line)\n    run(sink)", True),
+    "functools.partial": ("run(partial(typer.echo))", True),
+    "CONTROL: err=True is correct": ("run(lambda line: typer.echo(line, err=True))", False),
+    "CONTROL: say.step is the answer": ("run(say.step)", False),
+}
+
+
+@pytest.mark.parametrize("shape", list(SINK_SHAPES), ids=list(SINK_SHAPES))
+def test_the_sink_guard_can_actually_fire(shape, tmp_path):
+    """The guard, held to the standard it holds the package to.
+
+    It passed for a year while catching exactly ONE of the seven shapes below —
+    green, specific, and unable to fail for the reason it exists. A guard that
+    has never been shown to fire is a guard nobody has tested, so its own
+    detection is the thing under test here, and the two controls are as
+    load-bearing as the seven: a rule that flagged everything would also be
+    green.
+    """
+    source, should_catch = SINK_SHAPES[shape]
+    module = tmp_path / "sample.py"
+    module.write_text(f"def outer():\n    {source}\n", encoding="utf-8")
+
+    caught = bool(_stdout_writing_sinks(module))
+    assert caught is should_catch, (
+        f"{shape}: guard said {caught}, expected {should_catch}"
+    )
 
 
 def test_no_progress_sink_writes_to_stdout():
@@ -465,11 +580,73 @@ def test_no_progress_sink_writes_to_stdout():
     is dangerous wherever it is written.
     """
     for path in sorted((ROOT / "comfy_qa").glob("*.py")):
-        found = _stdout_writing_lambdas(path)
+        found = _stdout_writing_sinks(path)
         assert not found, (
             f"{path.name}:{found} — a progress sink writing to stdout. "
             f"Pass `say.step`: same indent, and the story belongs on stderr."
         )
+
+
+DECLARED = (
+    "[hosts.comfy-win]\n"
+    "kind = 'gce'\nos = 'Windows Server 2022'\ngpu = 'L4'\n"
+    "gce_instance = 'comfy-win'\ngce_zone = 'us-central1-a'\n"
+    "gce_project = 'a-project'\nport = 8190\n"
+)
+
+
+class _RunningBox:
+    """A cloud with one box that is on. Not a stand-in for `put_away`.
+
+    That distinction is the whole of what was wrong here. The previous version
+    replaced `lifecycle.put_away` with a two-line stub and then asserted on the
+    streams — so the assertion was aimed at the double, and the function that
+    writes the narrative never ran. Green, specific, and about nothing.
+
+    Worse than not exercising the subject: the double had DRIFTED from it. The
+    stub returned `False`, and the real `put_away` has returned one of
+    "billing"/"caught"/"idle"/"unknown" since a bool was found unable to tell a
+    box this stopped from a box already off. `down` looks the result up in
+    `{"unknown": ..., "billing": ..., "caught": ...}.get(found, [])`, so `False`
+    matched nothing and every host fell into a throwaway list. The test steered
+    the command down a branch the real function can no longer produce, and the
+    assertion it then made was WRONG — `stdout == ""` is false for `down --all`,
+    which puts its money summary there on purpose.
+
+    So: the real `put_away`, and only the cloud is faked.
+    """
+
+    def __init__(self, state: str = "RUNNING") -> None:
+        self.state = state
+        self.stopped: list[str] = []
+
+    def instance_status(self, instance, zone, project):
+        return self.state
+
+    def stop_instance(self, instance, zone, project):
+        self.stopped.append(instance)
+        return ""
+
+    def list_instances(self, project):
+        return []
+
+    def current_project(self):
+        return "a-project"
+
+
+def _run(argv, tmp_path, monkeypatch, cloud=None):
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import tunnel as tunnel_module
+    from comfy_qa.cli import app
+
+    monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
+    config = tmp_path / "hosts.toml"
+    config.write_text(DECLARED, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud",
+                        lambda *a, **k: cloud or _RunningBox())
+    return CliRunner().invoke(app, [*argv, "--config", str(config)])
 
 
 def test_the_narrative_of_a_command_that_costs_money_goes_to_stderr(tmp_path,
@@ -480,35 +657,185 @@ def test_the_narrative_of_a_command_that_costs_money_goes_to_stderr(tmp_path,
     Its progress is the story and belongs on stderr; whatever it concludes is the
     answer and belongs on stdout. Before the conversion this was the wrong way
     round in full: stdout carried everything and stderr was empty.
+
+    `--all`, because that is the form with a summary to put on stdout — and
+    because the single-host form turns out to have none, which is pinned
+    separately below.
     """
-    from typer.testing import CliRunner
-
-    from comfy_qa import gcloud as gcloud_module
-    from comfy_qa import lifecycle
-    from comfy_qa.cli import app
-
-    config = tmp_path / "hosts.toml"
-    config.write_text(
-        "[hosts.comfy-win]\n"
-        "kind = 'gce'\nos = 'Windows Server 2022'\ngpu = 'L4'\n"
-        "gce_instance = 'comfy-win'\ngce_zone = 'us-central1-a'\n"
-        "gce_project = 'a-project'\nport = 8190\n",
-        encoding="utf-8")
-
-    def put_away(gc, host, say, keep_running=False):
-        say("closing the tunnel")
-        say("stopping the machine")
-        return False
-
-    monkeypatch.setattr(lifecycle, "put_away", put_away)
-    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: object())
-
-    result = CliRunner().invoke(app, ["down", "comfy-win", "--config", str(config)])
+    cloud = _RunningBox()
+    result = _run(["down", "--all"], tmp_path, monkeypatch, cloud)
 
     assert result.exit_code == 0, result.output
-    assert "closing the tunnel" in result.stderr
-    assert "stopping the machine" in result.stderr
-    assert result.stdout == "", (
-        f"the story leaked onto stdout: {result.stdout!r} — a person who "
-        f"redirected it away would lose the progress of a command about money"
+    assert cloud.stopped == ["comfy-win"], (
+        "the real put_away did not run — if this ever passes with an empty list, "
+        "the subject has been replaced by a double again"
+    )
+
+    # The story: the sentence the REAL put_away writes, not one a stub was told
+    # to say.
+    assert "was running — stopped it" in result.stderr, result.stderr
+
+    # The answer, and the half the stubbed version could not see at all.
+    assert "was billing" in result.stdout, (
+        f"the money summary is the answer and belongs on stdout: "
+        f"{result.stdout!r}"
+    )
+    assert "was running — stopped it" not in result.stdout, (
+        "the story leaked onto stdout: a person who redirected it away would "
+        "lose the progress of a command about money"
+    )
+
+
+def test_a_money_command_says_something_on_each_stream(tmp_path, monkeypatch):
+    """Neither stream may be empty, which is the shape both defects take.
+
+    D78 is `move --dry-run` with EVERYTHING on stdout and stderr empty; its
+    mirror is `down <name>` with everything on stderr and stdout empty. One
+    invariant catches both, and it is the one the vocabulary already states:
+    stdout carries the answer, stderr carries the story, and a command about
+    money has both.
+    """
+    result = _run(["down", "--all"], tmp_path, monkeypatch)
+
+    assert result.stdout.strip(), "no answer on stdout"
+    assert result.stderr.strip(), "no story on stderr"
+
+
+@pytest.mark.xfail(strict=True, reason="D79's mirror: `down <name>` is _act(put_away, "
+                                       "..., say.step) and returns, so the whole "
+                                       "command is on stderr and `2>/dev/null` "
+                                       "prints nothing at all about money. "
+                                       "Not mine to fix; host.py belongs to "
+                                       "another agent.")
+def test_the_single_host_down_also_answers_on_stdout(tmp_path, monkeypatch):
+    """`down --all` puts its money summary on stdout. `down <name>` puts nothing
+    there, so the two forms of one command disagree about where the answer goes.
+
+    Found by making the guard above drive the real `put_away` — which is the
+    point of unstubbing it, and it turned up on the first run.
+    """
+    result = _run(["down", "comfy-win"], tmp_path, monkeypatch)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.strip(), (
+        f"`down comfy-win 2>/dev/null` says nothing about money: "
+        f"{result.stdout!r}"
+    )
+
+
+# The same invariant, pointed at the case that motivated all of this. D78 is
+# `move --dry-run` writing its whole leftovers block — heading, each resource,
+# and three `gcloud … --quiet` delete commands — to stdout, with stderr empty.
+# `2>/dev/null` loses nothing; `1>/dev/null` loses everything, in the command
+# that hands over the most delete commands in the tool.
+#
+# Verified by hand at HEAD before this was written: exit 0, stderr EMPTY,
+# `--quiet` present in stdout.
+#
+# FIXED IN d70e6b1 while this was being written, by moving the block to
+# `say.warn`. This went in as a strict xfail and turned red on the first run
+# against the new HEAD — which is the mechanism working: the notice arrived
+# without anyone having to remember to look. Kept as a live guard rather than
+# deleted, because the fix is one word (`warn` back to `result`) and nothing
+# else in the suite reads the streams of this command.
+
+_PROJECT_URL = "https://www.googleapis.com/compute/v1/projects/a-project"
+
+
+class _HalfFinishedMove:
+    """A project carrying what an earlier, interrupted move left behind."""
+
+    def _disk(self, name, zone, kind, **extra):
+        return {"name": name, "zone": f"{_PROJECT_URL}/zones/{zone}",
+                "sizeGb": "300", "status": "READY",
+                "type": f"{_PROJECT_URL}/zones/{zone}/diskTypes/{kind}",
+                "creationTimestamp": "2026-08-25T07:38:24.167-07:00", **extra}
+
+    def run(self, args, **kwargs):
+        joined = " ".join(str(part) for part in args)
+        if "disks list" in joined:
+            return [
+                self._disk("comfy-win-a", "us-central1-a", "pd-balanced",
+                           users=[f"{_PROJECT_URL}/zones/us-central1-a/instances/comfy-win"]),
+                self._disk("comfy-win-a-b", "us-central1-b", "pd-standard",
+                           sourceSnapshot=f"{_PROJECT_URL}/global/snapshots/comfy-win-a-move"),
+            ]
+        if "snapshots list" in joined:
+            return [{"name": "comfy-win-a-move", "diskSizeGb": "300",
+                     "sourceDisk": f"{_PROJECT_URL}/zones/us-central1-a/disks/comfy-win-a",
+                     "storageBytes": "22475608320", "status": "READY",
+                     "creationTimestamp": "2026-08-25T07:33:34.373-07:00"}]
+        if "machine-types list" in joined:
+            return [{"name": "g2-standard-8"}]
+        if "regions describe" in joined:
+            return None
+        if "instances describe" in joined:
+            return self.describe_instance("comfy-win", "us-central1-a", "a-project")
+        raise AssertionError(f"unexpected gcloud call: {joined}")
+
+    def describe_instance(self, instance, zone, project):
+        return {"name": instance, "status": "TERMINATED",
+                "zone": f"{_PROJECT_URL}/zones/us-central1-a",
+                "machineType": f"{_PROJECT_URL}/zones/us-central1-a/machineTypes/g2-standard-8",
+                "disks": [{"boot": True,
+                           "source": f"{_PROJECT_URL}/zones/us-central1-a/disks/comfy-win-a"}]}
+
+    def list_instances(self, project):
+        return []
+
+    def region_quotas(self, project, region):
+        return {}
+
+    def current_project(self):
+        return "a-project"
+
+
+def test_a_dry_run_that_hands_over_delete_commands_says_something_on_stderr(
+        tmp_path, monkeypatch):
+    result = _run(["move", "comfy-win", "--to", "us-central1-b", "--dry-run"],
+                  tmp_path, monkeypatch, _HalfFinishedMove())
+
+    assert result.exit_code == 0, result.output
+    both = result.stdout + result.stderr
+    assert "an earlier run left this behind" in both, (
+        "fixture drifted — this test is about WHERE the leftovers block goes, "
+        "so it is worth nothing if the block is not printed at all"
+    )
+
+    # Named by stream AND by command. The first draft of this asserted only
+    # `result.stderr.strip()` and passed with the defect three-quarters
+    # restored: the fix moved several lines, and putting ONE back left enough on
+    # stderr to satisfy it. "Something was on stderr" is not the property.
+    assert "an earlier run left this behind" in result.stderr
+    for line in ("disks delete comfy-win-a-b", "snapshots delete comfy-win-a-move"):
+        assert line in result.stderr, f"{line} is not on stderr: {result.stderr!r}"
+    assert "an earlier run left this behind" not in result.stdout
+    assert "snapshots delete comfy-win-a-move" not in result.stdout, (
+        f"a `gcloud … --quiet` delete command is on stdout, so `1>/dev/null` "
+        f"loses it: {result.stdout!r}"
+    )
+
+
+@pytest.mark.xfail(strict=True, reason="residual of D78, surviving d70e6b1: the "
+                                       "PLAN NOTE still hands a `gcloud compute "
+                                       "disks delete … --quiet` to stdout. Same "
+                                       "hazard, a different line — the fix moved "
+                                       "the leftovers block and not "
+                                       "`found.notes`. host.py is another "
+                                       "agent's; delete this with the fix.")
+def test_no_delete_command_reaches_stdout_from_a_dry_run(tmp_path, monkeypatch):
+    """The whole-command version of the assertion above.
+
+    Kept separate, and kept honest: the leftovers block IS fixed, and this is the
+    one line left. Rolling the two together would hide which half is which —
+    which is exactly how the first draft of the test above came to pass for the
+    wrong reason.
+    """
+    result = _run(["move", "comfy-win", "--to", "us-central1-b", "--dry-run"],
+                  tmp_path, monkeypatch, _HalfFinishedMove())
+
+    assert result.exit_code == 0, result.output
+    assert "--quiet" not in result.stdout, (
+        f"{result.stdout.count('--quiet')} delete command(s) on stdout: "
+        f"{result.stdout!r}"
     )
