@@ -23,6 +23,7 @@ who did not write the tool. Rather than repeat it, this is what it covered:
 | **not run** | J10/J11, and all of phase M — they need quota for **two GPU boxes at once**, and this project's `GPUS_ALL_REGIONS` ceiling is 1 |
 | **not run** | phase K (`create`) and phase L (`logs`) — both landed after that pass, so nothing in them has ever been run |
 | **not run** | E1, E2, E3, E3b, E5, E6, E7, F3–F8, J15 — see the note on each |
+| **never had a criterion** | phase S (`ssh`, `rdp`, `disconnect`) and phase N (`delete`). Four commands, added here because the pack could not see them — one of which destroys a machine |
 
 Two things to hold on to. **Everything about `create` and `logs` is unverified**,
 which makes phases K and L the point of the next run rather than a formality. And
@@ -33,6 +34,13 @@ either. A tick against the old wording would not have meant anything.
 The three phases that did not exist before are **K** (`create`), **L** (`logs` and
 the two ways of watching a launch) and **M** (two boxes up at once, which is what
 detaching bought). K runs before E because E needs a box.
+
+Two more are new here, for a different reason. **S** (`ssh`, `rdp`, `disconnect`)
+and **N** (`delete`) cover four commands that had **no criterion anywhere in this
+pack** — so a tester could complete the whole thing, sign off release 1, and never
+once exercise the only command in the tool that cannot be undone. They were
+missing because nothing failed when they were left out. Nothing here cross-checks
+the criteria against the binary; until something does, the check is you.
 
 ## The preamble
 
@@ -101,6 +109,8 @@ echo "=== A5b and so does the other one"; qat auth --help 2>&1 | sed -n '/Comman
 echo "=== A5c and env, which is hidden too"; qat env --help >/dev/null 2>&1; echo "exit $? (0 = reachable)"
 echo "=== A6 guide"; qat guide
 cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
+echo "=== A8 no message offers the old spelling"
+grep -rn "comfy-qat host \|comfy-qat auth " comfy_qa/ || echo "clean"
 ```
 
 - [ ] **A0** — prints `comfy-qat <version> (<sha>)`. **Record this line — every
@@ -109,10 +119,13 @@ cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
       correct: a wheel is not a checkout.
 - [ ] **A1** — help prints; no traceback, no import error.
 - [ ] **A2** — neither older binary is on `PATH` from this project. Both `which` calls come back empty.
-- [ ] **A3** — the top level lists exactly: list, init, discover, create, up, open,
-      down, go, logs, switch, move, stamp, status, login, setup, guide, quota.
+- [ ] **A3** — the top level lists exactly these 21, in this order: list, init,
+      discover, create, up, open, disconnect, down, go, ssh, rdp, logs, switch,
+      move, stamp, status, login, delete, setup, guide, quota.
       **`host`, `auth` and `env` must not appear.** One way to do each thing, not
-      two — that is what moving the verbs up was for.
+      two — that is what moving the verbs up was for. Count them: a command the
+      binary has and this line does not is not a pass, it is this criterion going
+      stale again, and the last time it did a correct build was marked FAILED.
 - [ ] **A4** — `quota` lists exactly: list, request.
 - [ ] **A5a/A5b** — `host` and `auth` still run and still list their subcommands,
       so nothing written down before the move breaks. They are a deprecation
@@ -120,8 +133,19 @@ cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
 - [ ] **A5c** — `env` exits 0. It belongs to a different tool and is hidden rather
       than removed, because it is the only way to check which build a deployed
       environment is serving. Hidden must not mean gone.
-- [ ] **A6** — the guide names `setup` first, then `host list` and `auth status`.
+- [ ] **A6** — the guide names `comfy-qat setup` first, then `comfy-qat list` and
+      `comfy-qat status` — the short spellings. If it still says `host list` or
+      `auth status`, that is a fail.
 - [ ] **A7** — every test passes.
+- [ ] **A8** — **no message the tool prints offers the old spelling.** The grep
+      finds nothing. It is a grep and not a judgement call because the old forms
+      are a deprecation window: a tool that still teaches the spelling it is
+      retiring never finishes retiring it.
+      **This fails today**, on three sites — `auth.py` twice (`comfy-qat auth
+      quota request ...`) and `gcloud.py` once (`comfy-qat auth status ...`).
+      Record it as a fail with those line numbers. Do not skip it because it is
+      known: the reason it survived this long is that the pack used to tell you
+      not to report it.
 
 *Ran 2026-08-27 and passed — but against the old command tree, so **A3, A4 and A5
 are new wording and have not been run**. A0–A2, A6 and A7 stand.*
@@ -192,6 +216,7 @@ echo "=== C4 quota (about a minute)"; time qat quota list
 echo "=== C5 one region"; qat quota list --region us-central1
 echo "=== C6 by region"; qat quota list --by-region 2>&1 | head -15
 echo "=== C7 quota json"; qat quota list --json 2>&1 | head -20
+echo "=== C9 asking for a card, without asking"; qat quota request --gpu l4 --region us-central1 --dry-run; echo "exit $?"
 ```
 
 - [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota.
@@ -212,6 +237,12 @@ echo "=== C7 quota json"; qat quota list --json 2>&1 | head -20
 - [ ] **C5/C6** — narrowing works and the numbers agree with C4.
 - [ ] **C7** — valid JSON with `project`, `gpus`, `by_region`.
 - [ ] **C8** — if nothing is usable, it prints the exact `quota request` command to fix that.
+- [ ] **C9** — `quota request --dry-run` shows the request it would submit — the
+      card, the region, the value and the justification — and **submits nothing**.
+      Requesting costs no money, but it is a request to Google that a human may
+      read, so the dry run is the check that belongs in a pack. Running the real
+      thing is optional and is C9b: it submits and then waits for the answer,
+      which can take days, so `--no-wait` is the form to use here.
 
 *Ran 2026-08-27 — **all of phase C passed**, C4b included. That check exists
 because it caught a real defect: `status` counted 25 grants of which 18 could not
@@ -360,7 +391,11 @@ echo "=== E7 go again, on a box already serving"; qat go $BOX; echo "exit $?"
       before the URL works, that is a fail, and a bad one.
 - [ ] **E4** — the stamp names the **cloud** box's GPU and OS, not your laptop's.
       This is the single most important check in the run. *(Passed 2026-08-27.)*
-- [ ] **E5** — a `.pid` and a `.log` for that host.
+- [ ] **E5** — **three** files for that host: `.pid`, `.log` and `.json`. The
+      `.json` is the identity record — instance, zone, project, port — and it is
+      the one that matters: it is what stops a tunnel opened under the right NAME
+      from pointing at the wrong MACHINE, which is the failure this whole tool
+      exists to prevent. A run that checks only the `.pid` never checks it.
 - [ ] **E6** — says a tunnel is already open and gives the pid. Does not open a second.
 - [ ] **E7** — a second `go` on a box that is already serving gives you the URL and
       the stamp straight away and **installs and restarts nothing**. *(Rewritten:
@@ -379,8 +414,15 @@ streaming: the question "what is it doing right now" needed somewhere to go.
 echo "=== L1 follow it"; qat logs $BOX     # Ctrl-C after a few lines
 echo "=== L2 the last 50 lines, then stop"; qat logs $BOX --tail 50; echo "exit $?"
 echo "=== L3 it is still serving"; qat stamp $BOX
-echo "=== L5 no log to read"; qat logs local; echo "exit $?"
+echo "=== L5a your own machine"; qat logs local; echo "exit $?"
+echo "=== L5b a stopped box"; qat down $BOX; qat logs $BOX; echo "exit $?"
 ```
+
+L5c is the third answer and it is only reachable in one place: a box that is
+**running with nothing ever launched on it**, which is true exactly once — between
+`create` in phase K and the first `go` in phase E. Run `qat logs $BOX` there, or
+record L5c as not run. It is not reachable from here, because L7's truncation
+means a box that has ever served has a log.
 
 - [ ] **L1** — follows by default, because "what is it doing now" is the question
       people have. It reads a file on the box and touches nothing else.
@@ -394,11 +436,18 @@ echo "=== L5 no log to read"; qat logs local; echo "exit $?"
       would, and **Ctrl-C then stops ComfyUI** — the old behaviour, on purpose,
       for debugging a launch. It stops ComfyUI and not the box, and a stopped
       ComfyUI on a running box still bills; the message must say so.
-- [ ] **L5** — three honest answers rather than a wait when there is no log: a
-      **stopped** box says it has no ComfyUI and no log; a **running** box with
-      nothing launched says there is no log file *and that the machine is
-      billing*; `local` says your own ComfyUI's log is in the terminal you started
-      it in.
+- [ ] **L5a** — `local` says your own ComfyUI's log is in the terminal you started
+      it in, and offers the `main.py` line to start it there. Exit non-zero, and
+      no wait.
+- [ ] **L5b** — a **stopped** box says it is not running, so it has no ComfyUI and
+      no log, and points at `go`. It must **answer**, not hang: a command that
+      waits silently on a stopped box is the worst of the three, because the box
+      it is waiting for may be one you are still paying for.
+- [ ] **L5c** — a **running** box with nothing launched says there is no log file
+      at that path *and that the machine is running and billing*. **The billing
+      sentence is the criterion**, not a nicety — this is the state where you have
+      a GPU box costing money and nothing to show for it, and the message is the
+      only thing that tells you. *(Run between phase K and phase E; see above.)*
 - [ ] **L6** — `qat go $BOX --new-window` opens a macOS Terminal window running
       `--follow` and leaves this terminal free. Anywhere that is not a Mac with
       `osascript`, it **says so and starts nothing**, printing the exact command
@@ -469,10 +518,93 @@ echo "=== F5 unknown host, lifecycle"; qat down not-a-machine; echo "exit $?"
 actually being out of capacity at that moment and cannot be scheduled — the
 2026-08-26 observation in F6 is a real sighting, not a run of this block.*
 
-Worth knowing when you read the output of F6–F8: several of the tool's own
-messages still offer the **old** spelling — `comfy-qat host switch <name>`,
-`comfy-qat host move <name>`, `comfy-qat host discover`. Both spellings work, so
-that is a cosmetic lag rather than a defect, but do not mark it as a failure.
+Old spellings in the output of F6–F8 are covered by **A8**, and A8 is a fail while
+any remain. Report what you see there against A8 rather than treating it as noise.
+
+## Phase S — onto the box, and off it again *(needs the box from E; S4 leaves it billing)*
+
+**Nothing in this phase has ever been run, and none of it has ever had a
+criterion.** `ssh`, `rdp` and `disconnect` are three of the four commands the pack
+could not see; `delete` is the fourth and is phase N.
+
+`ssh` and `rdp` **replace this terminal** — they `execvp` gcloud, so nothing after
+them in a pasted block runs. Run S1 as a block; run S2 and S3 one at a time.
+
+```sh
+WINBOX=comfy-win; LINUXBOX=comfy-linux   # whatever `qat list` calls yours
+echo "=== S1a your own machine has no box to ssh to"; qat ssh local; echo "exit $?"
+echo "=== S1b nor to rdp to"; qat rdp local; echo "exit $?"
+echo "=== S1c ssh at a Windows box"; qat ssh $WINBOX; echo "exit $?"
+echo "=== S1d rdp at a Linux box"; qat rdp $LINUXBOX; echo "exit $?"
+```
+
+```sh
+qat ssh $BOX      # S2 — on its own. `exit` brings you back.
+qat rdp $WINBOX   # S3 — on its own. Ctrl-C closes the forward.
+```
+
+```sh
+echo "=== S4 let go of the tunnel, keep the machine"; qat disconnect $BOX; echo "exit $?"
+echo "=== S5 the records are gone"; ls -l ~/.config/comfy-qa-tools/tunnels/
+echo "=== S6 the box is still up"; qat list; gcloud compute instances list
+echo "=== S7 the old flag"; qat down $BOX --keep-running; echo "exit $?"
+```
+
+- [ ] **S1a/S1b** — `local` is refused by name: `ssh` says to open a terminal,
+      `rdp` says it is not a Windows cloud box. Exit 2 for both, and **no gcloud
+      call is made** — these refuse from the host list alone, so they cost nothing
+      and are safe to run before you have any box at all.
+- [ ] **S1c** — `ssh` at a Windows box refuses and points at `comfy-qat rdp <box>`.
+      Exit 2. Being told "no ssh here" without being told what to use instead is
+      the failure; the fix line is the criterion.
+- [ ] **S1d** — `rdp` at a Linux box refuses and points at `comfy-qat ssh <box>`.
+      Exit 2. *(Skip S1c/S1d if you have only one OS declared, and say so.)*
+- [ ] **S2** — you land in a shell on the box having typed no zone, no project and
+      no `--tunnel-through-iap`. That is the whole command: the long form is four
+      arguments the tool already knows, and every fix line in the tool that used
+      to hand you that line now says `comfy-qat ssh <box>` instead.
+- [ ] **S2b** — **it works with no `comfy-qat open` ever run.** `ssh` goes through
+      Google's IAP, not through this tool's forwarded port, so it does not need a
+      tunnel and must not behave as though it does. Run it on a box you have only
+      `up`'d, or straight after `disconnect`. Anything that reads as "open a tunnel
+      first" is a defect in the wording, not in the command.
+- [ ] **S3** — `rdp` prints `user`, `password` and `address localhost:33389`
+      **before** it takes the terminal, in that order, and only then forwards.
+      Order matters at 2am: once the forward starts, this process is gone.
+- [ ] **S3b** — **a blank user or a blank password is a fail, not a warning.**
+      gcloud exiting 0 with nothing on stdout produces exactly the shape of a real
+      credential pair with both halves empty, under a line saying the forward is
+      starting — a failure that looks like success, whose only symptom is a login
+      prompt that never opens. The tool must refuse and hand you the raw
+      `gcloud compute reset-windows-password` line instead.
+- [ ] **S3c** — it says the password was **reset**. It is not reading a password
+      you already had; Google documents no way around that, and a tester who
+      thinks otherwise will not understand why a colleague's saved credential
+      stopped working.
+- [ ] **S4** — `disconnect` closes the tunnel, leaves the machine running, and
+      **says the machine keeps billing**. That is the point of the command, so it
+      has to be in the output.
+- [ ] **S4b** — it ends with `comfy-qat down <name>`. **The one command whose
+      purpose is to leave a GPU box running is the one that most needs to print
+      how to stop it**; it once did not.
+- [ ] **S4c** — it says the machine is running because it **asked**, not because
+      it assumed. If Google cannot be reached, it says it could not tell and
+      points at `list --live` — it must not claim a bill it did not check, in
+      either direction. Both errors have shipped, a day apart, in opposite
+      directions.
+- [ ] **S5** — all three tunnel files for that host are gone: `.pid`, `.log` and
+      `.json`. Killing the ssh process by hand is what leaves them behind, after
+      which `list` reports a tunnel that is not there — which is the reason this
+      command exists rather than "just Ctrl-C it".
+- [ ] **S6** — `list` shows the box as **not tunnelled**, and `gcloud` shows it
+      **RUNNING**. A stopped box and a disconnected one must not read the same.
+- [ ] **S7** — `down --keep-running` still works and **warns that it is now
+      `comfy-qat disconnect <name>`**. It is a deprecation window: reachable, and
+      saying so. The flag was the negation of its own command — `down --all
+      --keep-running` read as "stop everything except don't", the most expensive
+      outcome reachable from the cheapest-sounding command — which is why it moved.
+
+*Never run. Every check here is new.*
 
 ## Phase G — stop paying *(do not skip)*
 
@@ -482,6 +614,8 @@ echo "=== G2 tunnel is gone"; ls -l ~/.config/comfy-qa-tools/tunnels/ 2>&1
 echo "=== G3 nothing answers"; qat stamp $BOX; echo "exit $?"
 echo "=== G4 instance is TERMINATED"; gcloud compute instances list
 echo "=== G5 down again is harmless"; qat down $BOX; echo "exit $?"
+echo "=== G6a stop everything, by not naming anything"; qat down --all; echo "exit $?"
+echo "=== G6b --all with a name as well"; qat down --all $BOX; echo "exit $?"
 ```
 
 - [ ] **G1** — says it closed the tunnel and stopped the machine.
@@ -489,9 +623,18 @@ echo "=== G5 down again is harmless"; qat down $BOX; echo "exit $?"
 - [ ] **G3** — nothing answered on that port. Exit 1.
 - [ ] **G4** — the instance shows TERMINATED. **If it does not, the tool has left you billing and that is a blocker.**
 - [ ] **G5** — does not fail on an already-stopped box.
-- [ ] **G6** — `qat down --all` with no name stops everything and says how many;
-      given a name as well it refuses rather than guessing. *(New with `--all`.
-      Not run.)*
+- [ ] **G6a** — `qat down --all` takes no name, stops every declared cloud box and
+      **says how many**. With everything already stopped it says so and exits 0 —
+      "nothing was running" is an answer, not a failure. One box refusing to stop
+      must not leave the rest running: it stops the others, then names what did
+      not stop and what to do about it.
+- [ ] **G6b** — `--all` **with** a name is refused rather than guessing which of
+      the two you meant. Exit 2, nothing stopped.
+- [ ] **G6c** — on a host list with no cloud boxes at all, `--all` does **not**
+      claim an all-clear it has not earned: it either names machines running on
+      the project that you have not declared, or says the project could not be
+      checked and that this is therefore not an all-clear. *(Needs a host list
+      with no cloud entry — cheap to arrange with `--config` and a scratch file.)*
 
 *Ran 2026-08-27 — **all of phase G passed** (G6 excepted; it did not exist).
 Never skip this phase: G4 is the check that says you have stopped paying.*
@@ -537,6 +680,152 @@ it spent it on.** Silence is the defect.
 is now a second command that spends money, so it is a second thing that can leave
 something behind, and it has never been through this phase.*
 
+## Phase N — deleting a box *(this destroys a machine; run it last)*
+
+**Nothing in this phase has ever been run, and until now nothing in this pack
+mentioned `delete` at all.** It is the only command here that cannot be undone:
+it removes the instance *and* its boot disk, and the ComfyUI on it, the models on
+it and whatever a test run left behind go with them. Nothing brings any of it
+back.
+
+It is placed after phase I on purpose. Delete the box phase K made, then **run
+phase I again** — a delete that leaves a 300 GB disk behind is the exact leak
+phase I exists to catch, and this is the one command guaranteed to produce it if
+it is wrong.
+
+N1–N7 are refusals. They cost nothing and destroy nothing, and they are most of
+the value of this phase: everything worth protecting here is protected before the
+prompt, not by it.
+
+```sh
+echo "=== N1 a description is not a name"; qat delete windows; echo "exit $?"
+echo "=== N2 no name at all";              qat delete;         echo "exit $?"
+echo "=== N3 the right name, wrong case";  qat delete "$(echo $BOX | tr '[:lower:]' '[:upper:]')"; echo "exit $?"
+echo "=== N4 a name nothing has";          qat delete nosuchbox; echo "exit $?"
+echo "=== N5 your own machine";            qat delete local;   echo "exit $?"
+echo "=== N7 type the wrong name at the prompt"; qat delete $BOX   # then type anything else
+```
+
+- [ ] **N1** — **`delete windows` is refused.** This is the most important check in
+      the phase. Every other command in the tool takes a description — `go
+      windows`, `stamp l4` — because "the Windows one" is a fine way to say which
+      machine to work on. It is a terrible way to say which machine to destroy,
+      and the first version of this command resolved it exactly like the others,
+      with a comment claiming it did not. The message says delete takes an exact
+      name, never a description, and says why: a description can resolve to a
+      machine you did not picture, and this cannot be undone. Exit 2.
+- [ ] **N2** — with no name at all it asks which machine and points at
+      `comfy-qat list`. Exit 2. It must not default to anything.
+- [ ] **N3** — a name that differs only in case is **not** accepted, and the tool
+      offers the real one: "no host is called 'COMFY-WIN'. Did you mean
+      'comfy-win'?", with the corrected command. Exit 2. Naming it back to you is
+      the point — you retype the tool's spelling, not your own.
+- [ ] **N4** — a name nothing has is refused by name, pointing at `list`. Exit 2.
+- [ ] **N5** — `delete local` says it is this machine, not a cloud box. Exit 2.
+- [ ] **N6** — **a box that is not stopped is refused**, naming the state it is
+      actually in and pointing at `comfy-qat down <box>`. Not a warning, a refusal:
+      GCE will happily delete a running instance, and the promise this command
+      makes is that what you destroy is something you looked at seconds ago.
+      *Run this at the end of phase E, while the box is still up — it costs
+      nothing there and there is no free way to reach a running box from here.*
+- [ ] **N6b** — the refusal covers **every** state that is not stopped, not just
+      RUNNING. A machine has eight states and exactly one of them is stopped;
+      STAGING, PROVISIONING, STOPPING and SUSPENDED are none of them, and
+      `delete` at a box on its way down is a plausible thing to type. If you
+      cannot catch a transitional state, record N6b as **not run** rather than
+      assuming it from N6.
+- [ ] **N7** — typing anything other than the name at the prompt deletes nothing
+      and says `nothing was deleted.` **Exit 2, not 1** — 2 means nothing was
+      changed and 1 means the work started and failed, and declining is the first
+      of those. It exited 1, which reads to a script as an attempted delete that
+      went wrong.
+- [ ] **N7b** — with no terminal to prompt in (a pipe, a script) it refuses and
+      tells you to pass `--yes` if you are sure. It must never treat "cannot ask"
+      as "go ahead". Check with `qat delete $BOX < /dev/null | cat`.
+- [ ] **N7c** — the friction is **typing the name**, not a `[y/N]`. A `[y/N]` is
+      answered by reflex at 2am; a name is not. If this has become a yes/no
+      prompt, that is a fail on its own.
+
+Now the real one. Arrange the host list first, because one delete is all you get
+and it is the only way to see what the rewrite does to the file:
+
+```sh
+echo "=== N8 keep a copy to compare against"
+cp ~/.config/comfy-qa-tools/hosts.toml ~/hosts.before
+```
+
+Edit `~/.config/comfy-qa-tools/hosts.toml` so that, before you delete:
+the box you are deleting is **not** the first `[hosts.…]` table in the file;
+a `# comment line` sits directly above its header; and a
+`# DO NOT DELETE — this one holds the checkpoint` line sits directly above the
+**next** host's header, **with no blank line between the two blocks**. That is how
+a hand-maintained host list actually looks, and it is the arrangement that has
+destroyed comments before.
+
+```sh
+echo "=== N9 delete it";        qat delete $BOX   # type the name
+echo "=== N10 gone from Google"; gcloud compute instances list
+echo "=== N11 and its disk";     gcloud compute disks list
+echo "=== N12 what changed in the file"; diff ~/hosts.before ~/.config/comfy-qa-tools/hosts.toml
+echo "=== N13 the tool still reads it"; qat list; echo "exit $?"
+```
+
+- [ ] **N8/N9** — before it does anything it prints what it is about to destroy —
+      the instance, its zone, **and its boot disk** — and says this cannot be
+      undone and that the ComfyUI on it goes too. Then it asks you to type the
+      name.
+- [ ] **N10** — the instance is gone from `gcloud compute instances list`. Not
+      TERMINATED. Gone.
+- [ ] **N11** — **the disk is gone too, and this is the check that costs money if
+      it is wrong.** Boot disks here are created `auto-delete=no`, so deleting the
+      instance alone leaves 200–300 GB billing with nothing attached to it — which
+      looks like nothing at all in a console, and is the leftover people actually
+      get caught by. A disk still listed here is a **blocker**.
+- [ ] **N12** — the `[hosts.<name>]` entry is **out of the host list**, not left
+      behind as a note. This is not tidying: `create` refuses a name that a host
+      list entry holds, and ports are allocated from the same list, so a leftover
+      entry reserves both a name and a port for a machine that does not exist —
+      and the refusal arrives weeks later with nothing to connect it to tonight.
+      The tool says so in its closing line: "…and it is out of your host list."
+- [ ] **N12b** — **the deleted host's own note went with it.** A comment sitting
+      directly above a block describes that block; leaving it strands a note about
+      a machine that no longer exists.
+- [ ] **N12c** — **the next host's `# DO NOT DELETE` line is still there**, even
+      though the two blocks were touching. A block runs to the next `[`, so
+      everything in the gap used to be taken as well — and in a hand-maintained
+      file the gap is exactly where the next host's notes live. That defect passed
+      every guard: the file parsed, the names all matched, and it reported plain
+      success while destroying a line saying DO NOT DELETE. Read the `diff`
+      output line by line; do not skim it.
+- [ ] **N12d** — deleting the **first** host in the file leaves the comment run at
+      the top of the file alone. Nothing in the text can tell a file preamble from
+      the first host's own note, so for something irreversible the tool errs
+      toward leaving something behind: a stranded comment is removed by hand in
+      two seconds, a destroyed one is gone. *(Needs a second box to delete, or a
+      second run. Record as **not run** rather than assuming it from N12b — this
+      is the branch, not a repeat of it.)*
+- [ ] **N12e** — a backup of the old file is at
+      `~/.config/comfy-qa-tools/hosts.toml.bak`, and `~/hosts.before` matches it.
+- [ ] **N13** — `qat list` still works and no longer names the box. The rewrite is
+      validated by the tool's **own loader** before it is written, not by a proxy
+      for it: a file that parses as TOML and holds exactly the right names can
+      still be refused at load, after which no `comfy-qat` command works at all
+      until somebody hand-edits it.
+- [ ] **N14** — **run phase I again now.** Nothing the delete touched appears as an
+      unattached disk or an orphan snapshot. This is the phase's real conclusion:
+      the refusals above are free, and this is the one that tells you the money
+      stopped.
+- [ ] **N15** — if the box is deleted but the host list cannot be rewritten, the
+      tool says **both** — that the box and its disk are gone, *and* that the entry
+      is still in the file and must come out by hand, naming what it will otherwise
+      break. **Exit 1, not 2**: the work started and half of it failed, and a 2
+      there would say nothing had changed while a machine had just been destroyed.
+      *(Hard to arrange deliberately — make the file read-only before N9 if you
+      want it, and record it as not run otherwise.)*
+
+*Never run. Every check here is new, and `delete` had no acceptance criterion of
+any kind before this phase existed.*
+
 ## Phase H — the promise the README makes
 
 ```sh
@@ -571,6 +860,7 @@ echo "=== J4 both halves"; qat stamp windows/l4; echo "exit $?"
 echo "=== J5 the wrong separator"; qat stamp windows-l4; echo "exit $?"
 echo "=== J6 something you do not have"; qat stamp rtx4090; echo "exit $?"
 echo "=== J7 the plan, without doing it"; qat switch windows --dry-run; echo "exit $?"
+echo "=== J7b the plan that leaves the others up"; qat switch windows --keep-others --dry-run; echo "exit $?"
 ```
 
 - [ ] **J1** — one line per machine with OS, card, URL and STATE. Without `--live`
@@ -586,6 +876,12 @@ echo "=== J7 the plan, without doing it"; qat switch windows --dry-run; echo "ex
 - [ ] **J7** — states what it would start and what it would stop, then stops.
       Nothing is started or stopped. It may ask Google what is already running —
       one `describe` per *other* cloud box — which is a read and is correct.
+- [ ] **J7b** — `--keep-others` changes the plan to **start the target and stop
+      nothing**, and says so in those words, naming the flag. The plan must make
+      plain that the other machines keep running, because they keep billing —
+      this is the only flag in the tool whose effect is that two GPU boxes are up
+      at once, and a plan that merely omits the "stop" lines is a fail. Free:
+      `--dry-run` does nothing either way.
 
 With two or more cloud boxes declared, the ambiguity case matters more than any
 of the above:
@@ -638,9 +934,8 @@ And the case that started all this — switching when the box you want cannot st
       `discover` rather than leaving you at a dead end.
 
 *Ran 2026-08-27: **J1–J9 and J12–J14 passed**. J10/J11 not run — they need quota
-for two GPUs at once. J10b, J10c and J15 not run. Note that J12–J14 passed against
-output that still spells the commands `comfy-qat host switch` and `comfy-qat host
-move`; both spellings work.*
+for two GPUs at once. J10b, J10c and J15 not run. The old spellings seen in
+that output belong to A8, which is where they are counted.*
 
 ## Putting your machine back
 
@@ -664,10 +959,19 @@ phase and check id, what it printed, and the exit code. A check that could not b
 run — no capacity, no second box — is "not run", not a pass.
 
 A release-1 pass needs: every box in phases A–D, G, H and I ticked; **K1–K7 and
-E3, E3b and E4** ticked; **L1–L3, L5 and L7** ticked; J1–J9 ticked; and no
-unexplained traceback anywhere in the run. Anything needing a second simultaneous
-GPU box (J10, J11, all of M) or a real stockout (F6–F8, J12–J15) is recorded as
-"not run" rather than assumed, and you say which and why.
+E3, E3b and E4** ticked; **L1–L3, L5a, L5b and L7** ticked; J1–J9 ticked;
+**S1a–S1b, S4, S4b, S5 and S6** ticked; **N1–N5, N7, N10, N11, N12 and N14**
+ticked; and no unexplained traceback anywhere in the run. Anything needing a
+second simultaneous GPU box (J10, J11, all of M) or a real stockout (F6–F8,
+J12–J15) is recorded as "not run" rather than assumed, and you say which and why.
+
+Two of those need saying plainly. **N11** — the disk gone with the instance — is a
+blocker on its own: a delete that leaves the disk behind bills for a machine that
+no longer exists. And **A8 is expected to fail today.** Record the fail, with the
+three line numbers, in the report; it is a known open defect about wording and it
+is not a blocker for release 1. That is a release decision and it is written here
+so that it is one — an earlier version of this page told the tester not to report
+the defect at all, which is not the same thing and is worse.
 
 **What the next run is actually for.** A–D, G, H, I, E4, F1, F2, J1–J9 and J12–J14
 were ticked on 2026-08-27 and do not need repeating unless the build changed under

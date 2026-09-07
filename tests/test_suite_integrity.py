@@ -45,6 +45,7 @@ REQUIRED = {
     "test_detached",
     "test_detached_e2e",
     "test_discover",
+    "test_doc_coverage",
     "test_docs",
     "test_env",
     "test_gcloud_auth",

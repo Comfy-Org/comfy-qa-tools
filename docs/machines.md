@@ -273,12 +273,12 @@ This is not a fault on your side, and retrying in the same zone will not help.
 comfy-linux is untouched — you still have the machine you were on
 
 where you can test instead, easiest first:
-    comfy-qat host switch comfy-linux   # Ubuntu 22.04, A100
-    comfy-qat host switch local         # local install
+    comfy-qat switch comfy-linux   # Ubuntu 22.04, A100
+    comfy-qat switch local         # local install
 
 if it has to be comfy-win:
     Google says us-central1-b has capacity right now:
-    comfy-qat host move comfy-win --to us-central1-b
+    comfy-qat move comfy-win --to us-central1-b
 ```
 
 Same operating system is offered first, because someone who asked for Windows
@@ -289,10 +289,11 @@ has no GPUs left" below for what it actually does.
 
 `up` prints the same advice. It belongs to the failure, not to one command.
 
-That block is copied verbatim from a real run, which is why the commands in it
-still read `comfy-qat host switch` and `comfy-qat host move`: several of the
-tool's own messages have not caught up with the verbs moving to the top level.
-Both spellings work, and the short one is the one to learn.
+That block is copied from a real run. It read `comfy-qat host switch` and
+`comfy-qat host move` when it was taken, because the tool's own messages had not
+caught up with the verbs moving to the top level; they have since, and the block
+is updated to match. A few messages elsewhere still say `comfy-qat auth ...` —
+`A8` in [test-criteria.md](test-criteria.md) is the check that counts them.
 
 ## When you are done
 
@@ -312,10 +313,70 @@ Closes the tunnel and stops the instance — and with it the ComfyUI running on 
 which needs no separate step: nothing survives the machine going away. A stopped
 box costs only its disk — cents
 per day — which is why the pattern here is one box per OS, stopped when idle, rather
-than deleting and rebuilding. `--keep-running` closes only the tunnel and leaves the
-machine on — and, deliberately, the ComfyUI on it, which the next `go` finds
-and uses rather than starting a second one. Occasionally what you want, never what
-you want overnight.
+than deleting and rebuilding.
+
+### Keeping the box, letting go of the tunnel
+
+```sh
+comfy-qat disconnect comfy-win
+```
+
+For the case `down` cannot serve: a long generation or a model download is running
+on the box, ComfyUI is detached and will keep going, and you want the local port
+back — or you are closing the laptop. It closes the tunnel and leaves the machine
+on, and with it the ComfyUI, which the next `go` finds and uses rather than
+starting a second one.
+
+**The machine keeps billing, and it says so**, then prints `comfy-qat down
+<name>` for when the work is finished. It asks Google whether the box is really
+running rather than asserting it — and if it cannot tell, it says that instead,
+because a claim about money the tool never checked is wrong in both directions and
+has been wrong in both.
+
+Closing the ssh process by hand does the same thing to the tunnel and leaves its
+records behind, after which `list` reports a tunnel that is not there. That is why
+this is a command.
+
+This was `down --keep-running`, which still works and warns that it moved. The
+flag was the negation of its own command, one word away from the command whose
+whole purpose is to stop paying, and `down --all --keep-running` read as "stop
+everything except don't" — the most expensive outcome reachable from the
+cheapest-sounding command in the tool.
+
+### Finished with the box for good
+
+```sh
+comfy-qat delete comfy-win
+```
+
+The one thing here that cannot be undone. It removes the instance **and its boot
+disk**, and the ComfyUI on it, the models on it and whatever a run left behind go
+with them. Nothing brings any of it back, so `down` is the everyday answer and
+this is for a box you are finished with.
+
+The boot disk goes deliberately. These disks are created `auto-delete=no`, so
+deleting an instance on its own leaves 200-300 GB billing with nothing attached to
+it — which looks like nothing at all in a console, and is the leftover people
+actually get caught by.
+
+Three refusals, before any prompt:
+
+- **A description is not a name.** `delete windows` is refused. Every other
+  command takes one, because "the Windows one" is a fine way to say which machine
+  to work on; it is a terrible way to say which machine to destroy.
+- **A box that is not stopped is refused**, naming the state it is in and pointing
+  at `down`. GCE will delete a running instance quite happily. The point is that
+  what you destroy is something you looked at seconds ago.
+- **Your own machine is refused.**
+
+Then it prints what it is about to destroy and asks you to type the box's name
+back. Not `[y/N]` — a `[y/N]` is answered by reflex at 2am and a name is not.
+`--yes` skips it, for when you have already decided.
+
+Afterwards the `[hosts.<name>]` entry comes out of your host list, and that is not
+tidying: `create` refuses a name an entry holds and ports are allocated from the
+same list, so a leftover entry reserves both for a machine that does not exist —
+and the refusal arrives weeks later with nothing to connect it to tonight.
 
 See [cost.md](cost.md) for the one rule.
 
@@ -339,6 +400,32 @@ only while every attempt on `127.0.0.1` is refused.
 `open` on a box where ComfyUI is not running yet will say so rather than
 appear to succeed — there is nothing to forward to. `go` is the command that
 starts it and forwards in one step.
+
+## Getting onto the box itself
+
+```sh
+comfy-qat ssh comfy-linux    # a shell, on a Linux box
+comfy-qat rdp comfy-win      # Remote Desktop, on a Windows box
+```
+
+The long form of the first is `gcloud compute ssh <instance> --tunnel-through-iap
+--zone <zone> --project <project>`, and this tool already knows the last three.
+Both replace this terminal rather than wrapping it, so an interactive shell gets
+your Ctrl-C rather than a subprocess layer: `exit` comes back from `ssh`, Ctrl-C
+closes the `rdp` forward.
+
+Neither needs `comfy-qat open` first. They go through Google's IAP, not through
+this tool's forwarded port, so they work on a box you have only started.
+
+`rdp` resets the Windows password — Google documents no way around that — then
+prints the user, the password and `localhost:33389`, in that order, **before** it
+starts the forward, because once the forward starts the terminal is taken. If
+gcloud comes back without a username or without a password it says so and hands
+you the raw `reset-windows-password` line, rather than printing a blank pair that
+looks exactly like a real one under a line saying the forward is starting.
+
+`ssh` at a Windows box points you at `rdp`, and `rdp` at a Linux box points you at
+`ssh`.
 
 A tunnel outlives the command that opened it, so its process id is recorded in
 `~/.config/comfy-qa-tools/tunnels/<host>.pid` and checked rather than assumed.

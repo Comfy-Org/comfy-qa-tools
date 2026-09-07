@@ -55,7 +55,14 @@ and J12–J14. Not run, and recorded as not run rather than assumed: J10/J11, wh
 need quota for two GPU boxes at once, and everything covering `create` and
 `logs`, both of which landed after that pass.
 
-Version **1.0.0**, 1372 tests. They run on Python 3.11, 3.12 and 3.13, on Ubuntu
+Four commands — `ssh`, `rdp`, `disconnect` and `delete` — had **no acceptance
+criterion at all** until phases S and N were written, so a full pass of that page
+could be signed off without exercising the only command here that cannot be
+undone. Nothing failed when they were left out, which is why it lasted; a test now
+holds every advertised command to a row in the command reference and to a line the
+pack actually runs.
+
+Version **1.0.0**. The tests run on Python 3.11, 3.12 and 3.13, on Ubuntu
 and macOS, and CI builds the wheel, installs it into a throwaway virtualenv and
 runs the binary from outside the checkout — because testing the source tree never
 proved the thing people actually install works.

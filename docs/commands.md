@@ -1,8 +1,8 @@
 # Every command
 
 In the order you meet them, not alphabetically — the first four are your first
-hour, the middle ones are every day after that, and the last two are the ones you
-only need when something has gone sideways.
+hour, the middle ones are every day after that, and the last ones are for when
+something has gone sideways or a box has outlived its use.
 
 `<host>` is a machine's name, or a description of the machine you want:
 `windows`, `l4`, `windows/l4`. A description that fits exactly one declared host
@@ -50,7 +50,19 @@ type it. `init` is for the case where you want to write the file yourself.
 | `comfy-qat logs <host>` | read the ComfyUI log on the box. Follows by default, because "what is it doing now" is the question people have; `--tail N` prints that many lines and stops. Ctrl-C ends the reading and nothing else |
 | `comfy-qat stamp <host>` | ask a machine what it is, in one line you paste into a report. `--json` |
 | `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install` |
-| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name; `--keep-running` closes only the tunnel |
+| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name |
+| `comfy-qat disconnect <host>` | close the tunnel and **leave the machine running** — for a long generation you want to keep, or a laptop you are closing. It says the machine keeps billing, and how to stop it. This was `down --keep-running`, which still works and says so. `--os`, `--gpu` |
+
+## Onto the box itself
+
+| command | what it does |
+|---|---|
+| `comfy-qat ssh <host>` | a shell on a Linux box. The long form is `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` and this tool already knows the last three. It replaces this terminal; `exit` brings you back. `--os`, `--gpu` |
+| `comfy-qat rdp <host>` | a Windows box: resets the password, prints user, password and `localhost:33389`, **then** forwards RDP. Google documents no way around the password reset, so this does the parts it can and leaves you the one thing only a person can do. Ctrl-C closes the forward. `--os`, `--gpu` |
+
+`ssh` at a Windows box points you at `rdp`, and `rdp` at a Linux box points you at
+`ssh`, rather than failing obscurely. Neither needs a `comfy-qat open` first —
+they go through Google's IAP, not through this tool's forwarded port.
 
 ## The pieces of `go`, separately
 
@@ -68,6 +80,16 @@ forwards in one step.
 | command | what it does |
 |---|---|
 | `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its ComfyUI install. Resumes a move that stopped part-way rather than restarting it, and reports what an earlier one left billing. `--to`, `--yes`, `--dry-run`, `--clean` |
+| `comfy-qat delete <host>` | **permanently** remove a box, its boot disk and the ComfyUI on it, and take its entry out of your host list. Takes an exact name — never a description — refuses a box that is not stopped, and asks you to type the name back. `--yes` |
+
+`delete` is the only thing here that cannot be undone. A stopped box costs only
+its disk, so the everyday answer is `down`, not this; `delete` is for a box you
+are finished with. The boot disk is removed with the instance deliberately: these
+disks are created `auto-delete=no`, so an instance deleted on its own leaves
+200-300 GB billing with nothing attached to it, which looks like nothing at all in
+a console. Leaving the host list entry behind is not tidy either — `create`
+refuses a name an entry holds and ports come from the same list, so the entry
+would reserve both for a machine that no longer exists.
 
 Every error this tool can print has an entry in
 [troubleshooting.md](troubleshooting.md) — paste the message in and find it.
@@ -92,9 +114,11 @@ kept working so that a script, a run sheet or muscle memory written down before
 today does not break. Treat them as **a deprecation window, not a second permanent
 spelling**: 26 command paths is not a simplification of 13.
 
-One thing to know: some of the tool's own messages still print the old spelling —
-`create` finishes by suggesting `comfy-qat host go <name>`, for instance. Both
-work; the short form is the one to learn.
+One thing to know: a few of the tool's own messages still print the old spelling.
+At the time of writing there are three, all in the sign-in and quota paths, all
+saying `comfy-qat auth ...`. Both spellings work; the short form is the one to
+learn, and `A8` in [test-criteria.md](test-criteria.md) is the check that counts
+them.
 
 ## `env`, which belongs to a different tool
 
