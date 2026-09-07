@@ -1005,6 +1005,25 @@ def _commands_that_can_start_a_machine() -> set[str]:
     Following calls also finds a starter the command does not call itself.
     `move_cmd` starts a box inside `_zone_with_capacity`, one level down, which
     no scan of `move_cmd`'s own body can see.
+
+    WHAT THIS CANNOT SEE, stated because a guard that looks complete and is not
+    is worse than one that admits its edges — the next person reads the name and
+    stops there:
+
+    - A start that does not go through one of the three `Gcloud` methods. A raw
+      `subprocess` call, or a new gcloud wrapper, is invisible until its name is
+      added to `STARTS_A_BOX` above.
+    - A call made dynamically — `getattr(gc, name)()`, a method looked up in a
+      dict, a callable passed in as an argument. The walk reads call syntax, not
+      behaviour. `down_cmd` passes `put_away` to `_act` as an ARGUMENT, and it
+      is only caught because it also calls `put_away` directly elsewhere.
+    - A start in any module other than the four `_functions_by_name` reads.
+    - Two different functions with the same name in different modules are not
+      told apart; both are searched, so this errs toward including.
+
+    `disconnect_cmd` is in BILLABLE_ENDINGS and is NOT derived: it leaves a box
+    running without starting one, which is a fourth thing this does not model.
+    It is declared by hand, and that is the honest description of it.
     """
     found = set()
     functions = _functions_by_name()
