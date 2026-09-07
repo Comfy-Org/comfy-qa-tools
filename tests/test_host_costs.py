@@ -816,11 +816,12 @@ def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
 # `down_cmd` is here because of `--keep-running`, which deliberately leaves a box
 # on. The derivation below found it; it was not typed.
 BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd",
-                    "disconnect_cmd", "down_cmd")
+                    "disconnect_cmd", "down_cmd", "move_cmd")
 
 # The two vocabularies, and they must stay disjoint.
 #
-# STARTERS puts a command INTO the billable set. BILL_TOKENS is what clears it.
+# INCLUSION_VOCABULARY puts a command INTO the billable set. BILL_TOKENS is what
+# clears it.
 # Until today `_serve(` and `put_away` were in both, so a command was cleared by
 # the very call that made it billable — the evidence of guilt accepted as the
 # alibi. Three of the six passed on nothing else.
@@ -830,7 +831,28 @@ BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd",
 # printed its remedy: add it to BILLABLE_ENDINGS. Doing exactly that turned the
 # suite green over a command that leaves a GPU billing and says nothing. A guard
 # whose printed remedy defeats it is worse than none, because it is trusted.
-STARTERS = frozenset({"bring_up", "_bring_up", "put_away", "_serve", "build"})
+# What makes a box exist and bill, named at the only layer where it is a fact
+# rather than a convention: the gcloud calls themselves.
+#
+# This used to be a hand-typed list of the HELPERS that call them — bring_up,
+# _serve, build, _bring_up — which is the same hand-maintained-collection defect
+# as the two above, one layer down. It missed `move`. `_zone_with_capacity`
+# starts a box through `gc.start_instance` (its own docstring: "when it is *not*
+# refused the box is up and billing"), that is not a name anybody thought to
+# type, and it sits one call below `move_cmd` rather than in it. So `move` was
+# in NO list: not derived, not declared, and nothing checked that the one
+# command which starts a GPU box to ask Google a question says how to stop it.
+#
+# Keyed on these three, every helper that starts a box is reached rather than
+# remembered, and a fourth way to start one cannot be added without adding it
+# here — where the compiler-ish check below insists it is a real gcloud method.
+STARTS_A_BOX = frozenset({"start_instance", "create_instance_from_image",
+                          "create_instance_from_disk"})
+
+# Not a start: `put_away` LEAVES one up, and only under keep_running.
+KEEPS_A_BOX_UP = "put_away"
+
+INCLUSION_VOCABULARY = STARTS_A_BOX | {KEEPS_A_BOX_UP}
 
 BILL_TOKENS = ("comfy-qat down", "stop_paying", "_with_the_bill")
 
@@ -855,29 +877,38 @@ def _leaves_it_running(call: ast.Call) -> bool:
     return any(kw.arg == "keep_running" for kw in call.keywords)
 
 
-def _bodies_by_name() -> dict[str, list[str]]:
-    """Every function in the three modules a billable ending can live in.
+def _functions_by_name() -> dict[str, list[ast.FunctionDef]]:
+    """Every function in the four modules this rule has to be able to see.
 
-    `_serve` is in host.py, `put_away` in lifecycle.py, `build` in create.py.
-    All three, because a command that defers its ending to a function this does
-    not read is a command that can never be cleared — and the reverse: a starter
-    defined in a module nobody reads makes `test_every_starter_is_still_a_real_
-    function` fail, which is how create.py came to be in this list.
+    `_serve` is in host.py, `put_away` in lifecycle.py, `build` in create.py,
+    and the calls that actually start a box are methods of `Gcloud` in
+    gcloud.py. A command that defers its ending to a function this does not read
+    can never be cleared; a start that happens in a module this does not read is
+    never found at all, which is exactly how `move` went unlisted.
     """
     import inspect
 
     from comfy_qa import create as create_module
+    from comfy_qa import gcloud as gcloud_module
     from comfy_qa import host as host_module
     from comfy_qa import lifecycle as lifecycle_module
 
-    found: dict[str, list[str]] = {}
-    for module in (host_module, lifecycle_module, create_module):
+    found: dict[str, list[ast.FunctionDef]] = {}
+    for module in (host_module, lifecycle_module, create_module, gcloud_module):
         source = inspect.getsource(module)
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.FunctionDef):
-                found.setdefault(node.name, []).append(
-                    ast.get_source_segment(source, node) or "")
+                # `ast.get_source_segment` needs the module text this node came
+                # from, so it is resolved now rather than carried around.
+                node._body_text = ast.get_source_segment(source, node) or ""
+                found.setdefault(node.name, []).append(node)
     return found
+
+
+def _bodies_by_name() -> dict[str, list[str]]:
+    """The same functions, as source text, for the alibi scan."""
+    return {name: [node._body_text for node in nodes]
+            for name, nodes in _functions_by_name().items()}
 
 
 def _names_the_bill(body: str) -> bool:
@@ -910,10 +941,26 @@ ADVICE_ARGS = frozenset({"fix", "undo"})
 
 
 def _on_the_ordinary_path(body: str) -> str:
-    """`body` with imports, raises and abnormal-exit advice removed."""
+    """`body` with prose, imports, raises and abnormal-exit advice removed.
+
+    Prose is stripped — comments and docstrings — because a sentence ABOUT the
+    rule is not the rule. `_zone_with_capacity` carries a comment reading "every
+    lifecycle failure through `_with_the_bill`", and that comment on its own was
+    enough to clear a command. Nothing clears on prose alone today, so this
+    changes no verdict; it closes the door rather than a hole, and it is the same
+    door the import was.
+    """
+    import io
     import textwrap
+    import tokenize
 
     text = textwrap.dedent(body)
+    try:
+        text = tokenize.untokenize(
+            token for token in tokenize.generate_tokens(io.StringIO(text).readline)
+            if token.type != tokenize.COMMENT)
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        pass                       # pragma: no cover - fall back to the raw text
     try:
         tree = ast.parse(text)
     except SyntaxError:            # pragma: no cover - a body we cannot parse
@@ -929,6 +976,9 @@ def _on_the_ordinary_path(body: str) -> str:
     for node in ast.walk(tree):
         if isinstance(node, ast.Raise | ast.Import | ast.ImportFrom):
             drop(node)
+        elif (isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+              and isinstance(node.value.value, str)):
+            drop(node)             # a docstring, or a bare string used as one
         elif isinstance(node, ast.Call):
             for keyword in node.keywords:
                 if keyword.arg in ADVICE_ARGS:
@@ -944,22 +994,44 @@ def _commands_that_can_start_a_machine() -> set[str]:
     Derived from the source, so a NEW command cannot be added without either
     naming the bill or failing this. That is the whole difference between this
     and a list somebody remembers to update.
+
+    Followed TRANSITIVELY, unlike the alibi below, and the asymmetry is the
+    point. Being wrong here is cheap in one direction and expensive in the
+    other: an over-large billable set costs a command one line of output it
+    probably should have anyway, while a set that is one short is a GPU box
+    billing overnight with nothing said about it. So inclusion reaches as far as
+    it can and exoneration reaches exactly one hop.
+
+    Following calls also finds a starter the command does not call itself.
+    `move_cmd` starts a box inside `_zone_with_capacity`, one level down, which
+    no scan of `move_cmd`'s own body can see.
     """
-    import ast
-    import inspect
-
-    from comfy_qa import host as host_module
-
     found = set()
-    for node in ast.walk(ast.parse(inspect.getsource(host_module))):
-        if not isinstance(node, ast.FunctionDef) or not node.name.endswith("_cmd"):
-            continue
-        for inner in ast.walk(node):
-            if isinstance(inner, ast.Call) and _called_name(inner) in STARTERS:
-                if not _leaves_it_running(inner):
-                    continue
-                found.add(node.name)
+    functions = _functions_by_name()
+    for name in functions:
+        if name.endswith("_cmd") and _reaches_a_start(name, functions):
+            found.add(name)
     return found
+
+
+def _reaches_a_start(name: str, functions: dict[str, list[ast.FunctionDef]],
+                     seen: frozenset[str] = frozenset()) -> bool:
+    """Whether this function starts a box, or calls something that does."""
+    if name in seen:
+        return False
+    seen = seen | {name}
+    for node in functions.get(name, []):
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            called = _called_name(call)
+            if called in STARTS_A_BOX:
+                return True
+            if called == KEEPS_A_BOX_UP and _leaves_it_running(call):
+                return True
+            if called in functions and _reaches_a_start(called, functions, seen):
+                return True
+    return False
 
 
 def test_the_list_of_billable_commands_is_not_missing_one():
@@ -974,7 +1046,7 @@ def test_the_list_of_billable_commands_is_not_missing_one():
         "BILLABLE_ENDINGS, so nothing checks that it names the bill."
     )
     # And the derivation still finds something. Its silent death is a starter
-    # being RENAMED: `STARTERS` would go on naming a function that no longer
+    # being RENAMED: the vocabulary would go on naming a call that no longer
     # exists, `derived` would quietly empty, and this test would pass by finding
     # nothing to complain about. A count that drops to zero with no failures is
     # the bug, not the pass.
@@ -982,20 +1054,21 @@ def test_the_list_of_billable_commands_is_not_missing_one():
 
 
 def test_every_starter_is_still_a_real_function():
-    """`STARTERS` is a list of names matched against source, so nothing connects
-    it to the functions it names. Rename `_serve` and this collection keeps
-    naming the old one: `go` and `switch` drop out of the derived set, and the
-    guard above passes on an empty set rather than failing.
+    """The vocabulary is a set of names matched against source, so nothing
+    connects it to the calls it names. Rename `Gcloud.start_instance` and it
+    keeps naming the old one: every command drops out of the derived set, and
+    the guard above passes on an empty set rather than failing.
 
     That is the same shape as the two hand-maintained collections this file
     already had to make self-checking, arriving through the one door left open.
     """
-    bodies = _bodies_by_name()
-    gone = sorted(name for name in STARTERS if name not in bodies)
+    known = _functions_by_name()
+    gone = sorted(name for name in INCLUSION_VOCABULARY if name not in known)
     assert not gone, (
-        f"{', '.join(gone)} is in STARTERS but is no longer a function in "
-        "host.py, lifecycle.py or create.py — it was renamed or removed, and "
-        "the derivation has been silently finding fewer commands ever since."
+        f"{', '.join(gone)} is in the inclusion vocabulary but is no longer a "
+        "function in host.py, lifecycle.py, create.py or gcloud.py — it was "
+        "renamed or removed, and the derivation has been silently finding fewer "
+        "commands ever since."
     )
 
 
@@ -1009,7 +1082,7 @@ def test_no_token_that_makes_a_command_billable_can_also_clear_it():
     are plausible sentences — "it starts a box" and "it defers to something that
     names the bill" — and they were written months apart.
     """
-    assert STARTERS & {token.rstrip("(") for token in BILL_TOKENS} == set()
+    assert INCLUSION_VOCABULARY & {token.rstrip("(") for token in BILL_TOKENS} == set()
 
 
 def test_every_command_that_leaves_a_box_running_names_the_bill():
