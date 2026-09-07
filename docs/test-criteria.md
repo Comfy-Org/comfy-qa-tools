@@ -704,12 +704,13 @@ phase at the thing it was written for.
 
 ### R0 — the baseline. Do not skip this; nothing after it means anything without it.
 
-> **STOP THE BOX FIRST, and read the paragraph above before you do anything
-> else.** On a project whose `GPUS_ALL_REGIONS` is 1 — which is this one —
-> moving a **running** box does not get refused up front. It snapshots, it
-> builds a 300 GB disk, and Google refuses it at the create, which is the last
-> and most expensive step. That is the incident phase I was written for, and
-> running R the wrong way round reproduces it on your own project.
+> **STOP THE BOX FIRST.** On a project whose `GPUS_ALL_REGIONS` is 1 — which is
+> this one — a running source holds the only slot against the box the move is
+> about to build, so the move cannot go ahead while it is up. As of `cdeeddd`
+> you are told that **before anything is created**; until then you were told it
+> by Google at the instance create, after the snapshot and a 300 GB disk, which
+> is the incident phase I was written around. Either way, stopping it first is
+> what lets the move run.
 
 ```sh
 P=$(gcloud config get-value project 2>/dev/null); echo "=== R0 project $P"
@@ -718,6 +719,9 @@ echo "moving $BOX -> $TARGET_ZONE"
 mkdir -p ~/move-before
 echo "=== R0 stamp it WHILE IT STILL SERVES — R6b compares against this"
 qat stamp $BOX > ~/move-before/stamp.txt 2>&1; cat ~/move-before/stamp.txt
+echo "=== R0b the ceiling refusal, WHILE IT IS STILL RUNNING — must cost nothing"
+qat move $BOX --to $TARGET_ZONE; echo "exit $?"
+diff ~/qa-before/snapshots.txt <(gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())") && echo "NO SNAPSHOT — the refusal was free"
 echo "=== R0a now stop it — a TERMINATED source holds no GPU allowance"
 qat down $BOX; echo "exit $?"
 gcloud compute instances list --project $P    # confirm it reads TERMINATED
@@ -750,13 +754,16 @@ step below runs against a realistic file.
       spends the expensive half and then fails. A stopped box holds no GPU
       allowance, so the create needs 1 of 1 and fits; a running one holds the only
       slot against itself.
-- [ ] **R0b** — **known, and not your fault if you hit it: `move` does not check
-      the GPU ceiling before it spends.** `create` does — it reads the allowance
-      "before anything has been created" and refuses with `Nothing was created.`
-      `move` builds its instance through a different path that never asks. So on
-      a ceiling of 1 with the source running you get the snapshot, the disk, and
-      then the refusal. If that happens to you, it is this gap and not something
-      you did — record it, run R8, and do not retry until the source is stopped.
+- [ ] **R0b** — **if you forget R0a, the refusal is free — check that it was.**
+      Run `qat move $BOX --to $TARGET_ZONE` deliberately with the box still up,
+      before stopping it. It must refuse naming the ceiling, what is holding it
+      and how many cards the new box needs, and end `Nothing was created.` Then
+      confirm that literally: `diff ~/qa-before/snapshots.txt` against a fresh
+      snapshot list. **The snapshot is the check**, not the refusal — until
+      `cdeeddd` this path was not gated at all and Google refused it at the
+      instance create, having already taken the snapshot and built a 300 GB disk.
+      A refusal that costs nothing and a refusal that costs a disk read the same
+      on the terminal.
 - [ ] **R0** — you have five files in `~/move-before/` and you have looked at them.
       **`stamp.txt` has a real stamp in it, not an error.** It is taken before
       R0a stops the box, because `stamp` asks a serving ComfyUI what it is and a
