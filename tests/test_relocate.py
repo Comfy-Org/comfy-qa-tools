@@ -288,14 +288,29 @@ def test_a_clean_that_is_interrupted_says_which_of_the_three_it_was(capsys):
 
 def test_a_clean_interrupted_on_the_first_delete_names_the_one_it_never_reached(capsys):
     """The item still queued is not in doubt at all — it is certainly there and
-    certainly billing, and nothing was going to mention it."""
+    certainly billing — so it gets its own sentence rather than the in-flight
+    one's.
+
+    Both used to be one `Leftover` whose `what` carried every remaining item.
+    `_listed` splits that on newlines, so it looked right and had a single truth
+    value: the item whose request had gone ("may") and the items nothing had
+    touched ("certainly") shared whichever sentence was chosen. A heading field
+    cannot split one entry across two, so the registration is what had to split.
+    """
     with pytest.raises(inflight.Interrupted):
         clean_up(_CleanGcloud(interrupt_at=1))
 
     report = capsys.readouterr().err
+    lines = [line.strip() for line in report.splitlines()]
 
-    assert "the disk comfy-win-a-b in us-central1-b" in report, report
-    assert "the snapshot comfy-win-a-move" in report
+    under_may_exist = lines[lines.index("this may exist and be billing:") + 1]
+    never_reached = "and these were never reached, so they are still there:"
+    assert never_reached in lines, report
+    assert under_may_exist == "the disk comfy-win-a-b in us-central1-b"
+    assert lines[lines.index(never_reached) + 1] == "the snapshot comfy-win-a-move"
+    # The one in flight leads: `report` walks innermost-first, and the queue
+    # behind it is registered outside it for exactly that reason.
+    assert lines.index("this may exist and be billing:") < lines.index(never_reached)
     assert "already deleted" not in report, (
         "nothing had been deleted yet, so nothing may claim it was"
     )
@@ -331,6 +346,12 @@ def ceiling_quota(value):
                                   "applicableLocations": ["global"]}]}]
 
 
+# A quota list that came back perfectly well and simply has no
+# GPUS-ALL-REGIONS record in it. Distinct from a read that FAILED, and the
+# distinction matters: only this one reaches the gate with real arithmetic.
+NO_CEILING_RECORD = "no-ceiling-record"
+
+
 class _Project:
     """The two reads `survey` makes, plus the quota read the gate may add."""
 
@@ -353,6 +374,10 @@ class _Project:
         self.quota_reads += 1
         if self.ceiling is None:
             raise GcloudError("quota could not be read")
+        if self.ceiling == NO_CEILING_RECORD:
+            return [{"quotaId": "NVIDIA-L4-GPUS-per-project-region",
+                     "dimensionsInfos": [{"details": {"value": "4"},
+                                          "applicableLocations": ["us-central1"]}]}]
         return ceiling_quota(self.ceiling)
 
 
@@ -400,12 +425,43 @@ def test_something_else_holding_the_ceiling_is_handed_raw_gcloud():
     assert "comfy-qat down console-box" not in problem.fix
 
 
-def test_a_ceiling_that_could_not_be_read_refuses_nothing():
-    """"Not read" is not "zero" — the rule `create`'s own gate states. Refusing
-    on a number nobody has blocks a move the project is entitled to."""
-    gc = _Project([gpu_instance("comfy-win")], ceiling=None)
+def test_a_quota_read_that_fails_refuses_nothing():
+    """"Not read" is not "zero" — the rule `create`'s own gate states.
 
-    assert blocked(moving(), survey_with(gc)) is None
+    Note what this does NOT prove, because it is named for the guard and does
+    not reach it: a read that RAISES leaves `found` at its defaults, so the
+    arithmetic is `0 + 0 <= anything` and passes however `None` is treated. The
+    test below is the one that holds the guard up.
+    """
+    gc = _Project([gpu_instance("comfy-win")], ceiling=None)
+    found = survey_with(gc)
+
+    assert (found.cards_held, found.cards_needed) == (0, 0), (
+        "degenerate by construction — said out loud so nobody reads this as "
+        "cover for the None branch")
+    assert blocked(moving(), found) is None
+
+
+def test_a_project_that_reports_no_ceiling_at_all_refuses_nothing():
+    """The route to `ceiling is None` where the arithmetic is REAL, and the only
+    one where the guard is the thing doing the work.
+
+    `gpu_quotas` succeeds and the list simply carries no GPUS-ALL-REGIONS
+    record, so `global_allowance` returns None while cards held and cards needed
+    are both non-zero. Treat that None as a zero and the gate refuses every move
+    on such a project — which is the exact failure the residual exists to
+    prevent, and it is reachable on any project whose quota list comes back
+    without that metric.
+    """
+    gc = _Project([gpu_instance("comfy-win"),
+                   gpu_instance("console-box", zone="us-west4-b")],
+                  ceiling=NO_CEILING_RECORD)
+    found = survey_with(gc)
+
+    assert found.ceiling is None
+    assert (found.cards_held, found.cards_needed) == (2, 1), (
+        "the arithmetic must be real here, or this is the degenerate test again")
+    assert blocked(moving(), found) is None
 
 
 def test_an_unlimited_ceiling_refuses_nothing():

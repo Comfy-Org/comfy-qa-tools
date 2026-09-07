@@ -33,6 +33,20 @@ ALL = [WIN, LINUX]
 
 
 def test_the_os_decides_the_script():
+    """`root_for` dispatches on the platform, which is all this proves.
+
+    Worth saying, because the two lines below sit above the real pins and read
+    as if they covered the values: each compares a function against the constant
+    it returns, so they hold for whatever the roots are set to. A reader
+    scanning for "is this covered" sees the constant's name inside an assertion
+    and stops looking — which is why `LINUX_ROOT` went unpinned for as long as
+    it did while `WINDOWS_ROOT`, one line from it, did not.
+
+    They are kept because swapping the two returns really would fail here, and
+    that is a different question from what the values are. The values are held
+    to literals in `test_windows_installs_into_the_conventional_place` and
+    `test_linux_installs_into_the_conventional_place`.
+    """
     assert is_windows(WIN) and not is_windows(LINUX)
     assert root_for(WIN) == WINDOWS_ROOT
     assert root_for(LINUX) == LINUX_ROOT

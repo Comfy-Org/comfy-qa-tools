@@ -38,6 +38,7 @@ can happen to a box whose entire purpose is comparing behaviour between machines
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Callable
@@ -1123,10 +1124,18 @@ def remove_leftovers(gc: Gcloud, plan: Plan, found: Found,
     over `found` meant a Ctrl-C at item two of three exited 130 in silence, and
     the answer was right there and thrown away with the frame: item one is
     certainly gone, item two is in doubt, item three was never reached and is
-    still billing. Each delete is registered with the items it has not got to
-    yet, so what `inflight` holds at any moment is exactly "this may still be
-    there" — and what is certainly gone goes in the note, where a heading about
-    things that may exist cannot misdescribe it.
+    still billing.
+
+    Three states, three sentences, and that needs THREE registrations rather
+    than one entry carrying every remaining item. `inflight._listed` splits a
+    `what` on newlines for display, so a merged entry looks right and has a
+    single truth value — the item in flight ("may") and the items never reached
+    ("certainly there") would share whichever sentence was chosen. Merging is
+    correct for `run_move`, where `_state_after`'s three resources really do
+    share one, and this is the first caller where they do not. So the one in
+    flight is registered on its own, the queue behind it under its own heading,
+    and what is certainly gone goes in the note — where a heading about things
+    that may exist cannot misdescribe it.
     """
     targets: list[tuple[str, str, str, Callable[[], None], str]] = []
     if (found.disk is not None and found.instance is None
@@ -1152,14 +1161,30 @@ def remove_leftovers(gc: Gcloud, plan: Plan, found: Found,
         ))
 
     removed: list[str] = []
-    for index, (name, _described, _command, delete, announcement) in enumerate(targets):
+    for index, (name, described, command, delete, announcement) in enumerate(targets):
         say(announcement)
-        rest = targets[index:]
-        with inflight.may_leave(
-            "\n".join(item[1] for item in rest),
-            undo=["take these off the bill:", *(item[2] for item in rest)],
-            note=_still_to_clean(plan, removed),
-        ):
+        queued = targets[index + 1:]
+        with ExitStack() as registered:
+            # TWO registrations and not one, because the two halves are not in
+            # the same state and a single entry can only carry one sentence.
+            # The queued items are OUTER: `report` walks innermost-first, so the
+            # one actually in flight leads and the ones nothing has touched
+            # follow it.
+            if queued:
+                registered.enter_context(inflight.may_leave(
+                    "\n".join(item[1] for item in queued),
+                    undo=["and these, which nothing has touched:",
+                          *(item[2] for item in queued)],
+                    # No doubt at all about these. Listing them under "may
+                    # exist" would understate them, which is the wrong direction
+                    # for a line about something that is billing.
+                    heading="and these were never reached, so they are still there:",
+                ))
+            registered.enter_context(inflight.may_leave(
+                described,
+                undo=["take it off the bill:", command],
+                note=_still_to_clean(plan, removed),
+            ))
             delete()
         removed.append(name)
     return removed
