@@ -282,6 +282,47 @@ Class 7's remedy is therefore two halves, and neither is sufficient alone:
 - **assert against the success path** — because a guard about what a command says
   when it works is not satisfied by what it says when it fails.
 
+### And a third half: the suspect set was incomplete
+
+Both of those are about *clearing* a member wrongly. Neither says anything about
+a member that was never considered — and that was the larger hole.
+
+A command injected as a test — start a box, leave it running, print only
+"warmed up" — passed the whole file green. The guard did not clear it. **The
+guard never saw it.**
+
+The mechanism is not that method calls are invisible to the scan; they are not,
+the walk reads `obj.method()` by name perfectly well. It is that the *inclusion
+vocabulary was itself a hand-typed list of helpers* — `bring_up`, `_serve`,
+`build`, `_bring_up` — so it found only commands that call a name somebody
+thought to type. **Class 2, one layer down, inside the cure for class 7.**
+
+It also missed a real command, not just an injected one. `move` starts a GPU box
+through `gc.start_instance`, inside a helper one call *below* `move_cmd` — a
+name nobody would have typed. So `move` was in no list at all: not derived, not
+declared, and nothing checked that the one command which starts a box in order to
+ask Google a question says how to stop it. It does say it, in two places. Nothing
+was enforcing that.
+
+**Closed in `d39895b`**, by keying inclusion on the gcloud calls themselves —
+`start_instance`, `create_instance_from_image`, `create_instance_from_disk` —
+which is the layer where "a box exists and bills" is a fact rather than a
+convention. Every helper that starts one is now reached rather than remembered.
+
+Two things from that fix are worth more than the fix:
+
+**The asymmetry is deliberate.** Inclusion is followed *transitively*; the alibi
+still resolves exactly *one hop*. An over-large suspect set costs a command one
+line of output it should probably have anyway; an under-large one is a GPU box
+billing overnight with nothing said. **Wrong in the cheap direction on the way
+in, strict on the way out.** That is the general shape for any guard where the
+two errors have different prices.
+
+**And prose was clearing commands.** A comment reading "every lifecycle failure
+through `_with_the_bill`" was enough to satisfy the rule — a sentence *about* the
+rule accepted as compliance with it, which is the `import` case wearing different
+clothes. The scan now strips comments and docstrings.
+
 ## 8. The ambient default
 
 A test whose subject is decided by an environment value it never sets: the
@@ -347,6 +388,35 @@ whether that thing is in this file.
 Three instances turned up in a single day. The strongest fact about this class is
 that the third was written by the person who had just read and fixed the other
 two. **A shape that survives knowing about it earns its own entry.**
+
+### The fourth instance is a safety fixture, and it is the worst one
+
+`tests/conftest.py` carries an autouse fixture named
+`never_write_to_the_real_config`. Its entire body redirects the *tunnel*
+directory:
+
+```python
+@pytest.fixture(autouse=True)
+def never_write_to_the_real_config(monkeypatch, tmp_path):
+    """The tunnel directory defaults beside the user's own host list."""
+    monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
+```
+
+The name is a proxy for the coverage. It promises a category — *the real config*
+— and delivers one path inside it. `zone-latency.json` is written into that same
+real directory by a different module, so **this is the fixture that should have
+caught class 8's centrepiece**, and its name is exactly why nobody checked
+whether it did.
+
+**In the safety half of a suite, the name is what everyone reads instead of the
+body.** That is where this class does the most damage: a fixture called
+`never_write_to_the_real_config` is not read again by anybody, because it has
+already answered the question. Nine words of docstring bought a year of
+not-looking.
+
+The rule that follows: **a fixture's name may describe only what its body does.**
+If the name states a category, the body must cover the category or the name must
+shrink to what it covers.
 
 **The tell:** write down the token that puts a member *on* the list and the token
 that takes it *off*. If they intersect, the test cannot fail for that member.
