@@ -499,11 +499,34 @@ def _refused(exc, code: int = 2) -> None:
 
 
 def _act(action, *args, **kwargs):
-    """Run a lifecycle step, turning its failures into messages, never tracebacks."""
+    """Run a lifecycle step, turning its failures into messages, never tracebacks.
+
+    The exit code comes from the failure, not from this function. `say` states
+    the rule: 2 is "the command could not start — bad input, or a precondition
+    unmet", 1 is "the thing you asked for did not happen". Every reportable
+    failure was flattened to 1 here, and the flattening was reported as one
+    command's defect — `logs` on a stopped box exiting 1 where every other
+    refusal in the tool exits 2.
+
+    It was not one command's. Reading all three callees: `read_logs` raises five
+    refusals and one real failure, `in_a_new_window` raises a platform check
+    that says "Nothing was started" and two osascript failures, and `put_away`
+    raises a host-list contradiction it refuses to act on, plus a stop that was
+    attempted and failed. So `logs`, `go --new-window`, `disconnect`, `down` and
+    `switch` were all affected, and fixing this at the `logs` call site would
+    have left four of them — which is the shape that has cost the most tonight:
+    a fix landing where the problem was noticed rather than where it lives.
+
+    Only the raise knows which of the two it is, so the flag is set there and
+    read here. `getattr` rather than an attribute access, because
+    `_reportable()` is two unrelated classes — `TunnelError` is not a
+    `LifecycleError` and cannot become one — and an unmarked failure keeping
+    today's 1 is the safe default: it claims less.
+    """
     try:
         return action(*args, **kwargs)
     except _reportable() as exc:
-        say.fail(exc, code=1)
+        say.fail(exc, code=2 if getattr(exc, "refusal", False) else 1)
 
 
 # The four words `put_away` answers with, from nine `return` statements. Named

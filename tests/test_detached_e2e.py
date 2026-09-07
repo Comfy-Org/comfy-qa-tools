@@ -317,7 +317,11 @@ def test_logs_on_a_stopped_box_answers_rather_than_waiting(world):
     result = run(world, "host", "logs", BOX)
 
     no_traceback(result)
-    assert result.exit_code == 1
+    # 2, not 1. This is a refusal: the box is off, nothing was read and nothing
+    # was changed, and every other refusal in this tool exits 2. It was 1
+    # because `_act` flattened every reportable failure to 1 regardless of
+    # whether the work had started.
+    assert result.exit_code == 2
     assert "no ComfyUI and no log to follow" in result.output
     assert f"comfy-qat go {BOX}" in result.output
     assert not world.gc.did("ssh"), "nothing was run on a box that is off"
@@ -331,7 +335,9 @@ def test_logs_with_nothing_ever_launched_says_the_box_is_still_billing(world):
     result = run(world, "host", "logs", BOX)
 
     no_traceback(result)
-    assert result.exit_code == 1
+    # The ssh ran, but the precondition it checks — that something started
+    # ComfyUI on that box — is unmet, and no log was read. A refusal.
+    assert result.exit_code == 2
     assert "nothing has started ComfyUI there" in result.output
     assert "running and billing" in result.output
     assert f"comfy-qat down {BOX}" in result.output
@@ -341,9 +347,40 @@ def test_logs_on_the_local_machine_says_where_its_log_really_is(world):
     result = run(world, "host", "logs", "local")
 
     no_traceback(result)
-    assert result.exit_code == 1
+    # Refused before Google is asked anything at all.
+    assert result.exit_code == 2
     assert "this tool did not start its ComfyUI" in result.output
     assert "main.py" in result.output
+
+
+def test_a_read_that_was_attempted_and_failed_still_exits_1(world):
+    """The other half of the exit-code fix, and the half nothing was holding.
+
+    Making refusals exit 2 is only correct if the failures that are NOT refusals
+    keep exiting 1. Otherwise the fix is "everything from `_act` is a 2", which
+    is the same flattening in the other direction and would be just as invisible
+    — the suite went green on the 1s for months.
+
+    Here the box is running, the log exists, and the SSH that would read it
+    fails. That is the one raise in `read_logs` that is not marked `refusal`:
+    the work started and did not finish, which is what 1 means.
+    """
+    from comfy_qa.gcloud import GcloudError
+
+    cloud = world.cloud(statuses=["RUNNING"])
+
+    def refuse(instance, zone, project, remote, *, stream: bool = True):
+        raise GcloudError("the connection was closed by the remote host")
+
+    cloud.ssh = refuse
+
+    result = run(world, "host", "logs", BOX)
+
+    no_traceback(result)
+    assert result.exit_code == 1, (
+        "an attempted read that failed is not a refusal, and must not become one"
+    )
+    assert "could not read the ComfyUI log" in result.output
 
 
 # ----------------------------------------------------------- --new-window
@@ -356,7 +393,12 @@ def test_new_window_off_macos_refuses_without_starting_anything(world, monkeypat
     result = run(world, "host", "go", BOX, "--new-window")
 
     no_traceback(result)
-    assert result.exit_code == 1
+    # A platform check, before osascript is called — and the message says
+    # "Nothing was started" in as many words, which is the definition of a 2.
+    # `logs` was the command this defect got reported against; `go --new-window`
+    # had it too, and so did `disconnect`, `down` and `switch` through
+    # `put_away`. Fixing it at the `logs` call site would have left all four.
+    assert result.exit_code == 2
     assert "can only open a macOS Terminal window" in result.output
     assert "Nothing was started" in result.output
     assert world.gc.calls == [], "it must not touch the cloud before handing over"

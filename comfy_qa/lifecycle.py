@@ -111,10 +111,17 @@ class LifecycleError(Exception):
     """Something a person has to act on. `fix` says what."""
 
     def __init__(self, message: str, fix: str | None = None, kind: str = "error",
-                 zones: tuple[str, ...] = ()) -> None:
+                 zones: tuple[str, ...] = (), *, refusal: bool = False) -> None:
         super().__init__(message)
         self.fix = fix
         self.kind = kind
+        # Did this stop BEFORE anything was attempted? `say` states the rule it
+        # answers: 2 means "the command could not start — bad input, or a
+        # precondition unmet", 1 means "the thing you asked for did not happen".
+        # Only the raise knows which of the two it is; `host._act` was flattening
+        # every reportable failure to 1, so six refusals across three commands
+        # were reporting themselves as work that started and went wrong.
+        self.refusal = refusal
         # Where Google said there is capacity, carried rather than left for a
         # caller to read back out of the prose it just formatted.
         self.zones = zones
@@ -1539,23 +1546,26 @@ def read_logs(
                 f"~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port {host.port} "
                 "--listen 127.0.0.1",
             ),
+            refusal=True,
         )
 
     try:
         state = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
-        raise LifecycleError(str(exc), fix=exc.fix) from exc
+        raise LifecycleError(str(exc), fix=exc.fix, refusal=True) from exc
     if not state:
         raise LifecycleError(
             f"could not tell whether {host.name} is running, so there is no "
             "saying whether it has a log.",
             fix=output.fix("ask Google again:", "comfy-qat list --live"),
+            refusal=True,
         )
     if state != RUNNING:
         raise LifecycleError(
             f"{host.name} is not running, so it has no ComfyUI and no log to "
             f"follow. Whatever it was writing stopped when the machine did.",
             fix=f"comfy-qat go {host.name}   # start the box and ComfyUI on it",
+            refusal=True,
         )
 
     try:
@@ -1576,6 +1586,7 @@ def read_logs(
                 f"comfy-qat go {host.name}   # start it, and this will have "
                 "something to read",
             ),
+            refusal=True,
         )
     return code
 
@@ -1630,6 +1641,7 @@ def in_a_new_window(rest: list[str], say: Callable[[str], None]) -> None:
             "--new-window can only open a macOS Terminal window, and this is not a "
             "Mac with osascript on it. Nothing was started.",
             fix=by_hand,
+            refusal=True,
         )
 
     script = f"tell application \"Terminal\" to do script {_applescript_string(line)}"
@@ -1764,6 +1776,7 @@ def put_away(
                 f"{host.name} says kind = 'local' but names a cloud instance "
                 f"({', '.join(named)}). Refusing to report it as stopped: if that "
                 f"machine is running, it is billing.",
+                refusal=True,
                 fix=output.fix(
                     "fix the entry in your host list — a cloud box is kind = 'gce' "
                     "— then:",
