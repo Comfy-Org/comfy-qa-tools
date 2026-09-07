@@ -328,11 +328,14 @@ def create_cmd(
         instances = gc.list_instances(project)
         # The first place `create` goes quiet, and long enough that silence reads
         # as a hang. Timed rather than announced once and then nothing.
-        reading = say.slow("reading quota", expect="about a minute").start()
-        try:
+        # `with`, not `try/finally: done()`. `done()` prints "done in 62s" —
+        # a claim that the read finished — and `finally` ran it just as loudly
+        # when `gpu_quotas` raised, so a failed quota read announced its own
+        # completion one line above the refusal explaining that it had not
+        # completed. `Slow.__exit__` already makes exactly this distinction:
+        # `done()` when nothing was raised, `give_up()` when something was.
+        with say.slow("reading quota", expect="about a minute"):
             quotas = gc.gpu_quotas(project)
-        finally:
-            reading.done()
     except GcloudError as exc:
         _refused(exc)
 
@@ -720,12 +723,41 @@ def down_cmd(
         billing: list[Host] = []
         unknown: list[Host] = []
         stopped: list[Host] = []
+        # Collected and deliberately never reported — see the mapping below. It
+        # sits here with the other three so that the set of verdicts is visible
+        # in one place rather than inferred from what is missing.
+        idle: list[Host] = []
         for host in hosts:
             say.step(host.name)
             try:
                 found = put_away(gc, host, say.detail, keep_running=keep_running)
-                {"unknown": unknown, "billing": billing,
-                 "caught": stopped}.get(found, []).append(host)
+                # `.get(found, []).append(host)` appended to a throwaway list, so
+                # any verdict this did not name dropped the machine out of every
+                # count and every closing sentence without a word.
+                #
+                # And one WAS unnamed. `put_away` returns four verdicts, from
+                # nine places; this mapping knew three. `idle` — a box that was
+                # already stopped, or a local install that costs nothing — was
+                # being silently discarded on every run, and discarding it is
+                # correct: an idle box belongs in none of these three counts, so
+                # the summary came out right by way of a fall-through nobody had
+                # written down. It is named here so that it is a decision.
+                #
+                # Which leaves the default to mean what it should: a verdict this
+                # tool does not understand. That is counted as UNCHECKED, not as
+                # stopped — the summary already has a sentence for machines it
+                # could not settle, and "I do not know" is the honest reading of
+                # a word nobody here recognises. Saying so out loud is the point:
+                # the cost of the old silence was an undercount in the one
+                # command that exists to answer "am I still paying for anything".
+                bucket = {"unknown": unknown, "billing": billing,
+                          "caught": stopped, "idle": idle}.get(found)
+                if bucket is None:
+                    say.warn(f"{host.name} came back from stopping with an "
+                             f"outcome this tool does not recognise ({found!r}), "
+                             f"so it is counted as unchecked")
+                    bucket = unknown
+                bucket.append(host)
             except LifecycleError as exc:
                 # One machine refusing to stop must not leave the rest running —
                 # that is the whole reason for stopping them in one command.
@@ -1523,9 +1555,20 @@ def move_cmd(
     # the end instead.
     mine = leftovers(plan, found, unrelated=False)
     if mine:
-        say.result("\nan earlier run left this behind, and it is billing:")
+        # stdout carries the answer, stderr carries the story — and this is the
+        # story of an EARLIER run, not the answer to this one. It went to stdout,
+        # and on the `--dry-run` path this command returns before anything
+        # reaches stderr at all: `2>/dev/null` lost nothing and `1>/dev/null`
+        # lost the whole block, in the command that prints more
+        # `gcloud ... --quiet` delete commands than any other. Someone piping a
+        # dry run into a file to read later captured three destructive commands
+        # and no plan.
+        #
+        # `warn` rather than `step`, because "not fatal, and you need to know" is
+        # exactly what it is: whatever this run does, that disk is billing.
+        say.warn("an earlier run left this behind, and it is billing:")
         for line in mine:
-            say.result(f"  {line}")
+            say.detail(line)
 
         # Reusing them is the default and usually right — that is what makes a
         # failed move cheap to retry. Deleting them starts the copy from scratch.
@@ -1559,9 +1602,11 @@ def move_cmd(
         # `mine` is computed on the line above and is exactly "is there anything
         # here to act on". Both holes close by asking it instead of rebuilding it.
         if dry_run:
-            say.result("\n--dry-run: these would be deleted first, and are not:")
-            for line in mine:
-                say.result(f"  {line}")
+            # The list is four lines above and unchanged; printing it a second
+            # time doubled the delete commands on screen and said nothing new.
+            # What the flag adds is what happens to them, so that is all this
+            # says.
+            say.detail("--dry-run: these would be deleted first, and are not")
         elif clean or (not yes and can_prompt()
                        and typer.confirm("\nDelete these and start the move fresh?")):
             try:
@@ -1674,9 +1719,12 @@ def move_cmd(
     # what hid billing snapshots.
     _, stray = split_leftovers(plan, found)
     if stray:
-        say.result("\nalso on the project, unrelated to this move and billing:")
+        # Same stream rule as the block before the confirm, and for the same
+        # reason: the answer to `move` is where the box is now, and somebody
+        # else's billing snapshot is not that. It carries delete commands too.
+        say.warn("also on the project, unrelated to this move and billing:")
         for line in stray:
-            say.result(f"  {line}")
+            say.detail(line)
 
 
 def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | None:

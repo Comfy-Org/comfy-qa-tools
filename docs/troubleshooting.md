@@ -1150,6 +1150,29 @@ billing. This is a report, not an error — the move carries on and reuses what 
 can, which is what makes a failed move cheap to retry. Each line is followed by the
 exact `gcloud ... delete` command that removes it.
 
+It is printed on **stderr**, under `warning: `, with the resources indented under
+it — as is `--dry-run: these would be deleted first, and are not`. That is not
+cosmetic. The rule this tool holds to is that stdout carries the answer and stderr
+carries the story, and this block is the story of an *earlier* run rather than the
+answer to this one. On the `--dry-run` path the command used to return before
+anything reached stderr at all, so `1>/dev/null` discarded the whole block while
+`2>/dev/null` discarded nothing — meaning someone piping a dry run into a file to
+read later captured three `--quiet` delete commands and no plan. The list is
+printed once now, not once before the `--dry-run` line and again after it.
+
+**`also on the project, unrelated to this move and billing:`**
+
+Printed after a move that worked, on stderr, for the same reason. A disk or a
+snapshot from some earlier move of a *different* box is sitting on the project and
+costing money; this command did not create it and does not touch it, so it is not
+part of the answer to "where is my box now" — but an unattached disk looks like
+nothing at all in a console, and nothing else here would ever mention it. Each
+line comes with the delete command that removes it.
+
+It appears at the end rather than before the confirmation on purpose: a delete
+command for a machine you were not thinking about, three lines above
+`Move comfy-win to us-central1-b? [y/N]`, is how the wrong thing gets deleted.
+
 Nothing is deleted unless you say so. In a terminal you are asked "Delete these and
 start the move fresh?" and the move continues either way; `--clean` answers yes
 without asking. **Both then carry on and create the box** — `--clean` is "clean up
@@ -1562,6 +1585,25 @@ it is the only reason to read the command's output at all.
 The first form is the one to act on: it means the tool asked Google and did not get
 an answer, usually an expired login (`gcloud auth login`). It is not "nothing is
 running". `comfy-qat list --live` asks again.
+
+**`<name> came back from stopping with an outcome this tool does not recognise
+(<verdict>), so it is counted as unchecked`**
+
+You should never see this, and if you do it is a bug in this tool rather than
+anything about your machine — but it is printed rather than swallowed, and the
+machine is counted among the ones that could not be checked rather than among the
+ones that were stopped.
+
+`down --all` sorts each machine into stopped, still-billing, or could-not-check by
+reading a word back from the routine that stops it. That sorting used to discard
+anything it did not recognise into a throwaway list, so a machine could drop out of
+every count and every closing sentence in complete silence — in the one command
+whose entire purpose is answering "am I still paying for anything". An undercount
+there is the expensive direction, so an unrecognised answer is now read as "I do
+not know", which is what it is.
+
+Check the machine yourself with `comfy-qat list --live`, and report the verdict in
+the brackets.
 
 **`could not tell whether <name> is running: <error>. Check with `comfy-qat list --live``**
 
