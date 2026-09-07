@@ -854,6 +854,15 @@ echo "=== N13 the tool still reads it"; qat list; echo "exit $?"
       two seconds, a destroyed one is gone. *(Needs a second box to delete, or a
       second run. Record as **not run** rather than assuming it from N12b — this
       is the branch, not a repeat of it.)*
+- [ ] **N12f** — **a host list that arrived with Windows line endings comes back
+      with them.** The rewrite is textual, and the separator it writes used to be a
+      hard-coded `\n`, which puts a lone LF into a CRLF file. That is not cosmetic
+      here: this tool's whole point is testing on a Windows box, so a host list
+      edited there is the ordinary case, and a file with mixed endings is one a
+      person then has to repair by hand after an operation that cannot be undone.
+      Check with `file ~/.config/comfy-qa-tools/hosts.toml` before and after, or
+      `grep -c $'\r' `. *(Needs a CRLF host list to start from — make one with
+      `unix2dos`, or edit it on the Windows box.)*
 - [ ] **N12e** — a backup of the old file is at
       `~/.config/comfy-qa-tools/hosts.toml.bak`, and `~/hosts.before` matches it.
 - [ ] **N13** — `qat list` still works and no longer names the box. The rewrite is
