@@ -69,8 +69,12 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
     # the real host list while the suite stayed green. The fixtures here are
     # spaced differently from a file somebody actually maintains, and that
     # difference is the whole of why this was invisible.
-    body, swapped = re.subn(r"^([ \t]*port[ \t]*=[ \t]*)\d+[ \t\r]*$",
-                            rf"\g<1>{renamed_port}",
+    # And the line ending is captured and written back. Consuming the \r without
+    # replacing it left the rewritten port line ending \n in a file whose every
+    # other line ends \r\n. It parses, so it is silent — and git reports the
+    # whole file as changed.
+    body, swapped = re.subn(r"^([ \t]*port[ \t]*=[ \t]*)\d+([ \t]*\r?)$",
+                            rf"\g<1>{renamed_port}\g<2>",
                             body, count=1, flags=re.MULTILINE)
     if not swapped:
         # A host with no port line is not something this tool writes, but the
@@ -79,6 +83,10 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
 
     out = (
         text[:start.start()]
+        # Group 1 is the header's own indentation. The header pattern matches it
+        # so that an indented `[hosts.x]` is found at all; not writing it back
+        # flattened the block to column 0 on the way out.
+        + start.group(1)
         + f"[hosts.{renamed}]"
         + body
         + text[body_end:]

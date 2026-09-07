@@ -454,19 +454,32 @@ def test_removing_from_a_lived_in_file_keeps_everything_else():
 # unseen shape open. Five defects in a row, all in one function, all "the fixtures
 # differ from a real file in exactly the way that hides it".
 #
-# So this stops hand-writing shapes. Five binary axes, chosen because each one has
-# broken this function at least once: a file preamble, a comment above each host,
-# a blank line between blocks, CRLF endings, and a commented-out worked example
-# like the one `init` writes. 32 files, three victims each.
+# So this stops hand-writing shapes. Seven binary axes, chosen because each one
+# has broken this function at least once, or is the shape of a defect the earlier
+# five could not generate: a file preamble, a comment above each host, a blank
+# line between blocks, CRLF endings, a commented-out worked example like the one
+# `init` writes, that example sitting in the GAP between two hosts rather than at
+# the top, and a note trailing a host's body rather than heading it. 128 files,
+# three victims each.
 #
 # It asserts only what the module already promises: remove a host, and what is
 # left is valid TOML holding exactly the other hosts, with their own notes intact.
+#
+# These do NOT replace the hand-written tests above. Proved, not assumed: restore
+# D75's root cause (`\s` in `without`'s header pattern) and the generated cases
+# fire ZERO — the named tests are the only thing that catches it.
 
-SHAPES = list(itertools.product([False, True], repeat=5))
+SHAPES = list(itertools.product([False, True], repeat=7))
 VICTIMS = ("alpha", "beta", "gamma")
 
+# A note on a host's BODY, below its port line, rather than above its header.
+# The `own_comment` axis only ever puts comments directly above a header, and a
+# trailing note is a different shape for the comment walk to get wrong.
+TRAILING = "# {name} is the PM-630 box. Linear links to this port."
 
-def _lived_in(preamble, own_comment, blank_between, example, crlf):
+
+def _lived_in(preamble, own_comment, blank_between, example, crlf,
+              example_in_gap, trailing_note):
     lines: list[str] = []
     if preamble:
         lines += ["# this file is hand maintained", "# mind the comments", ""]
@@ -476,8 +489,16 @@ def _lived_in(preamble, own_comment, blank_between, example, crlf):
         if own_comment:
             lines.append(f"# {name} is the {name} box. DO NOT DELETE.")
         lines += [f"[hosts.{name}]", 'kind = "local"', f"port = {8100 + index}"]
+        if trailing_note:
+            lines.append(TRAILING.format(name=name))
         if blank_between and index < len(VICTIMS) - 1:
             lines.append("")
+        # The worked example in the GAP between two hosts, not only at the top.
+        # This is the shape `init` + `discover` produce: STARTER ends with the
+        # commented-out example and `to_toml` begins with a newline, so on every
+        # populated host list the example is one blank line from the next header.
+        if example_in_gap and index == 0:
+            lines += ["# [hosts.spare]", "# port = 9998"] + ([""] if blank_between else [])
     text = "\n".join(lines) + "\n"
     return text.replace("\n", "\r\n") if crlf else text
 
@@ -499,3 +520,43 @@ def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
                 f"a note belonging to {other} was destroyed\n"
                 f"shape={shape} victim={victim}\n{out}"
             )
+
+    # Gated on `blank_between`, and the gate is load-bearing rather than
+    # defensive. With NO blank line a trailing note touches the previous host's
+    # body AND the next host's header, and the module deliberately gives a
+    # contiguous comment run to the header that follows it — so ungated this
+    # asserts a preference, not a promise. Ungated, the two new axes report 112
+    # failures, most of them the module behaving as designed. Gated, 32, and
+    # every one of those is real.
+    if shape[6] and shape[2]:  # a trailing note on a body, blocks separated
+        for other in set(VICTIMS) - {victim}:
+            assert TRAILING.format(name=other) in out, (
+                f"{other}'s trailing note was destroyed\n"
+                f"shape={shape} victim={victim}\n{out}"
+            )
+
+
+# The gap-example assertion is its own test because at HEAD it FAILS, and only
+# for the host the example sits under. `without` runs the removal to the next
+# `[`, and the walk back from there stops at the blank line below the example —
+# so a commented-out block in the gap goes with the host above it. That is D93,
+# it is open, and the fix is a change to which side of a gap a comment run
+# belongs to, not a line. Recorded here as a strict xfail so it is not lost and
+# so closing D93 turns this red rather than silently green.
+
+GAP_SHAPES = [shape for shape in SHAPES if shape[5] and shape[2]]
+
+
+@pytest.mark.parametrize("shape", GAP_SHAPES)
+@pytest.mark.parametrize("victim", VICTIMS)
+def test_a_worked_example_in_the_gap_survives_a_removal(shape, victim, request):
+    if victim == VICTIMS[0]:
+        request.node.add_marker(pytest.mark.xfail(
+            strict=True,
+            reason="D93: a commented-out block in the gap goes with the host above it",
+        ))
+    out = without(_lived_in(*shape), victim)
+    assert "# [hosts.spare]" in out, (
+        f"the worked example in the gap was destroyed\n"
+        f"shape={shape} victim={victim}\n{out}"
+    )
