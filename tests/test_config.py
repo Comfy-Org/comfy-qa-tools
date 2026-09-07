@@ -131,3 +131,37 @@ def test_bare_host_accepts_config_like_every_other_command(tmp_path):
     result = CliRunner().invoke(app, ["--config", str(path)])
     assert result.exit_code == 0, result.output
     assert "only" in result.output
+
+
+@pytest.mark.parametrize("empty", [
+    {},
+    {"hosts": {}},
+    {"not_hosts": {"local": {"kind": "local", "port": 8188}}},
+])
+def test_a_host_list_with_no_hosts_says_what_to_do_about_it(empty):
+    """Refusing is deliberate; saying nothing about it was not.
+
+    troubleshooting.md has always carried the reasoning — a tool that silently
+    operates nothing is worse than one that stops — and the message was four
+    words with no way out of them. Every sibling refusal in `config.py` names
+    one: the missing file says `init`, the unreadable file says check it is not
+    a directory.
+
+    This is pinned HERE rather than left to the docs guard, and the reason is
+    worth the lines. Shortening the message back does not fail that guard: the
+    forward check is parametrised over the package's messages, so the case
+    VANISHES instead of failing (679 to 678, nothing red), and the reverse check
+    passes because the short message is still a substring of the entry heading.
+    Two guards, neither able to see the change, which is the shape this suite
+    keeps finding. An assertion on the text can fail.
+    """
+    with pytest.raises(ConfigError) as raised:
+        parse(empty)
+
+    message = str(raised.value)
+    assert "no [hosts.<name>] tables found" in message
+    assert "[hosts.local]" in message, "it names the shape of what is missing"
+    assert "comfy-qat init --force" in message, (
+        "and the way out — `--force` because the file exists, which is the "
+        "whole difference from the missing-file case"
+    )

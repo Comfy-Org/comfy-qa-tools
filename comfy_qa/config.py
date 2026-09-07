@@ -188,7 +188,22 @@ def parse(data: dict) -> list[Host]:
 
     hosts_table = data.get("hosts")
     if not isinstance(hosts_table, dict) or not hosts_table:
-        raise ConfigError("no [hosts.<name>] tables found")
+        # Refusing is deliberate and troubleshooting.md says why: a tool that
+        # silently operates nothing is worse than one that stops. What was
+        # missing is the way out — every other refusal in this file names one,
+        # and this was four words with nothing to do about them.
+        #
+        # It needs to serve two arrivals. Someone editing the file down to
+        # nothing, who wants a starter list back. And someone whose `delete`
+        # took their last cloud host: `hostfile` will not write a list this
+        # function cannot read, so the entry stays and the command says so —
+        # correctly, because writing an unloadable file is worse. Both are
+        # "there is nothing here", and `init --force` is the answer to both.
+        raise ConfigError(
+            "no [hosts.<name>] tables found — the file parses, and declares no "
+            "machines. Add a table like [hosts.local], or run "
+            "`comfy-qat init --force` for a starter list."
+        )
 
     hosts = [_parse_host(name, raw) for name, raw in hosts_table.items()]
 

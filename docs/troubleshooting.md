@@ -32,11 +32,18 @@ overwrites it`**
 the starter file back, `comfy-qat init --force` — and copy your cloud hosts
 out first, because they are not merged back in.
 
-**`no [hosts.<name>] tables found`**
+**`no [hosts.<name>] tables found — the file parses, and declares no machines. Add a table like [hosts.local], or run `comfy-qat init --force` for a starter list`**
 The file parses as TOML but declares no machines. Every host is a table named for
 it, `[hosts.local]`, and an empty host list is treated as a mistake rather than as
 "no machines", because a tool that silently operates nothing is worse than one
 that stops.
+
+There is a second way to arrive here, and it is the one that looks like a bug.
+`delete` will not remove your last cloud host by writing a list this parser
+cannot read — `hostfile` validates the rewrite with this same function and
+refuses, leaving the entry and saying so. That is the right refusal: an
+unloadable host list is worse than a stale entry. Take the table out by hand, or
+`init --force` for a fresh one.
 
 **`~/.config/comfy-qa-tools/hosts.toml is not valid TOML: ...`**
 A syntax error, quoted from the parser with the line it failed on. The usual cause
