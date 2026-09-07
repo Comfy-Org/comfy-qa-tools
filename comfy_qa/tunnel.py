@@ -632,9 +632,13 @@ def open_tunnel(
             # `identify`, which shells out to `ps -p N -o lstart=,command=` with
             # a ten-second timeout — so this line was both the slowest thing
             # between the spawn and the writes and the only one unprotected.
-            # Measured, median of seven: 3.59 ms here against 0.28 ms for the two
-            # writes, thirteen times the window the guard covered, and unbounded
-            # if `ps` hangs.
+            # Measured here, median of seven, twice: ~3.6 ms and ~4.2 ms for
+            # the `ps` call against ~0.3 ms for the two writes. The durable
+            # claims are the RATIO — thirteen to fourteen times the window the
+            # guard covered — and the ten-second timeout, which is the ceiling;
+            # the figures themselves are one machine's and move by tenths of a
+            # millisecond between runs, so the window has a floor in
+            # milliseconds and no ceiling.
             #
             # The record goes down before the pid, so a reader never finds a pid
             # with nothing saying where it goes.

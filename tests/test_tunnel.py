@@ -314,9 +314,11 @@ def test_the_interrupt_guard_covers_the_ps_call_that_dominates_the_window(
     The test above interrupts a write. Building the record calls `identify`,
     which shells out to `ps -p N -o lstart=,command=` with a ten-second timeout,
     and that line sat OUTSIDE the `try` — so the guard covered the fast half of
-    the window and not the slow one. Measured, median of seven: 3.59 ms for the
-    `ps` call against 0.28 ms for the two writes, thirteen times the window that
-    was protected, and unbounded if `ps` hangs.
+    the window and not the slow one. Measured here, median of seven, on two
+    separate runs: ~3.6 ms and ~4.2 ms for the `ps` call against ~0.3 ms for the
+    two writes. Thirteen to fourteen times the window that was protected — and
+    the ratio is the durable part, not the figures, which are one machine's and
+    move run to run. The ten-second `ps` timeout is the real ceiling.
 
     So the comment saying "the milliseconds between the spawn above and the two
     writes here" was wrong in both halves: the window is mostly the `ps` call,
