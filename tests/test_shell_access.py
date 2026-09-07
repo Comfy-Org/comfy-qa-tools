@@ -17,7 +17,6 @@ import pytest
 from typer.testing import CliRunner
 
 from comfy_qa import gcloud as gcloud_module
-from comfy_qa import host as host_module
 from comfy_qa.cli import app
 
 HOSTS = """\
@@ -223,9 +222,21 @@ def test_rdp_forwards_the_desktop_port_for_that_box(hosts, execvp, monkeypatch):
     result = run("rdp", "comfy-win", "--config", hosts)
 
     assert isinstance(result.exception, Replaced)
+    # 33389 as a literal, not `host_module.RDP_PORT`. Built from the constant,
+    # both sides of this move together and there is no oracle: changing
+    # RDP_PORT to 9999 left the whole suite green, measured. It is the port a
+    # person types into an RDP client, on a machine whose own notes already
+    # record what port confusion has cost here — 8188 against 8189 against 8190
+    # — so a silent change to it does not fail a test, it sends someone to the
+    # wrong machine.
+    #
+    # The general rule, and this file has two of the four known exceptions:
+    # a test needs an oracle independent of its subject. `subject(...) ==
+    # <literal>` is fine, because the literal IS the oracle. `<anything> ==
+    # SUBJECT_CONSTANT` asserts a thing against itself.
     assert execvp == [[
         "gcloud", "gcloud", "compute", "start-iap-tunnel", "win-instance",
-        "3389", f"--local-host-port=localhost:{host_module.RDP_PORT}",
+        "3389", "--local-host-port=localhost:33389",
         "--zone=us-central1-a", "--project=proj",
     ]]
 
@@ -243,7 +254,9 @@ def test_rdp_hands_over_the_credentials_before_it_forwards(hosts, execvp,
 
     assert "user     ali" in result.output
     assert "password hunter2" in result.output
-    assert f"address  localhost:{host_module.RDP_PORT}" in result.output
+    # The literal again, and this is the line that matters most: this is the
+    # address a person reads off the screen and types into Remote Desktop.
+    assert "address  localhost:33389" in result.output
 
 
 @pytest.mark.parametrize("answered,missing", [
