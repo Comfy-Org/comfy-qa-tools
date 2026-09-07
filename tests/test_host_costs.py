@@ -23,6 +23,8 @@ The rule the third one settles, and that this file holds the whole group to:
 
 from __future__ import annotations
 
+import ast
+
 import pytest
 from typer.testing import CliRunner
 
@@ -816,6 +818,125 @@ def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
 BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd",
                     "disconnect_cmd", "down_cmd")
 
+# The two vocabularies, and they must stay disjoint.
+#
+# STARTERS puts a command INTO the billable set. BILL_TOKENS is what clears it.
+# Until today `_serve(` and `put_away` were in both, so a command was cleared by
+# the very call that made it billable — the evidence of guilt accepted as the
+# alibi. Three of the six passed on nothing else.
+#
+# What that costs is not theoretical. A command was added that starts a box,
+# leaves it running and prints only "benchmark finished". The guard failed and
+# printed its remedy: add it to BILLABLE_ENDINGS. Doing exactly that turned the
+# suite green over a command that leaves a GPU billing and says nothing. A guard
+# whose printed remedy defeats it is worse than none, because it is trusted.
+STARTERS = frozenset({"bring_up", "_bring_up", "put_away", "_serve", "build"})
+
+BILL_TOKENS = ("comfy-qat down", "stop_paying", "_with_the_bill")
+
+
+def _called_name(call: ast.Call) -> str:
+    func = call.func
+    return (func.id if isinstance(func, ast.Name)
+            else func.attr if isinstance(func, ast.Attribute) else "")
+
+
+def _leaves_it_running(call: ast.Call) -> bool:
+    """Whether this call is one that can leave a box up.
+
+    `put_away` is the odd one: it STOPS a box unless `keep_running=True`, and it
+    prints the bill only on that branch. So the same condition governs both
+    sides — it makes a command billable only when it keeps the box, and it can
+    only clear one when it keeps the box. Asymmetry here would be the same
+    defect wearing the other hat.
+    """
+    if _called_name(call) != "put_away":
+        return True
+    return any(kw.arg == "keep_running" for kw in call.keywords)
+
+
+def _bodies_by_name() -> dict[str, list[str]]:
+    """Every function in the three modules a billable ending can live in.
+
+    `_serve` is in host.py, `put_away` in lifecycle.py, `build` in create.py.
+    All three, because a command that defers its ending to a function this does
+    not read is a command that can never be cleared — and the reverse: a starter
+    defined in a module nobody reads makes `test_every_starter_is_still_a_real_
+    function` fail, which is how create.py came to be in this list.
+    """
+    import inspect
+
+    from comfy_qa import create as create_module
+    from comfy_qa import host as host_module
+    from comfy_qa import lifecycle as lifecycle_module
+
+    found: dict[str, list[str]] = {}
+    for module in (host_module, lifecycle_module, create_module):
+        source = inspect.getsource(module)
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef):
+                found.setdefault(node.name, []).append(
+                    ast.get_source_segment(source, node) or "")
+    return found
+
+
+def _names_the_bill(body: str) -> bool:
+    """Whether this body tells the user how to stop paying ON THE ORDINARY PATH.
+
+    The rule being enforced is about SUCCESS. lifecycle's docstring already
+    states the failure half — "every failure after the machine has been started
+    says how to stop paying for it" — and `_with_the_bill` enforces it. So an
+    alibi drawn from a failure is no alibi for a success ending.
+
+    Two things are therefore not evidence, and both were found by measuring
+    rather than by reading:
+
+    - An IMPORT. With all five of `_serve`'s stop_paying lines replaced by
+      `say.result("")`, the sixth occurrence — `from .lifecycle import …
+      stop_paying …` — still cleared it. Importing a function says nothing to
+      anybody.
+    - Advice attached to an abnormal exit: a `raise`, a `fix=`, an `undo=`.
+      `bring_up` names the bill nine times and every one is a `fix=` or the
+      `undo=` of an interrupt handler. Counting those cleared a `bench` command
+      that starts a box, leaves it running and prints "benchmark finished" —
+      the exact demonstration this guard exists to fail.
+    """
+    return any(token in _on_the_ordinary_path(body) for token in BILL_TOKENS)
+
+
+# Keyword arguments that carry advice for an abnormal exit rather than output on
+# the ordinary path.
+ADVICE_ARGS = frozenset({"fix", "undo"})
+
+
+def _on_the_ordinary_path(body: str) -> str:
+    """`body` with imports, raises and abnormal-exit advice removed."""
+    import textwrap
+
+    text = textwrap.dedent(body)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:            # pragma: no cover - a body we cannot parse
+        return text
+
+    skip: set[int] = set()
+
+    def drop(node: ast.AST) -> None:
+        first = getattr(node, "lineno", None)
+        if first is not None:
+            skip.update(range(first, (getattr(node, "end_lineno", first) or first) + 1))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Raise | ast.Import | ast.ImportFrom):
+            drop(node)
+        elif isinstance(node, ast.Call):
+            for keyword in node.keywords:
+                if keyword.arg in ADVICE_ARGS:
+                    drop(keyword.value)
+
+    return "\n".join(line for number, line in enumerate(text.splitlines(), 1)
+                      if number not in skip)
+
 
 def _commands_that_can_start_a_machine() -> set[str]:
     """Every command whose body reaches a call that starts or keeps a box up.
@@ -829,24 +950,15 @@ def _commands_that_can_start_a_machine() -> set[str]:
 
     from comfy_qa import host as host_module
 
-    starters = {"bring_up", "_bring_up", "put_away", "_serve", "build"}
     found = set()
     for node in ast.walk(ast.parse(inspect.getsource(host_module))):
         if not isinstance(node, ast.FunctionDef) or not node.name.endswith("_cmd"):
             continue
         for inner in ast.walk(node):
-            if isinstance(inner, ast.Call):
-                func = inner.func
-                called = (func.id if isinstance(func, ast.Name)
-                          else func.attr if isinstance(func, ast.Attribute) else "")
-                # put_away only leaves a box running under keep_running=True;
-                # otherwise it is the command that stops one.
-                if called == "put_away" and not any(
-                    kw.arg == "keep_running" for kw in inner.keywords
-                ):
+            if isinstance(inner, ast.Call) and _called_name(inner) in STARTERS:
+                if not _leaves_it_running(inner):
                     continue
-                if called in starters:
-                    found.add(node.name)
+                found.add(node.name)
     return found
 
 
@@ -861,43 +973,95 @@ def test_the_list_of_billable_commands_is_not_missing_one():
         f"{', '.join(unlisted)} can leave a machine running and is not in "
         "BILLABLE_ENDINGS, so nothing checks that it names the bill."
     )
+    # And the derivation still finds something. Its silent death is a starter
+    # being RENAMED: `STARTERS` would go on naming a function that no longer
+    # exists, `derived` would quietly empty, and this test would pass by finding
+    # nothing to complain about. A count that drops to zero with no failures is
+    # the bug, not the pass.
+    assert derived, "the derivation found no commands at all — it has stopped working"
+
+
+def test_every_starter_is_still_a_real_function():
+    """`STARTERS` is a list of names matched against source, so nothing connects
+    it to the functions it names. Rename `_serve` and this collection keeps
+    naming the old one: `go` and `switch` drop out of the derived set, and the
+    guard above passes on an empty set rather than failing.
+
+    That is the same shape as the two hand-maintained collections this file
+    already had to make self-checking, arriving through the one door left open.
+    """
+    bodies = _bodies_by_name()
+    gone = sorted(name for name in STARTERS if name not in bodies)
+    assert not gone, (
+        f"{', '.join(gone)} is in STARTERS but is no longer a function in "
+        "host.py, lifecycle.py or create.py — it was renamed or removed, and "
+        "the derivation has been silently finding fewer commands ever since."
+    )
+
+
+def test_no_token_that_makes_a_command_billable_can_also_clear_it():
+    """The guard on the guard on the guard, and it is two lines because the class
+    it closes is mechanical.
+
+    A membership token and an exoneration token being the same string is how a
+    command comes to be cleared by the evidence against it. Nothing about
+    `_serve` or `put_away` made that likely to be noticed by eye: both readings
+    are plausible sentences — "it starts a box" and "it defers to something that
+    names the bill" — and they were written months apart.
+    """
+    assert STARTERS & {token.rstrip("(") for token in BILL_TOKENS} == set()
 
 
 def test_every_command_that_leaves_a_box_running_names_the_bill():
     """Reads the source rather than driving eleven commands, because the point is
     that a NEW one cannot be added without this. Driving them proves today; this
-    proves tomorrow."""
-    import ast
+    proves tomorrow.
+
+    A command clears by naming the bill itself, or by deferring to ONE call whose
+    own body names it — `go` and `switch` end in `_serve`, `down --keep-running`
+    in `put_away`. The alibi is the callee's real ending, so gutting that ending
+    turns this red, which is the whole point and was not true before: with
+    `_serve(` accepted as its own alibi, `_serve`'s ending could be replaced with
+    `say.result("")` and both tests still passed.
+
+    One hop, not the transitive closure. Following calls to exhaustion reaches
+    `_give_up` and `_with_the_bill` from almost anywhere in these two modules,
+    which clears every command and gives back a guard that cannot fail — the
+    same disease as accepting the inclusion token, arriving from the other side.
+    """
     import inspect
 
     from comfy_qa import host as host_module
 
     source = inspect.getsource(host_module)
-    tree = ast.parse(source)
-    functions = {node.name: node for node in ast.walk(tree)
-                 if isinstance(node, ast.FunctionDef)}
+    commands = {node.name: node for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.FunctionDef)}
+    bodies = _bodies_by_name()
 
     missing = []
     for name in BILLABLE_ENDINGS:
-        node = functions.get(name)
+        node = commands.get(name)
         if node is None:
             missing.append(f"{name} no longer exists — update this test")
             continue
-        body = ast.get_source_segment(source, node) or ""
-        # Either it names the command itself, or it defers to something that
-        # does: lifecycle's stop_paying / _with_the_bill, or _serve's ending.
-        # Either it names the command itself, or it defers to something that
-        # does. `put_away` names it on the keep_running branch, which is the only
-        # branch of `down` that leaves a box up.
-        says_it = ("comfy-qat down" in body or "stop_paying" in body
-                   or "_with_the_bill" in body or "_serve(" in body
-                   or "put_away" in body)
-        if not says_it:
+
+        if _names_the_bill(ast.get_source_segment(source, node) or ""):
+            continue
+
+        deferred = any(
+            _leaves_it_running(call)
+            and any(_names_the_bill(body)
+                    for body in bodies.get(_called_name(call), []))
+            for call in ast.walk(node) if isinstance(call, ast.Call)
+        )
+        if not deferred:
             missing.append(name)
 
     assert not missing, (
         f"{', '.join(missing)} can leave a machine running without saying how to "
-        "stop paying for it. Every other billable path in this tool says it."
+        "stop paying for it. Every other billable path in this tool says it. "
+        "Adding it to BILLABLE_ENDINGS is NOT the fix — that is the list of "
+        "commands this rule applies to, not the list of exceptions to it."
     )
 
 
