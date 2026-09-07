@@ -337,7 +337,10 @@ def test_down_all_stops_every_cloud_machine(cli):
     assert result.exit_code == 0, result.output
     assert result.cloud.calls.count("stop_instance") == 1, "the cloud box"
     assert "local" not in result.output, "a local install cannot be stopped"
-    assert "stopped" in result.output
+    # Not the bare substring "stopped" — it matches all four put_away verdicts
+    # and cannot tell "was already stopped" from "was running — stopped it",
+    # which is the distinction this command exists to make.
+    assert "was running — stopped it" in result.output
 
 
 def test_down_all_keeps_going_when_one_refuses(cli):
@@ -380,7 +383,14 @@ def test_keeping_them_running_is_not_reported_as_stopping_them(cli):
     assert "stopped." not in result.output, (
         "--keep-running stops nothing, so no closing line may say it did"
     )
+    # "still billing" comes from lifecycle's PER-HOST line, not from this
+    # command's summary — so a test named for `down --all --keep-running` was
+    # holding nothing that command writes, and its own summary was free to be
+    # wrong while this stayed green. Assert the summary too, by name.
     assert "still billing" in result.output
+    assert "left running and billing: comfy-win" in result.output, (
+        "the command's own summary is unasserted; it names WHICH boxes are billing"
+    )
     assert result.exit_code == 0
 
 
@@ -666,7 +676,13 @@ def test_disconnect_leaves_the_machine_running_and_says_so(cli):
     result = cli("disconnect", "comfy-win", cloud=Live())
 
     assert result.exit_code == 0
+    # Same shape: "still billing" is lifecycle's. `disconnect`'s own closing line
+    # — the only place it says how to stop paying — was asserted by nothing, in
+    # nine tests that ran it.
     assert "still billing" in result.output
+    assert "comfy-qat down comfy-win" in result.output, (
+        "disconnect's own stop-paying line is unasserted"
+    )
     assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
 
 

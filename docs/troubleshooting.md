@@ -310,7 +310,16 @@ whichever you are not using and run the create again. The count comes from
 `acceleratorCount` on each running instance, so a box with no card at all does
 not appear here however large it is.
 
-**`this project's L4 grant names no region, so there is nowhere to put the box. Nothing was created.`**
+**`this project's L4 grant names no region, so there is nowhere to put the box. The grant itself is <n>. Nothing was created.`**
+
+A quota can carry a limit and name no places. The API leaves the per-entry
+`dimensions` null and puts the regions in `applicableLocations`, so a payload
+that parses the number and not the locations lands here — and the grant size is
+printed precisely so you can tell that apart from having no quota at all.
+
+This used to be reported as "this project has no L4 quota", because the empty-limit
+question was asked first and an unparsed limit looks like a zero one. That sent
+people to request quota they already held.
 A grant exists but covers no named region, which is what an empty or malformed
 quota record looks like. Ask for the card in a region by name.
 

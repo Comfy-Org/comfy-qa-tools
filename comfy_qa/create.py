@@ -486,7 +486,29 @@ class QuotaCheck:
         return self.key or self.card.lower()
 
     def problem(self) -> LifecycleError | None:
-        """The reason this cannot be created, or None. Nothing has happened yet."""
+        """The reason this cannot be created, or None. Nothing has happened yet.
+
+        Order matters here. A quota payload can carry a LIMIT and no LOCATIONS —
+        the live API leaves the per-entry `dimensions` null and puts the places
+        in `applicableLocations`, which quota.py's own docstring says — and a
+        limit of zero is indistinguishable from an unparsed one at this point.
+        So the missing-region case is asked FIRST, because it names what is
+        actually absent.
+
+        It was asked last, so such a payload produced "this project has no L4
+        quota" — a wrong cause, sending someone to request quota they already
+        hold. It misled the agent that owns argument surfaces twice in one
+        session, which is the argument for the reorder rather than a reword.
+        """
+        if not self.regions and self.card_limit:
+            return LifecycleError(
+                f"this project's {self.card} grant names no region, so there is "
+                f"nowhere to put the box. The grant itself is "
+                f"{self.card_limit}. Nothing was created.",
+                fix=f"comfy-qat quota request --gpu {self.typed} "
+                    f"--region us-central1",
+                kind=NO_QUOTA,
+            )
         if not self.card_limit:
             return LifecycleError(
                 f"this project has no {self.card} quota, so a {self.card} box cannot "
@@ -531,14 +553,6 @@ class QuotaCheck:
                 f"them: {', '.join(self.running)}. Nothing was created.",
                 fix=f"comfy-qat down {self.running[0]} — stop the ones you are not "
                     f"using, then run this again",
-                kind=NO_QUOTA,
-            )
-        if not self.regions:
-            return LifecycleError(
-                f"this project's {self.card} grant names no region, so there is nowhere "
-                f"to put the box. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.typed} "
-                    f"--region us-central1",
                 kind=NO_QUOTA,
             )
         return None
