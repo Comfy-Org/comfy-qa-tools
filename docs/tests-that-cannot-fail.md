@@ -566,6 +566,13 @@ Fixing one moved the failure rather than removing it. Expect the same of anythin
 written after this page: ask what the new guard's own blind side is, in the same
 sentence as you write it.
 
+**And the chain ran off the end of the test suite.** Each instrument built here
+found something the previous one could not see, and the last link is not a test
+at all: the guard written to catch commands that never mention the bill turns out
+to answer a question about commands that never check the quota. If that keeps
+happening, the instruments are still improving — which is a different thing from
+the code getting good, and worth not confusing with it.
+
 ## And they compose
 
 The proof is a single money sentence. Gutting the line that tells a user their
@@ -719,6 +726,52 @@ instead of a behaviour; they differ only in which direction the failure points.
 When you need a failure to test a failure path, reach for a cause nobody will
 ever fix — an unwritable directory, a closed port, a missing file — rather than
 one that is on somebody's list.
+
+## When the tool itself spends before it checks
+
+**The first entry here that is not about a test.** Everything above is a way an
+instrument fails to notice something. This is a way the *product* fails, and it
+is on the page because the shape is identical one level up.
+
+`move` takes a snapshot, creates a disk, and only then asks Google to create an
+instance — which, on a project whose GPU ceiling is already spent, is refused.
+The slow expensive half completes and the useful half does not. That is not a
+hypothetical: it is the incident that caused `Phase I` of the acceptance pack to
+be written, and at the time of writing the pack's own `move` procedure would
+reproduce it.
+
+**It was invisible precisely because the check exists.** `create` reads the
+project allowance before anything is created. `switch` asks whether the ceiling
+is what is in the way. Anyone glancing at the codebase sees a ceiling check and
+concludes the tool checks the ceiling. Measured:
+
+| helper | callers |
+|---|---|
+| `global_allowance` | `create.py` and `_blocked_by_the_ceiling` |
+| `_blocked_by_the_ceiling` | **one** — inside `switch_cmd` |
+| anything in `relocate.py` | none; its only quota read is for disk, and its own docstring says *"Advisory only."* |
+
+So the defect is not a missing feature. It is **an invariant held at two of three
+call sites** — and nobody ever wrote down "the commands that check the ceiling"
+as a list, which is exactly what effectively exists. That is class 2, one level
+up from the tests and into the product: a hand-maintained set nothing derives,
+failing open on the member somebody forgot to add.
+
+**And the remedy is the same move for the third time tonight.** The billable
+guard already derives *every command that can start a machine* from the three
+gcloud primitives that start one. That derivation answers this question too:
+
+> Every command that can start a billable machine must consult the ceiling
+> before it spends anything.
+
+One pass over a set that is already computed. Class 6's remedy was *assert the
+relationship, not the pattern*; class 7's was *assert the relationship, not the
+membership*; this is the same instruction a third time, arrived at from a
+different direction. **Three independent instances make it a principle rather
+than a trick:** when a rule is supposed to hold across a set, derive the set and
+assert the rule over it — never enumerate the members and trust the list.
+
+*Being fixed; the commit will be named here when it lands.*
 
 ## A guard whose printed remedy defeats it
 
