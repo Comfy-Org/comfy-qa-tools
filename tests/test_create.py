@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from comfy_qa.config import Host
+from comfy_qa.config import ConfigError, Host, resolve
 from comfy_qa.create import (
     CARDS,
     CREATE_FAILED,
@@ -422,6 +422,34 @@ def test_a_gpu_box_already_running_on_the_ceiling_is_a_box_to_stop_not_a_quota_t
     assert "comfy-qat down comfy-win" in problem.fix
 
 
+def test_the_ceiling_refusal_names_an_instance_down_cannot_resolve():
+    """PINS: the command a money refusal hands over is one that runs.
+    FAILS ON: `"comfy-qat down console-box" in problem.fix`. The fix is to carry
+    the ZONE — `_gpu_boxes_running` appends `instance.get("name")` and discards
+    the zone, though it is in the payload being read — and hand over `gcloud
+    compute instances stop <name> --zone=<zone>`, which is what
+    `_undeclared_and_running` already does for this exact case in host.py. Then
+    assert on that instead.
+
+    `config.resolve` matches host-list names, then os/gpu descriptions, and never
+    `gce_instance`. The box holding the only slot is usually one somebody started
+    in the console, which is precisely the box absent from the host list.
+    """
+    problem = check_quota(CARDS["l4"], [L4_REGION_QUOTA, ceiling(1)],
+                          [instance("console-box")]).problem()
+    assert problem is not None
+
+    # CURRENT: a comfy-qat command built from a GCE instance name.
+    assert "comfy-qat down console-box" in problem.fix
+
+    declared = [Host(name="comfy-win", kind="gce", port=8190,
+                     os="Windows Server 2022", gpu="L4",
+                     gce_instance="console-box", gce_zone="us-central1-a",
+                     gce_project="proj")]
+    with pytest.raises(ConfigError):
+        resolve(declared, "console-box")      # the command it just printed
+
+
 def test_a_stopped_box_does_not_hold_the_ceiling():
     assert check_quota(CARDS["l4"], LIVE, [instance("comfy-win", running=False)]
                        ).problem() is None
@@ -575,6 +603,33 @@ def test_a_refusal_that_is_not_a_stockout_stops_rather_than_trying_everywhere():
     assert "Google refused to create comfy-linux in us-central1-a" in str(raised.value)
     assert raised.value.kind == CREATE_FAILED
     assert len(cloud.created) == 1
+
+
+def test_a_create_that_timed_out_keeps_the_half_made_box_advice():
+    """PINS: a non-capacity refusal always tells you to look for an instance that
+    may exist, whatever gcloud's own advice was.
+    FAILS ON: both assertions below. The fix is to make the advice ADDITIVE
+    rather than a fallback — gcloud's fix AND the console check — after which
+    assert that both strings are present.
+
+    Deliberately not this file's own `Cloud`: that fake raises GcloudError with
+    no `fix`, and a present `exc.fix` is the entire condition under test.
+    """
+    class _Timeout:
+        def create_instance_from_image(self, *args, **kwargs):
+            raise GcloudError(
+                "gcloud timed out after 300s: compute instances create comfy-linux",
+                fix="check your network, then try again",   # what TIMEOUT carries
+                kind="timeout",
+            )
+
+    with pytest.raises(LifecycleError) as caught:
+        build(_Timeout(), LINUX_L4, order("us-central1-a"), PROJECT,
+              lambda line: None)
+
+    # CURRENT: gcloud's generic advice wins and the console check is dropped.
+    assert caught.value.fix == "check your network, then try again"
+    assert "half-made" not in f"{caught.value}\n{caught.value.fix}"
 
 
 def test_the_create_passes_the_accelerator_only_for_an_attached_card():

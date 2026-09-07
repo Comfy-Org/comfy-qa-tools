@@ -16,6 +16,9 @@ from comfy_qa.lifecycle import (
     bring_up,
     how_to_get_in,
     put_away,
+    serve,
+    start_detached,
+    stop_paying,
 )
 from comfy_qa.stamp import Stamp
 
@@ -685,6 +688,73 @@ def test_every_failure_after_the_box_is_running_says_how_to_stop_paying(tmp_path
 
     for failure in failures:
         assert "comfy-qat down comfy-win" in (failure.fix or ""), str(failure)
+
+
+class _SshRaises:
+    """A Gcloud whose `ssh` raises, as a vanished binary does. Port is free."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def ssh_output(self, instance, zone, project, remote):
+        return "PORT_FREE"
+
+    def ssh(self, instance, zone, project, remote, *, stream=True):
+        raise self.exc
+
+
+# `serve` and `start_detached` call `gc.ssh` with no `except`, so a local gcloud
+# fault at the launch escapes both. `serve`'s call is inside a try/FINALLY, which
+# tidies the remote process and does not catch. The other two `gc.ssh` calls in
+# the module, in `ensure_installed` and in `read_logs`, ARE wrapped — this is a
+# pattern already right in two places of four.
+#
+# Reachable by a LOCAL fault only: `Gcloud.ssh` raises GcloudError when the binary
+# has left PATH mid-session, or OSError out of subprocess.run. A failed REMOTE ssh
+# returns a non-zero exit code, and every non-zero code is handled.
+
+
+@pytest.mark.parametrize("launch", (serve, start_detached))
+def test_a_gcloud_failure_at_the_launch_leaves_the_tunnel_open(tmp_path, launch):
+    """PINS: a launch that raises still closes the tunnel it opened.
+    FAILS ON: the `assert pid_file(...).exists()` below — invert it to
+    `assert not ...` once the two `gc.ssh` calls are wrapped in `_give_up`.
+
+    The box is running and billing with a local port held open onto it, and the
+    exception carries gcloud's own advice rather than this tool's.
+    """
+    from comfy_qa import tunnel as tunnel_module
+
+    _, say = said()
+    tunnel_module.open_tunnel(WIN, tmp_path)
+    assert tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+    with pytest.raises(GcloudError):
+        launch(_SshRaises(GcloudError("gcloud is not installed or not on PATH.")),
+               WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
+               tunnel_dir=tmp_path)
+
+    # CURRENT: the tunnel outlives the failure. Invert this line with the fix.
+    assert tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+
+@pytest.mark.parametrize("launch", (serve, start_detached))
+def test_a_gcloud_failure_at_the_launch_never_says_how_to_stop_paying(tmp_path, launch):
+    """PINS: every failure after the machine is on names `stop_paying(host)` —
+    the rule this module's own docstring states.
+    FAILS ON: the `not in` below. With the fix the raised error is a
+    LifecycleError whose `.fix` contains `comfy-qat down comfy-win`, so change
+    both the expected type and this assertion.
+    """
+    lines, say = said()
+    with pytest.raises(GcloudError) as caught:
+        launch(_SshRaises(GcloudError("your gcloud session has expired")),
+               WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
+               tunnel_dir=tmp_path)
+
+    whole = "\n".join(lines) + f"\n{caught.value}\n{getattr(caught.value, 'fix', '')}"
+    # CURRENT: nothing in the run mentions the bill. Invert with the fix.
+    assert stop_paying(WIN) not in whole
 
 
 def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):
