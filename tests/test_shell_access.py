@@ -69,6 +69,26 @@ def hosts(tmp_path):
     return str(path)
 
 
+@pytest.fixture
+def state(monkeypatch):
+    """What Google says the box is doing, without asking Google.
+
+    `ssh` reads the instance's state before it hands the terminal over, so every
+    test that expects to reach `execvp` has to answer that question — and none
+    of them may answer it by making a real call. The default is RUNNING, which
+    is the case the argv tests are about; `state.answer` sets up the others.
+    """
+    class Answer:
+        value = "RUNNING"
+
+    answer = Answer()
+    monkeypatch.setattr(
+        gcloud_module.Gcloud, "instance_status",
+        lambda self, instance, zone, project: answer.value,
+    )
+    return answer
+
+
 def run(*args):
     return CliRunner().invoke(app, list(args))
 
@@ -134,7 +154,7 @@ def test_an_unknown_name_is_refused(command, hosts):
 # ------------------------------------------------------------ what it execs
 
 
-def test_ssh_execs_the_iap_command_for_that_box(hosts, execvp):
+def test_ssh_execs_the_iap_command_for_that_box(hosts, execvp, state):
     result = run("ssh", "comfy-linux", "--config", hosts)
 
     assert isinstance(result.exception, Replaced)
@@ -144,11 +164,53 @@ def test_ssh_execs_the_iap_command_for_that_box(hosts, execvp):
     ]]
 
 
-def test_ssh_finds_the_box_by_description(hosts, execvp):
+def test_ssh_finds_the_box_by_description(hosts, execvp, state):
     """`--os` and `--gpu` reach the same machine as its name does."""
     run("ssh", "--gpu", "l4", "--config", hosts)
 
     assert execvp[0][4] == "linux-instance"
+
+
+# ------------------------------------- a box that cannot take a shell yet
+
+
+@pytest.mark.parametrize("stopped", ["TERMINATED", "STOPPING", "SUSPENDED",
+                                     "PROVISIONING", "STAGING"])
+def test_ssh_on_a_box_that_is_not_running_is_one_sentence(hosts, execvp, state,
+                                                          stopped):
+    """The everyday case: you forgot to `up`.
+
+    gcloud's own answer to this is a 36-line Python traceback and exit 255,
+    ending in a suggested `--troubleshoot` that fails identically. `logs` on the
+    same box in the same second says one sentence and names the fix. Nothing was
+    reached, so it is a 2 — and `execvp` must not have run at all.
+    """
+    state.value = stopped
+
+    result = run("ssh", "comfy-linux", "--config", hosts)
+
+    assert result.exit_code == 2
+    assert "comfy-linux is not running, so there is nothing to open a shell " \
+           "on" in result.output
+    assert "comfy-qat up comfy-linux" in result.output
+    assert execvp == [], "nothing may be handed to execvp on a box that is off"
+
+
+def test_ssh_does_not_guess_when_the_state_is_unreadable(hosts, execvp, state):
+    """An empty state is a third answer, not a quiet yes.
+
+    `instance_status` can succeed and say nothing. Treating that as RUNNING
+    hands the terminal to gcloud and gets the traceback back; treating it as
+    stopped tells someone to start a box that may already be billing.
+    """
+    state.value = ""
+
+    result = run("ssh", "comfy-linux", "--config", hosts)
+
+    assert result.exit_code == 2
+    assert "could not tell whether comfy-linux is running" in result.output
+    assert "comfy-qat list --live" in result.output
+    assert execvp == []
 
 
 def test_rdp_forwards_the_desktop_port_for_that_box(hosts, execvp, monkeypatch):

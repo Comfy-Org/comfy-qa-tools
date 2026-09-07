@@ -301,6 +301,24 @@ def create_cmd(
     except ConfigError:
         hosts = []
 
+    # `plan` is offline and total — it decides everything before anything is
+    # contacted — but it was called AFTER the project read, the instance list
+    # and the minute of quota. So `--os freebsd` cost 64 seconds to be told
+    # freebsd is not an operating system, and so did a 0 GB disk and a name
+    # Compute Engine will not take. All three are string checks against a table
+    # that ships with this tool.
+    #
+    # Run here first, against the host list alone, and thrown away. The name
+    # COLLISION check deliberately stays below: "already taken" means taken on
+    # the project too, and that genuinely needs the instance list. So a name
+    # clashing with your own host list is refused in a second, and one clashing
+    # with an undeclared box on the project still costs the read it requires.
+    try:
+        plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
+             taken=taken_names(hosts, []))
+    except _reportable() as exc:
+        _refused(exc)
+
     gc = Gcloud()
     try:
         project = gc.current_project()
@@ -621,6 +639,15 @@ def down_cmd(
         help="Which machine: a name, or what you want — windows, l4, windows/l4. "
              "Omit it with --all.")] = None,
     config: Annotated[Optional[Path], typer.Option("--config")] = None,
+    # `down` was the only machine-taking command without these — go, up, open,
+    # switch, logs, stamp, ssh, rdp and move all take them — so a session spent
+    # typing `go --os windows` ended at `down --os windows`, which was refused
+    # by the argument parser. Being refused is loud, but this is the one command
+    # where not running is what costs money.
+    os_: Annotated[Optional[str], typer.Option(
+        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
+        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
     keep_running: Annotated[bool, typer.Option(
         "--keep-running",
         help="Deprecated: this is `comfy-qat disconnect`.")] = False,
@@ -646,6 +673,12 @@ def down_cmd(
         if name:
             say.fail("--all stops every machine, so it takes no name", code=2,
                      blank_line=False)
+        # Kept apart from the name refusal above rather than folded into one
+        # sentence: the two mistakes read differently, and `--all --os windows`
+        # is a person narrowing what they meant, not naming a box.
+        if os_ or gpu:
+            say.fail("--all stops every machine, so it takes no --os or --gpu",
+                     code=2, blank_line=False)
         try:
             hosts = [h for h in load(config) if h.is_remote]
         except ConfigError as exc:
@@ -772,11 +805,15 @@ def down_cmd(
             say.result("  comfy-qat discover   # or adopt them and use `down --all`")
         return
 
-    if not name:
+    # Not `_selector` alone: its "which machine?" does not know about `--all`,
+    # and `--all` is the answer half the people who get here wanted. Given a
+    # selector, `_selector` takes over — including its refusal of a name and
+    # --os together, which every sibling already gives.
+    if not name and not os_ and not gpu:
         say.fail("say which machine, or --all for every one of them", code=2,
                  blank_line=False)
 
-    host = _host(name, config)
+    host = _host(_selector(name, os_, gpu), config)
     _act(put_away, Gcloud(), host, say.step, keep_running=keep_running)
 
 
@@ -793,7 +830,9 @@ def go_cmd(
     no_install: Annotated[bool, typer.Option(
         "--no-install", help="Fail rather than installing ComfyUI if it is absent.")] = False,
     follow: Annotated[bool, typer.Option(
-        "--follow", help="Stream ComfyUI's log here. Ctrl-C then stops ComfyUI.")] = False,
+        "--follow",
+        help="Stream ComfyUI's log here, and Ctrl-C then stops ComfyUI itself. "
+             "To watch without that, use `comfy-qat logs`.")] = False,
     new_window: Annotated[bool, typer.Option(
         "--new-window", help="Run this in a new macOS Terminal window instead.")] = False,
 ) -> None:
@@ -860,6 +899,35 @@ def ssh_cmd(
         gc.require()
     except GcloudError as exc:
         _refused(exc)
+
+    # And then whether there is anything to connect TO. Without this, the
+    # everyday case — you forgot to `up` — was handed to gcloud, which answered
+    # with a 36-line Python traceback and exit 255, and suggested
+    # `--troubleshoot`, which fails the same way. `logs` asks this question on
+    # the same box in the same second and says one sentence; the contrast was
+    # inside one tool. One extra read on the way to a shell is the price, and it
+    # is the same read `logs` already pays.
+    from .lifecycle import RUNNING
+
+    try:
+        state = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        _refused(exc)
+    if not state:
+        say.fail(
+            f"could not tell whether {host.name} is running, so there is no "
+            "saying whether it will take a shell.",
+            fix=say.fix("ask Google again:", "comfy-qat list --live"),
+            code=2,
+        )
+    if state != RUNNING:
+        say.fail(
+            f"{host.name} is not running, so there is nothing to open a shell "
+            f"on. SSH needs the machine up, not just declared.",
+            fix=f"comfy-qat up {host.name}   # start it, then ssh again",
+            code=2,
+        )
+
     argv = gc.ssh_argv(host.gce_instance, host.gce_zone, host.gce_project)
     # Replaced rather than spawned: an interactive shell wants this terminal, and
     # a subprocess wrapper would put a layer between the user and their own
@@ -941,7 +1009,8 @@ def logs_cmd(
         "--tail", help="Print this many lines and stop. Add --follow to keep reading.")] = None,
     follow: Annotated[Optional[bool], typer.Option(
         "--follow/--no-follow",
-        help="Keep reading as it is written. The default unless --tail is given.")] = None,
+        help="Keep reading as it is written; Ctrl-C ends the reading only, "
+             "never ComfyUI. The default unless --tail is given.")] = None,
 ) -> None:
     """Read the ComfyUI log on a box, since `go` no longer streams it here.
 
@@ -1120,13 +1189,35 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     try:
         wait_for_ssh(gc, host, say.step)
         ensure_installed(gc, host, say.step)
+        if follow:
+            # The last line of this tool's own voice before ComfyUI's output
+            # takes the terminal, which makes it the last chance to say what
+            # Ctrl-C will reach. `--help` says it too; nobody reads `--help`
+            # from inside a running stream.
+            say.step(f"streaming ComfyUI's log — Ctrl-C stops ComfyUI itself "
+                     f"(`comfy-qat logs {host.name}` watches without that)")
         say.result("")
         code = (serve if follow else start_detached)(
             gc, host, say.step, open_browser=browser)
     except _reportable() + (GcloudError,) as exc:
         say.fail(exc, code=1)
     except KeyboardInterrupt:
-        say.result(f"\nstopped. {host.name} is still running.")
+        # Two sentences, not one, and only under `--follow`. Ctrl-C out of a
+        # streamed log reaches ComfyUI and stops it, which is the opposite of
+        # what the same key does in `comfy-qat logs` — and the line printed here
+        # said only that the machine was still running, which is true and is not
+        # the part that surprises anyone. The person reading it has just left a
+        # log stream by reflex; what they need told is what went down with it,
+        # and that the box did not.
+        if follow:
+            say.result(f"\nstopped, and ComfyUI stopped with it — that is what "
+                       f"Ctrl-C does here. {host.name} is still running, and a "
+                       f"stopped ComfyUI on a running box still bills.")
+            say.result(f"  comfy-qat go {host.name}   # start ComfyUI again")
+            say.result(f"  comfy-qat logs {host.name}   # watch it without "
+                       "stopping it")
+        else:
+            say.result(f"\nstopped. {host.name} is still running.")
         say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
         return
 
