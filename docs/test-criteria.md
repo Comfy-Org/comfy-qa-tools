@@ -24,6 +24,7 @@ who did not write the tool. Rather than repeat it, this is what it covered:
 | **not run** | phase K (`create`) and phase L (`logs`) — both landed after that pass, so nothing in them has ever been run |
 | **not run** | E1, E2, E3, E3b, E5, E6, E7, F3–F8, J15 — see the note on each |
 | **never had a criterion** | phase S (`ssh`, `rdp`, `disconnect`) and phase N (`delete`). Four commands, added here because the pack could not see them — one of which destroys a machine |
+| **never run at all, by anyone** | phase R (`move`). A real move end to end on hardware has never happened; everything believed about the command comes from tests. It is the largest untested surface in the tool |
 
 Two things to hold on to. **Everything about `create` and `logs` is unverified**,
 which makes phases K and L the point of the next run rather than a formality. And
@@ -642,6 +643,208 @@ echo "=== S7 the old flag"; qat down $BOX --keep-running; echo "exit $?"
 
 *Never run. Every check here is new.*
 
+## Phase R — moving a box *(this bills, and it is the one nothing has ever proved)*
+
+**A real `move` end to end on hardware has never been run, by anyone.** Everything
+believed about this command comes from tests. It renames a host, reassigns its
+port, rewrites your hand-maintained host list, takes a snapshot, creates a disk,
+creates an instance, and — when you do not name a zone — starts a GPU box to read
+a zone out of Google's refusal. Six things that cost money and one that edits the
+file every other command depends on.
+
+It goes here, before phase G, on purpose: **phase I exists because of a `move`**
+that took a snapshot, built a 300 GB disk, failed creating the instance, said
+nothing, and billed for weeks. Running R before I is what finally points that
+phase at the thing it was written for.
+
+### R0 — the baseline. Do not skip this; nothing after it means anything without it.
+
+```sh
+P=$(gcloud config get-value project 2>/dev/null); echo "=== R0 project $P"
+TARGET_ZONE=us-central1-b            # a zone $BOX is NOT in, and that has your card
+echo "moving $BOX -> $TARGET_ZONE"
+mkdir -p ~/move-before
+cp ~/.config/comfy-qa-tools/hosts.toml ~/move-before/hosts.toml
+gcloud compute instances list --project $P > ~/move-before/instances.txt
+gcloud compute disks     list --project $P > ~/move-before/disks.txt
+gcloud compute snapshots list --project $P > ~/move-before/snapshots.txt
+qat list > ~/move-before/list.txt
+qat stamp $BOX > ~/move-before/stamp.txt 2>&1
+file ~/.config/comfy-qa-tools/hosts.toml            # LF or CRLF — you need to know which
+grep -n "" ~/move-before/hosts.toml | head -40      # the file with line numbers
+cat ~/move-before/instances.txt ~/move-before/disks.txt ~/move-before/snapshots.txt
+```
+
+- [ ] **R0** — you have five files in `~/move-before/` and you have looked at them.
+      Everything below is a **comparison**, and a comparison without a before is
+      the commonest broken check in this pack. If you skip R0 you cannot tell a
+      leak this move made from a disk that was already there.
+
+### R1–R2 — the free half. Refusals, and a plan. Nothing is created.
+
+```sh
+echo "=== R1 the plan"; qat move $BOX --to $TARGET_ZONE --dry-run; echo "exit $?"
+echo "=== R2 no zone, no dry run allowed"; qat move $BOX --dry-run; echo "exit $?"
+echo "=== R2b nothing happened"; diff ~/move-before/instances.txt <(gcloud compute instances list --project $P) && echo "unchanged"
+```
+
+- [ ] **R1** — a numbered plan naming **the snapshot, the new disk, the new
+      instance and the target zone**, and it ends saying nothing was created.
+      Read the numbers: the disk size should match the source box's, not a
+      default.
+- [ ] **R2** — **without `--to`, `--dry-run` refuses, and this is correct.** The
+      only way to ask Google where there is capacity is to try to start the box,
+      and a box that starts is billing — so a dry run cannot do it. It must say
+      that, in those terms, and print the `--to … --dry-run` form as the fix.
+      Exit 2. A `--dry-run` that goes looking for a zone is a **blocker**: it is
+      the one command promising to change nothing, spending the most.
+- [ ] **R2b** — the instance list is byte-identical to R0's. `--dry-run` created
+      nothing, and you checked rather than believed the word "dry".
+
+### R3 — the refusal that has to be free
+
+This is the check only a real project can make. `move` writes two entries: the box
+under its own name in the new zone, and the old one under `<name>-<old-zone>`. If
+your list already holds an entry naming the machine it is about to name, the
+resulting file is one the tool **refuses to read whole** — every command then
+exits 2, `down` included, while the box bills.
+
+```sh
+cp ~/.config/comfy-qa-tools/hosts.toml ~/move-before/hosts.clash.toml
+# Append a second entry pointing at the SAME instance/zone/project as $BOX,
+# under a different name. Then:
+echo "=== R3 the clash is refused"; qat move $BOX --to $TARGET_ZONE; echo "exit $?"
+echo "=== R3b and it cost nothing"; diff ~/move-before/instances.txt <(gcloud compute instances list --project $P) && echo "unchanged"
+diff ~/move-before/snapshots.txt <(gcloud compute snapshots list --project $P) && echo "no snapshot"
+# put the clean file back before R4
+cp ~/move-before/hosts.toml ~/.config/comfy-qa-tools/hosts.toml
+```
+
+- [ ] **R3** — refused, naming **both entries and the machine they would share**,
+      and saying plainly `Nothing was created.` Exit 2.
+- [ ] **R3b** — **and it really was free.** No new instance, and above all **no
+      snapshot**. This is the criterion, not R3: the refusal used to arrive at the
+      register step, after the snapshot, the disk and the instance existed and
+      were billing. "It refused" is satisfied by both versions; "it refused
+      having created nothing" is satisfied only by the right one.
+
+### R4 — the move itself
+
+```sh
+echo "=== R4 move"; time qat move $BOX --to $TARGET_ZONE; echo "exit $?"
+```
+
+- [ ] **R4** — it says what it is doing at each step, and finishes with
+      `<name> is now in <zone>, running and billing from now.` **The words
+      "running and billing" have to be there**: creating an instance starts it,
+      and a closing line that says "now run `go`" reads as "now start it" — which
+      is how a moved box billed silently from the moment the move finished.
+- [ ] **R4b** — it then tells you about the **old** box: still in the old zone,
+      now called `<name>-<old-zone>`, with its disk. **It is real and still
+      billing until you delete it**, and the closing lines must give you both
+      `comfy-qat down <name>-<old-zone>` and the `gcloud … delete` for it. A move
+      that leaves you one box is not what happened; you have two.
+
+### R5 — the host list, which is the part with no undo
+
+```sh
+echo "=== R5 what changed"; diff ~/move-before/hosts.toml ~/.config/comfy-qa-tools/hosts.toml
+echo "=== R5b line endings"; file ~/.config/comfy-qa-tools/hosts.toml
+echo "=== R5c the tool can still read it"; qat list; echo "exit $?"
+echo "=== R5d backup"; ls -l ~/.config/comfy-qa-tools/hosts.toml.bak
+```
+
+- [ ] **R5** — read the `diff` **line by line**. Exactly two things changed: the
+      moved host's block was renamed to `[hosts.<name>-<old-zone>]` and given a
+      **different** port, and a new block for `<name>` was appended. Everything
+      else is untouched — every other host, every comment, and the commented-out
+      example `init` writes into every new file.
+- [ ] **R5b** — **the renamed block did not move to column 0**, and any
+      indentation it had is still there. The rewrite is textual and has to put
+      back what the header match consumed; dropping it is a silent whole-file
+      diff that looks like a reformat and is not one.
+- [ ] **R5c** — the line endings are what R0 said they were. A hard-coded `\n`
+      puts a lone LF into a CRLF file, and a host list edited on the Windows box —
+      the ordinary case here — comes back mixed.
+- [ ] **R5d** — **the two entries have different ports, and neither is 8188.** A
+      rename that kept the old port is satisfied by "the host appears under its
+      new name", which is why that is not the check. Confirm with `qat list`:
+      two rows, two ports.
+- [ ] **R5e** — `qat list` still works, exit 0. The file was validated by the
+      tool's own loader before it was written — a file that parses as TOML and
+      holds the right names can still be refused at load, and if it is, no
+      `comfy-qat` command works at all until you hand-edit it.
+- [ ] **R5f** — a backup of the previous file is at `hosts.toml.bak`, and it
+      matches `~/move-before/hosts.toml`.
+
+### R6 — did the box survive the move?
+
+```sh
+echo "=== R6 serve it"; qat go $BOX --no-browser; echo "exit $?"
+echo "=== R6b same machine?"; qat stamp $BOX; cat ~/move-before/stamp.txt
+```
+
+- [ ] **R6** — `go` reaches the **new** box and ComfyUI is there without being
+      reinstalled. The point of `move` over `create` is that the install comes
+      with it; if it reinstalls, the move preserved nothing worth having.
+- [ ] **R6b** — the stamp names the same OS and card as R0's, in the **new** zone.
+      Compare the two files. A move that quietly built a different machine type
+      passes every check above this one.
+
+### R7 — what did it leave behind?
+
+```sh
+echo "=== R7 instances"; diff ~/move-before/instances.txt <(gcloud compute instances list --project $P)
+echo "=== R7b disks";    diff ~/move-before/disks.txt     <(gcloud compute disks list --project $P)
+echo "=== R7c snapshots";diff ~/move-before/snapshots.txt <(gcloud compute snapshots list --project $P)
+```
+
+- [ ] **R7** — every line the diffs add is one the tool **told you about**. One
+      new instance in the target zone, the old one still there, one new disk. If
+      `gcloud` shows you something `move` never mentioned, that is a defect in the
+      tool, not a tidy-up job — it is the exact failure phase I was written for.
+- [ ] **R7b** — **the snapshot is gone, or you were told it is still there and
+      billing.** A move takes a snapshot to build the new disk from; leaving it is
+      300 GB nobody is looking at. Either outcome can be correct — silence cannot.
+- [ ] **R7c** — now run **phase I** in full. R is the only phase that creates the
+      kind of leak I detects, so this is the first time that phase has ever been
+      pointed at its own reason for existing.
+
+### R8 — if it goes wrong halfway
+
+**Read this before you start, not after.** A move that fails partway leaves a GPU
+box billing and a host list you cannot yet trust. In that order:
+
+```sh
+echo "=== R8 what the tool said it left"   # scroll back to the failure and read it
+echo "=== R8b is the original still mine"; qat stamp $BOX; echo "exit $?"
+qat list --live                     # what exists, and what is running
+gcloud compute instances list --project $P
+gcloud compute disks     list --project $P
+gcloud compute snapshots list --project $P
+```
+
+- [ ] **R8** — on failure the tool prints **what it created and that it is
+      billing**, one line each, and says the original box is untouched in its old
+      zone. It must not exit claiming success, and it must not go silent.
+- [ ] **R8b** — **the original is still there and still yours.** `move` builds the
+      new box before it retires the old one, so a failure leaves you the machine
+      you started with. Check with `qat stamp $BOX` — if the host list was already
+      rewritten, `qat stamp <name>-<old-zone>`.
+- [ ] **R8c** — **before you go to bed**: stop everything the diffs in R7 show as
+      running, and delete anything the tool told you it left. `qat down --all`
+      stops declared boxes; a half-made instance that never reached your host list
+      is not declared, so stop it with the `gcloud` line the tool printed.
+      *(Only reachable on a real failure — record it as not run otherwise.)*
+- [ ] **R8d** — a resumed `move` **reuses** what the failed one made rather than
+      starting again, and `--clean` deletes the leftovers first and then still
+      does the move. `--clean` is "clean up first, then move", never "clean up
+      instead of moving". *(Needs a failed move to resume from — not arrangeable
+      to order; record as not run.)*
+
+*Never run. Every check in this phase is new, and the phase exists because
+`move` is the largest untested surface in the tool.*
+
 ## Phase G — stop paying *(do not skip)*
 
 ```sh
@@ -1050,7 +1253,15 @@ run — no capacity, no second box — is "not run", not a pass.
 A release-1 pass needs: every box in phases A–D, G, H and I ticked **except I5,
 which only exists if a `move` ran**; **K1–K7 and E3, E3b and E4** ticked;
 **L1–L3, L5a, L5b and L7** ticked; **J1–J7** ticked; **S1a–S1b, S4, S4b, S5 and
-S6** ticked; **N1–N5, N7, N10, N11, N12 and N14** ticked; and no unexplained traceback anywhere in the run. Anything needing a
+S6** ticked; **N1–N5, N7, N10, N11, N12 and N14** ticked; **R0–R3b** ticked —
+they are free, and R3b is the one that proves a refusal costs nothing; and no
+unexplained traceback anywhere in the run.
+
+**Phase R's billing half (R4–R7) is the most valuable thing in this pack and the
+least proved.** It is not in the required set, because a pass should not be
+blocked on capacity in a second zone — but if you run it, R4, R4b, R5, R5d, R5e
+and R7 must all tick, and if you skip it say so in the report. "A move has never
+been run" is the sentence this pack exists to stop being true. Anything needing a
 second simultaneous GPU box (J8, J9, J10, J11, all of M) or a real stockout
 (F6–F8, J12–J15) is recorded as "not run" rather than assumed, and you say which
 and why. **J8 and J9 moved out of the required set for that reason** — they need
