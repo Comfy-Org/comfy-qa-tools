@@ -301,6 +301,36 @@ echo "=== D5 stamp with nothing serving"; qat stamp local; echo "exit $?"
 
 *Ran 2026-08-27 — **all of phase D passed**.*
 
+## The baseline for phase I — run this now, before anything exists *(free)*
+
+Phase I asks what the run left behind, and **that is a comparison.** Until now the
+page said "run this before the run and after it, and compare" in prose and then
+gave one block, run once, at the end — so four criteria that read as comparisons
+were ticked against nothing, in the phase whose motivating failure cost real
+money. This is that before. It takes ten seconds and it is the difference between
+phase I meaning something and phase I being a formality.
+
+Run it here, after phase C proves gcloud works and **before phase K creates the
+first box.**
+
+```sh
+P=$(gcloud config get-value project 2>/dev/null); echo "=== Q0 project $P"
+mkdir -p ~/qa-before
+gcloud compute instances list --project $P > ~/qa-before/instances.txt
+gcloud compute disks     list --project $P --format="table(name,zone.basename(),sizeGb,type.basename(),users.basename())" > ~/qa-before/disks.txt
+gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())" > ~/qa-before/snapshots.txt
+qat list > ~/qa-before/list.txt
+wc -l ~/qa-before/*.txt; cat ~/qa-before/instances.txt
+```
+
+- [ ] **Q0** — four files in `~/qa-before/`, and **you have read
+      `instances.txt`.** Whatever is in it now is not this run's doing, however it
+      looks. A project that already carries three stopped boxes and a detached
+      disk is the normal case here, and without this file you cannot tell one of
+      those from a leak you are about to create.
+
+---
+
 ## Phase K — making the box *(K1–K4 free; K5 creates one and bills)*
 
 **Nothing in this phase has ever been run.** `create` landed after the 2026-08-27
@@ -985,26 +1015,41 @@ instance. It left both artifacts behind, said nothing about them, and they bille
 for weeks. The tool told the user which zone had capacity and could not build
 there — so the expensive half of the work succeeded and the useful half did not.
 
-**Run this before the run and after it, and compare.** Anything that appears and
-is not attached to a machine you meant to keep is a leak.
+**This is the second half of a comparison.** The first half is the `Q0` block you
+ran before phase K. If you skipped it, stop and say so in the report rather than
+ticking these — a single snapshot of a project you did not photograph first tells
+you what exists, never what this run did.
 
 ```sh
 P=$(gcloud config get-value project 2>/dev/null); echo "=== I0 project $P"
-echo "=== I1 instances"; gcloud compute instances list --project $P
+echo "=== I1 instances"; gcloud compute instances list --project $P > /tmp/i1.txt
+diff ~/qa-before/instances.txt /tmp/i1.txt && echo "IDENTICAL — nothing added"
 echo "=== I2 disks — USERS empty means nothing is attached"
-gcloud compute disks list --project $P --format="table(name,zone.basename(),sizeGb,type.basename(),users.basename())"
+gcloud compute disks list --project $P --format="table(name,zone.basename(),sizeGb,type.basename(),users.basename())" > /tmp/i2.txt
+diff ~/qa-before/disks.txt /tmp/i2.txt && echo "IDENTICAL — nothing added"
 echo "=== I3 snapshots"
-gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())"
+gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())" > /tmp/i3.txt
+diff ~/qa-before/snapshots.txt /tmp/i3.txt && echo "IDENTICAL — nothing added"
 echo "=== I4 anything the host list names that no longer exists"
 qat list
 ```
 
-- [ ] **I1** — every instance is one you meant to have, and every one you are not
-      using right now reads TERMINATED.
-- [ ] **I2** — no disk with an empty USERS column, unless you deliberately keep a
-      detached one. A detached disk still bills at full size.
-- [ ] **I3** — no snapshot whose source disk no longer exists, and no snapshot
-      left over from a move that has since finished.
+- [ ] **I1** — **read the `diff`, not the list.** Every `>` line is something this
+      run created. Each one is either a box you still mean to have, or a leak.
+      Every instance of yours that you are not deliberately running reads
+      TERMINATED — and if you ran phase R there are two of them.
+- [ ] **I2** — **every `>` line in the disk diff is accounted for.** A disk with an
+      empty USERS column is attached to nothing and still bills at full size. The
+      point of the diff is that a detached disk which was there before phase 0 is
+      not this run's problem and a new one is — and the single-snapshot version of
+      this check could not tell you which you were looking at.
+- [ ] **I3** — **every `>` line in the snapshot diff is accounted for.** A move
+      takes a snapshot to build the new disk from; one left behind is 300 GB
+      nobody is looking at, and it is the exact artefact that started this phase.
+- [ ] **I3b** — **`IDENTICAL — nothing added` on all three is a pass only if you
+      also deleted the box.** After phases K–R and before phase N you *should* see
+      added lines; they are the run working. This criterion is not "no changes",
+      it is "no changes you cannot name".
 - [ ] **I4** — the host list names no machine that is gone, and nothing exists in
       the project that the host list does not know about.
 - [ ] **I5** — *(only exists if a `move` ran this session; otherwise not run, and
@@ -1016,9 +1061,13 @@ qat list
 The rule this phase enforces: **a command that spends money must account for what
 it spent it on.** Silence is the defect.
 
-*Ran 2026-08-27 — **all of phase I passed**. Run it again after phase K: `create`
-is now a second command that spends money, so it is a second thing that can leave
-something behind, and it has never been through this phase.*
+*Ran 2026-08-27 — all of phase I was ticked. **Read that as less than it looks.**
+There was no `Q0` block then, so I1–I3 were single snapshots of a project nobody
+had photographed first: the boxes were ticked honestly and compared nothing. The
+phase has never once been run as a comparison. Run it again after phase K —
+`create` is a second command that spends money, so it is a second thing that can
+leave something behind — and after phase R, which is the only phase that makes
+the kind of leak this phase was written for.*
 
 ## Phase N — deleting a box *(this destroys a machine; run it after H and J)*
 
@@ -1337,8 +1386,9 @@ A release-1 pass needs: every box in phases A–D, G, H and I ticked **except I5
 which only exists if a `move` ran**; **K1–K7 and E3, E3b and E4** ticked;
 **L1–L3, L5a, L5b and L7** ticked; **J1–J7** ticked; **S1a–S1b, S4, S4b, S5 and
 S6** ticked; **N1–N5, N7, N10, N11, N12 and N14** ticked; **R0–R3b** ticked —
-they are free, and R3b is the one that proves a refusal costs nothing; and no
-unexplained traceback anywhere in the run.
+they are free, and R3b is the one that proves a refusal costs nothing; **Q0**
+ticked, without which I1–I3 cannot be; and no unexplained traceback anywhere in
+the run.
 
 **Phase R's billing half (R4–R7) is the most valuable thing in this pack and the
 least proved.** It is not in the required set, because a pass should not be
