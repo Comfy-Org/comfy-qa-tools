@@ -771,11 +771,20 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     # catches is Ctrl-C, which is a BaseException and walks past `except
     # GcloudError` untouched.
     #
-    # Measured: the thread survives the interrupt and prints "still going, 1s"
-    # one second later — into the middle of the interrupt report. It is a daemon
-    # so nothing hangs; what is lost is the tool's last words being legible, on
-    # the path where a person is most likely to interrupt, because a torch
-    # install is the longest silence this tool has.
+    # Measured: the thread survives the interrupt and outlives the whole run. It
+    # is a daemon, so nothing hangs. What it CAN do is print "still going" over
+    # the tool's own last words — and `can` is the honest word. The tick here is
+    # STREAM_TICK_SECONDS, a minute, so that only lands when the Ctrl-C falls in
+    # the last few milliseconds before a tick. An earlier note in this place said
+    # it prints one second later; that came from a probe running a one-second
+    # tick, and reproducing it at the real interval would suggest the defect was
+    # never there.
+    #
+    # The case does not rest on the window. It rests on the shape: a thread with
+    # no owner, whose visibility depends on when somebody happened to press a
+    # key. Verified by verify3 that the fix is the strong version rather than a
+    # race won — `finally` unwinds this frame before `may_leave`'s reporting runs
+    # in an outer `__exit__`, so there is no interval in which both are live.
     #
     # `give_up()` after `done()` is a no-op, so one cleanup covers every exit.
     try:

@@ -632,11 +632,16 @@ def test_an_install_that_reports_success_but_installed_nothing_is_caught():
 # has nothing to stop. Both were guarded by `except GcloudError`, and Ctrl-C is a
 # BaseException, so it walked past untouched and left the ticker running.
 #
-# Measured before the fix: the thread survives and prints "still going, 1s" one
-# second after the interrupt — into the middle of the tool's own last words. It
-# is a daemon, so nothing hangs; what is lost is the report being legible, on the
-# path where somebody is most likely to press Ctrl-C, because a torch install is
-# the longest silence this tool has.
+# Measured before the fix: the thread survives the interrupt and outlives the
+# whole run. Daemon, so nothing hangs — what it CAN do is print "still going"
+# over the tool's own last words. `Can`, not `does`: the real tick is
+# STREAM_TICK_SECONDS, a minute, so it lands inside the report only when the
+# Ctrl-C falls in the last milliseconds before a tick.
+#
+# So the case is the SHAPE, not the window — a thread with no owner, whose
+# visibility depends on when somebody happened to press a key. These tests assert
+# the shape, which is why they check `_stop.is_set()` rather than watching for a
+# line, and why they hold at any tick interval.
 
 
 class _Interrupting:

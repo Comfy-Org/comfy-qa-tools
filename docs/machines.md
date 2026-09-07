@@ -500,6 +500,41 @@ a second move does not destroy the first one's backup. If the copy cannot be
 made, the rewrite does not happen. Comments and hosts this tool does not manage
 are preserved.
 
+## Why some commands are handed over rather than run
+
+A reader who greps this package for `gcloud` finds thirteen imperative commands
+printed for somebody else to type, and the obvious conclusion is that the tool is
+lazy. It has been filed as a defect twice. It is not one, and the count is
+derived rather than remembered: `tests/test_docs.py` pins the set per module with
+a reason, so a new hand-over has to be argued for and one that stops being needed
+has to be removed.
+
+There are five reasons, and every site says the same thing at greater length
+where it lives:
+
+- **The box is in no host list, so this tool cannot name it.** `config.resolve`
+  matches declared names and descriptions, never `gce_instance`, and the box
+  holding your only GPU slot is usually one somebody started in the console.
+  `comfy-qat down <instance>` would be a command that cannot resolve — printing
+  raw gcloud with the zone is the fix, not the problem. See
+  `create._stop_the_box` and the same conclusion reached separately in
+  `relocate.py`.
+- **The process is dying.** An interrupt undo registered with `inflight.may_leave`
+  runs while the tool is unwinding. There is nothing left that could do the work.
+- **It destroys an install.** `relocate.delete_instance_command` says it outright:
+  handed over, never run.
+- **It is not ours to touch.** A ComfyUI this run did not start, a change to the
+  box's networking made on a hypothesis the tool cannot confirm, a Windows
+  password reset, and `gcloud auth login`, which is interactive by nature.
+- **The tool does run it, on request.** `move --clean` executes the disk and
+  snapshot deletes through `remove_leftovers`. The printed form is the manual
+  alternative for a run that did not ask for destructive cleanup.
+
+One site left this list by being fixed rather than justified: the tool used to
+tell you to kill a leftover ComfyUI yourself, and now stops the one it started,
+itself. What remains handed over there is a process this run did **not** start,
+where handing over is the safety decision.
+
 ## Which machine am I actually on?
 
 Every command names its host, and there is no default — no "current machine" is
