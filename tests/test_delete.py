@@ -45,10 +45,11 @@ port         = 8192
 class Cloud:
     """Records every call. Anything not expected is the failure being tested."""
 
-    def __init__(self, status="TERMINATED", fail=None):
+    def __init__(self, status="TERMINATED", fail=None, disk_gb="200"):
         self.calls: list[str] = []
         self._status = status
         self._fail = fail
+        self._disk_gb = disk_gb
 
     def instance_status(self, name, zone, project):
         self.calls.append(f"status {name}")
@@ -56,8 +57,22 @@ class Cloud:
             raise self._status
         return self._status
 
+    def describe_instance(self, name, zone, project):
+        """Read for one thing: the boot disk's name, so the confirmation can
+        say how big it is. `<name>-a`, the way a real one is named."""
+        self.calls.append(f"describe {name}")
+        return {"name": name, "status": self._status,
+                "disks": [{"boot": True, "source": f"https://x/disks/{name}-a"}]}
+
     def run(self, args, **kwargs):
         joined = " ".join(str(a) for a in args)
+        if joined.startswith("compute disks describe"):
+            self.calls.append(joined)
+            if self._disk_gb is None:
+                from comfy_qa.gcloud import GcloudError
+
+                raise GcloudError("the disk could not be read")
+            return {"sizeGb": self._disk_gb}
         self.calls.append(joined)
         if self._fail is not None:
             raise self._fail
@@ -290,8 +305,19 @@ def test_an_interrupted_delete_says_the_record_may_now_be_wrong(capsys):
     from comfy_qa import inflight
 
     class _Interrupted(Cloud):
+        """Ctrl-C on the DELETE, not on the reads before it.
+
+        The confirmation reads the boot disk's size first, and those reads are
+        deliberately outside the registration — nothing has been mutated yet, so
+        an interrupt there has nothing to report. Interrupting them instead
+        would test the wrong call.
+        """
+
         def run(self, args, **kwargs):
-            self.calls.append(" ".join(str(a) for a in args))
+            joined = " ".join(str(a) for a in args)
+            if not joined.startswith("compute instances delete"):
+                return super().run(args, **kwargs)
+            self.calls.append(joined)
             raise KeyboardInterrupt
 
     with pytest.raises(inflight.Interrupted):
@@ -343,3 +369,47 @@ def _delete_with(cloud, tmp=None):
         return delete_cmd(name="comfy-win", config=path, yes=True)
     finally:
         gcloud_module.Gcloud = real
+
+
+# --- the confirmation, which is the last thing between a person and a loss ---
+
+
+def test_the_confirmation_says_how_big_the_disk_is(cli):
+    """"and its boot disk" is skimmed. "its 200 GB boot disk" is read.
+
+    This is the last irreversible thing the tool does and the confirmation is
+    the only place a mistake can be caught, so the line has to carry something a
+    person either recognises or does not. A size is that; a noun is not.
+    """
+    result = cli("delete", "comfy-win", cloud=Cloud(disk_gb="200"),
+                 input="comfy-win\n")
+
+    assert "its 200 GB boot disk" in result.output, result.output
+    # Read off the boot disk, whose name is its own — `comfy-win` boots from
+    # `comfy-win-a`, and deriving one from the other is right by luck.
+    assert any("disks describe comfy-win-a" in call for call in result.cloud.calls)
+
+
+def test_a_disk_size_that_cannot_be_read_still_asks_the_question(cli):
+    """Degrades to the old wording rather than failing.
+
+    A confirmation that cannot name a size still has to be shown: refusing to
+    delete because a cosmetic read failed is the wrong trade on a command
+    somebody has already decided to run.
+    """
+    result = cli("delete", "comfy-win", cloud=Cloud(disk_gb=None),
+                 input="comfy-win\n")
+
+    assert "and its boot disk." in result.output, result.output
+    assert "GB" not in result.output
+    assert result.cloud.deleted(), "the delete still went through"
+
+
+def test_choosing_what_to_destroy_is_sent_to_the_live_listing(cli):
+    """`comfy-qat list` reads the host file, where a box that is stopped and a
+    box that was destroyed last week look identical. That difference does not
+    matter until the moment you are choosing what to destroy."""
+    for args in (("delete",), ("delete", "no-such-box")):
+        result = cli(*args)
+        assert result.exit_code == 2
+        assert "comfy-qat list --live" in result.output, args

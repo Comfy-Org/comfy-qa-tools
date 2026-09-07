@@ -49,6 +49,40 @@ def _refuse(message: str, fix: str | None = None) -> None:
     say.fail(message, fix=fix, code=2)
 
 
+def _boot_disk_phrase(gc, host) -> str:
+    """"its 200 GB boot disk" — the number is what makes a person stop and read.
+
+    This is the last irreversible thing the tool does, and the confirmation it
+    prints is the only place a person can catch a mistake. "and its boot disk"
+    is skimmed; a size is the difference between reading the line and passing
+    over it, because 200 GB is a number you either recognise as the box you
+    meant or do not.
+
+    Best effort, and it degrades to the old wording rather than failing: a
+    confirmation that cannot name a size still has to be shown, and refusing to
+    delete because a cosmetic read failed would be the wrong trade on a command
+    someone has already decided to run. One extra call, on a path that is
+    interactive and destructive and can afford it.
+    """
+    from .gcloud import GcloudError
+    from .relocate import boot_disk
+
+    try:
+        instance = gc.describe_instance(host.gce_instance, host.gce_zone,
+                                        host.gce_project)
+        name = boot_disk(instance or {})
+        if not name:
+            return "its boot disk"
+        disk = gc.run([
+            "compute", "disks", "describe", name,
+            f"--zone={host.gce_zone}", f"--project={host.gce_project}",
+        ]) or {}
+        size = str((disk or {}).get("sizeGb") or "").strip()
+    except (GcloudError, OSError):
+        return "its boot disk"
+    return f"its {size} GB boot disk" if size else "its boot disk"
+
+
 @app.command("delete")
 def delete_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine to delete: its name.")] = None,
@@ -64,8 +98,12 @@ def delete_cmd(
     from .gcloud import Gcloud, GcloudError, can_prompt
 
     if not name:
+        # `--live`, not the plain listing, and it is the same reason both times
+        # below. The plain list reads the host file, where a box that is stopped
+        # and a box that was destroyed last week look identical — and choosing
+        # what to destroy is the one moment that difference matters.
         _refuse("which machine? delete takes a name, never a description",
-                fix="comfy-qat list")
+                fix="comfy-qat list --live")
 
     try:
         hosts = load(config)
@@ -91,7 +129,7 @@ def delete_cmd(
             f"no host is called {name!r}. delete takes an exact name, never a "
             "description — a description can resolve to a machine you did not "
             "picture, and this cannot be undone",
-            fix="comfy-qat list",
+            fix="comfy-qat list --live",
         )
 
     if not host.is_remote:
@@ -115,7 +153,8 @@ def delete_cmd(
             fix=f"comfy-qat down {host.name}",
         )
 
-    say.result(f"delete {host.gce_instance} in {host.gce_zone}, and its boot disk.")
+    say.result(f"delete {host.gce_instance} in {host.gce_zone}, and "
+               f"{_boot_disk_phrase(gc, host)}.")
     say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
 
     if not yes:
