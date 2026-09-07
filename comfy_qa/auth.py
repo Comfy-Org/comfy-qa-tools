@@ -321,7 +321,7 @@ def quota_request_cmd(
     """
     if not gpu and not quota_id:
         say.fail("name a card to ask for",
-                 fix=say.fix("comfy-qat auth quota request --gpu l4,a100",
+                 fix=say.fix("comfy-qat quota request --gpu l4,a100",
                              "or --quota-id, to name a raw quota id exactly"),
                  code=2)
 
@@ -358,7 +358,7 @@ def quota_request_cmd(
                 + (f", it is metered in {', '.join(elsewhere)}" if elsewhere else ""),
                 fix=(f"ask for one of: {offer}" if offer != "none" else
                      "this project reports no GPU quota at all — "
-                     "comfy-qat auth quota request --gpu l4 --region us-central1"),
+                     "comfy-qat quota request --gpu l4 --region us-central1"),
                 code=2,
             )
         wanted.append((name, resolved))

@@ -124,7 +124,7 @@ _ADVICE: dict[str, tuple[str | None, str | None]] = {
     NO_ACCOUNT: ("no active gcloud account", "gcloud auth login"),
     NO_PROJECT: ("no project set", "gcloud config set project <your-project-id>"),
     NETWORK: ("could not reach Google Cloud", "check your network, then try again"),
-    DENIED: (None, "comfy-qat auth status — check which account you are using"),
+    DENIED: (None, "comfy-qat status — check which account you are using"),
     # gcloud's own sentence names the metric, the limit and the region, which is
     # everything needed; only the fix is worth adding.
     QUOTA: (None, "raise the limit at https://console.cloud.google.com/iam-admin/quotas "

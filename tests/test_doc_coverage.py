@@ -345,12 +345,25 @@ def test_troubleshooting_quotes_no_command_the_tool_has_stopped_printing():
 
 
 def test_that_check_would_have_caught_the_one_it_can():
-    """The guard on the guard, and it pins the limit as well as the catch.
+    """The guard on the guard — and the limit it pinned has since closed.
 
-    Run against `troubleshooting.md` as it stood before this commit, the check
-    reports exactly one phrase: `comfy-qat host down comfy-win`. It stays silent
-    on `comfy-qat auth quota`, and the second assertion here is what stops that
-    silence being mistaken for coverage later.
+    This test used to assert a LIMIT: the check stayed silent on
+    `comfy-qat auth quota`, because that was a live prefix of a message the
+    package really printed, so a doc quoting it could not be distinguished from
+    a doc quoting something current. The assertion said so out loud rather than
+    letting the silence read as coverage — and it named its own expiry: "if that
+    is true, this check has become strictly stronger and this test should be
+    revisited."
+
+    It became true. Three `fix=` lines were still printing the retired
+    `comfy-qat auth …` spelling — `auth` is a hidden deprecation window, not a
+    second permanent name — and when they were corrected, this assertion failed
+    with its own message. The check is now strictly stronger: nothing in the
+    package prints `auth` as a subcommand, so any doc quoting it IS stale, and
+    the sibling check above caught two such lines the moment the source changed.
+
+    A limit asserted rather than implied is a limit that tells you when it is
+    gone. That is the whole reason the shape is worth the extra lines.
     """
     source = _package_source()
 
@@ -358,8 +371,10 @@ def test_that_check_would_have_caught_the_one_it_can():
     assert OLD_SPELLING.findall(caught)[0] not in source, (
         "the package now prints this, so it is no longer a valid example")
 
-    # The one it cannot see, asserted as a limit rather than left implicit.
-    missed = "comfy-qat auth quota"
-    assert missed in source, (
-        "`comfy-qat auth quota` is no longer a live prefix — if that is true, this "
-        "check has become strictly stronger and this test should be revisited")
+    # The limit that closed. Kept as an assertion, pointing the other way now:
+    # if `auth` comes back as a printed spelling, the check silently weakens
+    # again and the docs it can no longer see would go unguarded.
+    assert "comfy-qat auth" not in source, (
+        "a fix= line has gone back to the retired `comfy-qat auth …` spelling. "
+        "That silently weakens the check above — a doc quoting `auth` would stop "
+        "being distinguishable from a doc quoting something current.")
