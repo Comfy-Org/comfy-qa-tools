@@ -10,9 +10,9 @@ is used, and the host it picked is printed before anything happens. One that fit
 two is refused with both named. Every command takes `--config` to read a host list
 somewhere other than `~/.config/comfy-qa-tools/hosts.toml`.
 
-**The same description can be given as flags instead**, on the ten commands that
-operate a machine you already have — `up`, `open`, `go`, `ssh`, `rdp`, `logs`,
-`disconnect`, `switch`, `move` and `stamp`:
+**The same description can be given as flags instead**, on the eleven commands
+that operate a machine you already have — `up`, `open`, `go`, `ssh`, `rdp`,
+`logs`, `disconnect`, `down`, `switch`, `move` and `stamp`:
 
 ```sh
 comfy-qat go --os linux            # same as `comfy-qat go linux`
@@ -69,7 +69,7 @@ type it. `init` is for the case where you want to write the file yourself.
 | `comfy-qat logs <host>` | read the ComfyUI log on the box. Follows by default, because "what is it doing now" is the question people have; `--tail N` prints that many lines and stops. Ctrl-C ends the reading and nothing else, `--os`, `--gpu` |
 | `comfy-qat stamp <host>` | ask a machine what it is, in one line you paste into a report. `--json`, `--os`, `--gpu` |
 | `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install`, `--os`, `--gpu` |
-| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name |
+| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name. `--os`, `--gpu` |
 | `comfy-qat disconnect <host>` | close the tunnel and **leave the machine running** — for a long generation you want to keep, or a laptop you are closing. It says the machine keeps billing, and how to stop it. This was `down --keep-running`, which still works and says so. `--os`, `--gpu` |
 
 ## Onto the box itself
