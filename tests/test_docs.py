@@ -473,10 +473,11 @@ def test_every_error_has_a_troubleshooting_entry(message):
 # uses on the same strings.
 ENTRY_RUN = IDENTIFYING
 
-# Entries that legitimately quote something this package does not say. Four are
-# other people's words; three are our own messages built so heavily from
-# interpolation that no single run reaches ENTRY_RUN. Both tests below keep this
-# honest — an allowlist nobody prunes is the hand-maintained list coming back.
+# Two lists, because there are two reasons an entry can be unmatchable and they
+# have opposite futures.
+#
+# These are somebody else's words, quoted so a user can recognise them. They are
+# permanent: no change to this package will ever make them ours.
 NOT_OUR_MESSAGE = {
     "comfy-qat: command not found":
         "the shell says this, not this tool",
@@ -486,13 +487,29 @@ NOT_OUR_MESSAGE = {
         "torch's own words, quoted from a ComfyUI log",
     "Required 'compute.instances.start' permission":
         "gcloud's own refusal, quoted so it can be recognised",
-    "request for l4 failed":
-        "f-string: 'request for ' is 11 characters, ' failed: ' is 9",
-    "testcloud serves 4f2a1b9c":
-        "f-string: ' serves ' and ', expected ' are 8 and 11",
-    "us-central1-b has no L4 capacity either":
-        "the entry truncates the message before its one long run",
 }
+
+# These ARE our messages. They are excused because the MATCHER cannot see them —
+# every literal run is shorter than ENTRY_RUN — not because the tool does not say
+# them. Keeping them under the other name was a real hole rather than a tidiness
+# problem: an entry excused as "not ours" is excused for ever, so deleting one of
+# these messages would leave its entry behind saying nothing had changed. That is
+# the exact failure this guard exists to catch, sitting inside its own escape
+# hatch, under a name that says the opposite.
+#
+# So this list is a known LIMIT with a shrinking membership. Anyone who improves
+# ENTRY_RUN or the run-splitting knows exactly which entries to re-test, and the
+# hygiene test below ejects one the moment it becomes matchable — which is how
+# the capacity entry left: it was a truncation, and quoting four more words of
+# the message it documents made it checkable like everything else.
+TOO_SHORT_TO_MATCH = {
+    "request for l4 failed":
+        "f-string: 'request for' is 11 characters, 'failed:' is 7",
+    "testcloud serves 4f2a1b9c":
+        "f-string: 'serves' and 'expected' are 6 and 8",
+}
+
+EXEMPTED = {**NOT_OUR_MESSAGE, **TOO_SHORT_TO_MATCH}
 
 
 def _message_runs() -> set[str]:
@@ -538,8 +555,8 @@ def test_the_entry_list_was_actually_found():
 
 @pytest.mark.parametrize("entry", ENTRIES, ids=lambda e: e[:40])
 def test_every_troubleshooting_entry_still_describes_something_real(entry):
-    if any(key in entry for key in NOT_OUR_MESSAGE):
-        pytest.skip("not one of our messages; see NOT_OUR_MESSAGE")
+    if any(key in entry for key in EXEMPTED):
+        pytest.skip("see NOT_OUR_MESSAGE / TOO_SHORT_TO_MATCH")
     assert any(run in entry for run in MESSAGE_RUNS), (
         f"troubleshooting.md documents {entry!r}, and nothing in comfy_qa/ can "
         f"still say it. Either it was reworded — quote the new wording verbatim "
@@ -552,18 +569,19 @@ def test_no_exempted_entry_has_quietly_become_checkable():
     """The allowlist is the part that rots. A message that grows a longer run
     should rejoin the check rather than stay exempt for ever."""
     stale = sorted(
-        key for key, _ in NOT_OUR_MESSAGE.items()
+        key for key in EXEMPTED
         if any(key in entry and any(run in entry for run in MESSAGE_RUNS)
                for entry in ENTRIES))
     assert not stale, (
         f"{', '.join(stale)} now quotes something the package says, so it no "
-        f"longer needs an exemption. Remove it from NOT_OUR_MESSAGE."
+        f"longer needs an exemption. Remove it from NOT_OUR_MESSAGE or "
+        f"TOO_SHORT_TO_MATCH."
     )
 
 
 def test_no_exempted_entry_has_left_the_page():
     """And an exemption for an entry nobody has any more is just clutter."""
-    absent = sorted(key for key in NOT_OUR_MESSAGE
+    absent = sorted(key for key in EXEMPTED
                     if not any(key in entry for entry in ENTRIES))
     assert not absent, (
         f"{', '.join(absent)} is exempted but is not in troubleshooting.md."

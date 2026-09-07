@@ -1244,7 +1244,7 @@ The zone does not have that machine type, so the instance could never be created
 there. Nothing has been snapshotted. Pick a zone that does:
 `gcloud compute machine-types list --filter='name=g2-standard-8'`.
 
-**`us-central1-b has no L4 capacity either`**
+**`us-central1-b has no L4 capacity either, so comfy-win-b could not be created.`**
 The move got as far as creating the machine and the destination zone was out of
 capacity by the time it got there. The zone Google names in a stockout message is
 where there was capacity when it answered, not a reservation, and it goes stale.
@@ -1890,7 +1890,7 @@ your connection — including a VPN or proxy that may have dropped — and try a
 
 **`Required 'compute.instances.start' permission for ...`**
 Your sign-in worked and Google refused the action: the account is missing an IAM
-role, not a credential. The message names the exact permission. `comfy-qat auth
+role, not a credential. The message names the exact permission. `comfy-qat
 status` shows which account you are actually using — being signed in as the wrong
 one of two accounts is the usual cause.
 
@@ -1927,9 +1927,9 @@ comfy-qat quota request --gpu l4 --region us-central1
 exactly.
 
 **`name a card to ask for`**
-`auth quota request` was run with nothing to request. It will not guess a card for
+`quota request` was run with nothing to request. It will not guess a card for
 you — asking for the wrong one wastes days of approval time. The fix line offers
-`comfy-qat auth quota request --gpu l4,a100`, or `--quota-id`, to name a raw quota
+`comfy-qat quota request --gpu l4,a100`, or `--quota-id`, to name a raw quota
 id exactly.
 
 **`a project-wide allowance only, no specific card granted`**
