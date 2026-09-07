@@ -99,8 +99,12 @@ def ceiling(value):
                                  "applicableLocations": ["global"]}]}
 
 
-def instance(name, *, running=True, gpu=True):
-    body = {"name": name, "status": "RUNNING" if running else "TERMINATED"}
+def instance(name, *, running=True, gpu=True, zone="us-central1-a"):
+    # The zone arrives as a URL, as it does from `gcloud compute instances list`
+    # — the refusal for a full ceiling has to hand over a command that stops the
+    # box, and `--zone=` is half of that command.
+    body = {"name": name, "status": "RUNNING" if running else "TERMINATED",
+            "zone": f"https://www.googleapis.com/compute/v1/projects/p/zones/{zone}"}
     if gpu:
         body["guestAccelerators"] = [{"acceleratorType": ".../nvidia-l4",
                                       "acceleratorCount": 1}]
@@ -419,28 +423,26 @@ def test_a_gpu_box_already_running_on_the_ceiling_is_a_box_to_stop_not_a_quota_t
     check = check_quota(CARDS["l4"], LIVE, [instance("comfy-win")])
     problem = check.problem()
     assert "comfy-win is already running on it" in str(problem)
-    assert "comfy-qat down comfy-win" in problem.fix
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in problem.fix)
 
 
-def test_the_ceiling_refusal_names_an_instance_down_cannot_resolve():
-    """PINS: the command a money refusal hands over is one that runs.
-    FAILS ON: `"comfy-qat down console-box" in problem.fix`. The fix is to carry
-    the ZONE — `_gpu_boxes_running` appends `instance.get("name")` and discards
-    the zone, though it is in the payload being read — and hand over `gcloud
-    compute instances stop <name> --zone=<zone>`, which is what
-    `_undeclared_and_running` already does for this exact case in host.py. Then
-    assert on that instead.
+def test_the_ceiling_refusal_hands_over_a_command_that_runs():
+    """The command a money refusal hands over is one that runs.
 
     `config.resolve` matches host-list names, then os/gpu descriptions, and never
     `gce_instance`. The box holding the only slot is usually one somebody started
-    in the console, which is precisely the box absent from the host list.
+    in the console, which is precisely the box absent from the host list — so
+    `comfy-qat down <instance>` would exit "no host called that", and the zone
+    that makes the raw gcloud stop runnable is right there in the payload.
     """
     problem = check_quota(CARDS["l4"], [L4_REGION_QUOTA, ceiling(1)],
-                          [instance("console-box")]).problem()
+                          [instance("console-box", zone="us-west4-b")]).problem()
     assert problem is not None
 
-    # CURRENT: a comfy-qat command built from a GCE instance name.
-    assert "comfy-qat down console-box" in problem.fix
+    assert ("gcloud compute instances stop console-box --zone=us-west4-b"
+            in problem.fix)
+    assert "comfy-qat down console-box" not in problem.fix
 
     declared = [Host(name="comfy-win", kind="gce", port=8190,
                      os="Windows Server 2022", gpu="L4",
@@ -477,7 +479,7 @@ def test_a_grant_that_names_no_region_is_refused_rather_than_searched():
 
 @pytest.mark.parametrize("instances,expected", [
     ([], []),
-    ([instance("a"), instance("b", running=False)], ["a"]),
+    ([instance("a"), instance("b", running=False)], [("a", "us-central1-a")]),
     ([instance("a", gpu=False)], []),
 ])
 def test_only_running_gpu_boxes_count_against_the_ceiling(instances, expected):
@@ -606,11 +608,13 @@ def test_a_refusal_that_is_not_a_stockout_stops_rather_than_trying_everywhere():
 
 
 def test_a_create_that_timed_out_keeps_the_half_made_box_advice():
-    """PINS: a non-capacity refusal always tells you to look for an instance that
-    may exist, whatever gcloud's own advice was.
-    FAILS ON: both assertions below. The fix is to make the advice ADDITIVE
-    rather than a fallback — gcloud's fix AND the console check — after which
-    assert that both strings are present.
+    """A non-capacity refusal always tells you to look for an instance that may
+    exist, whatever gcloud's own advice was.
+
+    A timeout is the case that needs it most — the create may well have made the
+    box — and a timeout is also the refusal that carries a `fix`, so a fallback
+    dropped the console check from exactly the failures that could leave
+    something billing.
 
     Deliberately not this file's own `Cloud`: that fake raises GcloudError with
     no `fix`, and a present `exc.fix` is the entire condition under test.
@@ -627,9 +631,10 @@ def test_a_create_that_timed_out_keeps_the_half_made_box_advice():
         build(_Timeout(), LINUX_L4, order("us-central1-a"), PROJECT,
               lambda line: None)
 
-    # CURRENT: gcloud's generic advice wins and the console check is dropped.
-    assert caught.value.fix == "check your network, then try again"
-    assert "half-made" not in f"{caught.value}\n{caught.value.fix}"
+    # Both: gcloud's advice about the refusal, and the check that finds the box
+    # the refusal may have left behind.
+    assert "check your network, then try again" in caught.value.fix
+    assert "half-made" in caught.value.fix
 
 
 def test_the_create_passes_the_accelerator_only_for_an_attached_card():
@@ -760,7 +765,7 @@ def test_a_box_that_is_not_terminated_holds_the_ceiling(state):
     from comfy_qa.create import _cards_running, _gpu_boxes_running
 
     assert _cards_running([_box(state)]) == 1, state
-    assert _gpu_boxes_running([_box(state)]) == ["b"], state
+    assert _gpu_boxes_running([_box(state)]) == [("b", "us-central1-a")], state
 
 
 def test_a_terminated_box_holds_nothing():

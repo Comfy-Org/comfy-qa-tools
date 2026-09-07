@@ -290,14 +290,20 @@ means nothing if this is 0. Raising it is a separate request from asking for a
 card, made in the console.
 
 **`GPUS_ALL_REGIONS is 1 and comfy-win is already running on it, so a new GPU box cannot start until that one stops. Nothing was created.`**
-Not a quota you need to raise — a box you need to stop. `comfy-qat down
-comfy-win` frees the allowance, and the create then goes through. This is checked
-before anything is made rather than being discovered as a refusal afterwards.
+Not a quota you need to raise — a box you need to stop. The fix hands over
+`gcloud compute instances stop <name> --zone=<zone>` rather than `comfy-qat
+down`, because the name is a **GCE instance** name: the box holding the only
+slot is usually one somebody started in the console, and `comfy-qat down`
+resolves host-list names and never `gce_instance`, so it would refuse the
+command it had just printed. Stopping it frees the allowance and the create then
+goes through. This is checked before anything is made rather than being
+discovered as a refusal afterwards.
 
 **`GPUS_ALL_REGIONS is 8 and 2 GPU boxes are already running on it, holding 9 of it between them: comfy-win, comfy-h100. Nothing was created.`**
 The same refusal with more than one box running, and the reason it counts cards
 rather than boxes: an `a3-highgpu-8g` is eight of the ceiling on its own. Stop
-whichever you are not using and run the create again. The count comes from
+whichever you are not using — again with the raw `gcloud compute instances
+stop`, for the reason above — and run the create again. The count comes from
 `acceleratorCount` on each running instance, so a box with no card at all does
 not appear here however large it is.
 
@@ -794,10 +800,27 @@ Not an error — what Ctrl-C out of `host logs` says. It ends the reading and
 nothing else. `go --follow` is the other one: there Ctrl-C reaches ComfyUI and
 stops it, and the box carries on billing either way.
 
+**`stopped, and ComfyUI stopped with it — that is what Ctrl-C does here. comfy-win
+is still running, and a stopped ComfyUI on a running box still bills.`**
+
+Ctrl-C out of `go --follow`. Under it are three lines: `comfy-qat go comfy-win`
+to start ComfyUI again, `comfy-qat logs comfy-win` to watch it without stopping
+it, and `comfy-qat down comfy-win   # stop the box, stop paying`.
+
+The message used to say only that the machine was still running, which is true
+and is not the part that surprises anyone. `--follow` and `comfy-qat logs` are
+both log streams and the same key does opposite things in them — here it reaches
+ComfyUI through the SSH session and stops it; there it ends the reading and
+nothing else. A reflex Ctrl-C out of the wrong one kills the ComfyUI you were
+debugging while the box carries on billing, so the difference is now stated in
+three places: in `--help` for both flags, on the last line before the stream
+starts, and here, in what Ctrl-C prints.
+
 **`stopped. comfy-win is still running.`**
-Ctrl-C out of `host go --follow`. ComfyUI is stopped; the box is not, and a
-stopped ComfyUI on a running box still bills. The line under it is
-`comfy-qat down comfy-win   # stop the box, stop paying`.
+The same interrupt without `--follow` — Ctrl-C while `go` is starting ComfyUI
+detached. Nothing was streaming, so there is nothing that went down with it; the
+box is running, and the line under it is `comfy-qat down comfy-win   # stop the
+box, stop paying`.
 
 **`could not read the ComfyUI log on comfy-win: ...`**
 The box would not run the command that reads the log. Usually the same causes as
@@ -886,6 +909,12 @@ A cloud box is `kind = "gce"`; fix the entry and run `host down` again.
 **`--all stops every machine, so it takes no name`**
 `host down --all` is "stop everything"; naming one as well is a contradiction.
 Drop the name, or drop `--all`.
+
+**`--all stops every machine, so it takes no --os or --gpu`**
+The same contradiction in the other spelling. `down` now takes `--os` and `--gpu`
+like every other command that acts on a machine, and `--all --os windows` is
+someone narrowing what they meant — which is `comfy-qat down --os windows`,
+without `--all`.
 
 **`say which machine, or --all for every one of them`**
 `host down` with nothing to act on. The question at the end of a session is
@@ -1528,6 +1557,31 @@ something you are", and this tool has shipped both.
 
 `ssh` reaches cloud boxes. The local install is already here, so there is nothing
 to connect to — open a terminal window.
+
+**`<name> is not running, so there is nothing to open a shell on. SSH needs the
+machine up, not just declared.`**
+
+The everyday one: you forgot to `comfy-qat up`. `comfy-qat up <name>` starts it,
+and then `ssh` works. Exit **2** — nothing was reached and nothing was changed.
+
+This is checked here because gcloud's own answer to it is a 36-line Python
+traceback ending in exit 255, with a suggested `gcloud compute ssh
+--troubleshoot` that fails the same way on the same box. `comfy-qat logs` asks
+the identical question and answers it in one sentence, so the tool was
+contradicting itself between two commands run a second apart.
+
+The price is one extra read of the instance's state before every `ssh`, which is
+the read `logs` already pays for the same reason.
+
+**`could not tell whether <name> is running, so there is no saying whether it
+will take a shell.`**
+
+Asking Google what the machine is doing succeeded and came back with no state at
+all — see [A read that said nothing](#a-read-that-said-nothing), which is the
+same third answer reaching `logs`. It is not guessed in either direction:
+assuming "running" hands you the traceback above, and assuming "stopped" tells
+you to start a box that may already be billing. `comfy-qat list --live` asks
+again, and it is usually transient.
 
 **`<name> runs Windows, which has no ssh here`**
 

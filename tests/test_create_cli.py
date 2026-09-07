@@ -276,11 +276,13 @@ def test_no_quota_for_the_card_refuses_before_any_zone_is_looked_up(cli):
 
 def test_a_gpu_box_already_running_on_the_ceiling_refuses_with_the_box_to_stop(cli):
     running = [{"name": "comfy-win", "status": "RUNNING",
+                "zone": ".../zones/us-central1-a",
                 "guestAccelerators": [{"acceleratorType": ".../nvidia-l4"}]}]
     result = cli("--os", "linux", "--gpu", "l4", "--yes",
                  gc=FakeGcloud(instances=running))
     assert result.exit_code == 2
-    assert "comfy-qat down comfy-win" in result.output
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in result.output)
     assert billable(result) == []
 
 

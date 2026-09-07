@@ -47,6 +47,7 @@ import re
 from dataclasses import dataclass
 
 from . import inflight
+from . import say as output
 from .config import Host
 from .gcloud import Gcloud, GcloudError
 from .lifecycle import LifecycleError, is_capacity_failure, suggested_zones
@@ -443,7 +444,10 @@ class QuotaCheck:
     card_limit: int | None
     global_limit: int | None
     needed: int
-    running: tuple[str, ...]
+    # `(name, zone)` per box, because a refusal that names a box has to hand over
+    # a command that stops it, and the zone is the half of that command this file
+    # used to throw away. See `_stop_the_box`.
+    running: tuple[tuple[str, str], ...]
     regions: tuple[str, ...]
     # What a person types after `--gpu` to mean this card. Not the same string as
     # `card` for the H100, and a fix line that says `--gpu h100-80gb` names a card
@@ -478,8 +482,13 @@ class QuotaCheck:
         if self.running:
             cards = "1 card" if self.held == 1 else f"{self.held} cards"
             out.append(f"already running and holding {cards} of it: "
-                       f"{', '.join(self.running)}")
+                       f"{', '.join(self.running_names)}")
         return out
+
+    @property
+    def running_names(self) -> tuple[str, ...]:
+        """Just the names, for a sentence. The zones are for the fix line."""
+        return tuple(name for name, _ in self.running)
 
     @property
     def typed(self) -> str:
@@ -539,27 +548,49 @@ class QuotaCheck:
         if self.running and self.global_limit is not None and 0 <= self.global_limit < (
             self.needed + self.held
         ):
+            first = _stop_the_box(*self.running[0])
             if len(self.running) == 1:
                 return LifecycleError(
-                    f"GPUS_ALL_REGIONS is {self.global_limit} and {self.running[0]} is "
-                    f"already running on it, so a new GPU box cannot start until that "
-                    f"one stops. Nothing was created.",
-                    fix=f"comfy-qat down {self.running[0]} — stop the one you are "
-                        f"not using, then run this again",
+                    f"GPUS_ALL_REGIONS is {self.global_limit} and "
+                    f"{self.running_names[0]} is already running on it, so a new GPU "
+                    f"box cannot start until that one stops. Nothing was created.",
+                    fix=f"{first} — stop the one you are not using, then run this "
+                        f"again",
                     kind=NO_QUOTA,
                 )
             return LifecycleError(
                 f"GPUS_ALL_REGIONS is {self.global_limit} and {len(self.running)} GPU "
                 f"boxes are already running on it, holding {self.held} of it between "
-                f"them: {', '.join(self.running)}. Nothing was created.",
-                fix=f"comfy-qat down {self.running[0]} — stop the ones you are not "
-                    f"using, then run this again",
+                f"them: {', '.join(self.running_names)}. Nothing was created.",
+                fix=f"{first} — stop the ones you are not using, then run this again",
                 kind=NO_QUOTA,
             )
         return None
 
 
-def _gpu_boxes_running(instances: list[dict]) -> list[str]:
+def _stop_the_box(name: str, zone: str) -> str:
+    """The command that stops a GPU box holding the project-wide ceiling.
+
+    Deliberately gcloud's and not `comfy-qat down <name>`. `config.resolve`
+    matches host-list names, then os/gpu descriptions, and never `gce_instance` —
+    so a refusal built from an instance name hands over a command that exits
+    "no host called that", which is the tool refusing to spend money and then
+    telling you to run something it cannot run. The box holding the only slot is
+    usually one somebody started in the console, and that is precisely the box
+    absent from the host list. `host._undeclared_and_running` reached the same
+    conclusion for the same case.
+
+    The zone is in the payload `_gpu_boxes_running` reads, and was being dropped
+    on the floor. When it is genuinely absent, say how to find it rather than
+    printing a command with a hole in it.
+    """
+    if not zone:
+        return (f"gcloud compute instances list   # find {name}'s zone, then "
+                f"gcloud compute instances stop {name} --zone=<zone>")
+    return f"gcloud compute instances stop {name} --zone={zone}"
+
+
+def _gpu_boxes_running(instances: list[dict]) -> list[tuple[str, str]]:
     """Instances holding a card, so they are spending the ceiling.
 
     Not "RUNNING". Google counts an accelerator against quota from the moment it
@@ -582,7 +613,10 @@ def _gpu_boxes_running(instances: list[dict]) -> list[str]:
             continue
         name = instance.get("name")
         if name:
-            found.append(name)
+            # `zone` arrives as a URL — .../zones/us-central1-a — and the tail is
+            # what gcloud takes.
+            zone = str(instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+            found.append((name, zone))
     return found
 
 
@@ -754,10 +788,19 @@ def build(
             if not is_capacity_failure(exc.raw):
                 raise LifecycleError(
                     f"Google refused to create {blueprint.name} in {zone}: {exc}",
-                    fix=(exc.fix or
-                         f"check the console for a half-made {blueprint.name} before "
-                         f"trying again: gcloud compute instances list "
-                         f"--project={project}"),
+                    # Both, never one. gcloud's advice was written for the
+                    # refusal and this one was written for the box: a create that
+                    # timed out may have made an instance anyway, and the console
+                    # check is the only line that finds it. Reading `exc.fix or
+                    # ...` meant the failures most likely to leave something
+                    # billing — a timeout carries a fix, a flat refusal does not
+                    # — were exactly the ones that dropped the check.
+                    fix=output.fix(
+                        exc.fix,
+                        f"check the console for a half-made {blueprint.name} before "
+                        f"trying again: gcloud compute instances list "
+                        f"--project={project}",
+                    ),
                     kind=CREATE_FAILED,
                 ) from exc
             say(f"  {zone} has no {blueprint.card.name} free right now")

@@ -100,8 +100,10 @@ def quota(quota_id, value, locations):
                                  "applicableLocations": list(locations)}]}
 
 
-def instance(name, *, running=True, cards=1, accelerator="nvidia-l4"):
-    body = {"name": name, "status": "RUNNING" if running else "TERMINATED"}
+def instance(name, *, running=True, cards=1, accelerator="nvidia-l4",
+             zone="us-central1-a"):
+    body = {"name": name, "status": "RUNNING" if running else "TERMINATED",
+            "zone": f"{URL}/zones/{zone}"}
     if cards:
         body["guestAccelerators"] = [{
             "acceleratorCount": cards,
@@ -305,7 +307,10 @@ def test_the_ceiling_held_by_a_running_box_is_a_box_to_stop_not_a_quota_to_raise
                  gc=FakeGcloud(instances=[instance("comfy-win")]))
     assert result.exit_code == 2
     assert "comfy-win is already running on it" in result.output
-    assert "comfy-qat down comfy-win" in result.output
+    # Not `comfy-qat down comfy-win`: nothing declares that box, so `resolve`
+    # cannot find it. The zone comes from the payload that named it.
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in result.output)
     # The distinction that matters: nothing here is a quota request.
     assert "auth quota request" not in result.output
     assert billable(result) == []
