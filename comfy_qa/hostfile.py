@@ -37,8 +37,54 @@ class HostFileError(ConfigError):
     """The rewrite was not safe to apply, so nothing was applied."""
 
 
-def _sections(text: str) -> list[str]:
-    return re.findall(r"^[ \t]*\[hosts\.([^\]]+)\]", text, flags=re.MULTILINE)
+# The three shapes this module reads, defined once each.
+#
+# They used to exist by COPY rather than by name — the header three times, the
+# "next block starts here" pattern twice — and that, not any single regex being
+# wrong, is why this module broke six times in a day. Every fix had to be made in
+# each copy separately, and D85 is what happens when one is missed: 756e794
+# narrowed `\s` to `[ \t]` in `without`'s header, in both `following` patterns and
+# in `rename_and_add`'s header, and NOT in the port pattern — which was silently
+# coupled to where `body_end` fell. `move` broke on the real host list and the
+# suite stayed green. Sharing them by name makes that class of miss impossible
+# rather than caught next time.
+#
+# `[ \t]`, never `\s`, in all of them. `\s` MATCHES NEWLINES, and nearly every
+# defect this module has had is some version of a pattern crossing a line it had
+# no business crossing: `^\s*\[hosts\.x\]` starts its match on the blank line
+# ABOVE the header and swallows it, and that blank line is the terminator the
+# comment walk in `without` depends on. The `\r` is for CRLF files, where a
+# trailing `[ \t]*$` alone fails, because `$` matches before the `\n` and the line
+# still ends in `\r`.
+
+# `{name}` is filled in by `_header_of`. Group 1 is the header's own indentation:
+# matched so that an indented `[hosts.x]` is found at all, and captured so that
+# `rename_and_add` can put it back rather than flattening the block to column 0.
+_HEADER = r"^([ \t]*)\[hosts\.{name}\][ \t\r]*$"
+
+# Where the block being read ends: the next line opening a table of any kind.
+FOLLOWING = re.compile(r"^[ \t]*\[", re.MULTILINE)
+
+# The port line, with its line ending as group 2. Two defects have lived in this
+# one pattern. A trailing `\s*$` swallowed the newline after the port line,
+# welding it to whatever came next —
+#
+#     port         = 8195[hosts.comfy-linux-a]
+#
+# which is not valid TOML, so `apply` refused the write and `move` failed on the
+# real host list while the suite stayed green. And consuming the `\r` without
+# writing it back left one `\n` line in a file whose every other line ends
+# `\r\n` — that parses, so it is silent, and git then reports the whole file as
+# changed. Hence group 2, and the replacement that puts it back.
+#
+# Both were invisible to the fixtures, which are spaced differently from a file
+# somebody actually maintains. That difference is the whole of why.
+PORT_LINE = re.compile(r"^([ \t]*port[ \t]*=[ \t]*)\d+([ \t]*\r?)$", re.MULTILINE)
+
+
+def _header_of(name: str) -> re.Pattern[str]:
+    """The `[hosts.<name>]` line, with its own indentation as group 1."""
+    return re.compile(_HEADER.format(name=re.escape(name)), re.MULTILINE)
 
 
 def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
@@ -48,34 +94,18 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
     The renamed block keeps everything else it had — its zone, its comments, any
     key this tool does not know about. Only the header and the port line change.
     """
-    header = re.compile(rf"^([ \t]*)\[hosts\.{re.escape(name)}\][ \t\r]*$", re.MULTILINE)
+    header = _header_of(name)
     if not header.search(text):
         raise HostFileError(f"{name} is not in the host list, so it cannot be moved.")
 
     start = header.search(text)
     assert start is not None
     body_start = start.end()
-    following = re.compile(r"^[ \t]*\[", re.MULTILINE).search(text, body_start)
+    following = FOLLOWING.search(text, body_start)
     body_end = following.start() if following else len(text)
 
     body = text[body_start:body_end]
-    # `[ \t\r]`, not `\s`, for the reason every other pattern in this module now
-    # says: `\s` matches NEWLINES. The trailing `\s*$` swallowed the newline after
-    # the port line, welding it to whatever came next —
-    #
-    #     port         = 8195[hosts.comfy-linux-a]
-    #
-    # which is not valid TOML, so `apply` refused the write and `move` failed on
-    # the real host list while the suite stayed green. The fixtures here are
-    # spaced differently from a file somebody actually maintains, and that
-    # difference is the whole of why this was invisible.
-    # And the line ending is captured and written back. Consuming the \r without
-    # replacing it left the rewritten port line ending \n in a file whose every
-    # other line ends \r\n. It parses, so it is silent — and git reports the
-    # whole file as changed.
-    body, swapped = re.subn(r"^([ \t]*port[ \t]*=[ \t]*)\d+([ \t]*\r?)$",
-                            rf"\g<1>{renamed_port}\g<2>",
-                            body, count=1, flags=re.MULTILINE)
+    body, swapped = PORT_LINE.subn(rf"\g<1>{renamed_port}\g<2>", body, count=1)
     if not swapped:
         # A host with no port line is not something this tool writes, but the
         # file is hand-maintained and a silent no-op here would collide ports.
@@ -83,9 +113,8 @@ def rename_and_add(text: str, *, name: str, renamed: str, renamed_port: int,
 
     out = (
         text[:start.start()]
-        # Group 1 is the header's own indentation. The header pattern matches it
-        # so that an indented `[hosts.x]` is found at all; not writing it back
-        # flattened the block to column 0 on the way out.
+        # Group 1 is the header's own indentation; not writing it back flattened
+        # the block to column 0 on the way out.
         + start.group(1)
         + f"[hosts.{renamed}]"
         + body
@@ -104,21 +133,18 @@ def without(text: str, name: str) -> str:
     list. So the note reserves both a name and a port for a machine that no longer
     exists, and nobody connects the refusal weeks later to tonight's delete.
     """
-    # `\s` matches NEWLINES, so `^\s*\[hosts\.x\]` starts its match on the blank
-    # line ABOVE the header and swallows it. That blank line is the terminator the
-    # comment walk below depends on — so the walk saw the previous host's comment
-    # where it expected the separator, and took it. On the real host list that
-    # destroyed all eight lines of the commented-out example `init` writes into
-    # every new file, and reported success.
-    #
-    # Every pattern here is line-local now: [ \t] never crosses a line, and the
-    # \r is for CRLF files, where `[ \t]*$` still fails because `$` matches before
-    # the \n and the line ends in \r.
-    header = re.compile(rf"^[ \t]*\[hosts\.{re.escape(name)}\][ \t\r]*$", re.MULTILINE)
+    # The blank line above a header is the terminator the comment walk below
+    # depends on. When this pattern used `\s`, it started its match on that blank
+    # line and swallowed it, so the walk saw the previous host's comment where it
+    # expected the separator and took it — on the real host list that destroyed
+    # all eight lines of the commented-out example `init` writes into every new
+    # file, and reported success. See `_HEADER`, which is line-local for this
+    # reason.
+    header = _header_of(name)
     start = header.search(text)
     if start is None:
         raise HostFileError(f"{name} is not in the host list.")
-    following = re.compile(r"^[ \t]*\[", re.MULTILINE).search(text, start.end())
+    following = FOLLOWING.search(text, start.end())
     end = following.start() if following else len(text)
 
     # Stop at the blank line before the next header, not at the header itself.
