@@ -1337,7 +1337,6 @@ def test_an_interrupted_move_names_the_snapshot_it_had_already_paid_for(capsys):
     with pytest.raises(inflight.Interrupted):
         run_move(gc, plan, found, say, register=register)
 
-    assert inflight.report() is True
     report = capsys.readouterr().err
 
     assert plan.snapshot in report, report
@@ -1351,7 +1350,7 @@ def test_an_interrupted_move_names_the_snapshot_it_had_already_paid_for(capsys):
     assert added == [], "nothing reached the host list"
 
 
-def test_an_interrupt_at_the_instance_leads_with_the_stop_not_the_delete():
+def test_an_interrupt_at_the_instance_leads_with_the_stop_not_the_delete(capsys):
     """The instance is the only part billing by the minute, and `_state_after`
     deliberately lists it with no cleanup command — on the failure paths a move
     that got this far is a move that succeeded, and the finished-move output
@@ -1367,12 +1366,10 @@ def test_an_interrupt_at_the_instance_leads_with_the_stop_not_the_delete():
     with pytest.raises(inflight.Interrupted):
         run_move(gc, plan, found, say, register=register)
 
-    undo = [line for item in inflight.pending() for line in item.undo]
-    inflight.clear()
-
-    stop = next(i for i, line in enumerate(undo) if "instances stop" in line)
-    delete = next(i for i, line in enumerate(undo) if "instances delete" in line)
-    assert stop < delete, undo
+    report = capsys.readouterr().err
+    stop = report.index("instances stop")
+    delete = report.index("instances delete")
+    assert stop < delete, report
 
 
 def test_a_move_that_finishes_leaves_the_record_empty():

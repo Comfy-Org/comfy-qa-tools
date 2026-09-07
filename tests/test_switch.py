@@ -602,18 +602,20 @@ def test_a_ceiling_switch_that_fails_says_you_are_on_neither_machine(cli, monkey
 def test_an_interrupt_after_the_ceiling_stop_reports_both_losses(
         cli, monkeypatch, capsys):
     from comfy_qa import host as host_module
-    from comfy_qa import inflight
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
                         lambda gc, host, others: 1)
 
-    with pytest.raises(inflight.Interrupted):
-        cli("switch", "comfy-win", "--no-browser",
-            statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
-            open_tunnels=("comfy-linux",), fail=KeyboardInterrupt())
+    # No `pytest.raises`: `Interrupted` is a `typer.Exit` now, so the runner
+    # returns a result with the code instead of letting an exception escape.
+    # That IS the fix — under `cli.register()` the old BaseException escaped
+    # unhandled and the report never ran.
+    result = cli("switch", "comfy-win", "--no-browser",
+                 statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+                 open_tunnels=("comfy-linux",), fail=KeyboardInterrupt())
 
-    assert inflight.report() is True
-    report = capsys.readouterr().err
+    assert result.exit_code == 130, result.output
+    report = result.output
 
     assert "may exist and be billing" in report, report
     assert "comfy-win" in report
@@ -638,17 +640,24 @@ def test_a_switch_that_stopped_nothing_reports_only_the_bill(cli, monkeypatch,
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
                         lambda gc, host, others: None)
 
-    with pytest.raises(inflight.Interrupted):
-        cli("switch", "comfy-win", "--no-browser",
-            statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
-            open_tunnels=("comfy-linux",), fail=KeyboardInterrupt())
+    # No `pytest.raises`: `Interrupted` is a `typer.Exit` now, so the runner
+    # returns a result with the code instead of letting an exception escape.
+    # That IS the fix — under `cli.register()` the old BaseException escaped
+    # unhandled and the report never ran.
+    result = cli("switch", "comfy-win", "--no-browser",
+                 statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+                 open_tunnels=("comfy-linux",), fail=KeyboardInterrupt())
 
-    assert inflight.report() is True
-    report = capsys.readouterr().err
+    assert result.exit_code == 130, result.output
+
+    # Only the report, not the whole run: the plan preview above it names
+    # comfy-linux legitimately ("then stop comfy-linux"), and asserting over the
+    # combined output would be asking a question about the preview.
+    report = result.output[result.output.index(inflight.HEADLINE):]
 
     assert "may exist and be billing" in report, report
     assert "already happened when you stopped it" not in report, report
-    assert "comfy-linux" not in report
+    assert "comfy-linux" not in report, report
 
 
 def test_a_ceiling_that_stopped_nothing_does_not_crash_the_switch(cli, monkeypatch):

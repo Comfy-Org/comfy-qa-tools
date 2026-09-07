@@ -259,7 +259,7 @@ def clean_up(gc) -> list[str]:
     return remove_leftovers(gc, moving(), found, lambda line: None)
 
 
-def test_a_clean_that_is_interrupted_says_which_of_the_three_it_was():
+def test_a_clean_that_is_interrupted_says_which_of_the_three_it_was(capsys):
     """`--clean` deleted a list one item at a time and kept the answer in a
     local that went with the frame.
 
@@ -271,27 +271,34 @@ def test_a_clean_that_is_interrupted_says_which_of_the_three_it_was():
     with pytest.raises(inflight.Interrupted):
         clean_up(_CleanGcloud(interrupt_at=2))
 
-    left = inflight.pending()
-    assert [item.what for item in left] == ["the snapshot comfy-win-a-move"]
-    assert any("snapshots delete comfy-win-a-move" in line
-               for line in left[0].undo)
-    # Certain, and in the note rather than in `what`, where a heading about
-    # things that may exist would misdescribe it.
-    assert "already deleted before you stopped it" in left[0].note
-    assert "comfy-win-a-b" in left[0].note
-    assert "--clean" in left[0].note, "re-running is the answer that settles it"
+    # The report fires inside `may_leave` now, so the record is cleared by the
+    # time the raise arrives and the message is what survives. Reading the
+    # message is the stronger check: it is what the person who pressed Ctrl-C
+    # sees, and the record was only ever a proxy for it.
+    report = capsys.readouterr().err
+
+    assert "the snapshot comfy-win-a-move" in report, report
+    assert "snapshots delete comfy-win-a-move" in report
+    # Certain, and said in the note rather than under a heading about things
+    # that may exist, which would misdescribe it.
+    assert "already deleted before you stopped it" in report
+    assert "comfy-win-a-b" in report
+    assert "--clean" in report, "re-running is the answer that settles it"
 
 
-def test_a_clean_interrupted_on_the_first_delete_names_the_one_it_never_reached():
+def test_a_clean_interrupted_on_the_first_delete_names_the_one_it_never_reached(capsys):
     """The item still queued is not in doubt at all — it is certainly there and
     certainly billing, and nothing was going to mention it."""
     with pytest.raises(inflight.Interrupted):
         clean_up(_CleanGcloud(interrupt_at=1))
 
-    left = inflight.pending()
-    assert [item.what for item in left] == [
-        "the disk comfy-win-a-b in us-central1-b\nthe snapshot comfy-win-a-move"]
-    assert "already deleted" not in left[0].note
+    report = capsys.readouterr().err
+
+    assert "the disk comfy-win-a-b in us-central1-b" in report, report
+    assert "the snapshot comfy-win-a-move" in report
+    assert "already deleted" not in report, (
+        "nothing had been deleted yet, so nothing may claim it was"
+    )
 
 
 def test_a_clean_that_finishes_leaves_nothing_registered():

@@ -119,21 +119,79 @@ def test_an_interrupt_keeps_it_and_hands_click_something_it_cannot_swallow():
     with pytest.raises(inflight.Interrupted):
         with inflight.may_leave("the instance x in y", undo=["stop it"]):
             raise KeyboardInterrupt
-    assert [item.what for item in inflight.pending()] == ["the instance x in y"]
+    # Reported and cleared by `may_leave` itself now, so what survives the raise
+    # is the MESSAGE, not the record. That is the point of moving it: the report
+    # happens on the only frame every entry point goes through.
+    assert inflight.pending() == []
+
+
+def test_the_exit_code_is_130_and_this_test_writes_the_number():
+    """The one place the number is a literal, and it has to stay one.
+
+    Four tests assert the exit code and every one of them did
+    `from comfy_qa.cli import INTERRUPTED` then `assert code == INTERRUPTED` —
+    both sides of the `==` moving together, so `INTERRUPTED = 7` left the whole
+    suite green. Measured. The literal 130 appeared in this repo's tests only in
+    docstrings and comments: every place that stated it was prose, every place
+    that checked it was a tautology.
+
+    Comparing against an imported constant is right when the constant is an
+    internal symbolic tag — `exc.kind == NO_QUOTA`, `classify(x) == REAUTH` —
+    where the value is arbitrary and identity is the whole point. It is wrong
+    when the constant encodes an EXTERNAL CONTRACT, and an exit code is one: 130
+    is what a shell reports for a process killed by SIGINT, and nothing in this
+    repository gets a say in it.
+
+    `128 + SIGINT` is the derivation, written in `inflight` so the number is
+    reasoned rather than remembered — which is exactly why the assertion here
+    must not use it. `lifecycle.INTERRUPTED_EXIT` is already pinned this way at
+    test_lifecycle.py:526-527, so this matches a house style rather than
+    inventing one.
+    """
+    import signal
+
+    assert inflight.INTERRUPTED == 130
+    assert inflight.INTERRUPTED == 128 + signal.SIGINT, (
+        "128 + SIGINT is the reason 130 is the right number; if the arithmetic "
+        "and the literal ever disagree, the literal is the contract"
+    )
 
 
 def test_interrupted_is_not_an_exception():
     """The one property that makes the whole thing work.
 
     Click catches `KeyboardInterrupt` inside its own `main()` and turns it into
-    `Aborted!` and exit 1 before anything of ours runs, so the real thing cannot
-    be used. And every `except Exception` in this package means "this step
+    `Exit(130)` before anything of ours runs (typer/core.py:203-204, which
+    overrides Click's own main), so the real thing cannot be used. And every `except Exception` in this package means "this step
     failed" — an interrupt that any of them can swallow is an interrupt that goes
     unreported through whichever one it meets first.
     """
-    assert issubclass(inflight.Interrupted, BaseException)
-    assert not issubclass(inflight.Interrupted, Exception)
-    assert not issubclass(inflight.Interrupted, KeyboardInterrupt)
+    import typer
+
+    assert issubclass(inflight.Interrupted, typer.Exit), (
+        "an Exit is handled by Typer's own _main in every embedding — which is "
+        "what makes this survive `cli.register()`, where our own `main` is not "
+        "on the stack at all"
+    )
+
+    # `typer.Exit`, not `click.exceptions.Exit`, and this assertion is the whole
+    # reason to say so: typer 0.27.1 VENDORS click, so the two are different
+    # classes and Typer's handler matches only its own. Subclassing the click on
+    # PATH compiles, imports, reads correctly, and propagates straight out of
+    # `app()` — which is the failure `Interrupted` exists to prevent. Found by
+    # driving the real entry point; no amount of reading would have shown it.
+    from click.exceptions import Exit as ClickExit
+
+    assert typer.Exit is not ClickExit, (
+        "typer has stopped vendoring click — re-read this class, because the "
+        "distinction it is careful about may have stopped existing"
+    )
+    assert not issubclass(inflight.Interrupted, ClickExit)
+    assert inflight.Interrupted().exit_code == 130
+    assert not issubclass(inflight.Interrupted, KeyboardInterrupt), (
+        "it must not be catchable as the thing it stands for: `_serve` and "
+        "`logs` catch KeyboardInterrupt deliberately and mean their own phase"
+    )
 
 
 def test_nesting_holds_the_outer_entry_and_drops_the_inner_one():
@@ -144,7 +202,9 @@ def test_nesting_holds_the_outer_entry_and_drops_the_inner_one():
                 pass
             assert [item.what for item in inflight.pending()] == ["the snapshot s"]
             raise KeyboardInterrupt
-    assert [item.what for item in inflight.pending()] == ["the snapshot s"]
+    # Both were reported by the inner registration — it reads the whole record,
+    # not just its own entry — and the record is then empty.
+    assert inflight.pending() == []
 
 
 def test_reporting_says_may_and_never_claims_it_knows(capsys):
@@ -152,12 +212,12 @@ def test_reporting_says_may_and_never_claims_it_knows(capsys):
         with inflight.may_leave("the instance x in y", undo=["gcloud ... stop x"]):
             raise KeyboardInterrupt
 
-    assert inflight.report() is True
     output = capsys.readouterr().err
     assert "may exist and be billing" in output, output
     assert "the instance x in y" in output
     assert "gcloud ... stop x" in output
     assert inflight.pending() == [], "reporting twice is the defect it replaced"
+    assert inflight.report() is False, "and a second call has nothing to say"
 
 
 def test_a_run_that_left_nothing_reports_nothing(capsys):
@@ -173,11 +233,11 @@ def test_a_bill_and_a_stopped_machine_are_not_reported_under_one_heading(capsys)
     billing, and calling that a bill would replace one false claim with another.
     """
     with pytest.raises(inflight.Interrupted):
-        with inflight.may_leave("comfy-win already stopped", billing=False):
+        with inflight.may_leave("comfy-win already stopped",
+                            heading="and this had already happened when you stopped it:"):
             with inflight.may_leave("comfy-linux, started"):
                 raise KeyboardInterrupt
 
-    inflight.report()
     output = capsys.readouterr().err
     assert "this may exist and be billing:" in output, output
     assert output.index("comfy-linux, started") < output.index("comfy-win already stopped")
@@ -191,13 +251,14 @@ def test_an_interrupt_exits_130_and_never_prints_aborted(run_main, monkeypatch,
                                                          tmp_path):
     """130 is what a shell reports for SIGINT, and the code is half the message.
 
-    `Aborted!` over a GPU box that is running and billing is the most expensive
-    sentence this tool can print, and exit 1 is the same sentence said to a
-    script. Both asserted, because fixing one and leaving the other is exactly
-    what a partial fix here looks like.
+    Typer already exits 130 for an interrupt on its own, so the code alone
+    proves nothing about this design — what it proves is that the REPORT
+    survives the whole path, from the registration through Typer's handling to
+    the shell. The number is asserted as a literal here and derived in
+    `inflight`; see `test_the_exit_code_is_130_and_this_test_writes_the_number`
+    for why both.
     """
     from comfy_qa import gcloud as gcloud_module
-    from comfy_qa.cli import INTERRUPTED
 
     path = tmp_path / "hosts.toml"
     path.write_text(
@@ -215,8 +276,15 @@ def test_an_interrupt_exits_130_and_never_prints_aborted(run_main, monkeypatch,
     monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Interrupted())
     code, output = run_main(["up", "comfy-win", "--config", str(path)])
 
-    assert code == INTERRUPTED
-    assert "Aborted!" not in output, output
+    assert code == 130
+    # NOT `assert "Aborted!" not in output`. That assertion cannot fail, for two
+    # independent reasons, and it sat in the commit whose headline was this
+    # test's name. Typer overrides Click's main and converts KeyboardInterrupt to
+    # `Exit(130)` before Click's Abort path is reached (typer/core.py:203-204);
+    # and when an Abort DOES happen — EOFError at a prompt, which `create` and
+    # `move` can reach with stdin closed — typer's rich branch prints `Aborted.`
+    # with a full stop, not `Aborted!`. So the string was unreachable twice over.
+    # What matters is that the report is there, and that is asserted below.
     assert "comfy-qat down comfy-win" in output
 
 
@@ -238,7 +306,6 @@ def test_the_probe_start_inside_move_is_registered_like_any_other(
     Eleven interrupt tests across six files, and none reached this call.
     """
     from comfy_qa import gcloud as gcloud_module
-    from comfy_qa.cli import INTERRUPTED
 
     path = tmp_path / "hosts.toml"
     path.write_text(
@@ -253,8 +320,7 @@ def test_the_probe_start_inside_move_is_registered_like_any_other(
     monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Interrupted())
     code, output = run_main(["move", "comfy-win", "--yes", "--config", str(path)])
 
-    assert code == INTERRUPTED
-    assert "Aborted!" not in output, output
+    assert code == 130
     # The box, the zone it is actually in — the ORIGINAL one, because the move
     # has not happened — and the way to stop paying for it.
     assert "comfy-win (comfy-win in us-central1-a)" in output, output
@@ -320,11 +386,11 @@ def test_the_two_headings_are_the_ones_the_report_actually_uses(capsys):
     mode this whole file exists to avoid.
     """
     with pytest.raises(inflight.Interrupted):
-        with inflight.may_leave("a stopped machine", billing=False):
+        with inflight.may_leave("a stopped machine",
+                                heading="and this had already happened when you stopped it:"):
             with inflight.may_leave("a billing instance"):
                 raise KeyboardInterrupt
 
-    inflight.report()
     printed = capsys.readouterr().err
 
     for phrase in (inflight.HEADLINE,

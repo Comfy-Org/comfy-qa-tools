@@ -1260,16 +1260,18 @@ def test_a_dry_run_deletes_nothing_without_clean_either(cli, monkeypatch):
     )
 
 
-# --- Ctrl-C does not cancel the work, and "Aborted!" says it did --------------
+# --- Ctrl-C does not cancel the work, and nothing said so --------------------
 #
-# `Gcloud.run` catches KeyboardInterrupt and calls `process.wait()` a SECOND
-# time, so a start or a create already under way COMPLETES and only then unwinds.
-# Measured against a replica of that pattern: interrupt at 0.4s, return at 2.02s,
-# resource created.
+# Ctrl-C reaches the local gcloud and kills it. It does not reach Compute
+# Engine: the request has already gone, and the instance is built server-side
+# whether or not the client that asked for it is alive. `Gcloud.run` is
+# `subprocess.run`, which re-raises without returning an exit code — measured at
+# 0.41s against the real call path — so the tool cannot even learn whether it
+# succeeded.
 #
-# KeyboardInterrupt is a BaseException, so it walks past `_reportable()` and every
-# handler in host.py, and Click prints "Aborted!" — a word that means nothing
-# happened, over a GPU box that is running and billing.
+# Typer converts the interrupt to `Exit(130)` (typer/core.py:203-204), so the
+# command already exited 130, silently. The defect was never the code: it was
+# that nobody said a GPU box may now be running and billing.
 
 
 def test_an_interrupt_while_starting_says_the_box_may_be_billing(
@@ -1283,7 +1285,6 @@ def test_an_interrupt_while_starting_says_the_box_may_be_billing(
     interrupt, not the 1 Click's `Abort` gave it.
     """
     from comfy_qa import gcloud as gcloud_module
-    from comfy_qa.cli import INTERRUPTED
 
     class Interrupted(Cloud):
         def instance_status(self, instance, zone, project):
@@ -1298,8 +1299,15 @@ def test_an_interrupt_while_starting_says_the_box_may_be_billing(
 
     code, output = run_main(["up", "comfy-win", "--config", str(path)])
 
-    assert code == INTERRUPTED, output
-    assert "Aborted!" not in output
+    assert code == 130, output
+    # NOT `assert "Aborted!" not in output`. That assertion cannot fail, for two
+    # independent reasons, and it sat in the commit whose headline was this
+    # test's name. Typer overrides Click's main and converts KeyboardInterrupt to
+    # `Exit(130)` before Click's Abort path is reached (typer/core.py:203-204);
+    # and when an Abort DOES happen — EOFError at a prompt, which `create` and
+    # `move` can reach with stdin closed — typer's rich branch prints `Aborted.`
+    # with a full stop, not `Aborted!`. So the string was unreachable twice over.
+    # What matters is that the report is there, and that is asserted below.
     assert "may exist and be billing" in output, output
     assert "comfy-qat down comfy-win" in output
     assert "list --live" in output

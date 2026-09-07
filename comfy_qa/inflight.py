@@ -39,24 +39,61 @@ in practice means Ctrl-C.
 
 from __future__ import annotations
 
+import signal
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+import typer
 
-class Interrupted(BaseException):
-    """Ctrl-C, wearing a name Click does not recognise.
 
-    Click catches `KeyboardInterrupt` inside its own `main()`, prints a blank
-    line and `Aborted!`, and exits 1 — all of it before anything of ours runs,
-    and `Aborted!` over a GPU box that is running and billing is the most
-    expensive sentence this tool can print. A `BaseException` Click does not
-    name walks straight through to `cli.main`, which is where the record is read.
+# An interrupt is not a failure, and 1 is the code a failure uses. 130 is what a
+# shell reports for a process killed by SIGINT — 128 + signal.SIGINT, which is 2.
+# Written as the arithmetic so the number is derived rather than remembered.
+INTERRUPTED = 128 + signal.SIGINT
 
-    A `BaseException` and not an `Exception`, for the same reason the interrupt
-    it stands for is one: every `except` in this codebase that means "this step
-    failed" must not swallow it.
+
+class Interrupted(typer.Exit):
+    """Ctrl-C, carried as an exit rather than as an exception.
+
+    THE PREVIOUS VERSION OF THIS DOCSTRING WAS WRONG, and the correction is the
+    reason for the current shape. It said Click catches `KeyboardInterrupt`,
+    prints `Aborted!` and exits 1. Click does do that — but Typer overrides
+    Click's `main`, and typer/core.py:203-204 gets there first:
+
+        except KeyboardInterrupt as e:
+            raise _click.exceptions.Exit(130) from e
+
+    So an interrupt anywhere in this tool already exits 130, silently, and
+    `Aborted!` is never printed for one. What is missing is not the exit code —
+    it is that nobody says what the interrupted call may have left running.
+
+    `Exit`, and not a `BaseException` of our own, because the BaseException was
+    STRICTLY WORSE THAN NOTHING in the one configuration it was supposed to
+    survive. `cli.register()` attaches this surface to somebody else's Typer
+    app, and there `main` is not in the path: a BaseException Typer does not
+    name escaped unhandled, so the host got a raw traceback, `report()` never
+    ran, and a GPU box that may be billing went unnamed WHILE THE RECORD THAT
+    WOULD HAVE NAMED IT WAS STILL POPULATED. Measured. Without it, Typer would
+    have caught the plain KeyboardInterrupt and exited quietly — so the
+    mechanism built to make an interrupt safe made it worse.
+
+    `Exit` is handled by Typer's own `_main` in every embedding, which is what
+    makes this work under `register()`, under `CliRunner`, and under `main`
+    alike. Reporting therefore happens where the record is — in `may_leave` —
+    rather than in a handler that only one entry point reaches.
+
+    **`typer.Exit`, NOT `click.exceptions.Exit`, and they are not the same
+    class.** Typer 0.27.1 vendors its own copy of click: `typer.Exit` is
+    `typer._click.exceptions.Exit`, and `typer/core.py` catches that one.
+    Subclassing the click on PATH produces an exception Typer's handler does not
+    match, which propagates out of `app()` untouched — the exact failure this
+    class exists to prevent, reintroduced by importing the obvious name. Caught
+    by a test that drove the real entry point rather than by reading.
     """
+
+    def __init__(self) -> None:
+        super().__init__(code=INTERRUPTED)
 
 
 @dataclass(frozen=True)
@@ -72,15 +109,20 @@ class Leftover:
     what: str
     undo: tuple[str, ...] = ()
     note: str = ""
-    billing: bool = True
-    """Is this a thing that now exists and costs money?
+    heading: str = "this may exist and be billing:"
+    """The sentence this leftover is listed under.
 
-    Almost always yes, and that is the whole point of the record. `switch` is
-    the exception: on the ceiling path it STOPS the machine you were on before
-    it starts the one you asked for, so an interrupt in between leaves you on
-    neither — nothing extra is billing, and the session you were mid-way through
-    is gone. That is worth the same sentence, under a different heading, and
-    reporting it as a bill would be a second false claim in place of the first.
+    A field rather than a `billing: bool` the centre interprets, and the reason
+    is the argument this module's own docstring already makes about
+    registration: the call site knows and the centre does not. A boolean let
+    `inflight` decide what two call sites were allowed to say, and a third case
+    then did not fit either sentence — an interrupted `down`, where the box
+    certainly exists (so "may exist" is false in its first half) and the stop
+    request may or may not have landed (so "had already happened" asserts the
+    one thing nobody can say).
+
+    Grouped in first-seen order by `report`, so the create case keeps its
+    wording and its position with no call site passing anything.
     """
 
 
@@ -109,7 +151,7 @@ def _drop(entry: Leftover) -> None:
 
 
 @contextmanager
-def may_leave(what: str, *, undo=(), note: str = "", billing: bool = True):
+def may_leave(what: str, *, undo=(), note: str = "", heading: str | None = None):
     """Register what this call may leave behind, for as long as it is in flight.
 
     Nested registrations are fine and are the normal case for `move`, which
@@ -117,15 +159,29 @@ def may_leave(what: str, *, undo=(), note: str = "", billing: bool = True):
     the call that creates it and dropped when that call returns, so at any
     moment the record holds exactly what exists and is not yet accounted for.
     """
-    entry = Leftover(what, tuple(undo), note, billing)
+    entry = (Leftover(what, tuple(undo), note) if heading is None
+             else Leftover(what, tuple(undo), note, heading))
     with _lock:
         _entries.append(entry)
     try:
         yield entry
     except KeyboardInterrupt as exc:
-        # Converted here rather than left alone, because Click is between this
-        # and `cli.main` and it swallows the real thing.
+        # Reported HERE, not in `cli.main`. This is the only frame guaranteed to
+        # be on the stack for every entry point — `main`, `CliRunner`, and a host
+        # app that took this surface through `register()`. Putting the report in
+        # `main` meant the one embedding that could not reach it was the one
+        # where the escape did the most damage.
+        #
+        # `report` clears, and an outer registration's `except Exception` below
+        # will then drop its own entry against an empty record, so nesting
+        # reports once and only once.
+        _report_safely()
         raise Interrupted() from exc
+    except Interrupted:
+        # Already reported by the registration that raised it. Named ahead of
+        # `Exception` — which it now is, being an `Exit` — so it reads as
+        # deliberate rather than as an ordinary failure falling through.
+        raise
     except Exception:
         # The command has its own words for a failure it can name. Two reports
         # for one event is how the leftovers block ended up printed twice.
@@ -146,6 +202,27 @@ HEADLINE = ("interrupted — Ctrl-C stops this tool, it does not cancel a reques
             "Google has already accepted")
 
 
+def _report_safely() -> None:
+    """`report`, with a second Ctrl-C unable to swallow the first one's message.
+
+    Measured: an interrupt arriving inside `say.error` truncated the output
+    mid-word — at *'it does not canc'* — losing everything after it INCLUDING
+    the `to fix:` block with the stop command. A narrow window, and the cost is
+    a message that stops rather than one that is wrong, but the whole purpose of
+    this frame is to get that block onto the screen.
+
+    A second interrupt still stops the tool. It just does not take the sentence
+    with it.
+    """
+    try:
+        report()
+    except KeyboardInterrupt:
+        try:
+            report()
+        except BaseException:
+            pass
+
+
 def report() -> bool:
     """Say what is still registered, and how to undo it. True if anything was.
 
@@ -161,14 +238,22 @@ def report() -> bool:
         return False
 
     lines = [f"{HEADLINE}."]
-    billing = [item for item in left if item.billing]
-    already = [item for item in left if not item.billing]
-    if billing:
-        lines.append("this may exist and be billing:")
-        lines += _listed(billing)
-    if already:
-        lines.append("and this had already happened when you stopped it:")
-        lines += _listed(already)
+    # INNERMOST FIRST, which is last-registered first. Not a taste: the
+    # registration nearest the interrupt is the call that was actually in
+    # flight, and on `switch` that is the box being started — the half that
+    # costs money while somebody reads. First-seen order put "already stopped"
+    # above it, which leads with the loss that has already finished happening.
+    order: list[str] = []
+    grouped: dict[str, list[Leftover]] = {}
+    for item in reversed(left):
+        if item.heading not in grouped:
+            order.append(item.heading)
+            grouped[item.heading] = []
+        grouped[item.heading].append(item)
+    for heading in order:
+        lines.append(heading)
+        lines += _listed(grouped[heading])
+
     undo = [line for item in left for line in item.undo]
     notes = [item.note for item in left if item.note]
     say.error("\n".join(lines),

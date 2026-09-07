@@ -210,30 +210,26 @@ def register(parent: typer.Typer, name: str = "qa") -> None:
     parent.add_typer(app, name=name)
 
 
-# An interrupt is not a failure, and 1 is the code a failure uses. 130 is what a
-# shell reports for a process killed by SIGINT (128 + 2), so `echo $?` after a
-# Ctrl-C says what happened rather than saying the command broke.
-INTERRUPTED = 130
-
-
 def main() -> None:
-    """The entry point, and the one place an interrupt is reported.
+    """The entry point.
 
-    Everything a mutating call may have left behind is registered by `inflight`
-    at the call site and read back here — one handler rather than a
-    `except KeyboardInterrupt` per command, because those drift and the fifth
-    command written next month gets none.
+    Deliberately thin. The interrupt report used to live here, on the argument
+    that one handler beats four — and the argument was right about the four and
+    wrong about the place. `cli.register()` hands this whole surface to somebody
+    else's Typer app, where `main` is not on the stack at all, so the one
+    embedding that could not reach the handler was the one where an unreported
+    interrupt did the most damage. Reporting now happens in `inflight.may_leave`,
+    which every entry point goes through.
 
-    `Interrupted` and not `KeyboardInterrupt`: Click catches the real thing
-    inside its own `main()` and turns it into a blank line, `Aborted!` and exit
-    1, before anything here runs. `KeyboardInterrupt` is caught as well, for the
-    paths that do not go through Click — `register()` hands this surface to
-    another app, and an embedder may not be Click at all.
+    The `KeyboardInterrupt` clause is the last resort rather than the mechanism:
+    an interrupt landing outside any registration has nothing to report, and
+    Typer already exits 130 for it (typer/core.py:203-204). This makes that true
+    for the paths Typer is not on either.
     """
     from . import inflight
 
     try:
         app()
-    except (inflight.Interrupted, KeyboardInterrupt):
+    except KeyboardInterrupt:
         inflight.report()
-        raise SystemExit(INTERRUPTED) from None
+        raise SystemExit(inflight.INTERRUPTED) from None

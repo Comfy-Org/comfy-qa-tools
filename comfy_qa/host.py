@@ -1445,12 +1445,16 @@ def switch_cmd(
                 undo=[f"comfy-qat up {others_stopped[0][0].name}"],
                 note=f"nothing is serving until one of them is up, and "
                      f"`comfy-qat switch {host.name}` retries the whole thing",
-                billing=False,
+                heading="and this had already happened when you stopped it:",
             ))
         try:
             ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
-        except typer.Exit:
-            if stopped_first:
+        except typer.Exit as exc:
+            # Not on an interrupt. `inflight.Interrupted` IS a `typer.Exit` now —
+            # that is what makes it survive `register()` — and the record has
+            # already said this in its own heading, with the names. Printing here
+            # too would be the same event twice, in two voices.
+            if stopped_first and not isinstance(exc, inflight.Interrupted):
                 say.error(
                     f"the machines you had are stopped and {host.name} did not come "
                     f"up, so you are on neither. Check what is running before "
@@ -1529,7 +1533,9 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
         #
         # The exit code was never the missing half: `cli.main` catches the bare
         # KeyboardInterrupt, so all three commands already exited 130 and none
-        # printed "Aborted!". What was missing is the sentence.
+        # said nothing at all — Typer converts the interrupt to Exit(130)
+        # (typer/core.py:203-204), so it exited quietly. What was missing
+        # is the sentence, not the code.
         #
         # Registered in the ORIGINAL zone, which is where a start that succeeds
         # leaves the box — the whole point of this probe is that the move has

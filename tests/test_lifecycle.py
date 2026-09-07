@@ -816,7 +816,7 @@ def test_stopping_says_so_before_it_starts_rather_than_only_afterwards():
     assert first("stopping comfy-win") < first("stopped it"), lines
 
 
-def test_an_interrupted_stop_is_not_silent_about_the_machine():
+def test_an_interrupted_stop_is_not_silent_about_the_machine(capsys):
     """The mirror of an interrupted create, and the more expensive direction.
 
     `down` exists to stop the bill, so the person who typed it believes the bill
@@ -838,13 +838,22 @@ def test_an_interrupted_stop_is_not_silent_about_the_machine():
     with pytest.raises(inflight.Interrupted):
         put_away(_Interrupted(), WIN, lambda line: None)
 
-    left = inflight.pending()
-    assert [item.what for item in left] == [
-        "comfy-win (comfy-win in us-central1-a)"]
+    # The report fires inside `may_leave` now rather than in `cli.main`, so what
+    # survives the raise is the printed message rather than the record. Reading
+    # the message is the stronger check anyway: it is what the person who pressed
+    # Ctrl-C actually sees, and the record was only ever a proxy for it.
+    report = capsys.readouterr().err
+
+    assert "comfy-win (comfy-win in us-central1-a)" in report, report
+    assert "this may still be running" in report, (
+        "an interrupted `down` needs its own sentence, and neither of the other "
+        "two headings is true here: the box certainly exists, and whether the "
+        "stop landed is the unknown"
+    )
     # Re-running is free — stopping an already-stopped box succeeds trivially —
     # so the first thing offered is the command that settles it.
-    assert "comfy-qat down comfy-win" in left[0].undo
-    assert "comfy-qat list --live" in left[0].undo
+    assert "comfy-qat down comfy-win" in report
+    assert "comfy-qat list --live" in report
 
 
 def test_a_stop_that_returns_leaves_nothing_registered():

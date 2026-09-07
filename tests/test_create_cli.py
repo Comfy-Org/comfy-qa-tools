@@ -490,15 +490,15 @@ def test_an_interrupt_during_create_names_the_gcloud_stop(monkeypatch, tmp_path,
 
     `create` is the one where `comfy-qat down` cannot help. The host list entry is
     written eighteen lines after the instance exists, so an interrupt in between
-    leaves a running, billing box that `list` cannot see — under the word
-    "Aborted!", which means nothing happened.
+    leaves a running, billing box that `list` cannot see — under complete
+    silence, because Typer converts the interrupt to `Exit(130)` and exits
+    without a word.
 
     Driven through `cli.main` rather than `CliRunner`, because the report lives in
     `main` and `CliRunner` never reaches it. That is also what makes the exit code
     assertable, and the code is half the message: 130 says interrupted, 1 says the
     command broke, and Click's `Abort` said the second about the first.
     """
-    from comfy_qa.cli import INTERRUPTED
 
     path = tmp_path / "hosts.toml"
     path.write_text(HOSTS, encoding="utf-8")
@@ -520,8 +520,15 @@ def test_an_interrupt_during_create_names_the_gcloud_stop(monkeypatch, tmp_path,
     code, output = run_main(
         ["create", "--os", "linux", "--gpu", "l4", "--yes", "--config", str(path)])
 
-    assert code == INTERRUPTED, output
-    assert "Aborted!" not in output
+    assert code == 130, output
+    # NOT `assert "Aborted!" not in output`. That assertion cannot fail, for two
+    # independent reasons, and it sat in the commit whose headline was this
+    # test's name. Typer overrides Click's main and converts KeyboardInterrupt to
+    # `Exit(130)` before Click's Abort path is reached (typer/core.py:203-204);
+    # and when an Abort DOES happen — EOFError at a prompt, which `create` and
+    # `move` can reach with stdin closed — typer's rich branch prints `Aborted.`
+    # with a full stop, not `Aborted!`. So the string was unreachable twice over.
+    # What matters is that the report is there, and that is asserted below.
     assert "gcloud compute instances stop" in output, output
     assert "comfy-qat discover" in output
     assert "may exist and be billing" in output
@@ -539,7 +546,6 @@ def test_an_interrupt_names_the_zone_the_create_was_actually_in(monkeypatch, tmp
     zone — a `gcloud compute instances stop --zone=` pointed at a zone with
     nothing in it, handed to somebody who has just been told they may be paying.
     """
-    from comfy_qa.cli import INTERRUPTED
 
     path = tmp_path / "hosts.toml"
     path.write_text(HOSTS, encoding="utf-8")
@@ -561,7 +567,7 @@ def test_an_interrupt_names_the_zone_the_create_was_actually_in(monkeypatch, tmp
     code, output = run_main(
         ["create", "--os", "linux", "--gpu", "l4", "--yes", "--config", str(path)])
 
-    assert code == INTERRUPTED, output
+    assert code == 130, output
     assert StockoutThenInterrupt.attempts == 2, output
     second = [zone for zone in ZONES if f"trying {zone}" in output][1]
     assert f"the instance comfy-linux in {second}" in output, output

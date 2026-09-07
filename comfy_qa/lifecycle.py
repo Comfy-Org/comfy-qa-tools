@@ -1845,6 +1845,15 @@ def put_away(
                 "or check first, if you would rather look:",
                 "comfy-qat list --live",
             ],
+            # Its own sentence, because neither of the other two is true here.
+            # "may exist and be billing" is wrong in its first half — the box
+            # certainly exists; what is unknown is whether it is still RUNNING.
+            # "had already happened when you stopped it" is worse: it asserts the
+            # stop landed, which is the one thing nobody can say. The request had
+            # gone, `subprocess.run` killed the client without a return code, and
+            # the user's belief after typing `down` is that the bill stopped.
+            heading=("this may still be running — the stop request had gone, and "
+                     "nothing here can say whether Google took it:"),
         ):
             gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
