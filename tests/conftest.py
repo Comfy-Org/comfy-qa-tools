@@ -24,8 +24,12 @@ but nothing about the result depends on what the OS would have said about them.
 
 from __future__ import annotations
 
+import importlib
+import os
+import socket
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -102,10 +106,159 @@ def never_start_a_real_tunnel(monkeypatch, request):
             pass
 
 
+# The developer's own configuration directory, resolved ONCE before anything is
+# redirected, so the tripwire below still knows where it is afterwards.
+REAL_CONFIG_DIR = (Path.home() / ".config" / "comfy-qa-tools").resolve()
+
+# Every module that bound `DEFAULT_CONFIG_PATH` at import time. Patching
+# `config.DEFAULT_CONFIG_PATH` alone reaches NONE of them — `from .config import
+# DEFAULT_CONFIG_PATH` copies the value — and that is precisely the mistake the
+# old version of this fixture made one level down.
+_BINDS_THE_DEFAULT_PATH = ("config", "host", "setup", "tunnel", "zones", "remove")
+
+# Loopback is not a leak. The end-to-end tests run a real fake ComfyUI on
+# 127.0.0.1 and really connect to it, which is the point of them.
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
+
+
 @pytest.fixture(autouse=True)
-def never_write_to_the_real_config(monkeypatch, tmp_path):
-    """The tunnel directory defaults beside the user's own host list."""
+def never_write_to_the_real_config(monkeypatch, tmp_path, tmp_path_factory):
+    """Nothing in this suite touches the user's own configuration directory.
+
+    THE NAME IS THE PROMISE, AND IT USED TO BE FALSE. This fixture patched one
+    attribute in one module — `tunnel.TUNNEL_DIR` — while its name and docstring
+    said the directory was covered. `zone-latency.json` is written into that same
+    directory by `zones.py`, and it went straight past: measured, a run under a
+    cold HOME really created `~/.config/comfy-qa-tools/zone-latency.json`.
+    Everyone downstream read the name and took the coverage, which is the same
+    shape as a check whose remedy defeats it, sitting in the safety half of the
+    suite.
+
+    So it now redirects every name that resolves into that directory, in every
+    module that bound one, and `no_test_writes_to_the_real_config` below fails
+    the run if anything still gets there.
+
+    WHAT THIS DOES NOT COVER, in the negative, because a docstring describing the
+    mechanism instead of the promise is what let the first version sit:
+
+    * A path a test builds from `Path.home()` itself rather than from one of
+      these constants. The tripwire catches the write; nothing catches the read.
+    * Anywhere else under the user's home. This is scoped to one directory, and
+      `~/.ssh/google_compute_engine` is the other one this tool can create — via
+      `gcloud compute ssh`, which `never_start_a_real_tunnel` above stops.
+    * Reads. A test may still READ the real host list and quietly depend on it;
+      that is what `test_readme.py::test_bare_comfy_qat_lists_your_machines` did,
+      and only a cold HOME revealed it.
+    """
+    # `tmp_path_factory`, not `tmp_path`: a test's own tmp_path is something
+    # tests assert on — one of them lists it and expects exactly one entry — so
+    # the redirect must not appear inside it.
+    redirected = tmp_path_factory.mktemp("config-redirect")
+
+    for name in _BINDS_THE_DEFAULT_PATH:
+        module = importlib.import_module(f"comfy_qa.{name}")
+        if hasattr(module, "DEFAULT_CONFIG_PATH"):
+            monkeypatch.setattr(module, "DEFAULT_CONFIG_PATH",
+                                redirected / "hosts.toml")
     monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
+
+
+@pytest.fixture(autouse=True)
+def no_test_reaches_the_network(monkeypatch):
+    """A unit suite may not open a socket to anything but this machine.
+
+    Two tests did. `order_zones` with neither `config=` nor `probe=` measured
+    real latency to `compute.{europe-west4,us-central1}.rep.googleapis.com:443`
+    — three connections across the two — while asserting on a boolean and on a
+    lowercased string. Neither wanted a latency number; that is what made it
+    invisible.
+
+    WHY THIS HAS TO EXIST RATHER THAN JUST FIXING THOSE TWO. A probe only fires
+    for a region ABSENT from the cache, and the cache lives in the developer's
+    home. So the first run on a machine and every run after it exercise
+    different code, both green, the second far faster — and a full suite run on
+    a warm machine writes nothing and connects to nothing. The leak is invisible
+    exactly where people look for it. That also means THIS TRIPWIRE WILL NEVER
+    FIRE ON A WARM MACHINE, so it will look like dead weight; it is not, and
+    deleting it restores a defect nobody can see locally.
+
+    Patched at `socket.create_connection`, which is low enough to catch
+    `urllib`, `http.client` and anything built on them, and low enough that the
+    suite's own fakes — `test_zones.py` patches this same attribute — replace it
+    rather than being caught by it.
+
+    NOT COVERED, deliberately and worth knowing: a raw `socket.socket().connect`
+    that bypasses `create_connection`; `os.execvp`, which replaces this process
+    entirely and is stubbed elsewhere; DNS, which `socket.getaddrinfo` can issue
+    without connecting; and any subprocess, which has its own network namespace
+    as far as this is concerned. `gcloud` is the one that matters there, and it
+    is fenced by the fakes rather than by this.
+    """
+    real = socket.create_connection
+
+    def guarded(address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) and address else address
+        if str(host) not in _LOOPBACK:
+            raise AssertionError(
+                f"this test opened a socket to {address!r}. A unit suite that "
+                f"reaches the network measures the runner, not the tool — and "
+                f"this one wrote its answer into the developer's home. Pass the "
+                f"seam: `probe=` for latency, `config=` for where the cache goes."
+            )
+        return real(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", guarded)
+
+
+@pytest.fixture(autouse=True)
+def no_test_writes_to_the_real_config(monkeypatch):
+    """The tripwire behind the redirect above, so the promise is enforced.
+
+    The redirect is the fix; this is what says so. If a new module binds
+    `DEFAULT_CONFIG_PATH` and is not added to `_BINDS_THE_DEFAULT_PATH`, the
+    redirect silently stops covering it and only this notices.
+
+    Every primitive this package actually writes through is wrapped:
+    `Path.write_text`, `Path.open`, `Path.mkdir`, `Path.replace`, `os.replace`
+    and `os.open` — the last two because `zones.write_cache` and `tunnel._claim`
+    use them directly and would otherwise walk past a `pathlib`-only guard.
+    """
+    def refuse(path):
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, ValueError):
+            return
+        if resolved == REAL_CONFIG_DIR or REAL_CONFIG_DIR in resolved.parents:
+            raise AssertionError(
+                f"this test wrote {resolved} — inside the user's own "
+                f"configuration directory. Use the `--config` seam, or "
+                f"`config=`/`path=` where the call takes one."
+            )
+
+    def wrap(owner, name, index=0, when=lambda a, k: True):
+        original = getattr(owner, name)
+
+        def guarded(*args, **kwargs):
+            if when(args, kwargs):
+                refuse(args[index])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, guarded)
+
+    writing = lambda args, kwargs: (
+        "w" in str(kwargs.get("mode", args[1] if len(args) > 1 else "r"))
+        or "a" in str(kwargs.get("mode", args[1] if len(args) > 1 else "r"))
+        or "x" in str(kwargs.get("mode", args[1] if len(args) > 1 else "r"))
+    )
+
+    wrap(Path, "write_text")
+    wrap(Path, "write_bytes")
+    wrap(Path, "mkdir")
+    wrap(Path, "open", when=writing)
+    wrap(Path, "replace", index=1)
+    wrap(os, "replace", index=1)
+    wrap(os, "open", when=lambda a, k: bool(
+        (k.get("flags", a[1] if len(a) > 1 else 0)) & (os.O_WRONLY | os.O_RDWR | os.O_CREAT)))
 
 
 @pytest.fixture(autouse=True)

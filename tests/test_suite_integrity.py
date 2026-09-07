@@ -90,6 +90,7 @@ REQUIRED = {
     "test_setup",
     "test_setup_flow",
     "test_shell_access",
+    "test_tripwires",
     "test_stamp",
     "test_stamp_hostile",
     "test_stamp_mismatch",

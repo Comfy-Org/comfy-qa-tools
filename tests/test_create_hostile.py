@@ -163,9 +163,30 @@ def test_order_zones_marks_an_explicit_zone_as_having_no_fall_through():
     assert ordering.fall_through is False
 
 
-def test_a_chosen_ordering_still_falls_through():
+def test_a_chosen_ordering_still_falls_through(tmp_path):
+    """`config=` and `probe=`, and neither is decoration.
+
+    Without them this test opened REAL TCP connections to
+    `compute.{europe-west4,us-central1}.rep.googleapis.com:443` and wrote
+    `zone-latency.json` into the developer's own `~/.config/comfy-qa-tools/`.
+    Measured, with a cold HOME: two outbound connections from this test and one
+    from the wrong-case test below, and the file really appeared.
+
+    The assertion is about `fall_through`, a boolean decided by whether a zone
+    was pinned. The network call was entirely incidental to it — which is what
+    made it invisible: nothing here wants a latency number, so nothing here
+    noticed it was measuring one.
+
+    DO NOT ADD AN ASSERTION ABOUT ZONE ORDER HERE, or anywhere that measures for
+    real. The two regions' relative latency is jitter: 60/160 ms on one run and
+    121/122 on the next, measured. Nothing asserts on the order today, so this is
+    not flaky — it is one assertion away from a coin flip, and the ordering is
+    already tested properly against a fixed `probe=` elsewhere in this file.
+    """
     check = check_quota(CARDS["l4"], QUOTAS, [])
-    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check)
+    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check,
+                           config=tmp_path / "hosts.toml",
+                           probe=counting_probe([]))
     assert ordering.fall_through is True
 
 
@@ -659,9 +680,16 @@ def test_a_zone_typed_in_the_wrong_case_is_the_same_zone(typed):
                        zone=typed).zones == ("us-central1-f",)
 
 
-def test_a_region_typed_in_the_wrong_case_is_the_same_region():
+def test_a_region_typed_in_the_wrong_case_is_the_same_region(tmp_path):
+    """The other half of the same leak — see the test above for the measurement.
+
+    This one asserts a string is lowercased. It reached us-central1 over the
+    network to do it.
+    """
     check = check_quota(CARDS["l4"], QUOTAS, [])
-    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check, region="US-CENTRAL1")
+    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check, region="US-CENTRAL1",
+                           config=tmp_path / "hosts.toml",
+                           probe=counting_probe([]))
     assert ordering.regions == ("us-central1",)
 
 

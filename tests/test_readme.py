@@ -168,17 +168,37 @@ def test_env_is_reachable_but_not_advertised():
     assert still_there.exit_code == 0, "hidden must not mean gone"
 
 
-def test_bare_comfy_qat_lists_your_machines():
+def test_bare_comfy_qat_lists_your_machines(tmp_path, monkeypatch):
     """The question someone has when they type the tool's name and nothing else
-    is "what have I got, and what is running" — not "what are the flags"."""
+    is "what have I got, and what is running" — not "what are the flags".
+
+    The monkeypatch is the point of this note. Without it this read the
+    DEVELOPER'S OWN `~/.config/comfy-qa-tools/hosts.toml` and asserted "NAME" was
+    in the output — which passed only because that person happened to have a host
+    list with hosts in it. Measured both ways: green on the author's machine,
+    red under a cold HOME. A test whose result is decided by a file outside the
+    repository is testing the machine, not the tool. The very next test in this
+    file already did it correctly; it was simply not applied here.
+    """
     from typer.testing import CliRunner
 
+    from comfy_qa import config
     from comfy_qa.cli import app
+
+    declared = tmp_path / "hosts.toml"
+    declared.write_text(
+        "[hosts.local]\nkind = 'local'\nport = 8188\n\n"
+        "[hosts.comfy-win]\nkind = 'gce'\nos = 'Windows Server 2022'\n"
+        "gpu = 'L4'\ngce_instance = 'comfy-win'\ngce_zone = 'us-central1-a'\n"
+        "gce_project = 'a-project'\nport = 8190\n",
+        encoding="utf-8")
+    monkeypatch.setattr(config, "DEFAULT_CONFIG_PATH", declared)
 
     result = CliRunner().invoke(app, [])
 
     assert result.exit_code == 0
     assert "NAME" in result.output and "KIND" in result.output
+    assert "comfy-win" in result.output, "the machines it listed are this test's"
     assert "Usage:" not in result.output, "help answers a question nobody asked"
 
 
