@@ -307,6 +307,28 @@ stop`, for the reason above — and run the create again. The count comes from
 `acceleratorCount` on each running instance, so a box with no card at all does
 not appear here however large it is.
 
+**`GPUS_ALL_REGIONS is 1 on this project and comfy-win already holds 1 of it, so the 1-card box this move creates cannot start. Nothing was created.`**
+
+The same ceiling, refused by `move` instead of by `create`. A move builds a
+second GPU box while the first one still exists, so **a move of a RUNNING box
+needs two of the allowance and a move of a stopped one needs one.** On a project
+whose `GPUS_ALL_REGIONS` is 1 that is the difference between a move that works
+and a move Google refuses — and it used to refuse it at the **instance create**,
+which is the last and most expensive step, after the snapshot and a 300 GB disk
+had been made and paid for. This is now checked before any of that.
+
+Stopping the box you are moving is the fix, and it costs nothing: the move does
+not need it running, and stopping it frees exactly the allowance the new one
+needs. If something else is holding the ceiling you get the raw `gcloud compute
+instances stop` for it instead, for the reason the entry above gives.
+
+The check refuses only on arithmetic it is sure of. A ceiling the project does
+not report, or one gcloud would not answer for, is "not read" rather than zero
+and refuses nothing — so a move can still be refused by Google at the create, as
+before. The quota itself is only read when something is actually holding a card,
+because that read takes the best part of a minute and cannot change the answer
+when nothing is held.
+
 **`this project's L4 grant names no region, so there is nowhere to put the box. The grant itself is <n>. Nothing was created.`**
 
 A quota can carry a limit and name no places. The API leaves the per-entry
@@ -1372,7 +1394,11 @@ branch.
 A move rewrites `hosts.toml` so the box keeps its name, its port and its URL. That
 is the one place this tool rewrites a file you maintain by hand, so it refuses
 rather than guesses, and it refuses **before** writing anything. The previous file
-is copied to `hosts.toml.bak` first, and the swap is atomic.
+is copied to `hosts.toml.bak` first — read back and compared before anything is
+written, so a copy that did not land stops the rewrite rather than being assumed —
+and the swap is atomic and flushed to the disk. Older copies rotate to
+`hosts.toml.bak.2` and `.bak.3`, so a second move does not destroy the first
+one's backup.
 
 All of these arrive at the last step of a move, which means **the new box already
 exists and is billing**. The host list not being updated is recoverable; not
@@ -1403,14 +1429,21 @@ the file the rewrite did not expect — send the file and the command.
 The name given does not appear in `hosts.toml`. `comfy-qat list` shows what is
 declared.
 
+**`the backup of <file> did not read back the same as the file it was copied from, so the previous host list is not recoverable. Nothing was written.`**
+
+The copy of your existing host list was written and then read back, and it did not
+match. Nothing was rewritten, and `hosts.toml` is exactly as it was — this refuses
+at the one moment where continuing would mean overwriting the only copy of a file
+you maintain by hand. It means the disk or the filesystem is not storing what it
+is given, so check free space on the volume holding `~/.config` first, then the
+disk itself. Move the box again once writes are landing.
+
 **`<name> has no port line, so its port cannot be freed.`**
 
 Every host needs its own `port`, and a move has to hand the moved box the old
 port while giving the retired entry a new one. A `[hosts.<name>]` block with no
 `port` line stops that. Add one — any free number above 8188 — and run the move
-again. Note this also fires when the port line carries a trailing comment
-(`port = 8192  # the QA port`), which is a limitation of the rewrite rather than a
-problem with your file.
+again.
 
 ## A move that ran out of capacity at the far end
 

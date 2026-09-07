@@ -194,6 +194,126 @@ def test_a_good_rewrite_lands_and_keeps_a_copy_of_what_was_there(tmp_path):
     assert backup.exists() and backup.read_text(encoding="utf-8") == HOSTS
 
 
+def test_a_second_rewrite_does_not_destroy_the_first_one_s_copy(tmp_path):
+    """The sequence that actually happens: move, notice something is wrong, move
+    again. One backup deep, the second write destroys the copy of the state you
+    wanted back — and this file has no other copy anywhere on the machine."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+
+    once = renamed()
+    apply(path, once, expect={"local", "comfy-win", "comfy-linux",
+                              "comfy-linux-us-central1-c"})
+    twice = rename_and_add(once, name="comfy-win", renamed="comfy-win-us-central1-a",
+                           renamed_port=8196, added=ADDED_HOST)
+    apply(path, twice, expect={"local", "comfy-win-us-central1-a", "comfy-linux",
+                               "comfy-linux-us-central1-c", "added"})
+
+    assert path.with_name("hosts.toml.bak").read_text(encoding="utf-8") == once
+    assert path.with_name("hosts.toml.bak.2").read_text(encoding="utf-8") == HOSTS, (
+        "the original is still recoverable after a second write"
+    )
+
+
+def test_an_unchanged_file_does_not_churn_the_generations(tmp_path):
+    """Rotating on every call would push the state you want off the end with
+    copies of itself. Only a backup whose content actually differs rotates."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    for _ in range(3):
+        apply(path, HOSTS, expect={"local", "comfy-win", "comfy-linux"})
+
+    assert path.with_name("hosts.toml.bak").read_text(encoding="utf-8") == HOSTS
+    assert not path.with_name("hosts.toml.bak.2").exists()
+
+
+def test_a_backup_that_does_not_read_back_stops_the_write(tmp_path):
+    """A backup nobody has read back is a belief, not a copy — and the next step
+    rewrites the only file there is. Declining is recoverable; writing over the
+    last copy of a hand-maintained file is not."""
+    from comfy_qa import hostfile as hostfile_module
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    honest = hostfile_module._write_durably
+
+    def lossy(target, content, *, like=None):
+        # The shape a failing disk gives you: the write returns, the bytes are
+        # not what you passed.
+        if target.name.endswith(".bak"):
+            content = b""
+        honest(target, content, like=like)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(hostfile_module, "_write_durably", lossy)
+    try:
+        with pytest.raises(HostFileError, match="not recoverable"):
+            apply(path, renamed(), expect={"local", "comfy-win", "comfy-linux",
+                                           "comfy-linux-us-central1-c"})
+    finally:
+        monkeypatch.undo()
+
+    assert path.read_text(encoding="utf-8") == HOSTS, "the file was rewritten anyway"
+
+
+def test_the_bytes_are_on_the_disk_before_the_rename_and_the_rename_after(tmp_path):
+    """`os.replace` is atomic in ORDERING, which is not the same as durable.
+
+    Without the fsync on the file, a crash can leave the rename visible over
+    content that never reached the disk. Without the one on the DIRECTORY, the
+    rename itself can be lost while the data survives — the file reverts and
+    `.bak` says the write happened.
+    """
+    import os as os_module
+
+    from comfy_qa import hostfile as hostfile_module
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    order: list[str] = []
+    real_fsync, real_replace = os_module.fsync, os_module.replace
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(hostfile_module.os, "fsync",
+                        lambda fd: (order.append("fsync"), real_fsync(fd))[1])
+    monkeypatch.setattr(hostfile_module.os, "replace",
+                        lambda a, b: (order.append("replace"), real_replace(a, b))[1])
+    try:
+        apply(path, renamed(), expect={"local", "comfy-win", "comfy-linux",
+                                       "comfy-linux-us-central1-c"})
+    finally:
+        monkeypatch.undo()
+
+    # The exact sequence, because a looser assertion cannot see the middle one
+    # go missing: "an fsync immediately before the replace" is satisfied by the
+    # BACKUP's fsync, so removing the new file's own left this test green.
+    #
+    #   fsync   the backup's bytes
+    #   fsync   the new file's bytes
+    #   replace the rename
+    #   fsync   the directory entry
+    assert order == ["fsync", "fsync", "replace", "fsync"], order
+
+
+def test_the_backup_does_not_widen_the_permissions_of_what_it_copies(tmp_path):
+    """A file created at the default umask is more permissive than the one it is
+    a copy of. Nothing in a host list is a secret; a file that quietly widens its
+    own permissions on every write is the kind of thing that is true of something
+    else later."""
+    import stat as stat_module
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    path.chmod(0o600)
+
+    apply(path, renamed(), expect={"local", "comfy-win", "comfy-linux",
+                                   "comfy-linux-us-central1-c"})
+
+    for name in ("hosts.toml", "hosts.toml.bak"):
+        mode = stat_module.S_IMODE(path.with_name(name).stat().st_mode)
+        assert mode == 0o600, f"{name} came out {mode:o}"
+
+
 def test_no_temp_file_is_left_beside_the_host_list(tmp_path):
     """A stray .tmp next to hosts.toml is the kind of thing somebody later has to
     make a decision about."""

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import tomllib
 from pathlib import Path
 
@@ -341,13 +342,103 @@ def apply(path: Path, text: str, *, expect: set[str]) -> None:
         ) from exc
 
     if path.exists():
-        backup = path.with_name(path.name + ".bak")
-        backup.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+        _keep_a_copy(path)
 
     temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        temporary.write_text(text, encoding="utf-8")
+        _write_durably(temporary, text, like=path)
         os.replace(temporary, path)
+        # And the rename itself. `os.replace` is atomic in ORDERING — you get the
+        # old file or the new one, never a half-written one — which is not the
+        # same as durable. The directory entry lives in the directory's own
+        # metadata, so without this the rename can still be lost by a crash that
+        # the data fsync above survived, and the file reverts to its old content
+        # while `.bak` says the write happened.
+        _sync_directory(path.parent)
     except OSError:
         temporary.unlink(missing_ok=True)
         raise
+
+
+# How many previous versions to keep. `.bak` is the most recent — the name is in
+# docs/machines.md, docs/troubleshooting.md and Ali's own test criteria, so it
+# stays put — and older ones are `.bak.2`, `.bak.3`.
+BACKUP_GENERATIONS = 3
+
+
+def _keep_a_copy(path: Path) -> None:
+    """Put the current content somewhere recoverable, and PROVE that it is.
+
+    Two things were wrong here and they are the same promise broken twice.
+
+    The copy was one deep and overwritten on every write, so the sequence that
+    actually happens — a move, then noticing something is wrong, then another
+    move — destroyed the only copy of the state you wanted back. Ali's host list
+    is hand-maintained and has no other copy anywhere on this machine.
+
+    And it was written with `write_text` and never read back. A backup nobody
+    has verified is a belief, not a copy; the whole reason this module makes a
+    backup is that the next step rewrites the only file there is.
+
+    So: rotate, copy, fsync, read back, compare. Anything short of a byte-exact
+    match raises, and the rewrite does not happen. Declining to write is a
+    recoverable outcome. Writing over the only copy of a file nobody can
+    reproduce is not.
+    """
+    content = path.read_bytes()
+    backup = path.with_name(path.name + ".bak")
+
+    # Rotate oldest-first, so a failure part-way through cannot leave two
+    # generations holding the same content and one lost. `os.replace` is a
+    # rename, so nothing is read or rewritten.
+    if backup.exists() and backup.read_bytes() != content:
+        for generation in range(BACKUP_GENERATIONS, 1, -1):
+            older = path.with_name(f"{path.name}.bak.{generation}")
+            newer = (backup if generation == 2
+                     else path.with_name(f"{path.name}.bak.{generation - 1}"))
+            if newer.exists():
+                os.replace(newer, older)
+
+    _write_durably(backup, content, like=path)
+
+    if backup.read_bytes() != content:
+        raise HostFileError(
+            f"the backup of {path.name} did not read back the same as the file "
+            f"it was copied from, so the previous host list is not recoverable. "
+            f"Nothing was written."
+        )
+
+
+def _write_durably(path: Path, content: str | bytes, *, like: Path | None = None) -> None:
+    """Write, flush, and fsync — and give the file the mode of `like`.
+
+    `write_text` returns once the bytes are in the page cache, which is why a
+    crash could leave a truncated or empty host list behind a rewrite that had
+    already reported success.
+
+    `like` carries the mode across because a backup created at the default umask
+    is more permissive than the file it copies. Nothing in a host list is a
+    secret, but a file that quietly widens its own permissions on every write is
+    the kind of thing that is true of something else later.
+    """
+    data = content if isinstance(content, bytes) else content.encode("utf-8")
+    with open(path, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if like is not None and like.exists():
+        os.chmod(path, stat.S_IMODE(like.stat().st_mode))
+
+
+def _sync_directory(directory: Path) -> None:
+    """fsync a directory, where the platform allows it."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:          # pragma: no cover - Windows cannot open a directory
+        return
+    try:
+        os.fsync(fd)
+    except OSError:          # pragma: no cover - some filesystems refuse
+        pass
+    finally:
+        os.close(fd)
