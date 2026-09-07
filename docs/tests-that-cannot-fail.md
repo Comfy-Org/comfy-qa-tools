@@ -12,6 +12,12 @@ day these were found.
 **Read the last two sections before the list.** The shapes are useful; the two
 observations at the end are the reason the list is not a checklist.
 
+One way to tell whether this page is still doing anything: while it was being
+written it caught two errors on their way into it — a claim that had gone stale
+between being made and being read, and a correction from the person who
+commissioned the page. Both were checked only because the page says to check. If
+that stops happening, suspect the page before you suspect the code.
+
 ---
 
 ## 1. A substring match over a whole file
