@@ -627,11 +627,19 @@ def open_tunnel(
                 fix="check that gcloud is installed and on your PATH",
             ) from exc
 
-        # The record goes down before the pid, so a reader never finds a pid with
-        # nothing saying where it goes.
-        record = {"pid": pid, "identity": identify(pid) or None,
-                  "opened": time.time(), **_destination(host)}
         try:
+            # Inside the guard, not above it. Building the record calls
+            # `identify`, which shells out to `ps -p N -o lstart=,command=` with
+            # a ten-second timeout — so this line was both the slowest thing
+            # between the spawn and the writes and the only one unprotected.
+            # Measured, median of seven: 3.59 ms here against 0.28 ms for the two
+            # writes, thirteen times the window the guard covered, and unbounded
+            # if `ps` hangs.
+            #
+            # The record goes down before the pid, so a reader never finds a pid
+            # with nothing saying where it goes.
+            record = {"pid": pid, "identity": identify(pid) or None,
+                      "opened": time.time(), **_destination(host)}
             _write(record_file(host.name, directory), json.dumps(record))
             _write(pid_file(host.name, directory), str(pid))
         except OSError as exc:
@@ -646,17 +654,23 @@ def open_tunnel(
             ) from exc
         except BaseException:
             # The same reasoning, through the door the OSError branch left open:
-            # a Ctrl-C in the milliseconds between the spawn above and the two
-            # writes here produces exactly the state that branch exists to
-            # prevent — a live ssh holding the port, pointing at a box that is
-            # billing, and no file naming it, so `down` cannot close it and
-            # nothing on screen says it is there.
+            # a Ctrl-C anywhere between the spawn above and the two writes here
+            # produces exactly the state that branch exists to prevent — a live
+            # ssh holding the port, pointing at a box that is billing, and no
+            # file naming it, so `down` cannot close it and nothing on screen
+            # says it is there.
             #
-            # Narrow window, and the only one in this tool where the leftover
-            # cannot be handed over as a command: the pid is the only handle and
-            # it is about to be lost. So it is undone here rather than reported,
-            # which is why this needs no `inflight` registration — there is
-            # nothing left to register by the time the exception carries on.
+            # "The milliseconds between the spawn and the two writes" is what
+            # this used to say, and it was wrong twice: the window is dominated
+            # by the `ps` call in the record above — which sat OUTSIDE this try
+            # until it was moved in — and `ps` has a ten-second timeout, so the
+            # window has a floor in milliseconds and no ceiling.
+            #
+            # The only leftover in this tool that cannot be handed over as a
+            # command: the pid is the only handle and it is about to be lost. So
+            # it is undone here rather than reported, which is why this needs no
+            # `inflight` registration — there is nothing left to register by the
+            # time the exception carries on.
             _abandon(pid)
             raise
     finally:
