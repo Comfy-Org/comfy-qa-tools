@@ -702,6 +702,14 @@ echo "=== R2 no zone, no dry run allowed"; qat move $BOX --dry-run; echo "exit $
 echo "=== R2b nothing happened"; diff ~/move-before/instances.txt <(gcloud compute instances list --project $P) && echo "unchanged"
 ```
 
+**What phase R does not prove.** Every `move` below names a zone with `--to`,
+because a repeatable procedure has to. The other path — `move` with no `--to`,
+which starts the box to read a zone out of Google's refusal, and where a box that
+*fails* to be refused is one you are now paying for with nothing to move — is
+exercised here only as the R2 refusal under `--dry-run`. **Completing this phase
+proves the `--to` move and leaves zone discovery unproven.** Do not read a
+finished phase R as "move works".
+
 - [ ] **R1** — a numbered plan naming **the snapshot, the new disk, the new
       instance and the target zone**, and it ends saying nothing was created.
       Read the numbers: the disk size should match the source box's, not a
@@ -754,10 +762,22 @@ echo "=== R4 move"; time qat move $BOX --to $TARGET_ZONE; echo "exit $?"
       and a closing line that says "now run `go`" reads as "now start it" — which
       is how a moved box billed silently from the moment the move finished.
 - [ ] **R4b** — it then tells you about the **old** box: still in the old zone,
-      now called `<name>-<old-zone>`, with its disk. **It is real and still
-      billing until you delete it**, and the closing lines must give you both
-      `comfy-qat down <name>-<old-zone>` and the `gcloud … delete` for it. A move
-      that leaves you one box is not what happened; you have two.
+      now called `<name>-<old-zone>`, with its disk. A move that leaves you one
+      box is not what happened; you have two, and two host-list entries.
+- [ ] **R4c** — **the sentence about the old box matches the box.** `move` never
+      stops the source — the "leave it" step is a statement, not an action — so
+      what it says depends on what the source was when the plan was made:
+
+      - source was **running**: `running and still billing`, and the closing lines
+        offer **both** `comfy-qat down <name>-<old-zone>` and the `gcloud … delete`.
+      - source was **stopped**: `stopped`, and **only** the delete line. `down` on
+        a stopped box is a no-op, so offering it would be noise.
+
+      **Coming out of phase S your box is running**, so the first is what you
+      should see here. If you get `stopped` about a box `gcloud` shows as RUNNING,
+      that is the defect this criterion exists for — it said "stopped"
+      unconditionally until 2026-09-01, which is a false statement about a GPU
+      that is billing. Check it against R9 rather than taking the sentence.
 
 ### R5 — the host list, which is the part with no undo
 
@@ -841,11 +861,14 @@ echo "=== R9 what is actually running"; gcloud compute instances list --project 
 echo "=== R9b what the tool thinks"; qat list --live
 ```
 
-- [ ] **R9** — **you have two GPU boxes running, and you read that from Google.**
-      The new one in the target zone, and the old one retired to
-      `<name>-<old-zone>` — `move` does not stop it, it stays declared so `down`
-      can reach it, and it bills until somebody acts. If you expected one box,
-      that expectation has been costing money since R4 finished.
+- [ ] **R9** — **read from Google what is running, and count it yourself.**
+      Coming out of phase S the source was up, and `move` does not stop it, so you
+      should see **two**: the new box in the target zone and the old one, now
+      declared as `<name>-<old-zone>`. Both are billing GPU-hours. If you expected
+      one box, that expectation has been costing money since R4 finished.
+      *(Had you moved a box that was already stopped, one would be TERMINATED and
+      costing only its disk — which is why R4c grades the sentence against this
+      list rather than on its own.)*
 - [ ] **R9b** — `qat list --live` agrees with the line above, name for name. This
       is the one place in the phase where the tool's account and Google's can be
       set side by side, and a disagreement here is worth more than either alone.
