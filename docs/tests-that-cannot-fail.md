@@ -256,6 +256,26 @@ and hands back a guard that cannot fail. So the alibi is **one hop**, not the
 transitive closure. Class 7 is the failure mode of class 2's cure; this is the
 failure mode of class 7's. Two turns of the same screw, in one file, in one day.
 
+**And disjointness alone is not enough, because the evidence can be worthless
+even when it is not circular.** Two things counted as an alibi that were never
+one: an `import` line naming a helper, and advice attached to an *abnormal exit*.
+`bring_up` names the bill nine times, and every one of them is a `fix=` or the
+`undo=` of an interrupt handler — advice for a run that went wrong. Counting
+those cleared a command that starts a box, leaves it running, and says nothing
+about money on the path where it succeeds. It is the same `bench` command the
+last section of this page describes.
+
+The rule the fix landed on, in its own words: **an alibi drawn from a failure is
+no alibi for a success ending.** So the search runs over the body with imports,
+`raise`s and abnormal-exit advice removed.
+
+Class 7's remedy is therefore two halves, and neither is sufficient alone:
+
+- **assert the relationship between the two lists** — that no token which puts a
+  member on the list can also take it off;
+- **assert against the success path** — because a guard about what a command says
+  when it works is not satisfied by what it says when it fails.
+
 ## 8. The ambient default
 
 A test whose subject is decided by an environment value it never sets: the
@@ -481,6 +501,17 @@ Every reading was accurate at the moment it was taken. Every one of them would
 have misled somebody an hour later. The only thing that makes any of them useful
 a day on is the sha, which is why this page names `e698b63` rather than saying
 "fixed".
+
+So the rule is not "attach a hash". A hash alone would not have separated those
+three, because all three had one. **A finding needs a hash *and* a direction:
+what you read, at which sha, and whether the tree was dirty.**
+
+    read tests/test_host_costs.py at 3e0a78d, clean          -> class 7 open
+    read tests/test_host_costs.py in the working tree, dirty  -> fix present
+    read tests/test_host_costs.py at e698b63, clean           -> class 7 closed
+
+Three true statements. Only the third is still true, and only because it names
+where it looked.
 
 The *shape* is what a page records. The instance is dated, and dating it is the
 whole job.
