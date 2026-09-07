@@ -664,11 +664,30 @@ echo "=== G6c --all with no cloud box declared"; qat down --all --config $G/nocl
 - [ ] **G3** — nothing answered on that port. Exit 1.
 - [ ] **G4** — the instance shows TERMINATED. **If it does not, the tool has left you billing and that is a blocker.**
 - [ ] **G5** — does not fail on an already-stopped box.
-- [ ] **G6a** — `qat down --all` takes no name, stops every declared cloud box and
-      **says how many**. With everything already stopped it says so and exits 0 —
-      "nothing was running" is an answer, not a failure. One box refusing to stop
-      must not leave the rest running: it stops the others, then names what did
-      not stop and what to do about it.
+- [ ] **G6a** — `qat down --all` takes no name and stops every declared cloud box.
+      **Read which of three closing sentences you got — not how many it counted.**
+      They are different claims and only one is an all-clear:
+
+      - `was billing: <names>. Stopped. Nothing is now.` — those boxes were read as
+        RUNNING and then stopped. An observation.
+      - `<n> machine(s) could not be checked before stopping, so it may have been
+        billing: <names>.` — the state read failed, or the verdict was not
+        recognised. **This is not an all-clear**, and it should point you at
+        `comfy-qat list --live`.
+      - `nothing was running, so nothing was billing.` — the only all-clear, and it
+        must appear **only** when nothing was unchecked *and* the project-wide
+        survey came back empty.
+
+      A count cannot tell those apart, and that is the whole defect: a session in
+      which every state read failed and every stop trivially succeeded printed the
+      same "all N stopped" as a clean one. If you see the third sentence, satisfy
+      yourself you were not also told something could not be checked — the two
+      together are a contradiction and a fail.
+- [ ] **G6d** — a box that **refuses to stop** does not leave the rest running: it
+      stops the others, then names what did not stop and what it may still be
+      costing, and exits non-zero. *(Needs a box that will not stop, so it is not
+      arrangeable — record it as not run rather than ticking it from a clean run.
+      Same check as M4b, same problem.)*
 - [ ] **G6b** — `--all` **with** a name is refused rather than guessing which of
       the two you meant. Exit 2, nothing stopped.
 - [ ] **G6c** — on a host list with no cloud boxes at all, `--all` does **not**
