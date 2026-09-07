@@ -250,12 +250,28 @@ def report() -> bool:
             order.append(item.heading)
             grouped[item.heading] = []
         grouped[item.heading].append(item)
+    # ONE ordering, used for both halves. The headings were grouped innermost-
+    # first and the commands were a flat walk of `left`, which is registration
+    # order — the exact reverse. So on `switch`'s ceiling path the fix block led
+    # with `comfy-qat up comfy-linux`, a command that STARTS a machine, above
+    # `comfy-qat down comfy-win`, the one that may be billing. Three things
+    # wrong with that at once, and none of them is cosmetic: it inverts this
+    # tool's own rule that stopping the bill comes first; the first command
+    # offered is the one most likely to FAIL, because GPUS_ALL_REGIONS is 1 on
+    # this project and the box that may be running is the one it would need
+    # room past; and each entry's prose separator — "or check first, if you
+    # would rather look:" — was orphaned from the commands it introduces,
+    # because the flat walk interleaved two entries' lists.
+    #
+    # Reading `ordered` for both is what makes the drift impossible rather than
+    # merely fixed: there is now one sequence, not two that have to agree.
+    ordered = [item for heading in order for item in grouped[heading]]
     for heading in order:
         lines.append(heading)
         lines += _listed(grouped[heading])
 
-    undo = [line for item in left for line in item.undo]
-    notes = [item.note for item in left if item.note]
+    undo = [line for item in ordered for line in item.undo]
+    notes = [item.note for item in ordered if item.note]
     say.error("\n".join(lines),
               say.fix(*undo, *notes) if (undo or notes) else None)
     clear()

@@ -397,3 +397,48 @@ def test_the_two_headings_are_the_ones_the_report_actually_uses(capsys):
                    "this may exist and be billing:",
                    "and this had already happened when you stopped it:"):
         assert phrase in printed, printed
+
+
+def test_the_commands_are_in_the_same_order_as_the_headings(capsys):
+    """The fix block led with a command that STARTS a machine.
+
+    The headings were grouped innermost-first and the commands were a flat walk
+    of the record — registration order, the exact reverse. On `switch`'s ceiling
+    path, which is the normal path on a project whose GPUS_ALL_REGIONS is 1, that
+    put `comfy-qat up comfy-linux` above `comfy-qat down comfy-win`.
+
+    Three things wrong at once and none of them cosmetic. It inverts this tool's
+    own rule that stopping the bill comes first — the rule `create`'s OSError
+    branch follows and 49a2889's own message quotes. The first command offered is
+    the one most likely to FAIL, because the box that may now be running is
+    exactly what a start would need room past at a ceiling of 1. And each entry's
+    prose separator was orphaned from the commands it introduces, because the
+    flat walk interleaved two entries' lists.
+    """
+    with pytest.raises(inflight.Interrupted):
+        with inflight.may_leave(
+            "comfy-linux already stopped to make room",
+            undo=["comfy-qat up comfy-linux"],
+            heading="and this had already happened when you stopped it:",
+        ):
+            with inflight.may_leave(
+                "comfy-win, started",
+                undo=["comfy-qat down comfy-win",
+                      "or check first, if you would rather look:",
+                      "comfy-qat list --live"],
+            ):
+                raise KeyboardInterrupt
+
+    report = capsys.readouterr().err
+
+    # The heading order and the command order are the same order.
+    assert report.index("comfy-win, started") < report.index("comfy-linux already stopped")
+    assert report.index("comfy-qat down comfy-win") < report.index("comfy-qat up comfy-linux"), (
+        f"the first command handed over starts a machine, above the one that "
+        f"stops the bill:\n{report}"
+    )
+
+    # And the separator still introduces its own entry's commands rather than
+    # sitting between two entries' lists.
+    separator = report.index("or check first, if you would rather look:")
+    assert report.index("comfy-qat down comfy-win") < separator < report.index("comfy-qat list --live")

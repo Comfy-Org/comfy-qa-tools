@@ -686,7 +686,32 @@ def test_the_narrative_of_a_command_that_costs_money_goes_to_stderr(tmp_path,
     )
 
 
-def test_a_money_command_says_something_on_each_stream(tmp_path, monkeypatch):
+# Every money command drivable offline with the fakes in this file. The LIST is
+# the point, not its length: this test stated a rule about "a money command" and
+# drove exactly ONE — `down --all` — while its own docstring claimed it caught
+# both D78 (`move --dry-run`, everything on stdout) and D78's mirror
+# (`down <name>`, everything on stderr), and it exercised NEITHER of them. A rule
+# stated as a class and enforced on one remembered instance is a hand-maintained
+# list wearing an invariant's clothes.
+#
+# `up`, `go`, `switch`, `create` and `logs` need richer fakes than this file has.
+# When they get them they belong HERE, as rows, rather than as separate tests: a
+# missing row is visible in a way a missing test is not.
+#
+# Found and built by triage, adopted whole.
+STREAM_RULE_CASES = [
+    (["down", "--all"], "running", "down --all"),
+    (["down", "comfy-win"], "running", "down <name>"),
+    (["disconnect", "comfy-win"], "running", "disconnect <name>"),
+    (["move", "comfy-win", "--to", "us-central1-b", "--dry-run"],
+     "half-finished move", "move --dry-run"),
+]
+
+
+@pytest.mark.parametrize("argv,cloud,label", STREAM_RULE_CASES,
+                         ids=[case[2] for case in STREAM_RULE_CASES])
+def test_every_money_command_says_something_on_each_stream(argv, cloud, label,
+                                                           tmp_path, monkeypatch):
     """Neither stream may be empty, which is the shape both defects take.
 
     D78 is `move --dry-run` with EVERYTHING on stdout and stderr empty; its
@@ -694,11 +719,21 @@ def test_a_money_command_says_something_on_each_stream(tmp_path, monkeypatch):
     invariant catches both, and it is the one the vocabulary already states:
     stdout carries the answer, stderr carries the story, and a command about
     money has both.
-    """
-    result = _run(["down", "--all"], tmp_path, monkeypatch)
 
-    assert result.stdout.strip(), "no answer on stdout"
-    assert result.stderr.strip(), "no story on stderr"
+    Deliberately says nothing about WHICH words. The two tests below assert the
+    specific text for the commands whose exact wording has been wrong; this says
+    the thing that must hold for all of them, including the ones nobody has
+    hand-written a test for yet.
+    """
+    fake = _HalfFinishedMove() if cloud == "half-finished move" else _RunningBox()
+    result = _run(argv, tmp_path, monkeypatch, fake)
+
+    assert result.stdout.strip(), (
+        f"{label}: no answer on stdout — `1>/dev/null` loses everything"
+    )
+    assert result.stderr.strip(), (
+        f"{label}: no story on stderr — `2>/dev/null` loses everything"
+    )
 
 
 def test_the_single_host_down_also_answers_on_stdout(tmp_path, monkeypatch):
