@@ -360,46 +360,57 @@ def apply(path: Path, text: str, *, expect: set[str]) -> None:
         raise
 
 
-# How many previous versions to keep. `.bak` is the most recent — the name is in
-# docs/machines.md, docs/troubleshooting.md and Ali's own test criteria, so it
-# stays put — and older ones are `.bak.2`, `.bak.3`.
-BACKUP_GENERATIONS = 3
+# How many superseded copies to keep, and where.
+#
+# `hosts.toml.bak` stays exactly where it is and keeps its name: it is quoted in
+# docs/machines.md, docs/troubleshooting.md and Ali's own test criteria (R5d,
+# R5f), so moving it would break a check somebody runs by hand. It is the most
+# recent copy.
+#
+# Everything older goes in `backups/`, timestamped, capped. In a subdirectory
+# rather than scattered beside the real file, because that directory is Ali's:
+# anything this tool leaves there should be obviously the tool's and obviously
+# disposable, and `hosts.toml.bak.1` through `.5` sitting next to the file he
+# maintains by hand is neither.
+BACKUP_GENERATIONS = 5
+BACKUP_DIRECTORY = "backups"
 
 
 def _keep_a_copy(path: Path) -> None:
     """Put the current content somewhere recoverable, and PROVE that it is.
 
-    Two things were wrong here and they are the same promise broken twice.
+    Three things were wrong here and they are one promise broken three ways.
 
-    The copy was one deep and overwritten on every write, so the sequence that
+    The copy was ONE DEEP and overwritten on every write, so the sequence that
     actually happens — a move, then noticing something is wrong, then another
     move — destroyed the only copy of the state you wanted back. Ali's host list
-    is hand-maintained and has no other copy anywhere on this machine.
+    is hand-maintained and has no other copy anywhere on this machine. A `.bak`
+    whose content differs from the one about to replace it is now archived
+    before it is overwritten, never destroyed.
 
-    And it was written with `write_text` and never read back. A backup nobody
-    has verified is a belief, not a copy; the whole reason this module makes a
-    backup is that the next step rewrites the only file there is.
+    It was written with `write_text` and NEVER READ BACK. A backup nobody has
+    verified is a belief, not a copy, and the very next step rewrites the only
+    file there is. It is now fsynced and compared byte for byte.
 
-    So: rotate, copy, fsync, read back, compare. Anything short of a byte-exact
-    match raises, and the rewrite does not happen. Declining to write is a
-    recoverable outcome. Writing over the only copy of a file nobody can
-    reproduce is not.
+    And a backup that cannot be written at all used to let the rewrite proceed
+    anyway. It now refuses. Declining a move is recoverable; doing one that
+    cannot be undone is not.
     """
     content = path.read_bytes()
     backup = path.with_name(path.name + ".bak")
 
-    # Rotate oldest-first, so a failure part-way through cannot leave two
-    # generations holding the same content and one lost. `os.replace` is a
-    # rename, so nothing is read or rewritten.
-    if backup.exists() and backup.read_bytes() != content:
-        for generation in range(BACKUP_GENERATIONS, 1, -1):
-            older = path.with_name(f"{path.name}.bak.{generation}")
-            newer = (backup if generation == 2
-                     else path.with_name(f"{path.name}.bak.{generation - 1}"))
-            if newer.exists():
-                os.replace(newer, older)
+    try:
+        # The copy about to be overwritten is a state nobody has since
+        # reproduced. Archived by RENAME, so it is never held in one place only.
+        if backup.exists() and backup.read_bytes() != content:
+            _archive(backup, path)
 
-    _write_durably(backup, content, like=path)
+        _write_durably(backup, content, like=path)
+    except OSError as exc:
+        raise HostFileError(
+            f"the previous {path.name} could not be copied ({exc.strerror or exc}), "
+            f"so this rewrite could not be undone. Nothing was written."
+        ) from exc
 
     if backup.read_bytes() != content:
         raise HostFileError(
@@ -407,6 +418,38 @@ def _keep_a_copy(path: Path) -> None:
             f"it was copied from, so the previous host list is not recoverable. "
             f"Nothing was written."
         )
+
+    # Pruned AFTER the new copy is on the disk, never before: a prune that runs
+    # first and then fails to write leaves fewer copies than it started with.
+    _prune(path)
+
+
+def _archive(backup: Path, path: Path) -> None:
+    """Move a superseded backup into `backups/`, named for when it was taken."""
+    from datetime import UTC, datetime
+
+    directory = path.parent / BACKUP_DIRECTORY
+    directory.mkdir(exist_ok=True)
+    stamp = datetime.fromtimestamp(backup.stat().st_mtime, UTC).strftime("%Y%m%dT%H%M%SZ")
+    target = directory / f"{path.name}.{stamp}.bak"
+    # Two rewrites inside one second is not a hypothetical — `move` retires one
+    # entry and adds another — and a colliding name would silently drop a copy.
+    suffix = 2
+    while target.exists():
+        target = directory / f"{path.name}.{stamp}-{suffix}.bak"
+        suffix += 1
+    os.replace(backup, target)
+
+
+def _prune(path: Path) -> None:
+    """Keep the newest `BACKUP_GENERATIONS` archived copies, drop the rest."""
+    directory = path.parent / BACKUP_DIRECTORY
+    if not directory.is_dir():
+        return
+    kept = sorted(directory.glob(f"{path.name}.*.bak"),
+                  key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in kept[BACKUP_GENERATIONS:]:
+        stale.unlink(missing_ok=True)
 
 
 def _write_durably(path: Path, content: str | bytes, *, like: Path | None = None) -> None:

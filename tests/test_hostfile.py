@@ -210,7 +210,8 @@ def test_a_second_rewrite_does_not_destroy_the_first_one_s_copy(tmp_path):
                                "comfy-linux-us-central1-c", "added"})
 
     assert path.with_name("hosts.toml.bak").read_text(encoding="utf-8") == once
-    assert path.with_name("hosts.toml.bak.2").read_text(encoding="utf-8") == HOSTS, (
+    archived = list((tmp_path / "backups").glob("hosts.toml.*.bak"))
+    assert [item.read_text(encoding="utf-8") for item in archived] == [HOSTS], (
         "the original is still recoverable after a second write"
     )
 
@@ -224,7 +225,51 @@ def test_an_unchanged_file_does_not_churn_the_generations(tmp_path):
         apply(path, HOSTS, expect={"local", "comfy-win", "comfy-linux"})
 
     assert path.with_name("hosts.toml.bak").read_text(encoding="utf-8") == HOSTS
-    assert not path.with_name("hosts.toml.bak.2").exists()
+    assert not (tmp_path / "backups").exists(), "nothing was archived"
+
+
+def test_only_the_newest_few_superseded_copies_are_kept(tmp_path):
+    """Capped, and pruned oldest-first AFTER the new copy is on the disk — a
+    prune that ran first and then failed to write would leave fewer copies than
+    it started with."""
+    import time
+
+    from comfy_qa.hostfile import BACKUP_GENERATIONS
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    for port in range(9000, 9000 + BACKUP_GENERATIONS + 3):
+        apply(path, HOSTS.replace("port = 8188", f"port = {port}"),
+              expect={"local", "comfy-win", "comfy-linux"})
+        time.sleep(0.01)   # the archive is named to the second; keep them ordered
+
+    archived = list((tmp_path / "backups").glob("hosts.toml.*.bak"))
+    contents = [item.read_text(encoding="utf-8") for item in archived]
+    assert len(archived) == BACKUP_GENERATIONS
+
+    # Oldest-first: the very first state is gone, the recent ones are not. A
+    # copy is archived one write AFTER it stops being live — it spends that
+    # write as `.bak` — so the newest archived state is two writes behind.
+    assert HOSTS not in contents, "the oldest was pruned"
+    newest = max(archived, key=lambda item: item.stat().st_mtime)
+    assert f"port = {9000 + BACKUP_GENERATIONS}" in newest.read_text(encoding="utf-8")
+
+
+def test_a_backup_that_cannot_be_written_refuses_the_rewrite(tmp_path):
+    """The strongest form of the rule: a move that cannot be undone does not
+    happen. The host list is hand-maintained and has no other copy anywhere."""
+    path = tmp_path / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    original_mode = tmp_path.stat().st_mode
+    tmp_path.chmod(0o500)               # r-x: readable, nothing new lands
+    try:
+        with pytest.raises(HostFileError, match="could not be copied"):
+            apply(path, renamed(), expect={"local", "comfy-win", "comfy-linux",
+                                           "comfy-linux-us-central1-c"})
+    finally:
+        tmp_path.chmod(original_mode)
+
+    assert path.read_text(encoding="utf-8") == HOSTS, "it was rewritten anyway"
 
 
 def test_a_backup_that_does_not_read_back_stops_the_write(tmp_path):

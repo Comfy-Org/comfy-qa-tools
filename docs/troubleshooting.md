@@ -1396,9 +1396,10 @@ is the one place this tool rewrites a file you maintain by hand, so it refuses
 rather than guesses, and it refuses **before** writing anything. The previous file
 is copied to `hosts.toml.bak` first — read back and compared before anything is
 written, so a copy that did not land stops the rewrite rather than being assumed —
-and the swap is atomic and flushed to the disk. Older copies rotate to
-`hosts.toml.bak.2` and `.bak.3`, so a second move does not destroy the first
-one's backup.
+and the swap is atomic and flushed to the disk. When that copy is superseded it is
+archived to `backups/hosts.toml.<when>.bak` rather than overwritten, five deep, so
+a second move does not destroy the first one's backup. Everything in `backups/` is
+this tool's and safe to delete.
 
 All of these arrive at the last step of a move, which means **the new box already
 exists and is billing**. The host list not being updated is recoverable; not
@@ -1428,6 +1429,14 @@ the file the rewrite did not expect — send the file and the command.
 
 The name given does not appear in `hosts.toml`. `comfy-qat list` shows what is
 declared.
+
+**`the previous <file> could not be copied (<reason>), so this rewrite could not be undone. Nothing was written.`**
+
+The existing host list could not be copied to `hosts.toml.bak`, so the rewrite
+would have been one you could not undo. Nothing was written and `hosts.toml` is
+exactly as it was. Usually the config directory is not writable, or the volume is
+full: `ls -ld ~/.config/comfy-qa-tools` and `df -h ~` between them say which. Fix
+that and run the move again.
 
 **`the backup of <file> did not read back the same as the file it was copied from, so the previous host list is not recoverable. Nothing was written.`**
 
