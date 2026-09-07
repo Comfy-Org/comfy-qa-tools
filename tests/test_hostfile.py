@@ -98,6 +98,44 @@ def test_a_block_with_no_port_line_is_refused_rather_than_silently_colliding():
                        renamed_port=8193, added=ADDED)
 
 
+def test_a_rename_drops_the_line_ending_on_the_header_it_rewrites():
+    """The port line's defect, on the header line, and still open.
+
+    PINS: current behaviour. `_HEADER` ends `[ \t\r]*$`, so a CRLF header's `\r`
+    is CONSUMED by the match and `body_start` falls after it. The body then
+    begins with a bare `\n`, and the reconstruction writes back group 1 (the
+    indentation) but never the line ending — so the rewritten header is the one
+    LF line in a file whose every other line ends CRLF. It parses, so `apply`
+    does not refuse it, and git then reports the whole file as changed.
+
+    Found by running a read-only copy of the real host list through
+    `rename_and_add` in CRLF. The only other CRLF test in this file exercises
+    `without`, which never rebuilds a header and so cannot show this.
+
+    FAILS ON: the `== 1` below. The fix is the one the port line already has —
+    capture the ending and put it back — after which this is 0. `added` is CRLF
+    here deliberately, so the count is this module's seam and not the caller's.
+    """
+    text = HOSTS.replace("\n", "\r\n")
+    added = ADDED.replace("\n", "\r\n")
+    assert lone_line_feeds(text) == 0, "the input is uniformly CRLF"
+
+    out = rename_and_add(text, name="comfy-linux", renamed="comfy-linux-z",
+                         renamed_port=8195, added=added)
+
+    assert "[hosts.comfy-linux-z]" in out
+    # CURRENT: exactly one, and it is the header this rename rewrote.
+    assert lone_line_feeds(out) == 1
+    assert "[hosts.comfy-linux-z]\n" in out
+    assert "[hosts.comfy-linux-z]\r\n" not in out
+
+
+def lone_line_feeds(text: str) -> int:
+    """LF characters not preceded by CR — the lines that are not CRLF."""
+    return sum(1 for index, char in enumerate(text)
+               if char == "\n" and (index == 0 or text[index - 1] != "\r"))
+
+
 # --- apply(): nothing reaches the file unless it is right --------------------
 
 def test_a_result_that_would_not_parse_never_lands(tmp_path):
