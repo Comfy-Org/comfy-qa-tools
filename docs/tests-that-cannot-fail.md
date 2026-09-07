@@ -45,7 +45,7 @@ assert any(f"comfy-qat {command}" in row for row in rows)
 
 The guard on that fix is a test proving prose cannot satisfy it.
 
-## 2. A hand-maintained list nothing derives
+## 2. A list that nothing prunes
 
 A tuple or set naming the things to check, updated by remembering.
 
@@ -61,9 +61,43 @@ It fails open in **two directions**, and this repo has now had one of each:
   how `disconnect` went unnoticed — the test that would have caught it was
   written for two other commands.
 
-Derive the membership from the source instead, so a new member cannot arrive
-without either satisfying the rule or failing the test. **Then read section 7,
-because that fix has its own shape.**
+**This class was first written down with the wrong rule, and the corrected one is
+the point of it.** It said: *derive the set, never enumerate it.* That is wrong,
+and following it does harm. Derivation is not always possible, and somebody
+trying to obey the rule has two bad exits — contort the code until a derivation
+exists, or **loosen a matcher until no list is needed**, which trades a visible
+list for an invisible over-match. Both are worse than what they replace.
+
+> **A hand-maintained list is not the defect. An unguarded one is.**
+
+The counter-example is in this repo and it settles it. `NOT_OUR_MESSAGE` in
+`tests/test_docs.py` exempts seven troubleshooting entries from the check that
+every entry describes something the tool still says — four are other people's
+words (the shell's `command not found`, torch's CUDA assertion, gcloud's
+permission refusal), three are ours, built so heavily from interpolation that no
+literal run is long enough to match. It is hand-typed, and **it is guarded in
+both directions**:
+
+- `test_no_exempted_entry_has_quietly_become_checkable` returns an entry to the
+  check the moment its message grows a run long enough to match — so the
+  exemption cannot outlive its reason;
+- `test_no_exempted_entry_has_left_the_page` fails on an exemption for an entry
+  nobody has any more — so the list cannot silently accumulate.
+
+**One direction alone is half a guard.** Its own comment states the standard
+better than a rule could: *"an allowlist nobody prunes is the hand-maintained
+list coming back."*
+
+Re-read the two failures above against that, and they still stand — for a
+different reason than first recorded. `ERROR_TYPES` was not a defect because a
+human typed it; it was a defect because **nothing pruned it** when two classes
+dropped out. `BILLABLE_ENDINGS` likewise: a new command that leaves a box running
+could join the codebase and nothing made the list account for it.
+
+**So the detection question is not "who typed this?" but "what prunes this?"**
+Derive the membership where you can — it is the cheapest guard available. Where
+you cannot, keep the list and add the two tests that stop it rotting in either
+direction. **Then read section 7, because deriving has its own shape.**
 
 ## 3. A test that vanishes rather than fails
 
@@ -85,9 +119,10 @@ suite is green, the diff is mostly additions — reported success.
 
 A rising count is not evidence that nothing went missing, and neither is a green
 run: **deleted tests do not fail.** `tests/test_suite_integrity.py` asserts the
-file list directly, which is a hand-maintained list (section 2) accepted
-deliberately, because the failure it catches is one no amount of reading the
-numbers will.
+file list directly — a hand-maintained list accepted deliberately, and by
+section 2's corrected standard a correct one: it changes only when a file is
+added or renamed, the fix is one line, and the failure it catches is one no
+amount of reading the numbers will.
 
 This shape has been found three separate times, most recently inside a commit
 written to eliminate it.
@@ -696,6 +731,13 @@ When you extend this page, extend this section too. "We checked and it was fine"
 is worth writing down only if you can say what would have happened had it not
 been.
 
+**And treat a moving count as a question, not a footnote.** Class 2's correction
+was found because someone noticed the suite's *skip* count go from two to seven
+in one pass and went to look. A skip hides a defect exactly as an `xfail` does,
+and a number that moved without anyone deciding it should is the cheapest
+available signal that something changed underneath you. It is the same instinct
+as class 3's rising total — the difference is only which number moved.
+
 ## The only standard that survived contact
 
 **After writing a test, delete the fix and watch it fail by name.**
@@ -773,8 +815,10 @@ concludes the tool checks the ceiling. Measured:
 So the defect is not a missing feature. It is **an invariant held at two of three
 call sites** — and nobody ever wrote down "the commands that check the ceiling"
 as a list, which is exactly what effectively exists. That is class 2, one level
-up from the tests and into the product: a hand-maintained set nothing derives,
-failing open on the member somebody forgot to add.
+up from the tests and into the product: **a set nothing prunes**, failing open on
+the member somebody forgot to add. Note which half of class 2 it is — the list
+here is not merely hand-typed, it is *unwritten*, so there was never anything to
+prune it against.
 
 **And the remedy is the same move for the third time tonight.** The billable
 guard already derives *every command that can start a machine* from the three
@@ -787,8 +831,9 @@ One pass over a set that is already computed. Class 6's remedy was *assert the
 relationship, not the pattern*; class 7's was *assert the relationship, not the
 membership*; this is the same instruction a third time, arrived at from a
 different direction. **Three independent instances make it a principle rather
-than a trick:** when a rule is supposed to hold across a set, derive the set and
-assert the rule over it — never enumerate the members and trust the list.
+than a trick:** when a rule is supposed to hold across a set, make something
+other than memory decide who is in it — derive the set where you can, and where
+you cannot, guard the list so it cannot rot in either direction.
 
 *Closed in `cdeeddd`: the check now runs before anything is created, so a move
 that cannot fit is refused up front and costs nothing.*
@@ -823,7 +868,7 @@ is class 7 in two lines. A reader scanning for "is this covered" sees the
 constant's name in an assertion and stops looking.
 
 Two independent instances, in unrelated parts of the codebase, with the same
-remedy: **derive the set the rule applies to, then assert the rule over it.**
+remedy: **make something other than memory decide the set the rule applies to.**
 That is what makes this a claim rather than an anecdote.
 
 ## A guard whose printed remedy defeats it
