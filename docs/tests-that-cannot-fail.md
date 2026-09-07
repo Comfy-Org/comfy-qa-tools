@@ -243,7 +243,7 @@ Nothing new was flagged when the pattern was widened, so the blind spot was
 benign in outcome. It was not benign in principle, and it would not have stayed
 benign.
 
-**The remedy is the transferable part, and it is not "widen the pattern":**
+**The remedy is the transferable part, and it is not "widen the pattern".**
 
 > The cure is the assertion, not the wider pattern.
 
@@ -284,15 +284,36 @@ and the assertion then clears a command whose body contains any of:
 
 | command | included because | cleared because |
 |---|---|---|
+| `create_cmd` | `build` | `comfy-qat down` |
 | `up_cmd` | `bring_up` | `comfy-qat down`, `stop_paying` |
-| `disconnect_cmd` | `put_away` | `comfy-qat down`, `put_away` |
 | `down_cmd` | `put_away` | **`put_away`** |
+| `go_cmd` | `_bring_up`, `_serve` | **`_serve(`** |
+| `switch_cmd` | `_bring_up`, `_serve` | **`_serve(`, `put_away`** |
 
-`up_cmd` is genuinely independent. `down_cmd` was cleared *only* by the token
-that included it — so every money sentence in it could have been deleted and the
-test would have stayed green. One command rather than three, but it was the
+`create_cmd` and `up_cmd` are genuinely independent. The other **three** —
+`down_cmd`, `go_cmd`, `switch_cmd` — were cleared only by tokens drawn from the
+inclusion vocabulary itself, so every money sentence in them could have been
+deleted and the test would have stayed green. One of the three is the
 `--keep-running` branch, which this suite has already been wrong about twice in
 opposite directions.
+
+> **Three of the six passed on nothing else.** — the fix's own comment.
+
+**Read the next paragraph before you trust any table on this page**, because
+this one was wrong when first published and the way it was wrong is class 2.
+
+I originally reported **one** command, not three, and defended the narrower
+number as a correction to somebody else's count. It came from a measuring script
+into which I had typed the three commands I intended to check —
+`("disconnect_cmd", "down_cmd", "up_cmd")` — and then reported a result about
+six. `go_cmd` and `switch_cmd` were never examined. **A hand-typed list nothing
+derives, in my own measurement of the class about hand-typed lists**, producing a
+confident narrowing from a sample I had chosen myself.
+
+Nothing about the method looked wrong while I was doing it. The script ran, the
+output was specific, the three commands it named were correctly analysed. That
+is what this whole page is about, and it applies to the instrument you are
+holding as much as to the code you are pointing it at.
 
 **Closed in `e698b63`.** The two vocabularies are now disjoint — the clearing set
 is `("comfy-qat down", "stop_paying", "_with_the_bill")`, with `_serve(` and
@@ -547,20 +568,51 @@ A page listing only what was found reads as a catalogue of disasters. This
 section is the other half, and it is the more useful one, because it puts a
 **bound** on class 8 rather than leaving an absence of evidence.
 
-The opposite pole was injected globally, one at a time, and the suite re-run:
+**The instrument, because it is what makes this evidence rather than assertion:**
+inject the *opposite pole* of the ambient value globally, in `conftest`, so that
+only tests which set the value themselves are unaffected. Green then means no
+test depended on the ambient value.
 
-| forced to the other value | result |
+Measured at `576738c`, against a baseline of 3839 passed / 66 xfailed.
+
+**Green — nothing depended on it:**
+
+| forced to | result |
 |---|---|
-| `sys.platform` | green |
-| `shutil.which` (binary absent) | green |
-| `COLUMNS` | green |
-| `TERM` / `NO_COLOR` | green |
+| `sys.platform` → `"linux"` | 3839 passed |
+| `shutil.which` → always found | 3839 passed |
+| `COLUMNS` → 40 (Click wraps to terminal width) | 3839 passed |
+| `TERM` → `"dumb"`, `NO_COLOR` → `"1"` | 3839 passed |
+| whole suite in **reverse file order** | green *(at `e940b0b`, not re-run since)* |
+| every test file alone in its own process | no isolated failures |
+| canary `hosts.toml` under a fake `HOME`, md5 before and after | identical — **the suite does not write the host list** |
 
-No test depended on any of those ambient values. That is a real measurement, and
-it is only meaningful because **the same instrument reported both outcomes** — the
-zone-latency probe was found by exactly this method, so the method demonstrably
-detects what it is looking for. An instrument that had only ever returned "clean"
-would be class 4.
+**Not green — and these rows are the more useful ones**, because they fail on a
+fresh machine rather than passing vacuously, which is the honest direction:
+
+| forced to | result |
+|---|---|
+| `shutil.which` → always `None` | 5 failed — 2 in `test_shell_access`, 3 in `test_tunnel` |
+| `PATH` → `/usr/bin:/bin` | 2 failed — `test_shell_access` |
+| `HOME` → empty tmpdir | 1 failed — `test_readme.py::test_bare_comfy_qat_lists_your_machines` |
+
+That last one is **a class 8 member, not mere fragility**: the test invokes the
+CLI with no `--config` and no monkeypatch of the config path, so it reads the
+developer's real host list. Both directions were measured — it fails with `HOME`
+empty, and passes again with a one-host canary — so the assertion needs the file
+to exist and nothing more. The very next test in the same file *does* patch the
+config path. The seam was known and not applied.
+
+**Axes nobody has tested**, so that this section does not imply more than it did:
+CWD, `PYTHONHASHSEED`, `LANG` as distinct from `LC_ALL`, and any capsys-versus-
+CliRunner stream difference.
+
+**Why this counts as a bound rather than an absence.** Two *different*
+instruments were used here — a socket tripwire and an environment injector — and
+**each returned both outcomes**. The socket tripwire came back clean at one
+commit and caught two tests at another; the injector came back clean on four axes
+and caught three. Neither has only ever said "clean". An instrument that had
+would be class 4, and its silence would mean nothing.
 
 When you extend this page, extend this section too. "We checked and it was fine"
 is worth writing down only if you can say what would have happened had it not
@@ -598,6 +650,29 @@ trusted.** If your assertion's failure message tells someone how to make it pass
 check that the cheapest way to follow that advice is also the correct one. Where
 it is not, say what the test is actually protecting, and let the reader work out
 the remedy from the rule rather than from the error string.
+
+**Closed, and adversarially verified — not merely fixed.** The guard was re-run
+in both directions against a later commit: a command that starts a box and defers
+its ending to `_serve` **passes, and correctly**, because `_serve` really does
+print the stop-paying line on its success path; a command that calls `bring_up`
+and never reaches `_serve` **fails, by name**. That is exactly the case class 7's
+success-path half was written for — `bring_up`'s bill mentions are all `fix=` and
+`undo=`, so they do not clear a success ending, and the guard says so.
+
+And the failure text no longer hands over the shortcut that defeated it:
+
+> Adding it to `BILLABLE_ENDINGS` is **not** the fix — that is the list of
+> commands this rule applies to, not the list of exceptions to it.
+
+That sentence is the lesson of the class, printed at the moment somebody is about
+to repeat it. If you write a guard whose remedy could be misread, the error
+string is where to say so.
+
+**One trap for anyone re-testing this.** Re-running the *original* injected
+command against the fixed guard comes back green, and for a minute looks like the
+fix failing. It is not: that command called `_serve`, so it was cleared for a
+real reason. Change the injected command to skip `_serve` before concluding
+anything.
 
 ---
 
