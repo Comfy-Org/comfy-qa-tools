@@ -441,6 +441,118 @@ def test_every_error_has_a_troubleshooting_entry(message):
     )
 
 
+# --- and the commands we hand over to gcloud instead of running -------------
+#
+# The sibling of the check above. That one asks whether a `comfy-qat ...` we
+# offer is a command that exists; this asks whether a raw `gcloud ...` we hand
+# over is one we should be handing over at all.
+#
+# D29 filed this as seven sites where "the tool could run it and does not". Every
+# one turned out to have a reason, and two of them are the REPAIR for a real
+# defect: `create.py` used to print `comfy-qat down <gce instance>` for a box
+# absent from the host list — a command that cannot resolve — and printing raw
+# gcloud with the zone is the fix. Acting on the row as filed would have put that
+# defect back.
+#
+# So this does not forbid hand-overs. It pins the set, so a NEW one is a decision
+# somebody makes on purpose and writes a reason for, rather than a habit that
+# spreads. Reading the strings without the surrounding reasons is exactly how the
+# row came to be filed twice.
+
+# The gcloud verbs that CHANGE something. `list` and `describe` are absent on
+# purpose: offering somebody a read-only look at their own project is advice, not
+# work this tool declined to do.
+MUTATING_GCLOUD = re.compile(
+    r"gcloud (?:compute (?:instances (?:stop|start|delete|create|add-access-config)"
+    r"|disks delete|snapshots delete|reset-windows-password|ssh)"
+    r"|auth login|config set)")
+
+# Every hand-over, and why it is handed over rather than run. Five reasons, and
+# each site says the same thing at greater length where it lives.
+GCLOUD_BY_DESIGN = {
+    "auth.py": "gcloud auth login and config set project are interactive and belong to the user",
+    "setup.py": "the same two, from the setup walkthrough",
+    "gcloud.py": "the same two again, as the `fix` carried by the errors this module "
+                 "raises; and reset-windows-password, which is credential-bearing",
+    "tunnel.py": "gcloud auth login, when a tunnel dies because the session expired",
+    "create.py": "the box is in no host list, so `comfy-qat down` cannot reach it; "
+                 "and the interrupt undo, where the process is dying and can run nothing",
+    "host.py": "boxes this tool did not declare — it only operates what you declare — "
+               "and reset-windows-password, which is credential-bearing",
+    "lifecycle.py": "a ComfyUI this run did not start, and add-access-config, which "
+                    "changes the box's networking on a hypothesis the tool cannot confirm",
+    "relocate.py": "a box the host list cannot name after a failed rewrite; the instance "
+                   "delete that destroys an install ('handed over, never run'); and the "
+                   "disk and snapshot deletes, which `remove_leftovers` DOES run under "
+                   "--clean — the printed form is the manual alternative",
+}
+
+
+def _gcloud_handovers() -> set[str]:
+    """Every module OFFERING a raw gcloud command that changes something.
+
+    `_in_command_position`, borrowed from the check above, and for the same
+    reason it exists there: `gcloud auth login` appears in prose as often as in a
+    fix line — "`gcloud auth login` opens a browser and prompts" is a sentence
+    about the command, not an offer of it. Matching anywhere in the string finds
+    four modules that hand over nothing.
+    """
+    found = set()
+    for where, text in _offered_strings():
+        for line in text.splitlines():
+            match = MUTATING_GCLOUD.search(line)
+            if match and _in_command_position(line, match.start()):
+                found.add(where.split(":")[0])
+    return found
+
+
+def _offered_strings() -> list[tuple[str, str]]:
+    """String constants MINUS docstrings.
+
+    Command position is not enough on its own here. A docstring explaining a
+    command quotes it in backticks — "`gcloud auth login` opens a browser and
+    prompts" — and a backtick is exactly the punctuation that marks an offer, so
+    prose about the tool reads as the tool offering something. Four modules
+    joined the list that way and hand over nothing.
+
+    A docstring documents; a fix line offers. That is the line.
+    """
+    docstrings = set()
+    for path in sorted(PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef
+                              | ast.ClassDef):
+                continue
+            first = node.body[0] if node.body else None
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                docstrings.add(f"{path.name}:{first.value.lineno}")
+    return [(where, text) for where, text in _string_constants()
+            if where not in docstrings]
+
+
+def test_every_module_handing_over_raw_gcloud_has_a_reason():
+    """A new hand-over is a decision, not a habit — so it fails until somebody
+    writes down why the tool is not doing the work itself."""
+    undeclared = sorted(_gcloud_handovers() - set(GCLOUD_BY_DESIGN))
+    assert not undeclared, (
+        f"{', '.join(undeclared)} hands over a raw gcloud command that changes "
+        f"something, and GCLOUD_BY_DESIGN does not say why. Either run it — the "
+        f"tool has a Gcloud and a host list — or add the reason it cannot."
+    )
+
+
+def test_no_module_is_listed_as_handing_over_and_does_not():
+    """And the other direction, so the list shrinks when a hand-over becomes a
+    thing the tool does itself. D64 closed one that way."""
+    stale = sorted(set(GCLOUD_BY_DESIGN) - _gcloud_handovers())
+    assert not stale, (
+        f"{', '.join(stale)} is in GCLOUD_BY_DESIGN and no longer hands over "
+        f"anything. Remove it — the exemption is describing something gone."
+    )
+
+
 # --- and the other direction: an entry that describes nothing real -----------
 #
 # The guard above checks that every message the package can print has an entry.
