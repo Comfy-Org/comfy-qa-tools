@@ -126,7 +126,32 @@ def gcloud_numpy(gc: Gcloud) -> tuple[str, str] | None:
     # this machine; other installs put it under /usr/lib, which is root-owned.
     # A setup command that asks for a root password is a different command, and
     # teaching people to type one into a QA tool is worth more than a fast tunnel.
-    root = Path(python).resolve().parent.parent
+    # ASK THE INTERPRETER, do not derive it. `Path(python).resolve()` follows
+    # `bin/python3.x` OUT of the virtualenv to the base interpreter it was built
+    # from, so the two `.parent`s then landed on Homebrew's Cellar rather than on
+    # gcloud's venv. Measured here:
+    #
+    #   python_location  ~/.config/gcloud/virtenv/bin/python3.14
+    #   derived          /opt/homebrew/Cellar/python@3.14/.../Versions/3.14
+    #   sys.prefix       ~/.config/gcloud/virtenv        <- where pip installs
+    #
+    # Both directions bite. A venv the user owns, built on a root-owned
+    # /usr/bin/python3, is judged UNWRITABLE and skipped — and the skip message
+    # then advises `sudo <venv>/bin/python -m pip install`, which leaves
+    # root-owned files inside a user's virtualenv. And an unwritable venv built
+    # on a writable base was waved through.
+    #
+    # The probe below already runs this interpreter; ask it the same way.
+    try:
+        prefix = subprocess.run(
+            [python, "-c", "import sys; print(sys.prefix)"],
+            capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not prefix:
+        return None
+    root = Path(prefix)
     if not os.access(root, os.W_OK):
         return python, f"its Python is not writable by you ({root})"
     return python, ""
@@ -171,7 +196,7 @@ def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, skip: bool = False) -> None:
         return
 
     p.say(f"gcloud's tunnel is faster with numpy; installing into its own Python "
-          f"({Path(python).resolve().parent.parent})")
+          f"({Path(python).parent.parent})")
     try:
         done = subprocess.run(
             [python, "-m", "pip", "install", "--quiet", "--only-binary=:all:",

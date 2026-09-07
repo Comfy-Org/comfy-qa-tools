@@ -157,11 +157,24 @@ def run_checks(gc: Gcloud) -> list[Check]:
     # slower tunnel. It is the only check here that blocks nothing.
     from .setup import gcloud_numpy
 
-    if gcloud_numpy(gc) is None:
+    wanted = gcloud_numpy(gc)
+    if wanted is None:
         results.append(Check("numpy", True, "gcloud's tunnel is on the fast path"))
     else:
+        _, blocked = wanted
+        # `ok=True` when setup CANNOT install it. `status` exits 1 on any failed
+        # check, so a root-owned gcloud python — which setup deliberately skips
+        # rather than escalating to sudo — gave a permanent non-zero exit with a
+        # fix that loops back to the command that already declined. Same for
+        # anyone who ran `setup --no-numpy`.
+        #
+        # A slower tunnel is not a readiness failure. The row still says so, and
+        # the row is the point; the exit code was claiming something it should
+        # not.
         results.append(Check(
-            "numpy", False,
+            "numpy", bool(blocked),
+            f"not installed and {blocked} — tunnels are slower than they need "
+            "to be" if blocked else
             "not installed — every tunnel is slower than it needs to be",
             "comfy-qat setup",
         ))

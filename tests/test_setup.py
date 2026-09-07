@@ -284,3 +284,43 @@ def test_a_global_only_allowance_is_still_reported(tmp_path):
     p = prompts()
     run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
     assert any("project-wide allowance" in line for line in p.said)
+
+
+# --- gcloud's python is a venv, and .resolve() walks out of it ----------------
+
+def test_the_writability_check_looks_at_the_venv_not_its_base(tmp_path):
+    """`Path(python).resolve()` follows bin/python OUT of a virtualenv to the
+    base interpreter it was built from, so the check landed on Homebrew's Cellar
+    rather than on gcloud's venv. Measured on the real install here.
+
+    Both directions bite. A venv the user owns, built on a root-owned
+    /usr/bin/python3, was judged UNWRITABLE and skipped — and the skip message
+    advises `sudo <venv>/bin/python -m pip install`, which leaves root-owned
+    files inside a user's virtualenv. And an unwritable venv built on a writable
+    base was waved through, which is what this builds.
+    """
+    import subprocess
+    import sys
+
+    from comfy_qa.setup import gcloud_numpy
+
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True,
+                   capture_output=True)
+    python = venv / "bin" / "python"
+    venv.chmod(0o555)
+    try:
+        class Fake:
+            def python_location(self):
+                return str(python)
+
+        found = gcloud_numpy(Fake())
+    finally:
+        venv.chmod(0o755)
+
+    assert found is not None, "an unwritable venv was waved through"
+    _, blocked = found
+    assert blocked, "it should refuse rather than try"
+    assert str(venv) in blocked, (
+        f"it named the wrong directory: {blocked}"
+    )
