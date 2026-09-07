@@ -42,21 +42,12 @@ that stops.
 A syntax error, quoted from the parser with the line it failed on. The usual cause
 is an unquoted string — every value except `port` needs quotes.
 
-**`unknown host 'comfy-lnux'. Declared: local, comfy-win`**
-You named a machine that is not in the host list. The message lists the names that
-are, which is faster than opening the file.
-
 **`host 'comfy-win': expected a table, got str`**
 Something under `[hosts]` is a bare value rather than a table — usually
 `hosts.comfy-win = "..."` where `[hosts.comfy-win]` was meant.
 
 **`host 'comfy-win': kind must be 'local' or 'gce', got None`**
 A host has a missing or misspelled `kind`. Those are the only two values.
-
-**`host 'comfy-win': unknown field(s) gce_zoen`**
-A typo. Unknown fields are rejected rather than ignored, so this fails now instead
-of leaving you puzzled later about why the box cannot be found. Check the spelling
-against [hosts.md](hosts.md).
 
 **`host 'comfy-win': kind 'gce' requires gce_zone, gce_project`**
 A cloud host is missing detail needed to locate it in Google Cloud. All of `os`,
@@ -556,8 +547,13 @@ already holding the local port. **The box is running while this is true**, so th
 fix line ends with the command that stops it.
 
 **`gcloud is not installed or not on PATH, so no tunnel can be opened.`**
-The tunnel is `gcloud compute start-iap-tunnel` and nothing else, so there is no
-fallback. Install the SDK from the link in the fix line. Note `gcloud` may be on
+The tunnel is gcloud and nothing else, so there is no fallback. The exact
+invocation is `gcloud compute ssh <instance> --zone=<zone> --project=<project>
+--tunnel-through-iap --quiet -- -N -L 127.0.0.1:<your port>:127.0.0.1:8188`, and
+`comfy-qat open <host> --dry-run` prints it for you — **that is what to look for
+in `ps` when you are hunting your own tunnel.** It is not `start-iap-tunnel`;
+searching for that finds nothing and reads as "the tunnel is gone". Install the
+SDK from the link in the fix line. Note `gcloud` may be on
 your interactive `PATH` and not on the one a script or a launchd job runs with.
 
 **`could not start the tunnel: ...`** and
@@ -665,10 +661,10 @@ gcloud compute instances add-access-config <name> --zone <zone> --project <proje
 ```
 
 A box created by `host move` copies the source instance's networking, so this
-only arises on a box built some other way — or one moved by a version of this
-tool older than 1.0.1.
+only arises on a box built some other way — or one moved before `move` started
+copying that networking.
 
-**`torch on comfy-win-b cannot see the L4 — it is a CPU-only build, so ComfyUI would start and refuse to run`**
+**`torch on comfy-win-b is a CPU-only build and cannot see the L4 — installing the CUDA build instead`**
 Not an error: the box was asked whether ComfyUI could start *before* launching it,
 the answer was no, and the CUDA build is being installed. This check exists
 because the alternative is finding out at launch, on a machine that has already
@@ -834,48 +830,34 @@ your own local ComfyUI, not the cloud one. Use the URL this tool printed —
 `http://127.0.0.1:<the host's port>`, 8191 in `host list`. It is now repeated just
 before the log starts, because ComfyUI's line is the last one you read.
 
-Related, and fixed: a remote ComfyUI used to be launched with `--listen 127.0.0.1`,
-which meant it served on the box's loopback only. An Identity-Aware Proxy tunnel
-arrives on the instance's network interface, never its loopback, so the box was
-serving and unreachable through the only route there is. Remote boxes now bind
-`0.0.0.0`, which is not an exposure — inbound traffic is whatever the GCE firewall
-allows, and the default rules do not include 8188.
+**No firewall rule is involved, and this tool does not create one.** That is worth
+saying plainly here, because it is the wrong turn people take when a box is up,
+tunnelled and serving and the browser still says "refused".
 
-**`could not add the firewall rule (...) — if the browser cannot reach http://127.0.0.1:8191, this is why`**
-ComfyUI's port has to be allowed through two firewalls before a tunnel can reach
-it: the VPC firewall, and the operating system's own. Neither allows 8188 by
-default, so a brand-new box runs ComfyUI on its GPU and the browser says
-"refused" — with the instance up, the tunnel open and the process serving, so
-every layer looks healthy from where it stands.
+It used to be true. When the tunnel was `gcloud compute start-iap-tunnel`, the far
+end was a port on the *instance's network interface*, so ComfyUI had to bind
+`0.0.0.0` and the port had to be allowed through two firewalls — the VPC's and the
+operating system's. Three things to get right, and any one of them failing looked
+exactly like "ComfyUI is not running".
 
-`host go` creates both rules on the first launch and recognises them by name
-afterwards. This message means the VPC rule could not be created — usually the
-account lacks `compute.firewalls.create`. Ask someone who has it for:
-
-```sh
-gcloud compute firewall-rules create comfy-qat-iap-comfyui --network=default \
-  --direction=INGRESS --action=allow --rules=tcp:8188 \
-  --source-ranges=35.235.240.0/20
-```
-
-That range is Google's Identity-Aware Proxy. It does **not** open ComfyUI to the
-internet: reaching the port still requires a tunnel authenticated as somebody
-with access to the project.
-
-**`opening ComfyUI's port to Google's tunnel range only (35.235.240.0/20)`**
-Not an error — the first launch on a project creating the rule above. It appears
-once.
+The tunnel is `ssh -L` now, and it resolves the far address **on the box**. So
+ComfyUI binds `127.0.0.1` as it prefers, nothing is exposed on any interface, and
+no rule is needed at either layer: port 22 is already open, which is how this tool
+has been running commands on the box all along. If the browser cannot reach the
+box, the cause is in this page's other entries — the wrong port, a dead tunnel, or
+a ComfyUI that has not started — never a missing firewall rule. Do not go and ask
+an administrator for `compute.firewalls.create`; you do not need it, and the box
+bills for the round trip.
 
 **`nothing is listening on the machine yet, so there is nothing to tunnel to — starting ComfyUI first`**
 **`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`<name> is running and billing, but ComfyUI is not started on it yet`**
 Not a broken tunnel — an ordering fact, and the one that made `host go` unable to
 work at all on a box that was not already serving.
 
-`gcloud compute start-iap-tunnel` tests the connection before it will serve, and
-refuses when the far port has no listener. So the tunnel cannot exist *before*
-ComfyUI is started, and `go` used to open it first: the tunnel refused, the run
-failed, and the launch it was about to do was the very thing that would have
-fixed it. Now the launch happens first and the tunnel is opened as soon as
+The forward tests the connection before it will serve, and refuses when the far
+port has no listener. So the tunnel cannot exist *before* ComfyUI is started, and
+`go` used to open it first: the tunnel refused, the run failed, and the launch it
+was about to do was the very thing that would have fixed it. Now the launch happens first and the tunnel is opened as soon as
 ComfyUI is listening, from the same watcher that waits for it to answer.
 
 You should not see this from `host go`. From `host open` it means exactly what it
@@ -1011,7 +993,9 @@ Printed under any failed move, last before the fix. One of the four steps —
 snapshot, disk, instance, host list — did not complete, and this is the line that
 says where you stand: the original box is exactly as it was, so you can retry, or
 move by hand. Any half-made snapshot or disk is left behind for you to look at and
-is not cleaned up automatically; delete it in the console once you are done.
+is not cleaned up automatically. You do not have to hunt for it in the console:
+every leftover is named in the tool's own output with the exact `gcloud ... delete`
+line beside it, and `comfy-qat move <host> --clean` removes them for you.
 
 **`http://127.0.0.1:8190 refused the request (401)`**
 Something is there and it wants credentials. A stamp reads ComfyUI's own
@@ -1123,7 +1107,7 @@ leaves you paying for work you cannot use. Each line is followed by the exact
 delete command. Running the move again is the supported recovery — it finds what
 exists and carries on from there — so delete only if you have decided against it.
 
-**`already on the project:`** followed by a disk or a snapshot
+**`an earlier run left this behind, and it is billing:`** followed by a disk or a snapshot
 An earlier `host move` did not finish, and what it created is still there and still
 billing. This is a report, not an error — the move carries on and reuses what it
 can, which is what makes a failed move cheap to retry. Each line is followed by the

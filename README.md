@@ -296,17 +296,23 @@ gce_project  = "your-project-id"
 port         = 8190
 ```
 
-Two rules are enforced offline, before anything else runs:
+Seven rules are enforced offline, before anything else runs. The two you meet
+first:
 
 - **No cloud host may use 8188.** That is the local ComfyUI's port; a tunnel on it
   would silently point you at the wrong machine, so it is refused, not warned about.
 - **No two hosts may share a port.** If two do, you cannot tell which one you reached.
 
+The other five — one box per cloud instance, no two names differing only in case,
+`local` reserved for this machine, no `gce_` fields on a `local` host, and a name
+that is actually typeable — are in [`docs/hosts.md`](docs/hosts.md) with the
+reason for each.
+
 Unknown fields are rejected rather than ignored, and the message names the typo and
 what it was probably meant to be:
 
 ```
-host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?).
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.
 ```
 
 Switching OS means switching host: one box per OS, and nothing is ever reimaged.
@@ -347,6 +353,7 @@ That only ever happens on a declared `gce` host, never locally.
 [getting started](docs/getting-started.md) · [every command](docs/commands.md) ·
 [the everyday loop](docs/machines.md) · [the host list](docs/hosts.md) ·
 [troubleshooting](docs/troubleshooting.md) · [cost](docs/cost.md) ·
+[when your session expires](docs/session-expiry.md) ·
 [test criteria](docs/test-criteria.md)
 
 ## Design

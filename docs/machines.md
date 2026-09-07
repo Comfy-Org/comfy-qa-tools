@@ -241,7 +241,7 @@ comfy-qat list
 ```
 NAME         KIND   OS                   GPU   URL                    STATE
 local        local  -                    -     http://127.0.0.1:8188  -
-comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  -
+comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  not tunnelled
 comfy-linux  gce    Ubuntu 22.04         A100  http://127.0.0.1:8191  tunnelled
 ```
 

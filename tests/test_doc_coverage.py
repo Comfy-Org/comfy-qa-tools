@@ -210,3 +210,44 @@ def test_the_stem_rule_does_not_swallow_an_unrelated_id():
     check went quiet.
     """
     assert "N1"[:2] == "N1"
+
+
+def test_the_command_reference_exists_and_is_not_a_stub():
+    """`docs/commands.md` could be deleted and this suite would stay green.
+
+    Established by reading the tests rather than by trying it: `test_docs`'s
+    stub check is parametrized over getting-started, machines, hosts,
+    troubleshooting, cost and test-criteria — `commands` is not in that list. The
+    glob tests iterate whatever files happen to be there, and no test follows
+    README's link to it. So the page README calls "every command" is the one page
+    with no floor under it, which is the same shape as the finding above: the
+    tests are not checking the documentation, they are defining it.
+    """
+    assert COMMANDS_PAGE.exists(), "docs/commands.md is gone and nothing noticed"
+    assert len(COMMANDS_PAGE.read_text().split()) > 400, "reduced to a stub"
+
+
+def test_troubleshooting_names_the_tunnel_the_tool_actually_builds():
+    """`test_docs` forbids `start-iap-tunnel` in README, machines.md and
+    test-criteria.md — and omits troubleshooting.md, the only page that had it.
+
+    The claim there was "The tunnel is `gcloud compute start-iap-tunnel` and
+    nothing else", which sends somebody hunting a process that does not exist, so
+    they cannot find their own tunnel to kill and conclude it has died. The page
+    may still describe `start-iap-tunnel` in the past — the switch to `ssh -L` is
+    why loopback binding and the firewall rules went away, and that history is
+    worth keeping — so this pins the present-tense claim, not the string.
+    """
+    from comfy_qa.config import Host
+    from comfy_qa.tunnel import command
+
+    page = (DOCS / "troubleshooting.md").read_text()
+    built = " ".join(command(Host(
+        name="box", kind="gce", os="Ubuntu 22.04", port=8190,
+        gce_instance="box", gce_zone="z", gce_project="p")))
+
+    assert "compute ssh" in built and "--tunnel-through-iap" in built
+    assert "The tunnel is `gcloud compute start-iap-tunnel`" not in page, (
+        "troubleshooting.md asserts a tunnel command the tool stopped using")
+    assert "-L 127.0.0.1:" in page, (
+        "troubleshooting.md never shows the forward, which is what to look for in `ps`")

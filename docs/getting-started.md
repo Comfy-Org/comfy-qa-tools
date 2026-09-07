@@ -71,9 +71,9 @@ comfy-qat list
 ```
 
 ```
-NAME         KIND   OS            GPU  URL
-local        local  -             -    http://127.0.0.1:8188
-comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190
+NAME         KIND   OS            GPU  URL                    STATE
+local        local  -             -    http://127.0.0.1:8188  -
+comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190  not tunnelled
 ```
 
 Every machine you test on now has a name, and there is no invisible default —

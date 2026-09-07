@@ -67,9 +67,9 @@ gcloud concludes it is running unattended, declines to prompt, and fails. That
 is why the error says "cannot prompt during non-interactive execution" even
 though you are sitting right there.
 
-The same applies, worse, to the tunnel: it runs detached with its output going
-to a log file, so a reauth failure there is completely silent. See
-[the gap that is still open](#the-gap-that-is-still-open).
+The same applied, worse, to the tunnel: it runs detached with its output going to
+a log file, so a reauth failure there was completely silent. That one is closed —
+see [the gap that was open, and is not](#the-gap-that-was-open-and-is-not).
 
 ## What the tool does about it now
 
@@ -209,23 +209,37 @@ checklist next to the other pre-pass steps.
   answered by asking again. The tool retries once and only with the terminal
   attached, which is the only retry that can change the outcome.
 
-## The gap that is still open
+## The gap that was open, and is not
+
+**This is fixed. It is kept here because the failure it describes is still the
+one to recognise, and because "tunnelled but ComfyUI is not answering" is what
+people remember.**
 
 The forward is started as a detached background process with its output
-redirected to a log file, and its exit status is not checked. If the session
-expires between starting the box and opening the tunnel, the tunnel process dies
-immediately of a reauth failure that nobody reads, a pid file is written for a
-process that is already gone, and the tool reports "tunnel open". The box is
-then diagnosed as "running and tunnelled, but ComfyUI is not answering" — which
-sends a tester to look for a broken ComfyUI install that is fine.
+redirected to a log file, and its exit status used to go unchecked. If the
+session expired between starting the box and opening the tunnel, the tunnel
+process died immediately of a reauth failure that nobody read, a pid file was
+written for a process that was already gone, and the tool reported "tunnel
+open". The box was then diagnosed as "running and tunnelled, but ComfyUI is not
+answering" — which sends a tester to look for a broken ComfyUI install that is
+fine, with the machine running and billing throughout.
 
 On this machine, 131 gcloud invocations logged that exact failure without one of
 them reaching a person.
 
-The box is left running and billing. `comfy-qat down <name>` stops it.
+A fresh tunnel is now watched for a moment after it starts. If the process is
+gone, its log is read and the end of it is quoted back:
 
-The fix is on the tunnel: after starting it, confirm the process is still alive
-a moment later and read its log if it is not, so a credential failure is
-reported as a credential failure. Until that lands, treat "tunnelled but ComfyUI
-is not answering" as *possibly* an expired session, and check with
-`comfy-qat status` before going onto the box.
+```
+the tunnel closed as soon as it was opened (gcloud exited 1). gcloud said: ...
+```
+
+with a fix line pointing at the log and, when it mentions credentials, at
+`gcloud auth login`. A credential failure is reported as a credential failure.
+troubleshooting.md calls this "the one failure that used to be recorded as a
+success".
+
+What has not changed is what to do when you meet the old symptom on an older
+build: treat "tunnelled but ComfyUI is not answering" as *possibly* an expired
+session, check with `comfy-qat status`, and remember the box is billing while
+you look.
