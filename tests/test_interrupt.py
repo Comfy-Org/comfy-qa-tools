@@ -230,3 +230,63 @@ def test_a_command_that_finishes_is_untouched_by_any_of_this(run_main, tmp_path)
     assert code == 0, output
     assert inflight.pending() == []
     assert "interrupted" not in output.lower()
+
+
+# --- the wording the docs walk cannot see ---------------------------------
+#
+# `test_docs` harvests message literals at the CALL SITE: `say.error("...")`.
+# `inflight.report` composes its text from a list and passes a variable, so the
+# walk collects ZERO messages from inflight.py — measured, not assumed. Every
+# other user-visible failure in this tool is pinned to troubleshooting.md by that
+# walk; without this, the one printed over a billing GPU box is the one that
+# could be reworded or deleted in a green suite.
+#
+# So it is pinned here, by the same contract the walk would have applied. Not
+# by listing `Interrupted` in ERROR_TYPES: membership there means exactly one
+# thing — collect the constructor's first argument — and it is raised with none,
+# which is a listing that looks like coverage and is not.
+
+
+def _troubleshooting() -> str:
+    import re
+    from pathlib import Path
+
+    docs = Path(__file__).resolve().parent.parent / "docs" / "troubleshooting.md"
+    return re.sub(r"\s+", " ", docs.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("phrase", [
+    inflight.HEADLINE,
+    "this may exist and be billing:",
+    "and this had already happened when you stopped it:",
+])
+def test_every_line_the_report_prints_has_a_troubleshooting_entry(phrase):
+    assert phrase in _troubleshooting(), (
+        f"`inflight.report` can print {phrase!r}, which is not in "
+        f"troubleshooting.md. Quote it there verbatim, with what it means and "
+        f"what to do — the same contract every other error in this tool is held "
+        f"to, applied by hand because the walk in test_docs cannot see a message "
+        f"composed from a list."
+    )
+
+
+def test_the_two_headings_are_the_ones_the_report_actually_uses(capsys):
+    """The parametrize above is a hand-typed list, which is the shape that goes
+    stale — so it is checked against a real report rather than against the source.
+
+    Both branches are driven, because a heading only prints when its own kind of
+    leftover is registered, and pinning a string nothing emits is the failure
+    mode this whole file exists to avoid.
+    """
+    with pytest.raises(inflight.Interrupted):
+        with inflight.may_leave("a stopped machine", billing=False):
+            with inflight.may_leave("a billing instance"):
+                raise KeyboardInterrupt
+
+    inflight.report()
+    printed = capsys.readouterr().err
+
+    for phrase in (inflight.HEADLINE,
+                   "this may exist and be billing:",
+                   "and this had already happened when you stopped it:"):
+        assert phrase in printed, printed

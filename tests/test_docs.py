@@ -295,40 +295,6 @@ def collect_messages() -> list[Message]:
 MESSAGES = collect_messages()
 
 
-def test_every_exception_this_package_defines_is_named_here():
-    """The tuple above is hand-maintained, and it has now silently dropped two
-    classes: `HostFileError`, invisible because the walk matches the constructor
-    name and not the base class, and `MoveError` — which meant `relocate.py`
-    contributed ZERO messages while being fully converted to the say vocabulary.
-
-    `move` is the command that takes snapshots, creates disks and creates
-    instances, so its failures are precisely where money gets left behind. One of
-    the messages this exposed says a box is "running and billing, but your host
-    list could not be updated" — an orphan the tool can no longer stop — and it
-    had no required entry.
-
-    So the tuple is no longer trusted to be complete. Every exception defined in
-    this package has to be named in it, or deliberately excused here.
-    """
-    defined = set()
-    for path in PACKAGE.glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.ClassDef) and any(
-                isinstance(base, ast.Name) and (
-                    base.id == "Exception" or base.id in ERROR_TYPES
-                    or base.id.endswith("Error"))
-                for base in node.bases
-            ):
-                defined.add(node.name)
-
-    missing = sorted(defined - set(ERROR_TYPES))
-    assert not missing, (
-        f"{', '.join(missing)} is raised by this package and is not in "
-        "ERROR_TYPES, so every message it carries is invisible to this walk "
-        "and nothing looks wrong anywhere."
-    )
-
-
 # Raised things that carry no message of their own, written down rather than
 # inferred from a naming pattern. This list started as a suffix match — collect
 # names ending in Error, Stopped or Parameter — which is an allowlist by
@@ -353,6 +319,54 @@ EXCUSED = frozenset({
                                           # their literals are caught at the
                                           # constructor call inside them
 })
+
+
+def test_every_exception_this_package_defines_is_named_here():
+    """The tuple above is hand-maintained, and it has now silently dropped two
+    classes: `HostFileError`, invisible because the walk matches the constructor
+    name and not the base class, and `MoveError` — which meant `relocate.py`
+    contributed ZERO messages while being fully converted to the say vocabulary.
+
+    `move` is the command that takes snapshots, creates disks and creates
+    instances, so its failures are precisely where money gets left behind. One of
+    the messages this exposed says a box is "running and billing, but your host
+    list could not be updated" — an orphan the tool can no longer stop — and it
+    had no required entry.
+
+    So the tuple is no longer trusted to be complete. Every exception defined in
+    this package has to be named in it, or deliberately excused here.
+    """
+    defined = set()
+    for path in PACKAGE.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ClassDef) and any(
+                isinstance(base, ast.Name) and (
+                    base.id in ("Exception", "BaseException")
+                    or base.id in ERROR_TYPES
+                    or base.id.endswith("Error"))
+                for base in node.bases
+            ):
+                defined.add(node.name)
+
+    # `BaseException` is not decoration. This walk read `Exception`, a name
+    # ending in Error, or a name already in the tuple — so a class based on
+    # `BaseException` matched none of the three and was invisible here.
+    # `inflight.Interrupted` is the first this package has had, and only the
+    # sibling below caught it: two tests written to cover each other's holes,
+    # and the hole was in the one nobody re-read. Measured before widening —
+    # `Interrupted` is the only name this adds.
+    #
+    # And the same EXCUSED as the sibling, rather than none. This test had no
+    # way to say "carries no message", so the only way past it was ERROR_TYPES
+    # — which for `Interrupted` would harvest nothing, because membership means
+    # exactly one thing (collect the constructor's first argument) and it is
+    # raised with none. That is a listing that looks like coverage and is not.
+    missing = sorted(defined - set(ERROR_TYPES) - EXCUSED)
+    assert not missing, (
+        f"{', '.join(missing)} is raised by this package and is not in "
+        "ERROR_TYPES, so every message it carries is invisible to this walk "
+        "and nothing looks wrong anywhere."
+    )
 
 
 def test_every_exception_this_package_RAISES_is_named_here():

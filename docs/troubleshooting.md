@@ -1391,10 +1391,11 @@ answer worth having before retrying.
 
 ## Ctrl-C while something is being created, started or moved
 
-**`interrupted — Ctrl-C stops this tool, it does not cancel a request Google has already accepted. This may exist and be billing:`**
+**`interrupted — Ctrl-C stops this tool, it does not cancel a request Google has already accepted.`**
 
-Followed by what was in flight, and by the exact commands that take it off the
-bill. The command exits **130**, which is what a shell reports for a process
+Then one or both of **`this may exist and be billing:`** and **`and this had
+already happened when you stopped it:`**, each followed by what was in flight,
+and then the exact commands that take it off the bill. The command exits **130**, which is what a shell reports for a process
 stopped by Ctrl-C. It used to exit 1 under the word `Aborted!` — a failure code
 over a sentence meaning nothing happened, printed over a GPU box that was running.
 
@@ -1420,8 +1421,8 @@ certainty it cannot support, but the exact resource and the exact command:
 * **`go`, `up` and `switch`** name the machine, and it is declared, so
   `comfy-qat down <name>` reaches it. `comfy-qat list --live` settles whether it
   needs to.
-* **`switch`** adds a second line under *and this had already happened when you
-  stopped it*. On the GPU-ceiling path — the normal path when `GPUS_ALL_REGIONS`
+* **`switch`** is the only command that prints the second heading. On the
+  GPU-ceiling path — the normal path when `GPUS_ALL_REGIONS`
   is 1 — the machine you were working on is stopped BEFORE the new one starts, so
   an interrupt in between leaves you on neither. That half is not a bill, and it
   is not reported as one.

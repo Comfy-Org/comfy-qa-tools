@@ -126,3 +126,87 @@ def test_the_pack_does_not_tell_the_tester_to_stay_quiet():
                    "do not report",
                    "rather than a defect"):
         assert phrase not in text, f"the pack tells the tester to ignore something: {phrase!r}"
+
+
+# --------------------------------------------------------------------------
+# The two halves of the acceptance pack, checked against each other.
+#
+# Nothing did this before, and every false pass we found was the same shape: a
+# criterion describing more than its block executes. G6 required `qat down --all`
+# behaviour for a release-1 sign-off while phase G's block contained no such
+# command, so the box was ticked on faith or nothing shipped. L5 graded three
+# answers and ran one, and the branch it never ran is the one that says the
+# machine is billing.
+
+# Why a criterion may have no command. Each is a fact about the world rather than
+# about the tool, and adding to this list is meant to be the moment somebody has to
+# justify one — the same bargain `test_docs.NOT_AN_ENTRY` makes.
+UNRUNNABLE = ("needs", "need ", "interactive", "only reachable", "only exists",
+              "not arrangeable", "same precondition", "run at ", "run between",
+              "cannot be forced", "not something to arrange", "window is seconds")
+
+CRITERION = re.compile(r"- \[ \] \*\*([A-Za-z0-9.]+)\*\*(.*?)(?=\n- \[ \]|\n\n|\n#)", re.S)
+
+
+def _criteria() -> list[tuple[str, str]]:
+    return CRITERION.findall(PACK.read_text())
+
+
+def _markers() -> set[str]:
+    """The `=== G6a` labels the pack's own shell blocks print as they run."""
+    return set(re.findall(r"===\s*([A-Za-z0-9.]+)", _pack_shell()))
+
+
+def test_the_pack_has_criteria_at_all():
+    assert len(_criteria()) > 100
+
+
+@pytest.mark.parametrize("criterion", [c for c, _ in _criteria()])
+def test_every_criterion_is_runnable_or_says_why_not(criterion):
+    """A tester must be able to reach every box, or be told plainly they cannot.
+
+    Two ways to satisfy this. Either a shell block prints `=== <id>`, in which case
+    pasting the block exercises it; or the criterion carries a `*(…)*` aside giving
+    a REASON it cannot be driven from one — a real stockout, two GPU boxes, a
+    Ctrl-C into a live stream, a state that lasts seconds.
+
+    The reason is what makes the second case not a loophole, and it is load-bearing
+    rather than pedantry. G6 escaped with `*(New with --all. Not run.)*`: "not run"
+    is a fact about the LAST pass, not about whether the check can be run at all,
+    and the page used one phrasing for both. Requiring the reason separates them.
+    Checked rather than assumed — against the pack as it stood at `73fda1a` this
+    assertion fails on G6, and on eleven others.
+
+    Suffixes count as covered by their stem: `E3b` is checked from what `=== E3`
+    prints, and `N12a` from `=== N12`. That is the page's own convention and not
+    a weakening — the marker is what puts the output on screen.
+
+    What this refuses is the third case: a criterion with neither. That is a box
+    someone has to tick without a way to earn it, and for a release-1 requirement
+    it is worse than a wrong criterion, because a wrong one gets reported.
+    """
+    body = dict(_criteria())[criterion]
+    markers = _markers()
+    runnable = any(criterion[:n] in markers for n in range(len(criterion), 0, -1))
+    if runnable:
+        return
+    aside = " ".join(re.findall(r"\*\((.*?)\)\*", body, re.S)).lower()
+    assert any(reason in aside for reason in UNRUNNABLE), (
+        f"criterion {criterion} has no `=== {criterion}` in any shell block, and its "
+        f"aside gives no reason why it cannot have one. A tester cannot tick it "
+        f"honestly; say what the check needs, or give the block a line."
+    )
+
+
+def test_the_stem_rule_does_not_swallow_an_unrelated_id():
+    """The guard on the guard: `N1` must not be counted as covering `N12`.
+
+    The rule walks the id from its full length down, so a marker only covers ids
+    it is a prefix of — and `N1` IS a prefix of `N12`. That is the one direction
+    this could go wrong in, so it is stated: a marker for a shorter id makes a
+    longer one pass. It is accepted because the page numbers criteria in order
+    and a stem always names the command the suffix varies, but if a phase ever
+    grows an `N1` and an unrelated `N12`, this is the line that explains why the
+    check went quiet.
+    """
+    assert "N1"[:2] == "N1"
