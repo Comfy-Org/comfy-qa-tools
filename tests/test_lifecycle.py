@@ -625,6 +625,88 @@ def test_an_install_that_reports_success_but_installed_nothing_is_caught():
     assert "reported success" in str(caught.value)
 
 
+# --- Ctrl-C during an install leaves nothing ticking --------------------------
+#
+# `ensure_installed` and the torch repair are the only two `output.slow` calls in
+# this module that run on a THREAD; every other one passes background=False and
+# has nothing to stop. Both were guarded by `except GcloudError`, and Ctrl-C is a
+# BaseException, so it walked past untouched and left the ticker running.
+#
+# Measured before the fix: the thread survives and prints "still going, 1s" one
+# second after the interrupt — into the middle of the tool's own last words. It
+# is a daemon, so nothing hangs; what is lost is the report being legible, on the
+# path where somebody is most likely to press Ctrl-C, because a torch install is
+# the longest silence this tool has.
+
+
+class _Interrupting:
+    """A Gcloud whose streaming ssh is interrupted, as a Ctrl-C makes it."""
+
+    def __init__(self, answer="MISSING"):
+        self.answer = answer
+
+    def ssh_output(self, instance, zone, project, remote):
+        return self.answer
+
+    def ssh(self, instance, zone, project, remote, *, stream=True):
+        raise KeyboardInterrupt
+
+
+def _watch_tickers(monkeypatch):
+    """Record every `output.slow` the module starts, so a test can inspect it."""
+    from comfy_qa import lifecycle as lifecycle_module
+
+    started = []
+    real = lifecycle_module.output.slow
+
+    def watched(*args, **kwargs):
+        ticker = real(*args, **kwargs)
+        started.append(ticker)
+        return ticker
+
+    monkeypatch.setattr(lifecycle_module.output, "slow", watched)
+    return started
+
+
+def test_an_interrupted_install_leaves_no_ticker_running(monkeypatch):
+    """PINS: every background ticker is stopped on the way out, Ctrl-C included."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    started = _watch_tickers(monkeypatch)
+    _, say = said()
+
+    with pytest.raises(KeyboardInterrupt):
+        ensure_installed(_Interrupting(), WIN, say)
+
+    # Selected on "would have started a thread", not on `_thread is not None`:
+    # stopping one sets `_thread = None`, so the obvious filter excludes exactly
+    # the tickers this is about and the test passes by checking none of them.
+    threaded = [t for t in started if t._background and t._every > 0]
+    assert threaded, "no background ticker was started — the test proves nothing"
+    for ticker in threaded:
+        assert ticker._stop.is_set(), (
+            "a ticker is still running after the interrupt; it will print "
+            "'still going' over the report the tool is trying to make"
+        )
+
+
+def test_an_interrupted_torch_repair_leaves_no_ticker_running(monkeypatch):
+    """The sibling site, which is the more likely of the two to be interrupted."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    started = _watch_tickers(monkeypatch)
+    _, say = said()
+
+    # INSTALLED, so the install is skipped and `_verify` reaches the torch fetch.
+    with pytest.raises(KeyboardInterrupt):
+        ensure_installed(_Interrupting("INSTALLED\nNO_TORCH"), WIN, say)
+
+    threaded = [t for t in started if t._background and t._every > 0]
+    assert threaded, "no background ticker was started — the test proves nothing"
+    for ticker in threaded:
+        assert ticker._stop.is_set(), "a ticker outlived the interrupt"
+
+
 def test_a_successful_install_is_confirmed_on_the_box_not_assumed():
     from comfy_qa.lifecycle import ensure_installed
 

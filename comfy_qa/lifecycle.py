@@ -764,25 +764,41 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     say("  what follows is the box's own output — apt, git, then pip. The quiet "
         "stretch is torch, torchvision, torchaudio and the CUDA runtime, which "
         "download without progress lines.")
+    # `finally`, not three `give_up()` calls on the paths we thought of. This
+    # ticker runs on a THREAD — the only two in this module that do; every other
+    # `output.slow` here passes background=False and has nothing to stop. So an
+    # exception nobody catches leaves it ticking, and the one exception nobody
+    # catches is Ctrl-C, which is a BaseException and walks past `except
+    # GcloudError` untouched.
+    #
+    # Measured: the thread survives the interrupt and prints "still going, 1s"
+    # one second later — into the middle of the interrupt report. It is a daemon
+    # so nothing hangs; what is lost is the tool's last words being legible, on
+    # the path where a person is most likely to interrupt, because a torch
+    # install is the longest silence this tool has.
+    #
+    # `give_up()` after `done()` is a no-op, so one cleanup covers every exit.
     try:
         try:
             reported = gc.ssh_output(host.gce_instance, host.gce_zone,
                                      host.gce_project, cuda_command(host))
         except GcloudError:
             reported = None
-        installed = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                           install_command(host, torch_index_for(str(reported or ""))),
-                           stream=True)
-    except GcloudError as exc:
-        installing.give_up()
-        raise give_up(
-            f"the ComfyUI install on {host.name} did not finish: {exc}") from exc
+        try:
+            installed = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                               install_command(host,
+                                               torch_index_for(str(reported or ""))),
+                               stream=True)
+        except GcloudError as exc:
+            raise give_up(
+                f"the ComfyUI install on {host.name} did not finish: {exc}") from exc
 
-    if installed != 0:
+        if installed != 0:
+            raise give_up(
+                f"the ComfyUI install on {host.name} did not finish (exit {installed})")
+        installing.done("installed")
+    finally:
         installing.give_up()
-        raise give_up(
-            f"the ComfyUI install on {host.name} did not finish (exit {installed})")
-    installing.done("installed")
 
     # An install script that exits 0 having installed nothing is not a theory:
     # on Windows a failed clone leaves every later step running in the wrong
@@ -988,20 +1004,25 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
         "box's driver supports",
         expect="several minutes", emit=say, every=STREAM_TICK_SECONDS).start()
 
+    # The same `finally` as the install above, and for the same reason — this is
+    # the other background ticker, and Ctrl-C during a torch fetch is the single
+    # most likely interrupt in the tool.
     try:
-        code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                      repair_command(host, force_torch=TORCH_NO_CUDA in state,
-                                     index=index),
-                      stream=True)
-    except GcloudError as exc:
+        try:
+            code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                          repair_command(host, force_torch=TORCH_NO_CUDA in state,
+                                         index=index),
+                          stream=True)
+        except GcloudError as exc:
+            raise give_up(f"could not install torch on {host.name}: {exc}",
+                          egress=True) from exc
+        if code != 0:
+            raise give_up(
+                f"torch could not be installed on {host.name} (exit {code}), so "
+                "ComfyUI cannot use its GPU. Its log is above.", egress=True)
+        fetching.done("installed")
+    finally:
         fetching.give_up()
-        raise give_up(f"could not install torch on {host.name}: {exc}", egress=True) from exc
-    if code != 0:
-        fetching.give_up()
-        raise give_up(
-            f"torch could not be installed on {host.name} (exit {code}), so "
-            "ComfyUI cannot use its GPU. Its log is above.", egress=True)
-    fetching.done("installed")
 
 
 def serve(
