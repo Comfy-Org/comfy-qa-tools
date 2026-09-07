@@ -1333,7 +1333,22 @@ def switch_cmd(
     # billing — while the command exits 1, which reads as "nothing happened".
     # `_failed` is handed an empty `kept` for the same reason and cannot say
     # where to work instead.
-    stopped_first = bool(first)
+    # `bool(others_stopped)`, not `bool(first)`. Both mean "was anything stopped
+    # before the target was started" and only one of them ASKS it: `first` is the
+    # ceiling, and it is a proxy that holds solely because
+    # `_blocked_by_the_ceiling` returns None when `others` is empty — a guard in
+    # a DIFFERENT function, invisible from here, and one the switch tests already
+    # stub out with a lambda that ignores `others`.
+    #
+    # When the proxy is wrong the registration below does `others_stopped[0][0]`
+    # and raises IndexError. That is a crash on the ordinary path of `switch`,
+    # not only in the interrupt report — the ExitStack is entered on every
+    # ceiling switch. A crash inside the machinery for saying what a Ctrl-C left
+    # running is the worst place in this tool to have one.
+    #
+    # Asking the list the message is built from makes the call site
+    # self-sufficient, and makes the name true.
+    stopped_first = bool(others_stopped)
     # The interrupt case needs the same clause as the failure case below, and
     # gets it from the record rather than from a second `except`: `_bring_up`
     # already registers the start, so this adds the half only `switch` knows —

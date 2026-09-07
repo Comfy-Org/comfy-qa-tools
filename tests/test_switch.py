@@ -649,3 +649,35 @@ def test_a_switch_that_stopped_nothing_reports_only_the_bill(cli, monkeypatch,
     assert "may exist and be billing" in report, report
     assert "already happened when you stopped it" not in report, report
     assert "comfy-linux" not in report
+
+
+def test_a_ceiling_that_stopped_nothing_does_not_crash_the_switch(cli, monkeypatch):
+    """`stopped_first` was `bool(first)` — the CEILING — and the interrupt
+    registration below it indexes `others_stopped[0][0]`.
+
+    Those two agree only because `_blocked_by_the_ceiling` returns None when
+    `others` is empty: a guard in a different function, invisible from the call
+    site, and one this very file already stubs out with `lambda gc, host,
+    others: 1`, which ignores `others` entirely. Make the ceiling say "stop the
+    others first" while nothing else is running and the proxy is wrong.
+
+    The failure is not confined to the interrupt report. The registration is
+    entered on EVERY ceiling switch, so an IndexError there takes down the whole
+    command — a crash inside the machinery for saying what a Ctrl-C left billing.
+
+    Fixed by asking the list the message is actually built from.
+    """
+    from comfy_qa import host as host_module
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
+                        lambda gc, host, others: 1)
+
+    result = cli("switch", "comfy-win", "--no-browser",
+                 statuses={"comfy-win": "RUNNING", "comfy-linux": "TERMINATED"},
+                 open_tunnels=("comfy-win",), serving=("comfy-win",))
+
+    assert not isinstance(result.exception, IndexError), (
+        f"the ceiling path crashed with nothing to stop: {result.exception!r}"
+    )
+    assert result.exit_code == 0, result.output
+    assert "nothing else is running, so nothing to stop" in result.output
