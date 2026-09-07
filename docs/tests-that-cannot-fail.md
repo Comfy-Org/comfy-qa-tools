@@ -604,6 +604,20 @@ are shapes rather than Python problems. An audit of it found:
 | Five `--dry-run` criteria asserting "nothing was created", in blocks with no step that could detect creation | class 4 — an instrument with one branch. The plan prints identically in both worlds |
 | `G1` and `G6a` graded on the tool's own sentence about what it stopped | the tool's claim accepted as its own evidence. Phase M gets this right — `M4` makes the claim, `M5` reads `gcloud` and checks it. Same page, same author, one has the observation |
 | Phase I says in bold "run this before the run and after it, and compare" — and never runs it before | a comparison with no baseline. It is also the designated backstop for every unobserved negative in the pack, so it compounds rather than sits beside them |
+
+**And the same class has a second form, caught in the act while that phase was
+being fixed.** Adding a step that stops the box moved it *above* the baseline
+capture — which included a `stamp`. A stamp of a stopped box records "nothing
+answered", and the later criterion compares the moved box's stamp against that
+file. Two error strings match each other well enough for a tired reader to tick
+it, so the check becomes unfalsifiable.
+
+> A baseline that captures a failure is worse than no baseline, because it looks
+> like one.
+
+Caught by its author, mid-change, by asking what the captured file would actually
+contain rather than that the capture had run. That question — *what is in it, not
+did it happen* — is the one a baseline step needs and the one nobody asks.
 | `G5` "does not fail on an already-stopped box" | unfalsifiable: a `down` that does nothing at all and exits 0 passes identically to one that handles the case |
 
 The sharpest observation from that audit is one the first seven did not have, and it
