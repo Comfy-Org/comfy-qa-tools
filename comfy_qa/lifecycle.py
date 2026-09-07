@@ -1827,8 +1827,26 @@ def put_away(
         say(f"{host.name} was already stopped")
         return "idle"
 
+    # Said BEFORE the call, because the call takes most of a minute and printed
+    # nothing for the whole of it: a real `down` was blank for 30 seconds and
+    # then said one line. That silence is also why an interrupt here felt like
+    # nothing had happened — there was nothing on the screen it could interrupt.
+    say(f"stopping {host.name} — this usually takes under a minute")
     try:
-        gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
+        # A stop is as interruptible as a start and reads the opposite way. The
+        # request has gone to Google, Ctrl-C reaches only the local gcloud, and
+        # the person who typed `down` believes the bill stopped — so silence
+        # here is read as success. `down` again is free: stopping an
+        # already-stopped box succeeds trivially.
+        with inflight.may_leave(
+            f"{host.name} ({host.gce_instance} in {host.gce_zone})",
+            undo=[
+                f"comfy-qat down {host.name}",
+                "or check first, if you would rather look:",
+                "comfy-qat list --live",
+            ],
+        ):
+            gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         raise LifecycleError(f"could not stop {host.name}: {exc}", fix=exc.fix) from exc
     if before is None:

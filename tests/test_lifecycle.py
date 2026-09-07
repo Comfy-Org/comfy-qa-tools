@@ -795,6 +795,68 @@ def test_an_oserror_anywhere_in_the_launch_still_names_the_bill(tmp_path, launch
     assert not tunnel_module.pid_file("comfy-win", tmp_path).exists()
 
 
+# --- interrupting the one command whose job is stopping the bill -----------
+
+
+def test_stopping_says_so_before_it_starts_rather_than_only_afterwards():
+    """A real `down` was blank for 30 seconds and then printed one line.
+
+    Measured by driving it against a fake gcloud that sleeps: nothing at all
+    reaches the terminal while the stop is in flight. That silence is also why
+    an interrupt here felt like nothing had happened.
+    """
+    from comfy_qa.lifecycle import put_away
+
+    lines, say = said()
+    put_away(gcloud(["RUNNING"]), WIN, say)
+
+    def first(fragment: str) -> int:
+        return next(i for i, line in enumerate(lines) if fragment in line)
+
+    assert first("stopping comfy-win") < first("stopped it"), lines
+
+
+def test_an_interrupted_stop_is_not_silent_about_the_machine():
+    """The mirror of an interrupted create, and the more expensive direction.
+
+    `down` exists to stop the bill, so the person who typed it believes the bill
+    stopped — and an interrupt printed NOTHING: exit 130, stdout and stderr both
+    empty, not even a progress line. The stop request has already gone to
+    Google, Ctrl-C reaches only the local gcloud, and nothing here can say
+    whether it landed.
+    """
+    from comfy_qa import inflight
+    from comfy_qa.lifecycle import put_away
+
+    class _Interrupted:
+        def instance_status(self, *args):
+            return "RUNNING"
+
+        def stop_instance(self, *args):
+            raise KeyboardInterrupt
+
+    with pytest.raises(inflight.Interrupted):
+        put_away(_Interrupted(), WIN, lambda line: None)
+
+    left = inflight.pending()
+    assert [item.what for item in left] == [
+        "comfy-win (comfy-win in us-central1-a)"]
+    # Re-running is free — stopping an already-stopped box succeeds trivially —
+    # so the first thing offered is the command that settles it.
+    assert "comfy-qat down comfy-win" in left[0].undo
+    assert "comfy-qat list --live" in left[0].undo
+
+
+def test_a_stop_that_returns_leaves_nothing_registered():
+    """The guard on the registration: a `down` that finished has nothing to say
+    about a machine that may still be running."""
+    from comfy_qa import inflight
+    from comfy_qa.lifecycle import put_away
+
+    put_away(gcloud(["RUNNING"]), WIN, lambda line: None)
+    assert inflight.pending() == []
+
+
 def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):
     """The refusal is at the point of the decision, not only at the parse.
 
