@@ -374,9 +374,37 @@ def test_a_card_the_project_has_never_asked_for_has_no_regions():
     assert regions_with_quota("A100", LIVE) == []
 
 
+# The ceiling metered twice, the way the L4 grant already is in this file: -1 in
+# the zone-scoped copy, 1 in the region-scoped one. A live project carries both.
+CEILING_ZONE_COPY = {
+    "quotaId": "GPUS-ALL-REGIONS-per-project-zone",
+    "dimensionsInfos": [{
+        "dimensions": None,
+        "details": {"value": "-1"},
+        "applicableLocations": L4_ZONES,
+    }],
+}
+
+
 def test_the_project_wide_ceiling_is_read_off_the_live_shape():
     assert global_allowance(LIVE) == 1
     assert global_allowance([L4_REGION_QUOTA]) is None
+
+
+def test_the_zone_scoped_copy_of_the_ceiling_does_not_free_the_gate():
+    """The unit is pinned in test_create_hostile.py; this is what it costs.
+
+    The ceiling is 1 on this project, so it governs every create — and read as
+    unlimited the gate goes quiet: no refusal, and no mention of the GPU box
+    that is running and billing, which is the only place `create` says so. Both
+    orderings, because the record order is gcloud's to choose.
+    """
+    for quotas in ([CEILING_ZONE_COPY, *LIVE], [*LIVE, CEILING_ZONE_COPY]):
+        check = check_quota(CARDS["l4"], quotas, [instance("console-box")])
+        assert check.global_limit == 1
+        problem = check.problem()
+        assert problem is not None, "a ceiling of 1 with a box on it must refuse"
+        assert "console-box is already running on it" in str(problem)
 
 
 # --- the gate --------------------------------------------------------------

@@ -325,10 +325,21 @@ def _binding(gpu: str, quotas: list[dict]) -> list[dict]:
     no grant in. The region-scoped record is the one that binds, so where there
     is one it is the only one read.
     """
-    matching = [q for q in quotas if matches(gpu, q.get("quotaId") or "")]
-    region_scoped = [q for q in matching
-                     if not (q.get("quotaId") or "").lower().endswith(_ZONE_SCOPED)]
-    return region_scoped or matching
+    return _prefer_region_scope(
+        [q for q in quotas if matches(gpu, q.get("quotaId") or "")])
+
+
+def _prefer_region_scope(records: list[dict]) -> list[dict]:
+    """Drop the zone-scoped copies when a region-scoped record exists.
+
+    Written once because both the per-card path and the project-wide ceiling
+    need it and only one of them had it. A project carries both scopes of the
+    same quota, `friendly_name` maps them to the same label, and the zone-scoped
+    copy is the one that says -1.
+    """
+    region_scoped = [r for r in records
+                     if not (r.get("quotaId") or "").lower().endswith(_ZONE_SCOPED)]
+    return region_scoped or records
 
 
 def regions_with_quota(gpu: str, quotas: list[dict]) -> list[str]:
@@ -364,15 +375,45 @@ def global_allowance(quotas: list[dict]) -> int | None:
     **1** on this project, so a second GPU box cannot start while the first one
     is running, whatever the per-card grant says. None when the project reports
     no such quota at all.
+
+    EVERY matching record is read and then reduced. This returned on the FIRST
+    match, so the answer depended on the order gcloud happened to list the
+    records in — which is not a contract gcloud offers — and the project carries
+    two of them, `GPUS-ALL-REGIONS-per-project` and its `-per-project-zone`
+    copy, which `friendly_name` maps to the same label. The zone-scoped copy is
+    -1, so whenever it sorted first the one limit that governs every create on
+    this project read as UNLIMITED.
+
+    Two defences, because the ordering between records was not the only way in:
+
+    **The zone-scoped copy drops out when a region-scoped record exists**, which
+    is what `_binding` already did for the per-card path, for the same reason.
+
+    **And a real limit beats -1 wherever the two meet**, which the scope filter
+    does not cover: one correctly region-scoped record carrying an unlimited row
+    AND a row of 1 also read as unlimited, in any row order. -1 is Google's
+    "this record sets no explicit limit" — the ABSENCE of a constraint, not a
+    grant of infinity — and letting an absence overrule a number that was read
+    is how a tool cheerfully starts a second box on a ceiling of one. So
+    UNLIMITED is the answer only when nothing else was found.
+
+    Among real limits the largest wins, as in `allowance`. Two records
+    disagreeing about the project-wide ceiling is not a shape any live project
+    has shown, and guessing low would refuse a create the project is entitled
+    to — the strict direction is not free either.
     """
-    for quota in quotas:
-        if friendly_name(quota.get("quotaId") or "") != GLOBAL_ALLOWANCE:
-            continue
-        best: int | None = None
+    records = _prefer_region_scope(
+        [q for q in quotas
+         if friendly_name(q.get("quotaId") or "") == GLOBAL_ALLOWANCE])
+
+    best: int | None = None
+    unlimited = False
+    for quota in records:
         for _where, limit, _locations in _rows(quota):
             if limit == UNLIMITED:
-                return UNLIMITED
-            if best is None or limit > best:
+                unlimited = True
+            elif best is None or limit > best:
                 best = limit
+    if best is not None:
         return best
-    return None
+    return UNLIMITED if unlimited else None

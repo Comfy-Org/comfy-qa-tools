@@ -53,7 +53,7 @@ from comfy_qa.create import (
 )
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.lifecycle import LifecycleError, suggested_zones
-from comfy_qa.quota import global_allowance
+from comfy_qa.quota import UNLIMITED, global_allowance
 from comfy_qa.zones import (
     MAX_ATTEMPTS,
     UNREACHABLE,
@@ -413,20 +413,41 @@ def test_a_card_with_no_grant_still_says_not_granted():
     assert "not granted" in check.lines()[0]
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "quota.global_allowance returns on the FIRST record whose friendly name is "
-    "GPUS_ALL_REGIONS, and friendly_name() maps both "
-    "'GPUS-ALL-REGIONS-per-project' and '...-per-project-zone' to the same label. "
-    "A project carrying both — which is the pattern this codebase already "
-    "documents for NVIDIA-L4 — reads as unlimited whenever the zone-scoped copy "
-    "sorts first, because its value is -1. Fix in comfy_qa/quota.py: give "
-    "global_allowance the same _binding treatment the per-card path already has "
-    "— collect every matching record, drop the zone-scoped ones when a "
-    "region-scoped one exists, and only then reduce. Owned by another agent; "
-    "recorded here rather than edited."))
 def test_the_zone_scoped_copy_of_the_ceiling_does_not_make_it_unlimited():
+    """The shape that bites: a project carries BOTH scopes of this quota, and
+    the zone-scoped copy is -1.
+
+    Both orderings, because a bug that depends on the order gcloud listed the
+    records in is not fixed by a fixture that happens to list them the other
+    way. gcloud offers no ordering contract, so neither may this.
+    """
     zone_scoped = ceiling(-1, "GPUS-ALL-REGIONS-per-project-zone")
+
     assert global_allowance([zone_scoped, ceiling(1)]) == 1
+    assert global_allowance([ceiling(1), zone_scoped]) == 1
+
+
+def test_an_unlimited_row_beside_a_real_limit_does_not_win():
+    """The scope filter is not the whole fix. One correctly region-scoped record
+    can carry an unlimited row AND a real one, and that read as unlimited too.
+
+    -1 is Google's "this record sets no explicit limit" — an absence, not a
+    grant of infinity — so it must never overrule a number that was read.
+    """
+    both = {"quotaId": "GPUS-ALL-REGIONS-per-project",
+            "dimensionsInfos": [{"details": {"value": "-1"},
+                                 "applicableLocations": ["global"]},
+                                {"details": {"value": "1"},
+                                 "applicableLocations": ["global"]}]}
+    assert global_allowance([both]) == 1
+
+
+def test_a_ceiling_that_really_is_unlimited_still_reads_unlimited():
+    """The other direction of the same decision. -1 loses to a number, and to
+    nothing else — a project that reports only an unlimited ceiling has one."""
+    assert global_allowance([ceiling(-1)]) == UNLIMITED
+    assert global_allowance([ceiling(0)]) == 0, "a real zero is not an absence"
+    assert global_allowance([]) is None
 
 
 @pytest.mark.xfail(strict=True, reason=(
