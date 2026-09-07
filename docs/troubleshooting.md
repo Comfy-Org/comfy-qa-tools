@@ -1181,7 +1181,13 @@ anything reached stderr at all, so `1>/dev/null` discarded the whole block while
 read later captured three `--quiet` delete commands and no plan. The list is
 printed once now, not once before the `--dry-run` line and again after it.
 
-**`also on the project, unrelated to this move and billing:`**
+Nothing is deleted unless you say so. In a terminal you are asked "Delete these and
+start the move fresh?" and the move continues either way; `--clean` answers yes
+without asking. **Both then carry on and create the box** — `--clean` is "clean up
+first, then move", not "clean up instead of moving". Under `--yes`, or with output
+piped, the leftovers are kept and reported.
+
+**`also on the project, unrelated to this move and billing:`** followed by a disk or a snapshot
 
 Printed after a move that worked, on stderr, for the same reason. A disk or a
 snapshot from some earlier move of a *different* box is sitting on the project and
@@ -1190,27 +1196,14 @@ part of the answer to "where is my box now" — but an unattached disk looks lik
 nothing at all in a console, and nothing else here would ever mention it. Each
 line comes with the delete command that removes it.
 
-It appears at the end rather than before the confirmation on purpose: a delete
-command for a machine you were not thinking about, three lines above
-`Move comfy-win to us-central1-b? [y/N]`, is how the wrong thing gets deleted.
-
-Nothing is deleted unless you say so. In a terminal you are asked "Delete these and
-start the move fresh?" and the move continues either way; `--clean` answers yes
-without asking. **Both then carry on and create the box** — `--clean` is "clean up
-first, then move", not "clean up instead of moving". Under `--yes`, or with output
-piped, the leftovers are kept and reported.
-
-**`also on the project, unrelated to this move and billing:`** followed by a disk or a snapshot
-Printed after a move finishes, and it is about **somebody else's leftovers** — a
-disk or a snapshot the project is paying for that this move did not create and does
-not touch. It comes last, after the box you asked for, because the answer to `move`
-is where your box is now; a stray billing snapshot is worth knowing and is not that
-answer.
-
 The distinction from the entry above matters when you decide what to delete. That
 one is **this move's** unfinished work, and `--clean` removes it. This one is
 outside the move's scope, so nothing here is ever removed for you — each line
 carries its own `gcloud ... delete` command, and running it is your call.
+
+It appears at the end rather than before the confirmation on purpose: a delete
+command for a machine you were not thinking about, three lines above
+`Move comfy-win to us-central1-b? [y/N]`, is how the wrong thing gets deleted.
 
 If you have never seen this before on a project you have been testing on for a
 while, that is the point of it: these are exactly the resources that look like
