@@ -263,3 +263,83 @@ def test_a_state_that_read_back_empty_is_words_not_a_gap(cli):
     assert not result.cloud.deleted()
     assert "is , not stopped" not in result.output, result.output
     assert "unknown state" in result.output
+
+
+# --- interrupting the one thing that cannot be undone ----------------------
+
+
+def test_an_interrupted_delete_says_the_record_may_now_be_wrong(capsys):
+    """`remove.py` did not import `inflight` at all: exit was 130 and the report
+    had nothing to report.
+
+    This is the only one of these gaps that is not about a resource. The request
+    carries `--delete-disks=all`, so by the time it can be interrupted the box
+    and its disk are being destroyed server-side — and the host list still says
+    the machine exists, because the code that takes the entry out is the code
+    that did not run. `create` refuses a name a host list entry holds and ports
+    come from the same list, so that entry reserves both for a machine that may
+    no longer exist, and the refusal arrives weeks later with nothing to connect
+    it to tonight.
+
+    Asserted on the report's TAIL and on recovery words, not on the box name:
+    the name is printed by the confirmation lines BEFORE the interrupt, so
+    asserting it passes against a tool that reports nothing at all. That is
+    triage's finding about its own first version of this test, and it is the
+    only thing separating this from a test that cannot fail.
+    """
+    from comfy_qa import inflight
+
+    class _Interrupted(Cloud):
+        def run(self, args, **kwargs):
+            self.calls.append(" ".join(str(a) for a in args))
+            raise KeyboardInterrupt
+
+    with pytest.raises(inflight.Interrupted):
+        _delete_with(_Interrupted())
+
+    printed = capsys.readouterr()
+    tail = (printed.out + printed.err).split("deleting comfy-win")[-1]
+
+    # Its own sentence. Neither outcome here is spending — a deleted box bills
+    # nothing, and this refuses to run unless the box is already stopped — so
+    # all three of the other headings are about the wrong thing.
+    assert "this was probably destroyed, and the host list still names it:" in tail
+    assert "gcloud compute instances describe comfy-win" in tail
+    assert "[hosts.comfy-win]" in tail
+    # The obvious recovery is the one that does not work: this command reads the
+    # box's state first and refuses anything it cannot read as TERMINATED.
+    assert "will not do it" in tail
+
+
+def test_a_delete_that_finishes_leaves_nothing_registered(capsys):
+    from comfy_qa import inflight
+
+    cloud = Cloud()
+    _delete_with(cloud)
+
+    assert cloud.deleted(), "the delete should have run"
+    assert inflight.pending() == []
+    assert "probably destroyed" not in capsys.readouterr().err
+
+
+def _delete_with(cloud, tmp=None):
+    """`delete --yes` against one host list, with the cloud handed in.
+
+    Not the `cli` fixture: `CliRunner` swallows the report's stream, and what is
+    under test here is what reaches a terminal.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.remove import delete_cmd
+
+    directory = Path(tmp or tempfile.mkdtemp())
+    path = directory / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    real = gcloud_module.Gcloud
+    gcloud_module.Gcloud = lambda *a, **k: cloud
+    try:
+        return delete_cmd(name="comfy-win", config=path, yes=True)
+    finally:
+        gcloud_module.Gcloud = real

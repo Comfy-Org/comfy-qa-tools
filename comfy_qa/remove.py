@@ -39,6 +39,7 @@ from typing import Annotated, Optional
 import typer
 
 from . import say
+from . import inflight
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load
 
 app = typer.Typer()
@@ -131,14 +132,59 @@ def delete_cmd(
 
     removing = say.slow(f"deleting {host.name}", expect="up to a minute").start()
     try:
-        gc.run([
-            "compute", "instances", "delete", host.gce_instance,
-            f"--zone={host.gce_zone}", f"--project={host.gce_project}",
-            "--delete-disks=all", "--quiet",
-        ], parse_json=False, timeout=300)
+        # The only mutating call in this module, and the last one in the package
+        # that was not registered. What makes it different from the others is
+        # what is at risk: they leave a RESOURCE unaccounted for, and this leaves
+        # THIS TOOL'S OWN RECORD wrong. The request carries `--delete-disks=all`,
+        # so by the time it can be interrupted the box and its disk are being
+        # destroyed server-side — while the host list below still says the
+        # machine exists, because the code that takes the entry out is the code
+        # that did not run.
+        #
+        # The cost is written down forty lines from here, in the comment on that
+        # removal: a name and a port reserved for a machine that does not exist,
+        # and a `create` refused weeks later with nothing to connect it to
+        # tonight.
+        #
+        # Its own heading, and it is the only one of the four that is not about
+        # a resource at all. Neither outcome here is spending — a deleted box
+        # bills nothing, and this refuses to run unless the box is already
+        # TERMINATED — so all three of the other sentences are about the wrong
+        # thing. What is wrong is the RECORD.
+        with inflight.may_leave(
+            f"{host.gce_instance} in {host.gce_zone}, and its boot disk",
+            undo=[
+                "find out which of the two happened:",
+                f"gcloud compute instances describe {host.gce_instance} "
+                f"--zone={host.gce_zone} --project={host.gce_project}",
+                f"if it is gone, take [hosts.{host.name}] out of "
+                f"{config or DEFAULT_CONFIG_PATH} by hand:",
+                # Said because the obvious recovery is the one that does not
+                # work. This command reads the box's state first and refuses
+                # anything it cannot read as TERMINATED, so running it again
+                # against a box that IS deleted exits 2 on a gcloud "not found"
+                # and never reaches the host list at all.
+                f"running `comfy-qat delete {host.name}` again will not do it — "
+                f"it refuses a box it cannot read",
+            ],
+            note=(f"the entry is stale whichever way it went, and while "
+                  f"[hosts.{host.name}] is there, `create --name {host.name}` "
+                  f"refuses that name and its port stays reserved"),
+            heading="this was probably destroyed, and the host list still names it:",
+        ):
+            gc.run([
+                "compute", "instances", "delete", host.gce_instance,
+                f"--zone={host.gce_zone}", f"--project={host.gce_project}",
+                "--delete-disks=all", "--quiet",
+            ], parse_json=False, timeout=300)
     except GcloudError as exc:
         removing.give_up()
         say.fail(exc, code=1)
+    except inflight.Interrupted:
+        # Close the step before the report prints, so its ticker cannot land a
+        # "still going" line on top of the interrupt's own message.
+        removing.give_up()
+        raise
     removing.done()
 
     # Taking the entry out is not tidying. `create` refuses a name that a host
