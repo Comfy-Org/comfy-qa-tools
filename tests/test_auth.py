@@ -216,28 +216,26 @@ def test_a_compute_error_summary_of_dashes_is_not_the_message():
     assert localized_message("nothing here") is None
 
 
-def test_status_does_not_fail_forever_over_a_tunnel_speed_it_cannot_fix():
+def test_status_does_not_fail_forever_over_a_tunnel_speed_it_cannot_fix(monkeypatch):
     """`status` exits 1 on any failed check. A root-owned gcloud python — which
     setup deliberately SKIPS rather than escalating to sudo — made that a
     permanent non-zero exit, with a fix line pointing at the command that had
     already declined. Same for anyone who ran `setup --no-numpy`.
 
-    A slower tunnel is not a readiness failure. The row still says so."""
-    import comfy_qa.auth as auth_module
+    A slower tunnel is not a readiness failure. The row still says so.
 
-    original = auth_module.__dict__.get("gcloud_numpy")
-    checks = None
-    try:
-        from comfy_qa import setup as setup_module
+    `monkeypatch`, not a hand-rolled try/finally: the first version of this test
+    restored the wrong module and left `setup.gcloud_numpy` patched for the rest
+    of the session, which broke a test in another file.
+    """
+    from comfy_qa import setup as setup_module
 
-        setup_module.gcloud_numpy = lambda gc: ("/usr/bin/python3",
-                                                "its Python is not writable by you")
-        checks = run_checks(fake(**GCLOUD_PY, **SIGNED_IN, **PROJECT, **BILLED,
-                                 **QUOTA))
-    finally:
-        from comfy_qa import setup as setup_module
-        if original is not None:
-            auth_module.gcloud_numpy = original
+    monkeypatch.setattr(
+        setup_module, "gcloud_numpy",
+        lambda gc: ("/usr/bin/python3", "its Python is not writable by you"),
+    )
+    checks = run_checks(fake(**GCLOUD_PY, **SIGNED_IN, **PROJECT, **BILLED,
+                             **QUOTA))
 
     numpy = next(c for c in checks if c.name == "numpy")
     assert numpy.ok, "an install setup declined to make must not fail status"
