@@ -348,6 +348,7 @@ echo "=== K2 a card you have no quota for"; qat create --os linux --gpu a100 --d
 echo "=== K3 a card that does not exist"; qat create --os linux --gpu rtx4090 --dry-run; echo "exit $?"
 echo "=== K4 an OS that does not exist"; qat create --os plan9 --gpu t4 --dry-run; echo "exit $?"
 echo "=== K4b nothing was written"; ls -l ~/.config/comfy-qa-tools/
+echo "=== K4c and nothing was CREATED"; diff ~/qa-before/instances.txt <(gcloud compute instances list --project $P) && echo "IDENTICAL"
 ```
 
 - [ ] **K1** — prints three things and creates nothing: the **quota it read**
@@ -361,9 +362,15 @@ echo "=== K4b nothing was written"; ls -l ~/.config/comfy-qa-tools/
       cleanup, and refusing costs nothing.
 - [ ] **K3/K4** — names what there is rather than failing obscurely. Exit 2, no
       traceback.
-- [ ] **K4b** — `--dry-run` wrote nothing. No host list entry, and no
-      `zone-latency.json` change you did not ask for. (A fresh latency measurement
-      *is* expected on the first run and is cached for a week.)
+- [ ] **K4b** — `--dry-run` wrote nothing **to your host list**. No new entry.
+      `zone-latency.json` may appear or change — a fresh latency measurement is
+      expected on the first run and is cached for a week — so that file is not
+      part of this check and never was.
+- [ ] **K4c** — **and it created nothing on the project.** `IDENTICAL` against the
+      `Q0` capture. Four `--dry-run` criteria in this pack asserted that nothing
+      was created while running no step that could have noticed; the plan prints
+      before the thing it promises not to do, so the output is the same in both
+      worlds. This is the step that tells them apart.
 - [ ] **K1b** — **the machine type follows from the card, and is right.** `t4` →
       an `n1-` type with `--accelerator`; `l4` → a `g2-` type with the GPU built
       into it and no `--accelerator` at all. Getting this the wrong way round is
@@ -538,7 +545,10 @@ echo "=== M5 and Google agrees"; gcloud compute instances list
       says how many. Given a name as well it refuses rather than guessing.
 - [ ] **M4b** — **one box refusing to stop does not leave the rest running.** It
       stops the others, then names what did not stop, what it may still be
-      costing, and what to do — and exits non-zero.
+      costing, and what to do — and exits non-zero. *(Needs a box that will not
+      stop, which cannot be arranged to order. **Record it as not run** rather
+      than ticking it from a clean run — a run where everything stopped tells you
+      nothing about this, and it is the same check as G6d.)*
 - [ ] **M5** — every instance reads TERMINATED. **If one says RUNNING you are
       still being billed, and that is a blocker.**
 
@@ -551,6 +561,7 @@ echo "=== F1 up on a box that is already up"; qat up $BOX
 echo "=== F2 go with --no-install on a box that has ComfyUI"; qat go $BOX --no-browser --no-install
 echo "=== F3 move, plan only"; qat move $BOX --to us-central1-b --dry-run   # a zone the box is NOT in
 echo "=== F3b and without --to"; qat move $BOX --dry-run; echo "exit $?"
+echo "=== F3c neither of those created anything"; diff ~/qa-before/snapshots.txt <(gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())") && echo "IDENTICAL"
 echo "=== F4 unknown host"; qat stamp not-a-machine; echo "exit $?"
 echo "=== F5 unknown host, lifecycle"; qat down not-a-machine; echo "exit $?"
 ```
@@ -558,7 +569,11 @@ echo "=== F5 unknown host, lifecycle"; qat down not-a-machine; echo "exit $?"
 - [ ] **F1** — recognises it is already up and serving; does not restart anything.
 - [ ] **F2** — serves without reinstalling.
 - [ ] **F3** — with `--to`, a numbered plan naming the snapshot, the new disk, the
-      new instance and the target zone, then it stops. **Nothing is created.**
+      new instance and the target zone, then it stops.
+- [ ] **F3c** — **and the snapshot list is unchanged.** A `move --dry-run` prints
+      its plan before it would take the snapshot, so "it printed a plan and said
+      nothing was created" is satisfied by a build that took one. The snapshot is
+      the first thing a move creates and the cheapest to check for.
 - [ ] **F3b** — **without `--to`, `--dry-run` refuses, and that is correct.** Finding
       a zone with capacity means starting the box and reading the zones out of the
       refusal, which is exactly what a dry run must not do. It says so and exits 2.
@@ -972,7 +987,13 @@ echo "=== G6c --all with no cloud box declared"; qat down --all --config $G/nocl
       RUNNING here that you did not mean to leave running is a blocker.** This
       criterion said "the instance" while the pack could only make one box; phase R
       makes two, and one TERMINATED line is no longer an answer.
-- [ ] **G5** — does not fail on an already-stopped box.
+- [ ] **G5** — **it says `<name> was already stopped`, in those words.** Not
+      merely "exits 0": stopping a box that is already stopped succeeds trivially,
+      so a `down` that did nothing whatever — or one that failed to read the state
+      and pressed on — exits 0 too. The tool distinguishes the two cases
+      internally and prints a different sentence for each (`was already stopped`
+      against `was running — stopped it`); this criterion is that the right one
+      reaches you. Compare with what G1 printed a moment ago: they must differ.
 - [ ] **G6a** — `qat down --all` takes no name and stops every declared cloud box.
       **Read which of three closing sentences you got — not how many it counted.**
       They are different claims and only one is an all-clear:
@@ -1282,6 +1303,7 @@ echo "=== J5 the wrong separator"; qat stamp windows-l4; echo "exit $?"
 echo "=== J6 something you do not have"; qat stamp rtx4090; echo "exit $?"
 echo "=== J7 the plan, without doing it"; qat switch windows --dry-run; echo "exit $?"
 echo "=== J7b the plan that leaves the others up"; qat switch windows --keep-others --dry-run; echo "exit $?"
+echo "=== J7c and nothing started or stopped"; gcloud compute instances list --project $P
 ```
 
 - [ ] **J1** — one line per machine with OS, card, URL and STATE. Without `--live`
@@ -1294,9 +1316,12 @@ echo "=== J7b the plan that leaves the others up"; qat switch windows --keep-oth
       2022, L4)`. A silent resolution is a fail even if it picks correctly.
 - [ ] **J5** — says the separator is `/` and shows `windows/l4`. Exit 2.
 - [ ] **J6** — lists what is declared *and* the vocabulary it accepts. Exit 2.
-- [ ] **J7** — states what it would start and what it would stop, then stops.
-      Nothing is started or stopped. It may ask Google what is already running —
-      one `describe` per *other* cloud box — which is a read and is correct.
+- [ ] **J7** — states what it would start and what it would stop, then stops. It
+      may ask Google what is already running — one `describe` per *other* cloud
+      box — which is a read and is correct.
+- [ ] **J7c** — **the instance states are what they were before J7 ran**, read
+      from Google rather than from the plan. `--dry-run` prints what it *would*
+      do, and a build that did it prints exactly the same thing.
 - [ ] **J7b** — `--keep-others` changes the plan to **start the target and stop
       nothing**, and says so in those words, naming the flag. The plan must make
       plain that the other machines keep running, because they keep billing —
