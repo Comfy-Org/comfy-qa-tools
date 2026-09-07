@@ -253,6 +253,39 @@ def without(text: str, name: str) -> str:
             end -= len(above[-2]) + 1
             above.pop(-2)
 
+    # And a comment run touching NEITHER block belongs to neither, so it stays.
+    #
+    # The two rules above are both about a run that touches something: one that
+    # touches this block's body goes with it, one that touches the next header
+    # goes with that. Between them they cover a run at one end of the gap or the
+    # other — and silently delete one sitting in the MIDDLE, with a blank line on
+    # both sides, because it is what remains after both walks have finished.
+    #
+    # That is not a rare shape. It is the one `init` and `discover` produce
+    # together: STARTER ends with the commented-out worked example, `to_toml`
+    # begins with a newline, so on every populated host list the example sits in
+    # a gap with blanks on both sides. On the real file, deleting the FIRST host
+    # destroyed all eight lines of it and reported success.
+    #
+    # So the block ends where its own run of non-blank lines ends. A blank line
+    # after the body is the end of this host, and everything past it belongs to
+    # somebody else or to nobody — either way it is not ours to take. Only the
+    # smaller of the two ends is used, so the walk above still wins when the
+    # blocks touch, which is the case it was written for.
+    # From the line AFTER the header: `start.end()` sits on the header's own line
+    # ending, so starting there reads an empty line and stops instantly, taking
+    # the header and leaving the body behind.
+    body_end = text.find("\n", start.end())
+    body_end = end if body_end == -1 else body_end + 1
+    while body_end < end:
+        line_end = text.find("\n", body_end)
+        if line_end == -1 or line_end >= end:
+            break
+        if not text[body_end:line_end].strip():
+            end = min(end, body_end)
+            break
+        body_end = line_end + 1
+
     # The separator and the final newline are the file's own, not `\n`. Hard-coded
     # they put a lone LF into a CRLF file exactly as the header did — the same
     # defect in the sibling function, found the same way.

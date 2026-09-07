@@ -637,13 +637,15 @@ def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
         assert "\r" not in out, f"shape={shape} victim={victim}\n{out!r}"
 
 
-# The gap-example assertion is its own test because at HEAD it FAILS, and only
-# for the host the example sits under. `without` runs the removal to the next
-# `[`, and the walk back from there stops at the blank line below the example —
-# so a commented-out block in the gap goes with the host above it. That is D93,
-# it is open, and the fix is a change to which side of a gap a comment run
-# belongs to, not a line. Recorded here as a strict xfail so it is not lost and
-# so closing D93 turns this red rather than silently green.
+# The gap-example assertion is its own test because it used to FAIL, and only
+# for the host the example sits under: `without` ran the removal to the next `[`,
+# and the walk back from there stopped at the blank line below the example, so a
+# commented-out block in the gap went with the host above it. That was D93.
+#
+# It was recorded here as a STRICT xfail rather than fixed on the spot, and the
+# strictness is what closed it: fixing D93 turned 128 xfails into XPASS and the
+# suite went red, which is how a defect record is supposed to end. A non-strict
+# xfail would have gone quietly green and stayed in the file as decoration.
 
 # --- the same shapes, through the other function ------------------------------
 #
@@ -736,12 +738,7 @@ GAP_SHAPES = [shape for shape in SHAPES if shape[5] and shape[2]]
 
 @pytest.mark.parametrize("shape", GAP_SHAPES)
 @pytest.mark.parametrize("victim", VICTIMS)
-def test_a_worked_example_in_the_gap_survives_a_removal(shape, victim, request):
-    if victim == VICTIMS[0]:
-        request.node.add_marker(pytest.mark.xfail(
-            strict=True,
-            reason="D93: a commented-out block in the gap goes with the host above it",
-        ))
+def test_a_worked_example_in_the_gap_survives_a_removal(shape, victim):
     out = without(_lived_in(*shape), victim)
     assert "# [hosts.spare]" in out, (
         f"the worked example in the gap was destroyed\n"
