@@ -20,6 +20,7 @@ from comfy_qa.provision import (
     install_command,
     is_windows,
     launch_command,
+    logs_command,
     root_for,
 )
 
@@ -187,6 +188,43 @@ def test_install_says_what_it_is_doing(host):
 def test_windows_installs_into_the_conventional_place():
     assert WINDOWS_ROOT in install_command(WIN)
     assert WINDOWS_ROOT == r"C:\ComfyUI"
+
+
+def test_linux_installs_into_the_conventional_place():
+    """The pin its neighbour has had all along.
+
+    `WINDOWS_ROOT` is held to a literal one line above and `LINUX_ROOT` was held
+    to nothing, so pointing it at `/nonsense` changed every Linux install
+    command in the tool and left the suite green. Nobody decided that: the pin
+    was written for one of a pair.
+    """
+    assert LINUX_ROOT in install_command(LINUX)
+    assert LINUX_ROOT == "/opt/comfyui"
+
+
+def test_the_exit_codes_the_remote_scripts_return_are_held_to_their_values():
+    """These two are a contract with a shell, and a test cannot use the constant
+    as its own oracle.
+
+    `provision` writes the number into a script that runs on the box and
+    `lifecycle` compares the code that comes back against the same Python name,
+    so both sides move together and nothing here notices. `assert f"exit
+    {NO_LOG_EXIT}" in logs_command(...)` is true for every value it could ever
+    have — the literal is the only independent oracle there is.
+
+    The values are not arbitrary either: they have to stay clear of what a shell
+    returns on its own (126 and 127 for "cannot execute" and "not found", 128+n
+    for a signal) and low enough to be obviously ours.
+    """
+    from comfy_qa.provision import NO_LOG_EXIT, NO_PYTHON_EXIT
+
+    assert NO_PYTHON_EXIT == 3, "nothing on the box can run ComfyUI"
+    assert NO_LOG_EXIT == 4, "the box has no ComfyUI log to read"
+
+    # And that each really is what the script returns, which is the half the
+    # literal cannot check on its own.
+    assert "exit 3" in launch_command(LINUX)
+    assert "exit 4" in logs_command(LINUX, tail=20, follow=False)
 
 
 @pytest.mark.parametrize("host", ALL)
