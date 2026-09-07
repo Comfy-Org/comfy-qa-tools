@@ -738,6 +738,14 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     installing = output.slow("ComfyUI is not there — installing it",
                              expect="several minutes; torch is the slow part",
                              emit=say, every=STREAM_TICK_SECONDS).start()
+    # Where the box's own output starts. Said because the next few hundred lines
+    # are apt's and pip's, not this tool's, and the long silence in the middle of
+    # them is four wheels being fetched with no per-file progress — which is the
+    # point at which a person decides it has hung and presses Ctrl-C. The `still
+    # going` lines below are the clock; nothing else in that stretch is one.
+    say("  what follows is the box's own output — apt, git, then pip. The quiet "
+        "stretch is torch, torchvision, torchaudio and the CUDA runtime, which "
+        "download without progress lines.")
     try:
         try:
             reported = gc.ssh_output(host.gce_instance, host.gce_zone,

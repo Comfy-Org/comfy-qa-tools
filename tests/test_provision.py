@@ -132,6 +132,26 @@ def test_every_apt_call_waits_for_the_dpkg_lock():
     )
 
 
+def test_every_apt_call_is_non_interactive():
+    """Otherwise apt opens the install with three lines that read as a crash.
+
+    `debconf: unable to initialize frontend: Dialog`, the parenthetical about a
+    non-interactive terminal, and `falling back to frontend: Readline` — four
+    lines into an install whose next stretch is a silent torch download. That
+    pairing is where `go` gets interrupted: nothing has failed, and the only
+    thing on screen says it has.
+
+    `sudo env VAR=…`, not `sudo VAR=…`: command-line environment assignments go
+    through sudoers and a hardened one refuses them, which would turn a cosmetic
+    fix into a failed install.
+    """
+    command = install_command(LINUX)
+
+    assert command.count("apt-get") == command.count(
+        "sudo env DEBIAN_FRONTEND=noninteractive apt-get")
+    assert "sudo DEBIAN_FRONTEND=" not in command
+
+
 @pytest.mark.parametrize("host", ALL)
 def test_every_box_binds_loopback(host):
     """This assertion has now been written three ways, and the reason is that it

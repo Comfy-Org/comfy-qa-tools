@@ -430,7 +430,18 @@ def install_command(host: Host, index: str | None = None) -> str:
             "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; "
             "Write-Output 'install complete'\""
         )
-    apt = f"sudo apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT} -y -qq"
+    # `env DEBIAN_FRONTEND=noninteractive`, not `sudo DEBIAN_FRONTEND=...`:
+    # command-line environment assignments go through sudoers, and a hardened
+    # one refuses them outright. `env` is a binary run as root and always works.
+    #
+    # Without it apt opens with three lines that read exactly like a crash —
+    # "debconf: unable to initialize frontend: Dialog", "(Dialog frontend will
+    # not work on a non-interactive terminal…)", "falling back to frontend:
+    # Readline" — four lines into an install whose next stretch is silent while
+    # torch downloads. That combination is where `go` gets interrupted: nothing
+    # here has failed, and the only output on the screen says it has.
+    apt = (f"sudo env DEBIAN_FRONTEND=noninteractive "
+           f"apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT} -y -qq")
     series = " ".join(PYTHON_SERIES_SUPPORTED)
     return (
         "set -e; "
