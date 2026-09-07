@@ -97,6 +97,7 @@ REQUIRED = {
     "test_stamp_payloads",
     "test_suite_integrity",
     "test_switch",
+    "test_tripwire",
     "test_tunnel",
     "test_tunnel_identity",
     "test_version",
