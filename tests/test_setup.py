@@ -319,8 +319,53 @@ def test_the_writability_check_looks_at_the_venv_not_its_base(tmp_path):
         venv.chmod(0o755)
 
     assert found is not None, "an unwritable venv was waved through"
-    _, blocked = found
-    assert blocked, "it should refuse rather than try"
-    assert str(venv) in blocked, (
-        f"it named the wrong directory: {blocked}"
+    assert found.blocked, "it should refuse rather than try"
+    assert str(venv) in found.blocked, (
+        f"it named the wrong directory: {found.blocked}"
+    )
+    # The sentence and the test are the SAME directory, not two derivations of
+    # it. `setup` announces `found.prefix` when it installs, and this is what
+    # stops that sentence naming a place the writability check never looked at.
+    assert found.prefix == str(venv), (
+        f"the announced directory is not the one that was tested: {found.prefix}"
+    )
+
+
+def test_setup_names_the_directory_it_tested_not_one_it_derived(monkeypatch):
+    """The sentence a user reads must name the place the writability check
+    looked at.
+
+    The announcement used to compute its own `Path(python).parent.parent` while
+    the gate asked the interpreter for `sys.prefix`. Two derivations of "where
+    does pip put this" that agree on the common layout and disagree elsewhere —
+    so the tool could announce a directory it had never tested, for the one step
+    in `setup` that modifies software the user did not install.
+
+    The python below is deliberately shaped so the two answers differ: the old
+    derivation gives /opt/base, the tested prefix is /venv. Both are fabricated;
+    nothing here runs an interpreter.
+    """
+    import subprocess as real_subprocess
+
+    from comfy_qa import setup as setup_module
+
+    monkeypatch.setattr(
+        setup_module, "gcloud_numpy",
+        lambda gc: setup_module.GcloudNumpy("/opt/base/bin/python3", "/venv", ""),
+    )
+    monkeypatch.setattr(
+        real_subprocess, "run",
+        lambda *a, **k: real_subprocess.CompletedProcess(a[0] if a else [], 0,
+                                                         "", ""),
+    )
+
+    p = prompts()
+    setup_module.ensure_tunnel_speed(gcloud(**READY), p)
+
+    installing = next(line for line in p.said if "installing" in line)
+    assert "/venv" in installing, (
+        f"it announced a directory it never tested: {installing}"
+    )
+    assert "/opt/base)" not in installing, (
+        "that is the base interpreter, not where pip would put NumPy"
     )

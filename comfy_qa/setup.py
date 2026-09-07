@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from .config import DEFAULT_CONFIG_PATH
 from .gcloud import Gcloud, GcloudError, console_quota_url, quota_request_command
@@ -104,11 +104,27 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
     return chosen
 
 
-def gcloud_numpy(gc: Gcloud) -> tuple[str, str] | None:
+class GcloudNumpy(NamedTuple):
+    """Where gcloud's NumPy would go, and why it might not.
+
+    Named rather than a bare tuple because BOTH strings are paths to the same
+    place and a positional unpack cannot tell them apart. `prefix` exists so the
+    sentence a user reads and the writability test they never see are derived
+    ONCE: the announcement used to compute its own `Path(python).parent.parent`
+    while the gate asked the interpreter for `sys.prefix`, and on any layout
+    where those disagree the tool named a directory it had not tested.
+    """
+
+    python: str
+    prefix: str
+    blocked: str
+    """"" if NumPy can be installed there; otherwise a sentence saying why not."""
+
+
+def gcloud_numpy(gc: Gcloud) -> GcloudNumpy | None:
     """gcloud's own interpreter and why NumPy is or is not wanted there.
 
-    Returns None when there is nothing to do. Otherwise `(python, reason)`, where
-    reason is "" if it can be installed and a sentence if it cannot.
+    Returns None when there is nothing to do.
     """
     import os
 
@@ -153,8 +169,9 @@ def gcloud_numpy(gc: Gcloud) -> tuple[str, str] | None:
         return None
     root = Path(prefix)
     if not os.access(root, os.W_OK):
-        return python, f"its Python is not writable by you ({root})"
-    return python, ""
+        return GcloudNumpy(python, str(root),
+                           f"its Python is not writable by you ({root})")
+    return GcloudNumpy(python, str(root), "")
 
 
 def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, skip: bool = False) -> None:
@@ -189,14 +206,14 @@ def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, skip: bool = False) -> None:
     found = gcloud_numpy(gc)
     if found is None:
         return
-    python, blocked = found
-    if blocked:
-        p.say(f"gcloud's tunnels would be faster with NumPy, but {blocked}. "
+    python = found.python
+    if found.blocked:
+        p.say(f"gcloud's tunnels would be faster with NumPy, but {found.blocked}. "
               f"Skipping. To do it yourself: sudo {python} -m pip install numpy")
         return
 
     p.say(f"gcloud's tunnel is faster with numpy; installing into its own Python "
-          f"({Path(python).parent.parent})")
+          f"({found.prefix})")
     try:
         done = subprocess.run(
             [python, "-m", "pip", "install", "--quiet", "--only-binary=:all:",

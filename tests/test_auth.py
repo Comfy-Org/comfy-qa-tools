@@ -220,9 +220,15 @@ def test_status_does_not_fail_forever_over_a_tunnel_speed_it_cannot_fix(monkeypa
     """`status` exits 1 on any failed check. A root-owned gcloud python — which
     setup deliberately SKIPS rather than escalating to sudo — made that a
     permanent non-zero exit, with a fix line pointing at the command that had
-    already declined. Same for anyone who ran `setup --no-numpy`.
+    already declined.
 
     A slower tunnel is not a readiness failure. The row still says so.
+
+    This does NOT cover `setup --no-numpy`, and an earlier version of this
+    docstring claimed it did. That user still fails the check, correctly: they
+    declined, nothing declined for them, and `comfy-qat setup` without the flag
+    installs it. The sibling below pins that difference so the claim cannot
+    drift back.
 
     `monkeypatch`, not a hand-rolled try/finally: the first version of this test
     restored the wrong module and left `setup.gcloud_numpy` patched for the rest
@@ -232,7 +238,8 @@ def test_status_does_not_fail_forever_over_a_tunnel_speed_it_cannot_fix(monkeypa
 
     monkeypatch.setattr(
         setup_module, "gcloud_numpy",
-        lambda gc: ("/usr/bin/python3", "its Python is not writable by you"),
+        lambda gc: setup_module.GcloudNumpy(
+            "/usr/bin/python3", "/usr", "its Python is not writable by you"),
     )
     checks = run_checks(fake(**GCLOUD_PY, **SIGNED_IN, **PROJECT, **BILLED,
                              **QUOTA))
@@ -240,3 +247,34 @@ def test_status_does_not_fail_forever_over_a_tunnel_speed_it_cannot_fix(monkeypa
     numpy = next(c for c in checks if c.name == "numpy")
     assert numpy.ok, "an install setup declined to make must not fail status"
     assert "not writable" in numpy.detail, "the row still says what is wrong"
+
+
+def test_a_tunnel_speed_setup_could_fix_still_fails_status(monkeypatch):
+    """The sibling of the test above, and the reason it exists.
+
+    The two cases differ by one empty string — `blocked` — and the whole exit
+    code turns on it, so a reader who saw only the first test would reasonably
+    conclude that `numpy` never fails `status`. It does, and it should: NumPy
+    absent from a WRITABLE gcloud python means either nobody has run `setup`
+    yet or somebody ran it with `--no-numpy`, and in both cases the fix line is
+    a command that actually works.
+
+    Without this, `ok=True` unconditionally passes the test above and nothing
+    notices. That is the shape we keep finding: a fix pinned only on the side it
+    changed.
+    """
+    from comfy_qa import setup as setup_module
+
+    monkeypatch.setattr(
+        setup_module, "gcloud_numpy",
+        lambda gc: setup_module.GcloudNumpy(
+            "/usr/bin/python3", "/usr", ""),
+    )
+    checks = run_checks(fake(**GCLOUD_PY, **SIGNED_IN, **PROJECT, **BILLED,
+                             **QUOTA))
+
+    numpy = next(c for c in checks if c.name == "numpy")
+    assert not numpy.ok, (
+        "NumPy that setup CAN install is a real failing check — the fix works"
+    )
+    assert numpy.fix == "comfy-qat setup", "and it names the command that fixes it"
