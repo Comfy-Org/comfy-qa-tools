@@ -1506,6 +1506,16 @@ certainty it cannot support, but the exact resource and the exact command:
   report a *failed* move prints. Before, it was reachable only on the next `move`
   run, which is the run somebody who has just pressed Ctrl-C is least likely to
   make.
+* **`move` with no `--to`**, which is the ordinary way to use it, names the box
+  in the zone it is **already** in: `comfy-win (comfy-win in us-central1-a),
+  started to ask where there is capacity`. Finding a zone with capacity means
+  starting the machine and reading the answer out of Google's refusal — there is
+  no API that answers it — so a probe that is *not* refused leaves a GPU box
+  running, in the original zone, with the move not yet begun. An interrupt in
+  that window used to print nothing at all: the output ended at "asking Google
+  where there is capacity", with no report and no stop command, while a box may
+  have just started. The exit code was 130 throughout; the sentence was what was
+  missing.
 
 Two interrupts are deliberately not reported here, because they are not failures
 and leave nothing behind: Ctrl-C out of `comfy-qat logs` ends the reading, and

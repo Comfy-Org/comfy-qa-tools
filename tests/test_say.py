@@ -701,18 +701,17 @@ def test_a_money_command_says_something_on_each_stream(tmp_path, monkeypatch):
     assert result.stderr.strip(), "no story on stderr"
 
 
-@pytest.mark.xfail(strict=True, reason="D79's mirror: `down <name>` is _act(put_away, "
-                                       "..., say.step) and returns, so the whole "
-                                       "command is on stderr and `2>/dev/null` "
-                                       "prints nothing at all about money. "
-                                       "Not mine to fix; host.py belongs to "
-                                       "another agent.")
 def test_the_single_host_down_also_answers_on_stdout(tmp_path, monkeypatch):
     """`down --all` puts its money summary on stdout. `down <name>` puts nothing
     there, so the two forms of one command disagree about where the answer goes.
 
     Found by making the guard above drive the real `put_away` — which is the
     point of unstubbing it, and it turned up on the first run.
+
+    Was a strict xfail while host.py belonged to another agent. Fixed there: the
+    single-host form now ends with the same money summary its `--all` sibling
+    prints, read off `put_away`'s verdict, while the per-host story stays on
+    stderr. The marker came off with the fix, which is what its reason asked for.
     """
     result = _run(["down", "comfy-win"], tmp_path, monkeypatch)
 
@@ -720,6 +719,15 @@ def test_the_single_host_down_also_answers_on_stdout(tmp_path, monkeypatch):
     assert result.stdout.strip(), (
         f"`down comfy-win 2>/dev/null` says nothing about money: "
         f"{result.stdout!r}"
+    )
+    # Specific, not merely non-empty: "something on stdout" is satisfied by any
+    # stray line, and this test exists because the ANSWER was missing. It also
+    # holds the story to its own stream, the way the `--all` guard above does.
+    assert "was billing. Stopped." in result.stdout, (
+        f"stdout has something, but not the answer about money: {result.stdout!r}"
+    )
+    assert "was running — stopped it" not in result.stdout, (
+        "the per-host story leaked onto stdout"
     )
 
 
@@ -816,13 +824,6 @@ def test_a_dry_run_that_hands_over_delete_commands_says_something_on_stderr(
     )
 
 
-@pytest.mark.xfail(strict=True, reason="residual of D78, surviving d70e6b1: the "
-                                       "PLAN NOTE still hands a `gcloud compute "
-                                       "disks delete … --quiet` to stdout. Same "
-                                       "hazard, a different line — the fix moved "
-                                       "the leftovers block and not "
-                                       "`found.notes`. host.py is another "
-                                       "agent's; delete this with the fix.")
 def test_no_delete_command_reaches_stdout_from_a_dry_run(tmp_path, monkeypatch):
     """The whole-command version of the assertion above.
 
@@ -830,6 +831,13 @@ def test_no_delete_command_reaches_stdout_from_a_dry_run(tmp_path, monkeypatch):
     one line left. Rolling the two together would hide which half is which —
     which is exactly how the first draft of the test above came to pass for the
     wrong reason.
+
+    That last line is now fixed too, and the marker came off with it. The note
+    was the arguable one — a note could be read as part of the plan, and the plan
+    is the answer — so it was decided on what the notes actually are rather than
+    on the invariant: `judge_disk` builds them with `output.fix`, and the only
+    one that exists is a caveat plus a `--quiet` delete command for avoiding it.
+    That is advice, not a step the move takes.
     """
     result = _run(["move", "comfy-win", "--to", "us-central1-b", "--dry-run"],
                   tmp_path, monkeypatch, _HalfFinishedMove())

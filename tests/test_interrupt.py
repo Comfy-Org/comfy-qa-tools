@@ -220,6 +220,47 @@ def test_an_interrupt_exits_130_and_never_prints_aborted(run_main, monkeypatch,
     assert "comfy-qat down comfy-win" in output
 
 
+def test_the_probe_start_inside_move_is_registered_like_any_other(
+        run_main, monkeypatch, tmp_path):
+    """`move <host>` with no `--to` starts the box, and nothing recorded it.
+
+    `_zone_with_capacity` starts the instance on purpose — nothing answers "where
+    is there an L4 free", so the only way to ask is to try and read the zone out
+    of the refusal, which means a try that is NOT refused leaves a GPU box
+    running. It was the one billable start in the package outside `may_leave`,
+    and it sits on the ordinary path: `move <host>` with no `--to` is how the
+    command is meant to be used.
+
+    Measured with a real SIGINT before the fix: exit 130, and the output ended at
+    "asking Google where there is capacity" with nothing after it — no report, no
+    "may be billing", no stop command. The exit code was never the missing half.
+
+    Eleven interrupt tests across six files, and none reached this call.
+    """
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.cli import INTERRUPTED
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(
+        '[hosts.comfy-win]\nkind = "gce"\nport = 8190\nos = "windows"\ngpu = "L4"\n'
+        'gce_instance = "comfy-win"\ngce_zone = "us-central1-a"\ngce_project = "p"\n',
+        encoding="utf-8")
+
+    class Interrupted:
+        def start_instance(self, instance, zone, project):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Interrupted())
+    code, output = run_main(["move", "comfy-win", "--yes", "--config", str(path)])
+
+    assert code == INTERRUPTED
+    assert "Aborted!" not in output, output
+    # The box, the zone it is actually in — the ORIGINAL one, because the move
+    # has not happened — and the way to stop paying for it.
+    assert "comfy-win (comfy-win in us-central1-a)" in output, output
+    assert "comfy-qat down comfy-win" in output, output
+
+
 def test_a_command_that_finishes_is_untouched_by_any_of_this(run_main, tmp_path):
     """The record must be invisible on every path but one."""
     path = tmp_path / "hosts.toml"

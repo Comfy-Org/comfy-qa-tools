@@ -506,6 +506,29 @@ def _act(action, *args, **kwargs):
         say.fail(exc, code=1)
 
 
+# The four words `put_away` answers with, from nine `return` statements. Named
+# here rather than inline at each of the two call sites, so that adding a fifth
+# is one edit and not a search.
+VERDICTS = ("caught", "billing", "idle", "unknown")
+
+
+def _known_verdict(host: Host, found: str) -> str:
+    """`put_away`'s answer, or "unknown" — out loud — if it is not one of them.
+
+    Both callers used to read this through `dict.get(found, [])`, which appended
+    to a throwaway list: a verdict neither of them named dropped the machine out
+    of every count and every closing sentence in silence, in the one command that
+    exists to answer "am I still paying for anything". An undercount is the
+    expensive direction, so an answer nobody recognises is read as "I do not
+    know", which is what it is, and is said rather than swallowed.
+    """
+    if found in VERDICTS:
+        return found
+    say.warn(f"{host.name} came back from stopping with an outcome this tool "
+             f"does not recognise ({found!r}), so it is counted as unchecked")
+    return "unknown"
+
+
 @app.command("up")
 def up_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
@@ -664,7 +687,7 @@ def down_cmd(
     that by naming each box in turn is how one gets missed.
     """
     from .gcloud import Gcloud
-    from .lifecycle import put_away
+    from .lifecycle import put_away, stop_paying
 
     # Both paths, not just --all: the single-host form is the one someone types
     # out of habit.
@@ -751,12 +774,8 @@ def down_cmd(
                 # the cost of the old silence was an undercount in the one
                 # command that exists to answer "am I still paying for anything".
                 bucket = {"unknown": unknown, "billing": billing,
-                          "caught": stopped, "idle": idle}.get(found)
-                if bucket is None:
-                    say.warn(f"{host.name} came back from stopping with an "
-                             f"outcome this tool does not recognise ({found!r}), "
-                             f"so it is counted as unchecked")
-                    bucket = unknown
+                          "caught": stopped, "idle": idle}.get(
+                              _known_verdict(host, found))
                 bucket.append(host)
             except LifecycleError as exc:
                 # One machine refusing to stop must not leave the rest running —
@@ -846,7 +865,34 @@ def down_cmd(
                  blank_line=False)
 
     host = _host(_selector(name, os_, gpu), config)
-    _act(put_away, Gcloud(), host, say.step, keep_running=keep_running)
+    found = _act(put_away, Gcloud(), host, say.step, keep_running=keep_running)
+
+    # `down --all` ends with its money summary on stdout and the per-host story
+    # on stderr. This form printed the story and stopped, so `comfy-qat down
+    # comfy-win 2>/dev/null` said NOTHING AT ALL about money — two forms of one
+    # command disagreeing about where the answer goes, and the mirror of the
+    # `move --dry-run` defect where everything went to stdout and stderr was
+    # empty. One rule catches both: a command about money has an answer and a
+    # story, and neither stream is empty.
+    #
+    # Not a duplicate of `put_away`'s own line, for the reason `--all` is not:
+    # that line is the story of one machine on stderr, this is the answer on
+    # stdout, and someone who redirects either away still has the other.
+    verdict = _known_verdict(host, found)
+    say.result({
+        "caught": f"\n{host.name} was billing. Stopped.",
+        "idle": f"\n{host.name} was not running, so nothing was billing.",
+        "billing": f"\n{host.name} is left running, and it is billing.",
+        "unknown": f"\n{host.name} could not be checked before stopping, so it "
+                   f"may have been billing.",
+    }[verdict])
+    # Read from the SETTLED verdict, not from the raw answer: an unrecognised
+    # one becomes "unknown" above, and it needs the way to go and look more than
+    # any of the others do.
+    if verdict == "unknown":
+        say.result("  comfy-qat list --live")
+    elif verdict == "billing":
+        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
 
 
 @app.command("go")
@@ -1471,7 +1517,33 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
 
     say.step("asking Google where there is capacity")
     try:
-        gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
+        # This start is as billable as any other and interrupts the same way,
+        # and it was the one start in the tool that nothing registered. Measured
+        # with a real SIGINT against a fake gcloud: `up comfy-win` exits 130 and
+        # names the box and the way to stop it, while `move comfy-win` exited
+        # 130 with its output ending at "asking Google where there is capacity"
+        # and nothing after it — no report, no "may be billing", no stop
+        # command, while a GPU box may have just started. `move <host>` with no
+        # `--to` is the ordinary way to use the command, so that was the
+        # ordinary path.
+        #
+        # The exit code was never the missing half: `cli.main` catches the bare
+        # KeyboardInterrupt, so all three commands already exited 130 and none
+        # printed "Aborted!". What was missing is the sentence.
+        #
+        # Registered in the ORIGINAL zone, which is where a start that succeeds
+        # leaves the box — the whole point of this probe is that the move has
+        # not happened yet.
+        with inflight.may_leave(
+            f"{host.name} ({host.gce_instance} in {host.gce_zone}), started to "
+            f"ask where there is capacity",
+            undo=[
+                f"comfy-qat down {host.name}",
+                "or check first, if you would rather look:",
+                "comfy-qat list --live",
+            ],
+        ):
+            gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         if not is_capacity_failure(exc.raw):
             _refused(exc)
@@ -1641,8 +1713,16 @@ def move_cmd(
     say.result("")
     for line in plan.steps(found):
         say.result(f"  - {line}")
+    # The plan goes to stdout above, because the plan IS the answer. A note is
+    # not part of it, and the argument that it might be does not survive reading
+    # one: `judge_disk` builds them with `output.fix`, the tool's own vocabulary
+    # for "what to do about it", and the only note that exists says the moved box
+    # gets a slower boot disk than the one it replaces and hands over a `gcloud
+    # compute disks delete ... --quiet` to avoid that. A caveat and a remedy, not
+    # a step this move takes — and the delete command is the same hazard that put
+    # the leftovers block on the wrong stream, one line further down.
     for note in found.notes:
-        say.result(f"\nnote: {note}")
+        say.warn(note)
 
     if dry_run:
         say.result("\n--dry-run: nothing changed")
