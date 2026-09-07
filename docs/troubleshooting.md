@@ -640,6 +640,27 @@ directory, a missing requirement printed and gone. Its own log is above the erro
 on your terminal; read that first. Note the exit code alone would have said
 success, which is the same lie as calling a booted VM "up".
 
+**`the tunnel to comfy-win never opened, so ComfyUI was never reached on http://127.0.0.1:8190 — it was not asked, and nothing here says it failed. ComfyUI is running on comfy-win and has been left running. The machine is up and billing.`**
+The message above, and this one, are the two ends of the same wait, and the
+difference between them is worth more than it looks. That one means ComfyUI was
+asked and stayed silent. This one means it was never asked: the local forward
+onto the box never came up, so there was nothing to ask through. **Nothing on
+the box is stopped in this case** — the server may be perfectly healthy, and
+killing it would take away the one thing the launch got right. The last sentence
+says which of the three the box reported: still running, no longer running, or
+would not say. Read the tunnel's own log in
+`~/.config/comfy-qa-tools/tunnels/<host>.log` and reopen with
+`comfy-qat open <name>`; an expired session is the usual cause. The box is still
+billing either way.
+
+**`something is already listening on comfy-win's ComfyUI port (python, pid 8123), and the tunnel to it could not be opened, so it could not be asked whether it is ComfyUI. Nothing was started, and nothing was stopped.`**
+The same distinction one step earlier. A held port is only a problem when what
+holds it is not the ComfyUI you wanted, and that is settled by asking it —
+through the tunnel. With no tunnel there is no answer, so the tool refuses
+rather than assuming: the alternative was calling a possibly-healthy ComfyUI
+"not answering" and offering to kill it. Fix the tunnel first, then run the same
+command again.
+
 **`Quota 'SSD_TOTAL_GB' exceeded.  Limit: 500.0 in region us-central1.`**
 A disk you asked for does not fit under the project's SSD allowance. pd-balanced,
 pd-ssd and hyperdisk all count against it; pd-standard does not. A move copies a

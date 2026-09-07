@@ -757,6 +757,44 @@ def test_a_gcloud_failure_at_the_launch_never_says_how_to_stop_paying(tmp_path, 
     assert "your gcloud session has expired" in str(caught.value)
 
 
+class _EverythingRaises:
+    """A Gcloud where every call fails, including the ones asked BEFORE the
+    launch — which is where an OSError used to get out."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            raise self.exc
+        return call
+
+
+@pytest.mark.parametrize("launch", (serve, start_detached))
+def test_an_oserror_anywhere_in_the_launch_still_names_the_bill(tmp_path, launch):
+    """The same failure by the other route out of `subprocess`.
+
+    `Gcloud.ssh` raises GcloudError when the binary has gone, and OSError —
+    EMFILE, ENOMEM — when the process cannot be spawned at all. The launch call
+    itself catches both, but `_port_holder` runs first and caught only
+    GcloudError, so an OSError escaped as a traceback past every handler in the
+    tool: tunnel open, box billing, nothing said. The four best-effort asks on
+    this path now treat a local fault as one more way for a box not to answer.
+    """
+    from comfy_qa import tunnel as tunnel_module
+
+    _, say = said()
+    tunnel_module.open_tunnel(WIN, tmp_path)
+
+    with pytest.raises(LifecycleError) as caught:
+        launch(_EverythingRaises(OSError(24, "Too many open files")),
+               WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
+               tunnel_dir=tmp_path)
+
+    assert stop_paying(WIN) in (caught.value.fix or "")
+    assert not tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+
 def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):
     """The refusal is at the point of the decision, not only at the parse.
 

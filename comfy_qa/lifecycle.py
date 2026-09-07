@@ -538,11 +538,7 @@ def bring_up(
                 f"the tunnel to {host.name} closed, so nothing is listening on "
                 f"{host.url}. ComfyUI was never reached.",
                 kind=TUNNEL_DOWN,
-                fix=_with_the_bill(
-                    host,
-                    f"read what gcloud said in {log_file(host.name, tunnel_dir)}, then:",
-                    f"comfy-qat open {host.name}",
-                ),
+                fix=_tunnel_fix(host, tunnel_dir),
             )
         if now() >= deadline:
             break
@@ -786,7 +782,13 @@ def _port_holder(gc: Gcloud, host: Host) -> tuple[str, str] | None:
     try:
         answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
                                port_holder_command(host))
-    except GcloudError:
+    except (GcloudError, OSError):
+        # OSError as well as GcloudError, here and in the three other best-effort
+        # asks below, because this one runs BEFORE the launch is wrapped: an
+        # OSError out of subprocess — EMFILE, ENOMEM — escaped as a traceback,
+        # past every handler, leaving the tunnel open and the box billing. These
+        # four already promise to tolerate a box that will not answer, and a
+        # local fault is one more way of not answering.
         return None
     # Whatever the box said, as text: this asks a question and the only wrong
     # answer is one that stops a launch which would otherwise have worked.
@@ -823,11 +825,31 @@ def _stop_ours(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
     try:
         gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                stop_command(host, pid), stream=False)
-    except GcloudError:
+    except (GcloudError, OSError):
         say(f"could not stop the ComfyUI left on {host.name} (pid {pid}) — "
             f"it still holds the port")
         return
     say(f"stopped the ComfyUI this run started on {host.name} ({name}, pid {pid})")
+
+
+def _tunnel_fix(host: Host, tunnel_dir) -> str:
+    """What to do when the tunnel is the thing that failed.
+
+    The fix and not the whole exception, so each message stays a literal at the
+    `LifecycleError` that raises it — which is what `docs/troubleshooting.md` is
+    checked against. Written once so the three sites that reach this state
+    cannot drift apart about which log to read.
+
+    Note what these sites must NOT do, which is why they are not `_give_up`:
+    `_give_up` stops the ComfyUI this run started, and that is exactly wrong
+    when the server is healthy and the only thing missing is a local forward
+    onto it.
+    """
+    return _with_the_bill(
+        host,
+        f"read what gcloud said in {log_file(host.name, tunnel_dir)}, then:",
+        f"comfy-qat open {host.name}",
+    )
 
 
 def _give_up(host: Host, tunnel_dir, say: Callable[[str], None], message: str,
@@ -1186,7 +1208,7 @@ def _still_alive(gc: Gcloud, host: Host) -> bool | None:
     try:
         answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
                                alive_command(host))
-    except GcloudError:
+    except (GcloudError, OSError):
         return None
     answer = str(answer or "").strip()
     if not answer:
@@ -1206,7 +1228,7 @@ def _log_tail(gc: Gcloud, host: Host, lines: int = 20) -> str:
     try:
         text = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
                              logs_command(host, tail=lines, follow=False))
-    except GcloudError:
+    except (GcloudError, OSError):
         # No log, or an unreachable box. Either way there is nothing to quote,
         # and failing to read a log is not worth replacing the real failure.
         return ""
@@ -1291,7 +1313,20 @@ def start_detached(
         pid, name = holder
         # A held port is only a problem when what holds it is not the thing you
         # wanted. If it serves, it is not in the way — it is the answer.
-        _open_forward(host, tunnel_dir, say)
+        if not _open_forward(host, tunnel_dir, say):
+            # The return value used to be discarded, so a forward that never
+            # opened was followed by a probe through it, one guaranteed silence,
+            # and a refusal that called a possibly-healthy ComfyUI "not
+            # answering" — and offered to kill it. Never asked is not the same
+            # as asked and silent.
+            raise LifecycleError(
+                f"something is already listening on {host.name}'s ComfyUI port "
+                f"({name}, pid {pid}), and the tunnel to it could not be opened, "
+                f"so it could not be asked whether it is ComfyUI. Nothing was "
+                f"started, and nothing was stopped.",
+                kind=TUNNEL_DOWN,
+                fix=_tunnel_fix(host, tunnel_dir),
+            )
         serving = probe_fn(host)
         if serving is not None:
             say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
@@ -1348,10 +1383,17 @@ def start_detached(
             f"ComfyUI on {host.name} could not be launched (exit {code}).")
 
     stamp = None
+    # Whether ComfyUI was ever actually ASKED. The loop has three ways out and
+    # only one of them means "it did not answer": a forward that never opens
+    # skips the probe entirely, so the deadline used to arrive with nothing
+    # asked and be reported as ComfyUI never answering — after killing it.
+    asked = False
+    stopped = False
     deadline = now() + timeout
     asked_alive = now()
     while True:
         if _open_forward(host, tunnel_dir, say):
+            asked = True
             stamp = probe_fn(host)
             if stamp is not None:
                 break
@@ -1362,9 +1404,12 @@ def start_detached(
             if _still_alive(gc, host) is False:
                 say(f"ComfyUI is no longer running on {host.name} — it stopped "
                     f"before it ever answered")
+                stopped = True
                 break
         sleep(POLL_SECONDS)
 
+    if stamp is None and not asked and not stopped:
+        return _never_forwarded(gc, host, say, tunnel_dir=tunnel_dir)
     if stamp is None:
         return _never_answered(gc, host, say, tunnel_dir=tunnel_dir, repair=repair,
                                open_browser=open_browser, probe_fn=probe_fn,
@@ -1374,6 +1419,43 @@ def start_detached(
     if open_browser is not None:
         open_browser(host.url)
     return 0
+
+
+def _never_forwarded(gc: Gcloud, host: Host, say: Callable[[str], None], *,
+                     tunnel_dir) -> int:
+    """The wait ran out with no tunnel — which is not the same as no ComfyUI.
+
+    The distinction is the whole point, and getting it wrong is expensive in the
+    one direction that cannot be undone. `_never_answered` reads the log, STOPS
+    what this run started, and says ComfyUI "exited without ever answering". Two
+    of those three are wrong here: nothing exited, and nothing was asked. The
+    server on the box may be perfectly healthy — a forward that will not open is
+    an IAP or a local problem, not the box's — and killing it takes away the one
+    thing the launch got right.
+
+    So this stops nothing. It asks the box once whether ComfyUI is still there,
+    because "it is up, you just cannot reach it" and "it went away" want
+    different next moves, and reports which it saw. `None` from `_still_alive`
+    is neither: an unanswerable box has said nothing, and nothing is not a
+    reason to kill a server.
+    """
+    alive = _still_alive(gc, host)
+    if alive is True:
+        state = (f"ComfyUI is running on {host.name} and has been left running")
+    elif alive is False:
+        state = (f"ComfyUI is no longer running on {host.name} either")
+    else:
+        state = (f"{host.name} would not say whether ComfyUI is still running, "
+                 f"so it has been left alone")
+
+    stand_down(host, tunnel_dir, say)
+    raise LifecycleError(
+        f"the tunnel to {host.name} never opened, so ComfyUI was never reached "
+        f"on {host.url} — it was not asked, and nothing here says it failed. "
+        f"{state}. The machine is up and billing.",
+        kind=TUNNEL_DOWN,
+        fix=_tunnel_fix(host, tunnel_dir),
+    )
 
 
 def _never_answered(gc: Gcloud, host: Host, say: Callable[[str], None], *,

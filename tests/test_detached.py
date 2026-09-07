@@ -23,7 +23,13 @@ import pytest
 
 from comfy_qa.config import Host
 from comfy_qa.gcloud import Gcloud, GcloudError
-from comfy_qa.lifecycle import LifecycleError, in_a_new_window, read_logs, start_detached
+from comfy_qa.lifecycle import (
+    TUNNEL_DOWN,
+    LifecycleError,
+    in_a_new_window,
+    read_logs,
+    start_detached,
+)
 from comfy_qa.provision import (
     ALIVE,
     GONE,
@@ -104,6 +110,51 @@ def detach(host, gc, say, **kwargs):
     return start_detached(gc, host, say, **kwargs)
 
 
+@pytest.fixture
+def no_tunnel(monkeypatch):
+    """A local forward that will not open.
+
+    An IAP or a local problem, never the box's — which is the whole reason the
+    two endings below have to be told apart.
+    """
+    from comfy_qa import lifecycle
+    from comfy_qa.tunnel import TunnelError
+
+    def refuse(host, tunnel_dir=None):
+        raise TunnelError("could not open the tunnel")
+
+    monkeypatch.setattr(lifecycle, "open_tunnel", refuse)
+
+
+def box_that_holds_its_port_once_launched(**kwargs):
+    """PORT_FREE when the launch is decided, held afterwards.
+
+    The shape a real launch makes: nothing on the port, then ComfyUI on it. It
+    is the only way to see whether the ending stopped what the launch started,
+    because a box that never held the port has nothing to stop.
+    """
+    gc = box(**kwargs)
+    inner = gc.runner
+    launched = []
+
+    def runner(args, mode):
+        joined = " ".join(args)
+        holding = "NetTCPConnection" in joined or "sport = :" in joined
+        if holding and mode == "output":
+            return "4242 python" if launched else "PORT_FREE"
+        if "nohup" in joined or "Start-Process -FilePath 'powershell'" in joined:
+            launched.append(joined)
+        return inner(args, mode)
+
+    gc.runner = runner
+    return gc
+
+
+def stops_in(gc):
+    return [call for call in gc.calls if "kill 4242" in call
+            or "Stop-Process -Id 4242" in call]
+
+
 # --- the promise: it comes back, and only once ComfyUI answers -------------
 
 
@@ -137,6 +188,83 @@ def test_started_is_not_serving(host, tmp_path):
     assert "billing" in str(caught.value)
     assert f"comfy-qat down {host.name}" in caught.value.fix
     assert f"comfy-qat logs {host.name}" in caught.value.fix
+
+
+# --- never asked is not the same as asked and silent -----------------------
+#
+# The wait has three ways out and only one of them means ComfyUI did not answer.
+# A forward that never opens skips the probe entirely, so the deadline used to
+# arrive with the question unasked and be reported as ComfyUI having "exited
+# without ever answering" — after stopping it. Both halves of that sentence were
+# wrong, and the tool had just killed a working server to say it.
+
+
+def test_a_tunnel_that_never_opens_is_not_reported_as_comfyui_never_answering(
+        no_tunnel, tmp_path):
+    lines, say = said()
+    gc = box_that_holds_its_port_once_launched(log="Starting server")
+
+    with pytest.raises(LifecycleError) as caught:
+        detach(LINUX, gc, say, tunnel_dir=tmp_path, probe_fn=lambda h: None)
+
+    assert caught.value.kind == TUNNEL_DOWN
+    assert "never opened" in str(caught.value)
+    assert "it was not asked" in str(caught.value)
+    assert "without ever answering" not in str(caught.value)
+    # The money half: a healthy ComfyUI is left alone. Killing it is what made
+    # this worth fixing rather than rewording.
+    assert stops_in(gc) == []
+    assert "the last of its log on" not in " ".join(lines)
+    # And it still says which box is costing money, and how to stop it.
+    assert f"comfy-qat down {LINUX.name}" in caught.value.fix
+    assert f"comfy-qat open {LINUX.name}" in caught.value.fix
+
+
+def test_the_tunnel_ending_says_what_the_box_said_about_comfyui(no_tunnel, tmp_path):
+    """Three answers, not two: up and unreachable, gone, or unanswerable — and
+    the last is not a reason to stop anything."""
+    for alive, expected in ((ALIVE, "is running on comfy-linux and has been left "
+                                    "running"),
+                            (GONE, "is no longer running on comfy-linux either"),
+                            ("", "would not say whether ComfyUI is still running")):
+        gc = box_that_holds_its_port_once_launched(alive=alive)
+        with pytest.raises(LifecycleError) as caught:
+            detach(LINUX, gc, said()[1], tunnel_dir=tmp_path,
+                   probe_fn=lambda h: None)
+        assert expected in str(caught.value), alive
+        assert stops_in(gc) == [], alive
+
+
+def test_a_tunnel_that_does_open_still_ends_the_old_way(tmp_path):
+    """The guard on the fix. A launch that WAS asked and stayed silent is still
+    the failure it always was: the log is read, what this run started is
+    stopped, and it says so."""
+    lines, say = said()
+    gc = box_that_holds_its_port_once_launched(log="Traceback (most recent call last)")
+
+    with pytest.raises(LifecycleError) as caught:
+        detach(LINUX, gc, say, tunnel_dir=tmp_path, probe_fn=lambda h: None)
+
+    assert "without ever answering" in str(caught.value)
+    assert stops_in(gc) != []
+    assert "the last of its log on" in " ".join(lines)
+
+
+def test_a_held_port_with_no_tunnel_is_not_called_not_answering(no_tunnel, tmp_path):
+    """The sibling, one step earlier. `_open_forward`'s answer was discarded, so
+    the probe went through a tunnel that was not there, and the guaranteed
+    silence became "it is not answering as ComfyUI" plus an offer to kill it."""
+    _, say = said()
+    gc = box(port_holder="2804 python")
+
+    with pytest.raises(LifecycleError) as caught:
+        detach(WIN, gc, say, tunnel_dir=tmp_path, probe_fn=lambda h: None)
+
+    assert caught.value.kind == TUNNEL_DOWN
+    assert "could not be asked whether it is ComfyUI" in str(caught.value)
+    assert "nothing was stopped" in str(caught.value)
+    assert "not answering as ComfyUI" not in str(caught.value)
+    assert "Stop-Process -Id 2804" not in caught.value.fix
 
 
 def test_the_detached_launch_is_the_one_that_runs_not_the_foreground_one(tmp_path):
