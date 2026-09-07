@@ -704,17 +704,28 @@ phase at the thing it was written for.
 
 ### R0 — the baseline. Do not skip this; nothing after it means anything without it.
 
+> **STOP THE BOX FIRST, and read the paragraph above before you do anything
+> else.** On a project whose `GPUS_ALL_REGIONS` is 1 — which is this one —
+> moving a **running** box does not get refused up front. It snapshots, it
+> builds a 300 GB disk, and Google refuses it at the create, which is the last
+> and most expensive step. That is the incident phase I was written for, and
+> running R the wrong way round reproduces it on your own project.
+
 ```sh
 P=$(gcloud config get-value project 2>/dev/null); echo "=== R0 project $P"
 TARGET_ZONE=us-central1-b            # a zone $BOX is NOT in, and that has your card
 echo "moving $BOX -> $TARGET_ZONE"
 mkdir -p ~/move-before
+echo "=== R0 stamp it WHILE IT STILL SERVES — R6b compares against this"
+qat stamp $BOX > ~/move-before/stamp.txt 2>&1; cat ~/move-before/stamp.txt
+echo "=== R0a now stop it — a TERMINATED source holds no GPU allowance"
+qat down $BOX; echo "exit $?"
+gcloud compute instances list --project $P    # confirm it reads TERMINATED
 cp ~/.config/comfy-qa-tools/hosts.toml ~/move-before/hosts.toml
 gcloud compute instances list --project $P > ~/move-before/instances.txt
 gcloud compute disks     list --project $P > ~/move-before/disks.txt
 gcloud compute snapshots list --project $P > ~/move-before/snapshots.txt
 qat list > ~/move-before/list.txt
-qat stamp $BOX > ~/move-before/stamp.txt 2>&1
 file ~/.config/comfy-qa-tools/hosts.toml            # LF or CRLF — you need to know which
 grep -n "" ~/move-before/hosts.toml | head -40      # the file with line numbers
 cat ~/move-before/instances.txt ~/move-before/disks.txt ~/move-before/snapshots.txt
@@ -734,7 +745,23 @@ exotic one — and until an hour ago both of those annotations made the host
 is not in the host list`, about a host on the screen. Do this before R0 so every
 step below runs against a realistic file.
 
+- [ ] **R0a** — **the source reads TERMINATED before you go on.** This is not
+      tidiness, it is the difference between a move that completes and one that
+      spends the expensive half and then fails. A stopped box holds no GPU
+      allowance, so the create needs 1 of 1 and fits; a running one holds the only
+      slot against itself.
+- [ ] **R0b** — **known, and not your fault if you hit it: `move` does not check
+      the GPU ceiling before it spends.** `create` does — it reads the allowance
+      "before anything has been created" and refuses with `Nothing was created.`
+      `move` builds its instance through a different path that never asks. So on
+      a ceiling of 1 with the source running you get the snapshot, the disk, and
+      then the refusal. If that happens to you, it is this gap and not something
+      you did — record it, run R8, and do not retry until the source is stopped.
 - [ ] **R0** — you have five files in `~/move-before/` and you have looked at them.
+      **`stamp.txt` has a real stamp in it, not an error.** It is taken before
+      R0a stops the box, because `stamp` asks a serving ComfyUI what it is and a
+      stopped box cannot answer — and R6b compares the moved box against this
+      file. A `stamp.txt` holding "nothing answered" makes R6b unfalsifiable.
       Everything below is a **comparison**, and a comparison without a before is
       the commonest broken check in this pack. If you skip R0 you cannot tell a
       leak this move made from a disk that was already there.
@@ -818,11 +845,13 @@ echo "=== R4 move"; time qat move $BOX --to $TARGET_ZONE; echo "exit $?"
       - source was **stopped**: `stopped`, and **only** the delete line. `down` on
         a stopped box is a no-op, so offering it would be noise.
 
-      **Coming out of phase S your box is running**, so the first is what you
-      should see here. If you get `stopped` about a box `gcloud` shows as RUNNING,
-      that is the defect this criterion exists for — it said "stopped"
-      unconditionally until 2026-09-01, which is a false statement about a GPU
-      that is billing. Check it against R9 rather than taking the sentence.
+      **You stopped the box at R0a, so `stopped` is what you should see here** —
+      and only the delete line under it. The other branch is what you would get
+      having moved a running box, which on this project you cannot do; if you ever
+      see `stopped` about a box `gcloud` shows as RUNNING, that is the defect this
+      criterion exists for. It said "stopped" unconditionally until 2026-09-01,
+      which is a false statement about a GPU that is billing. Check the sentence
+      against R9's list rather than taking it on its own.
 
 ### R5 — the host list, which is the part with no undo
 
@@ -906,14 +935,15 @@ echo "=== R9 what is actually running"; gcloud compute instances list --project 
 echo "=== R9b what the tool thinks"; qat list --live
 ```
 
-- [ ] **R9** — **read from Google what is running, and count it yourself.**
-      Coming out of phase S the source was up, and `move` does not stop it, so you
-      should see **two**: the new box in the target zone and the old one, now
-      declared as `<name>-<old-zone>`. Both are billing GPU-hours. If you expected
-      one box, that expectation has been costing money since R4 finished.
-      *(Had you moved a box that was already stopped, one would be TERMINATED and
-      costing only its disk — which is why R4c grades the sentence against this
-      list rather than on its own.)*
+- [ ] **R9** — **read from Google what is running, and count it yourself.** You
+      stopped the source at R0a and `move` never starts it again, so you should
+      see **two instances and one of them RUNNING**: the new box in the target
+      zone, running and billing GPU-hours, and the old one — now declared as
+      `<name>-<old-zone>` — TERMINATED and costing only its disk. Two boxes and
+      two host-list entries either way; it is the second one's *state* that
+      depends on how you started. *(Had you moved a running box, both would be
+      billing GPU-hours — which on a ceiling of 1 you could not have done. That is
+      R0b.)*
 - [ ] **R9b** — `qat list --live` agrees with the line above, name for name. This
       is the one place in the phase where the tool's account and Google's can be
       set side by side, and a disagreement here is worth more than either alone.
