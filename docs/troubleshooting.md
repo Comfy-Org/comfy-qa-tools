@@ -1156,6 +1156,22 @@ without asking. **Both then carry on and create the box** — `--clean` is "clea
 first, then move", not "clean up instead of moving". Under `--yes`, or with output
 piped, the leftovers are kept and reported.
 
+**`also on the project, unrelated to this move and billing:`** followed by a disk or a snapshot
+Printed after a move finishes, and it is about **somebody else's leftovers** — a
+disk or a snapshot the project is paying for that this move did not create and does
+not touch. It comes last, after the box you asked for, because the answer to `move`
+is where your box is now; a stray billing snapshot is worth knowing and is not that
+answer.
+
+The distinction from the entry above matters when you decide what to delete. That
+one is **this move's** unfinished work, and `--clean` removes it. This one is
+outside the move's scope, so nothing here is ever removed for you — each line
+carries its own `gcloud ... delete` command, and running it is your call.
+
+If you have never seen this before on a project you have been testing on for a
+while, that is the point of it: these are exactly the resources that look like
+nothing at all in a console.
+
 **`comfy-win-a-b already exists in us-central1-b, but ...`**
 A disk is sitting where the move wants to put one, and it could not be confirmed as
 a copy of this box's boot disk — it is attached to something, it came from a
