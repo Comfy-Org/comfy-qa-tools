@@ -57,8 +57,11 @@ app = typer.Typer(
 # and `go --new-window` re-execs itself with `--config` in exactly that position —
 # so dropping it would break the tool inside a spawned Terminal window, on the
 # command that starts a GPU box, where nobody would see the error. Hidden rather
-# than removed: the deprecation window `cli.py` already uses for the `host` and
-# `auth` spellings, and `host.py` for `--os`/`--gpu` on the eleven selectors.
+# than removed: the deprecation window `cli.py` uses for the `host` and `auth`
+# spellings. `--os`/`--gpu` on the eleven selectors was the other one, and it has
+# since run its course — hidden, warning about itself, then deleted — which is
+# the shape this is in the middle of and not an argument that hiding is the end
+# of it.
 CONFIG_INHERITED = "comfy_qa.config_path"
 
 
@@ -473,9 +476,10 @@ def create_cmd(
     # with `--dry-run` is the same shape and is fine, because `--yes` only
     # suppresses a prompt `--dry-run` never reaches.
     #
-    # This is the position `_selector` already takes for --os/--gpu: "picking a
-    # winner would carry that mistake out on a machine". Here the machine costs
-    # money and can land on the wrong continent.
+    # This is the position `_selector` already takes about the machine itself:
+    # there is deliberately no default and no "the last one you used", because a
+    # tool that picks for you is a tool that reads results from the wrong box.
+    # Here the box costs money and can land on the wrong continent.
     if zone and region:
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
@@ -1533,9 +1537,13 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
 
 @app.command("switch")
 def switch_cmd(
-    # Optional here, required by `_selector`, exactly as everywhere else: the
-    # positional and `--os`/`--gpu` are alternatives, so making the argument
-    # mandatory made the flags on the same help panel unusable.
+    # Optional here, required by `_selector`, exactly as everywhere else. It was
+    # written that way because the positional and `--os`/`--gpu` were
+    # alternatives; those flags are gone and it stays, for the better reason
+    # underneath. Typer makes an argument with no default mandatory, and the
+    # parser's "Missing argument 'name'" is not the sentence to answer "which
+    # machine?" with — `_selector`'s refusal names every shape a machine can be
+    # said in, and it can only run if parsing got that far.
     name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
