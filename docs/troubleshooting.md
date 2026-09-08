@@ -979,8 +979,7 @@ ComfyUI on it.
 
 **`there is no ComfyUI log at C:\ComfyUI\comfyui.log on comfy-win, so nothing has started ComfyUI there. The machine is running and billing.`**
 The box is up and no ComfyUI has ever been launched on it by this tool. That is a
-different fact from "the box is off", and it has a different fix: `comfy-qat host
-go comfy-win`. The second sentence is the one that matters — the machine is on.
+different fact from "the box is off", and it has a different fix: `comfy-qat go comfy-win`. The second sentence is the one that matters — the machine is on.
 
 **`stopped reading. ComfyUI is still running on comfy-win, and so is the machine.`**
 Not an error — what Ctrl-C out of `comfy-qat logs` says. It ends the reading and

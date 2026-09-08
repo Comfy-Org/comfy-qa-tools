@@ -23,78 +23,16 @@ never collide on `PATH`.
 
 ## Status
 
-**Release 1 is code complete.** Every command below is implemented and tested.
+**1.1.0. Every command is implemented, tested, and has run against real GCE
+hardware on both Linux and Windows** — not against fakes.
 
-| area | state |
-|---|---|
-| `setup` | shipped — one-command first run |
-| `status`, `login` | shipped |
-| `quota list`, `quota request` | shipped |
-| `init`, `list`, `discover` | shipped — offline, no cloud call |
-| `create` | shipped — name a card, the zone is chosen for you |
-| `up`, `open`, `down`, `go` | shipped — start, tunnel, stop |
-| `logs` | shipped — read a detached ComfyUI's log on the box |
-| `ssh` | shipped — a shell on a box, without the gcloud incantation |
-| `delete` | shipped — remove a box and its disk, permanently |
-| `disconnect` | shipped — close the tunnel, leave the machine working |
-| `rdp` | shipped — Windows password and Remote Desktop forwarding |
-| `switch` | shipped — stop the box you were on, go to the one you want |
-| `move` | shipped — escape a zone with no GPU capacity |
-| `stamp` | shipped — the evidence line |
-| `env` | carried over from v0, unchanged, awaiting its own release |
+The verbs are at the top level: `comfy-qat go linux`. The `host ...` and
+`auth ...` spellings were a deprecation window rather than a second permanent way
+to type everything, and it closed at 1.1.0 — typing one now exits 2. An old run
+sheet that says `host create` or `auth status` wants the noun taken off.
 
-**Proven against real hardware, 2026-09-08.** Every command above has now run
-against live GCE instances rather than fakes — both operating systems, both
-serving ComfyUI through the tunnel, verified with `gcloud` and `curl` rather
-than by the tool's own output. What that pass found, and what it confirmed:
+`env` is carried over from v0, hidden, and awaiting its own release.
 
-| behaviour | result |
-|---|---|
-| L4 stockout in a zone | named the zones that *did* have capacity, exit 1 |
-| project GPU ceiling | refused before creating anything, arithmetic correct against live quota |
-| `move` | snapshot → disk → instance → snapshot deleted → host list rewritten → source left stopped and renamed |
-| `move` interrupted by a 300s gcloud timeout | resumed, found the in-flight snapshot, reused it, warned it was billing |
-| `delete` | instance, disk and host list entry, 7s, no orphan |
-| Windows `rdp` | password reset in 8s, warns before the destructive step |
-| `switch`, `discover --prune` | ghost entries ignored, then removed |
-
-Three defects that only a real run could produce were found and fixed the same
-day: a stockout searched four European regions and reported "there is no L4
-anywhere"; an interrupted `move` said nothing about the snapshot it had started;
-and `rdp` printed nothing at all for ten minutes on a call that resets a
-password. None of them was reachable by a test.
-
-**The verbs are at the top level.** It is `comfy-qat go linux`. The `host ...`
-and `auth ...` spellings were a deprecation window rather than a second permanent
-way to type everything, and the window closed at 1.1.0: they are removed, and
-typing one now exits 2 with `No such command`. An old run sheet that says
-`host create` or `auth status` wants the noun taken off.
-
-**What has actually been run against a real Google Cloud project**, by someone
-who did not write the tool, on 2026-08-27: phases A–D, G, H and I of
-[`docs/test-criteria.md`](docs/test-criteria.md) in full, plus E4, F1, F2, J1–J9
-and J12–J14. Not run, and recorded as not run rather than assumed: J10/J11, which
-need quota for two GPU boxes at once, and everything covering `create` and
-`logs`, both of which landed after that pass.
-
-Four commands — `ssh`, `rdp`, `disconnect` and `delete` — had **no acceptance
-criterion at all** until phases S and N were written, so a full pass of that page
-could be signed off without exercising the only command here that cannot be
-undone. Nothing failed when they were left out, which is why it lasted; a test now
-holds every advertised command to a row in the command reference and to a line the
-pack actually runs.
-
-Version **1.0.0**. The tests run on Python 3.11, 3.12 and 3.13, on Ubuntu
-and macOS, and CI builds the wheel, installs it into a throwaway virtualenv and
-runs the binary from outside the checkout — because testing the source tree never
-proved the thing people actually install works.
-
-Three rules hold the docs to the code, each enforced by a test: every error the
-tool can print has an entry in [troubleshooting](docs/troubleshooting.md), every
-command in the binary appears in this README and every command in this README
-exists in the binary, and no test file may vanish from the suite unnoticed.
-
----
 
 ## Install
 
@@ -238,64 +176,24 @@ stopped", it is "am I still paying for anything".
 [`docs/machines.md`](docs/machines.md) covers the whole loop, including what to do
 when a zone has no GPUs left.
 
-## Command reference
+## Commands
 
-Every target is a **declared host**, local or cloud. Naming them all is the point:
-local stops being an invisible default, so picking the wrong one becomes something
-you do on purpose.
+Twenty of them. Every target is a **declared host**, local or cloud — naming them
+all is the point, so local stops being an invisible default and picking the wrong
+machine becomes something you do on purpose.
 
-`<host>` below is a name, or a description of the machine you want — `windows`,
-`l4`, `windows/l4`. A description that fits exactly one declared host is used and
-printed; one that fits two is refused with both named.
-
-| command | what it does |
+| | |
 |---|---|
-| `comfy-qat --version` | what you are running — `comfy-qat 1.1.0 (0d27bd4)` from a checkout. Paste it with any result |
-| `comfy-qat setup` | first run: sign-in, project, billing, quota, host list |
-| `comfy-qat status` | signed in? which project? billing? GPU quota? — `--json` too |
-| `comfy-qat login` | prints the sign-in commands; gcloud does the signing in |
-| `comfy-qat quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
-| `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
-| `comfy-qat list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
-| `comfy-qat create` | make a GPU box: `--os linux --gpu t4`. The zone is chosen, not typed. `--zone`, `--region`, `--name`, `--disk`, `--yes`, `--dry-run` |
-| `comfy-qat init` | write a starter host list you can edit |
-| `comfy-qat discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
-| `comfy-qat up <host>` | start it and wait until ComfyUI actually answers |
-| `comfy-qat open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
-| `comfy-qat down <host>` | close the tunnel and stop the machine. `--all` stops every declared cloud box and takes no name |
-| `comfy-qat go <host>` | up + install if needed + launch ComfyUI on the box and hand the prompt back. `--follow` streams its log here instead, `--new-window` opens a macOS Terminal window, `--no-browser`, `--no-install` |
-| `comfy-qat logs <host>` | read the ComfyUI log on a box. Follows by default; `--tail N` prints that many lines and stops |
-| `comfy-qat ssh <host>` | open a shell on a Linux box through the tunnel. Replaces `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` |
-| `comfy-qat rdp <host>` | reset a Windows box's password, print it, and forward Remote Desktop to `localhost:33389` |
-| `comfy-qat disconnect <host>` | close the tunnel and leave the machine running — for when a long job is going on the box and you want the local port back. Was `down --keep-running`, which has been removed |
-| `comfy-qat delete <host>` | delete a box and its boot disk permanently. Refuses while it is running, and asks you to type the box's name — a `[y/N]` is answered by reflex, a name is not |
-| `comfy-qat switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
-| `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
-| `comfy-qat stamp <host>` | ask a machine what it is. `--json` |
+| set up | `setup` `status` `login` `quota` |
+| your machines | `init` `list` `discover` `create` `delete` |
+| use one | `go` `up` `open` `disconnect` `down` |
+| on the box | `ssh` `rdp` `logs` `stamp` |
+| change machine | `switch` `move` |
 
+**[docs/commands.md](docs/commands.md) is the reference** — what each one does,
+its flags, and which to reach for. `comfy-qat <command> --help` says the same
+thing at the prompt.
 
-Every command takes `--config` to point at a host list somewhere other than the
-default.
-
-One thing still runs and is not advertised: `env`, v0's build and feature-flag
-check for deployed environments, which belongs to a different tool and would only
-confuse a first reader of `--help`. It is hidden, not going away — there is no
-shorter spelling of it to point anyone at.
-
-The other two hidden spellings have gone. Every verb above used to be reachable
-with a noun in front of it as well, and that noun was a deprecation window rather
-than a second permanent way to type everything. The window closed at 1.1.0: those
-paths now exit 2 with `No such command`. Drop the noun — the verb is the command.
-
-### The stamp
-
-```
-local · local-git · ComfyUI 0.33.0 · darwin · mps (32GB) · torch 2.13.0 · python 3.12.13
-```
-
-That line is the point. It is the record nothing else keeps — paste it into a report
-and nobody has to ask which machine produced the result. `--json` gives the same
-thing using ComfyUI's own field names.
 
 ## The host list
 
