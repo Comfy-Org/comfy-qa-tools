@@ -369,3 +369,91 @@ def test_setup_names_the_directory_it_tested_not_one_it_derived(monkeypatch):
     assert "/opt/base)" not in installing, (
         "that is the base interpreter, not where pip would put NumPy"
     )
+
+
+# --- the four ways the NumPy step could break unnoticed ----------------------
+#
+# Mutation testing found `--no-numpy` broken two independent ways, the guard
+# that keeps pip out of the wrong interpreter droppable, and the argv it builds
+# asserted nowhere. None of the four had a test.
+
+
+def test_no_numpy_actually_skips_the_install(monkeypatch):
+    """`if skip: return` neutered passed the whole suite. A documented flag that
+    is ignored is worse than one that does not exist — the user believes they
+    declined."""
+    from comfy_qa import setup as setup_module
+
+    called = []
+    monkeypatch.setattr(setup_module, "gcloud_numpy",
+                        lambda gc: called.append("looked") or None)
+
+    p = prompts()
+    setup_module.ensure_tunnel_speed(gcloud(**READY), p, skip=True)
+
+    assert called == [], "--no-numpy still went looking for an interpreter"
+    assert not any("installing" in line for line in p.said)
+
+
+def test_the_no_numpy_flag_reaches_the_step_that_honours_it(monkeypatch):
+    """The second, independent break: `no_numpy=no_numpy` dropped from the call
+    leaves the parameter at its False default, so the flag is honoured by a
+    function nobody passes it to."""
+    from comfy_qa import setup as setup_module
+
+    seen = {}
+    monkeypatch.setattr(setup_module, "ensure_tunnel_speed",
+                        lambda gc, p, *, skip=False: seen.setdefault("skip", skip))
+    for name in ("ensure_gcloud", "ensure_signed_in", "ensure_project",
+                 "ensure_billing", "ensure_host_list", "ensure_quota"):
+        if hasattr(setup_module, name):
+            monkeypatch.setattr(setup_module, name, lambda *a, **k: None)
+
+    try:
+        setup_module.run_setup(gcloud(**READY), prompts(), no_numpy=True)
+    except SetupStopped:
+        pass
+
+    assert seen.get("skip") is True, (
+        "--no-numpy was accepted by the CLI and never reached the step")
+
+
+def test_an_interpreter_path_that_does_not_exist_is_not_used(monkeypatch):
+    """`gcloud info` can report a bare name rather than a path. Dropping the
+    os.path.exists half of the guard makes `gcloud_numpy` return a real target
+    built from the CALLER's Python — and pip then installs into the user's own
+    interpreter, not gcloud's. Demonstrated: the mutant returned
+    GcloudNumpy(python='python3', prefix='/opt/homebrew/...python@3.14/...')."""
+    from comfy_qa.setup import gcloud_numpy
+
+    class BareName:
+        def python_location(self):
+            return "python3"
+
+    assert gcloud_numpy(BareName()) is None, (
+        "a bare interpreter name was treated as a path that exists")
+
+
+def test_the_install_is_wheels_only(monkeypatch):
+    """`--only-binary=:all:` is not tidiness — the docstring says so. Without it
+    an interpreter with no wheel falls back to building from source. The argv
+    was asserted nowhere."""
+    import subprocess as real_subprocess
+
+    from comfy_qa import setup as setup_module
+
+    argv = []
+    monkeypatch.setattr(
+        setup_module, "gcloud_numpy",
+        lambda gc: setup_module.GcloudNumpy("/opt/base/bin/python3", "/venv", ""))
+    monkeypatch.setattr(
+        real_subprocess, "run",
+        lambda *a, **k: (argv.append(list(a[0])) if a else None) or
+        real_subprocess.CompletedProcess(a[0] if a else [], 0, "", ""))
+
+    setup_module.ensure_tunnel_speed(gcloud(**READY), prompts())
+
+    install = next((c for c in argv if "install" in c), None)
+    assert install is not None, "no pip install was run"
+    assert "--only-binary=:all:" in install, (
+        f"a source build can come back unnoticed: {install}")
