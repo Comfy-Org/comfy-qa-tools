@@ -28,6 +28,7 @@ from comfy_qa.config import ConfigError, Host
 from comfy_qa.hostfile import HostFileError
 from comfy_qa.gcloud import Gcloud, GcloudError
 from comfy_qa.relocate import (
+    BUILT_IN_CARD,
     accelerator_of,
     describe_snapshot,
     CREATE_DISK,
@@ -972,6 +973,28 @@ def test_a_built_in_card_is_not_asked_for_twice(family, card):
         }],
     }
     assert accelerator_of(reported) is None, family
+
+
+def test_the_built_in_card_families_are_exactly_these_three():
+    """The parametrised guard below holds the families it names. It cannot hold
+    the ones it does not — and adding `g4`, `c3` or `n2` to BUILT_IN_CARD each
+    left the whole suite green, because none of those three is in its list.
+
+    So this pins MEMBERSHIP rather than behaviour, deliberately, and it is the
+    only assertion in this file that will fail on a one-word edit. Each member
+    is here because Google attaches its card as part of the machine type and
+    passing --accelerator as well is an error at create time:
+
+        g2  L4          a2  A100        a3  H100
+
+    Adding a family means asserting that of Google's catalogue. If that is true,
+    change this test and say why in the commit. If it is not, the flag is
+    omitted, the move produces a box with no GPU, and it reports success — which
+    is the defect `accelerator_of` exists for.
+    """
+    assert BUILT_IN_CARD == frozenset({"g2", "a2", "a3"}), (
+        "BUILT_IN_CARD changed. A family added here stops getting --accelerator; "
+        "a family removed here gets it twice and Google refuses the create.")
 
 
 @pytest.mark.parametrize("family", [
