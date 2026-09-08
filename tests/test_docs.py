@@ -1111,7 +1111,10 @@ QUOTED_CONFIG_ERRORS = _quoted_config_errors()
 # test_suite_integrity.py: it moves only when someone deliberately documents a
 # config error or stops, the fix is one line, and it catches the one failure that
 # reading a rising test count never will.
-QUOTED_CONFIG_ERRORS_EXPECTED = 26
+# 27 since 2026-09-08: the `os` field is validated now. It was the one field
+# with a silent, total failure — a misspelling handed a Windows box the whole
+# Linux command set and swapped `ssh` and `rdp` over, saying nothing.
+QUOTED_CONFIG_ERRORS_EXPECTED = 27
 
 
 def test_no_config_error_construction_matches_everything():

@@ -65,6 +65,18 @@ A host has a missing or misspelled `kind`. Those are the only two values.
 A cloud host is missing detail needed to locate it in Google Cloud. All of `os`,
 `gpu`, `gce_instance`, `gce_zone` and `gce_project` are required.
 
+**`host 'comfy-win': os 'Windwos Server 2022' looks like a misspelling of 'windows'. The os field decides which commands this box is sent — anything not recognised as Windows is given the Linux command set, and 'ssh' and 'rdp' swap over with it. Fix the spelling, or use a name this tool does not recognise at all if the box really is something else.`**
+The `os` field is not a label. Which of two command sets a box gets is decided by
+whether `os` is recognised as Windows, so a Windows box spelled `Windwos` is
+handed the Linux set — `cd /opt/comfyui`, `apt-get`, bash — and `ssh` and `rdp`
+swap over, leaving the one command that can reach it refusing to. None of that
+prints a word, which is why it is refused at load instead.
+
+Fix the spelling. An `os` this tool has never heard of is fine and passes
+untouched — `sles-15`, `unknown`, and whatever `discover` reads off a licence it
+does not recognise are all allowed, because a host list the tool will not read is
+a machine nobody can stop. Only a near-miss of a name it acts on is rejected.
+
 **`host 'comfy-win': kind 'gce' requires an explicit port`**
 Only `local` hosts get a default port. Cloud hosts must say which local port their
 tunnel uses, because that is the number you will type into a browser.

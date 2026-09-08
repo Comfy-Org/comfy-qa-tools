@@ -177,3 +177,79 @@ def test_a_host_list_with_no_hosts_says_what_to_do_about_it(empty):
         "this text is quoted into hostfile.apply's refusal, where the file is "
         "intact and must not be overwritten — nothing here may suggest it"
     )
+
+
+# --- the os field decides which OS a box is treated as, so it is checked -------
+#
+# `kind` and `port` were validated and `os` was not, and `os` is the field with
+# the widest blast radius of the three. Every branch in `provision` is
+# `"windows" in (host.os or "").lower()`, so a misspelling is not a near miss:
+# the box silently receives the entire LINUX command set, `cd /opt/comfyui` and
+# all. It also swaps the two access commands over — `ssh` stops refusing and
+# `rdp` starts — so the only command that can reach a Windows box is the one
+# that says it cannot. None of it prints a word.
+
+def _with_os(value):
+    return {"hosts": {"comfy-win": dict(GCE, os=value)}}
+
+
+@pytest.mark.parametrize("declared,meant", [
+    ("Windwos Server 2022", "windows"),
+    ("Windos Server 2022", "windows"),
+    ("wnidows", "windows"),
+    ("Widnows Server 2022", "windows"),
+    ("linx", "linux"),
+    ("ubunut 22.04", "ubuntu"),
+    ("Ubunutu 22.04", "ubuntu"),
+    ("Debain 12", "debian"),
+    ("fedroa-40", "fedora"),
+    ("centso-9", "centos"),
+])
+def test_an_os_that_is_nearly_one_we_know_is_a_typo_not_a_new_platform(declared, meant):
+    """The failure is silent and total, which is why this refuses rather than
+    warns: a Windows box declared `Windwos` is handed bash."""
+    with pytest.raises(ConfigError, match="misspelling") as raised:
+        parse(_with_os(declared))
+    assert meant in str(raised.value), "and it says which one was meant"
+
+
+@pytest.mark.parametrize("declared", [
+    # what `discover` writes from Google's licence names
+    "Windows Server 2025", "Windows Server 2022", "Windows Server 2019",
+    "Ubuntu 24.04", "Ubuntu 22.04", "Ubuntu 20.04", "Debian 12", "Debian 11",
+    "Rocky Linux 9", "macOS 15",
+    # and what it writes when it recognises nothing: the raw licence tail, or
+    # the word `unknown`. Refusing these would let `discover` write a host list
+    # that `load` then refuses — and a host list the tool will not read is a
+    # machine nobody can stop, which is worse than the defect above.
+    "unknown", "sles-15", "cos-101-lts", "opensuse-leap-15", "freebsd-14",
+    "windows-server-2016-dc", "sql-2019-standard-on-windows-server-2019-dc",
+    "fedora-cloud-40", "centos-stream-9", "rhel-9",
+    "SUSE Linux Enterprise 15", "Red Hat Enterprise Linux 9",
+])
+def test_an_os_this_tool_has_never_met_is_allowed_through(declared):
+    """Narrow on purpose. Nearly one of ours is a typo; nothing like any of them
+    is an operating system nobody has taught this tool about yet."""
+    (host,) = parse(_with_os(declared))
+    assert host.os == declared
+
+
+def test_the_os_vocabulary_is_derived_from_the_table_the_tool_already_has():
+    """There are already five places in this package that decide what OS a host
+    runs. A sixth hand-written list is not the answer to that, and this fails if
+    one appears — add a family to `OS_KEYWORDS` and it is covered here."""
+    from comfy_qa import osfamily
+    from comfy_qa.config import OS_KEYWORDS, _OS_VOCABULARY
+
+    assert set(_OS_VOCABULARY) == {
+        word
+        for source in (OS_KEYWORDS, osfamily.FAMILY_WORDS)
+        for tokens in source.values() for token in tokens for word in token.split()
+    }, "the typo vocabulary must stay the union of both, not a third list"
+    assert "windows" in _OS_VOCABULARY and "ubuntu" in _OS_VOCABULARY
+
+
+def test_a_local_host_declaring_no_os_is_untouched():
+    """`local` usually declares no `os` at all, and must keep loading."""
+    (host,) = parse({"hosts": {"local": {"kind": "local"}}})
+    assert host.os is None

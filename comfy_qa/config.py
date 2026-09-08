@@ -8,6 +8,8 @@ starting a GPU instance.
 
 from __future__ import annotations
 
+from . import osfamily
+
 import difflib
 import re
 import tomllib
@@ -161,6 +163,8 @@ def _parse_host(name: str, raw: object) -> Host:
             raise ConfigError(
                 f"host {name!r}: kind 'gce' requires {', '.join(missing)}"
             )
+
+    _check_os_is_not_a_typo(name, raw.get("os"))
 
     return Host(
         name=name,
@@ -354,6 +358,76 @@ _WRONG_SEPARATORS = re.compile(r"[-_,+\s]+")
 # Most specific first: an Ubuntu box answers to both `ubuntu` and `linux`, and
 # the narrower word is the more useful thing to suggest when two boxes clash.
 _BY_SPECIFICITY = ("windows", "ubuntu", "debian", "macos", "linux", "local")
+
+
+# Every word that makes an `os` field recognisable, from BOTH vocabularies that
+# read it rather than written out again. `osfamily.FAMILY_WORDS` is the evidence
+# side — what a machine reports about itself, and what `is_windows` dispatches on
+# — and `OS_KEYWORDS` above is the selector side, what a person types. A value in
+# this field is read by both, so a typo is a typo against the union. Derived, so
+# a family added to either one is covered here without anybody remembering to.
+_OS_VOCABULARY = sorted({
+    word
+    for source in (OS_KEYWORDS, osfamily.FAMILY_WORDS)
+    for tokens in source.values() for token in tokens for word in token.split()
+})
+
+# How close a word has to be to one of those before it is called a typo rather
+# than an operating system nobody has taught this tool about. Measured against
+# every value either side actually produces: 22 real ones pass, and `windwos`,
+# `windos`, `wnidows`, `widnows`, `linx`, `ubunut`, `ubunutu`, `debain`, `fedroa`
+# and `centso` are all caught at 0.83 or above, while `sles-15`, `cos-101-lts`,
+# `opensuse-leap-15` and `freebsd-14` sit below 0.7. Words shorter than four
+# letters are not near-matched at all: nothing that long can reach 0.8 against a
+# two-letter token, so `os` and `mac` cannot drag an unrelated word in.
+_OS_TYPO_CUTOFF = 0.8
+_OS_SHORTEST_WORD = 4
+
+
+def _check_os_is_not_a_typo(name: str, declared: str | None) -> None:
+    """Refuse an `os` that is a misspelling of one this tool acts on.
+
+    `kind` and `port` were validated and `os` was not, and `os` has the widest
+    blast radius of the three. `osfamily.is_windows` picks between two entirely
+    different command sets and answers "not Windows" for anything it does not
+    recognise — correctly, since an unfamiliar cloud image is POSIX. So
+    `os = "Windwos Server 2022"` is not a near miss: it is a Windows box handed
+    the whole Linux command set, `cd /opt/comfyui` and `apt-get` and all. It also
+    swaps the two access commands over, because `ssh` refuses a Windows box and
+    `rdp` refuses everything else — so the only command that can reach it is the
+    one that says it cannot. Nothing prints a word about any of it.
+
+    An UNRECOGNISED `os` is deliberately still allowed, and that is the half that
+    matters more. `discover` writes this field from Google's licence names and
+    falls back to a raw tail like `sles-15`, or to `unknown`. Rejecting
+    everything outside the table would let `discover` write a host list that
+    `load` then refuses — and a host list this tool will not read is a machine
+    nobody can stop. That is worse than the defect being fixed here, and it is
+    the same reasoning `hostfile.apply` exists on.
+
+    So the rule is narrow on purpose: a word that is NEARLY one of ours is a
+    typo, a word that is nothing like any of them is an operating system we have
+    not met. One consequence worth knowing rather than hiding: a string with one
+    good word and one typo — `Rocky Linx 9` — passes, because the good word
+    classifies it correctly and there is nothing to save it from.
+    """
+    words = [word for word in re.split(r"[^a-z0-9]+", (declared or "").lower()) if word]
+    if not words or any(word in _OS_VOCABULARY for word in words):
+        return
+    for word in words:
+        if len(word) < _OS_SHORTEST_WORD:
+            continue
+        near = difflib.get_close_matches(
+            word, _OS_VOCABULARY, n=1, cutoff=_OS_TYPO_CUTOFF)
+        if near:
+            raise ConfigError(
+                f"host {name!r}: os {declared!r} looks like a misspelling of "
+                f"{near[0]!r}. The os field decides which commands this box is "
+                f"sent — anything not recognised as Windows is given the Linux "
+                f"command set, and 'ssh' and 'rdp' swap over with it. Fix the "
+                f"spelling, or use a name this tool does not recognise at all if "
+                f"the box really is something else."
+            )
 
 
 def describe(host: Host) -> str:
