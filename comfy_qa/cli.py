@@ -138,8 +138,15 @@ def setup_cmd(
     non_interactive: Annotated[bool, typer.Option(
         "--non-interactive", help="Never prompt. Fails with the command to run "
                                   "instead of opening a browser.")] = False,
+    config: host.ConfigOption = None,
 ) -> None:
-    """Get this machine ready, in one command."""
+    """Get this machine ready, in one command.
+
+    This one writes: it makes sure you have a host list, so the file `--config`
+    names — and ~/.config/comfy-qa-tools/hosts.toml when it is left off — is
+    written if it is not there yet, and appended to by the discovery pass at the
+    end. An existing list is read, never replaced.
+    """
     prompts = setup_mod.Prompts(
         confirm=typer.confirm,
         ask=typer.prompt,
@@ -151,6 +158,7 @@ def setup_cmd(
             Gcloud(), prompts,
             interactive=not non_interactive,
             project=project, region=region, no_numpy=no_numpy,
+            config_path=config,
         )
     except (setup_mod.SetupStopped, GcloudError) as exc:
         # One handler, because there was never a difference: both are a message

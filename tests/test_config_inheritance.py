@@ -34,6 +34,17 @@ What this file pins, and why each one:
     finds out it takes one;
   - every command that took a host list before still takes one, compared between
     the source and the live Click tree with no list typed in between;
+  - and, separately, that nothing TOUCHES a host list without taking one. Those
+    are not the same check, and the difference cost a real defect. The one above
+    compares two derivations that both start from the commands which already
+    have a `config` parameter, so a command outside that set is outside both
+    directions of it. `setup` was outside it: it had no `--config`, because
+    before the hoist nobody expected one there, and it went on writing
+    ~/.config/comfy-qa-tools/hosts.toml while the root option told the reader it
+    had inherited the flag it was ignoring. Hoisting to the root turns "these
+    sixteen take a host list" into a promise about every subcommand, and a
+    promise has to be checked against what the commands DO rather than against
+    which of them already agreed with it;
   - the read/update distinction. Readers used to say "Host list to read." and the
     four that write said "Host list to read and update."; one root option cannot
     say both, so the commands that write say so in their own docstring, which is
@@ -156,6 +167,80 @@ WRITES_THE_LIST = sorted(
 )
 
 
+# Reading a host list looks like exactly two things in this package: naming
+# `DEFAULT_CONFIG_PATH`, or calling `load` / `ensure_host_list`. Bare-name calls
+# only — `json.load(resp)` is an attribute call and `env` is full of them, which
+# is the one false positive this distinction removes.
+HOST_LIST_READERS = {"load", "ensure_host_list"}
+HOST_LIST_NAME = "DEFAULT_CONFIG_PATH"
+
+
+def _functions() -> dict[str, list[ast.FunctionDef]]:
+    """Every function in the package, by name.
+
+    By name and not by module, because a command reaches its helpers through
+    plain names after a function-local import — `from .config import load` then
+    `load(config)` — and resolving those properly would mean an import graph for
+    a question two hops of names already answer.
+    """
+    found: dict[str, list[ast.FunctionDef]] = {}
+    for path in sorted(PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                found.setdefault(node.name, []).append(node)
+    return found
+
+
+FUNCTIONS = _functions()
+
+
+def _calls(node: ast.FunctionDef) -> set[str]:
+    """Every name this function calls, however it was spelled."""
+    names = set()
+    for call in ast.walk(node):
+        if isinstance(call, ast.Call):
+            func = call.func
+            names.add(func.id if isinstance(func, ast.Name)
+                      else getattr(func, "attr", None))
+    return {name for name in names if name}
+
+
+def reaches_a_host_list(node: ast.FunctionDef, hops: int = 2) -> list[str]:
+    """What this command touches that is a host list, following its helpers.
+
+    Two hops, because that is what the shape of this package costs: `ssh` calls
+    `_host`, and `_host` calls `load`. One hop finds twelve of the eighteen and
+    would have found `setup` — but a guard set to the exact depth of the defect
+    that prompted it is a guard for that defect. Deeper is nearly free here and
+    the failure mode is benign: an extra hop can only ever ADD a command to the
+    set, and every command in the set is one that must take `--config` anyway.
+    """
+    seen, frontier, found = set(), [node], set()
+    for _ in range(hops + 1):
+        following = []
+        for func in frontier:
+            if id(func) in seen:
+                continue
+            seen.add(id(func))
+            if HOST_LIST_NAME in ast.unparse(func):
+                found.add(HOST_LIST_NAME)
+            found |= {call.func.id for call in ast.walk(func)
+                      if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+                      and call.func.id in HOST_LIST_READERS}
+            for name in _calls(func):
+                following.extend(FUNCTIONS.get(name, []))
+        frontier = following
+    return sorted(found)
+
+
+TOUCHES_A_HOST_LIST = {
+    identity: reaches_a_host_list(node)
+    for identity, node in ENTRY_POINTS.items()
+    if reaches_a_host_list(node)
+}
+
+
 def _tree() -> dict[str, click.Command]:
     """Every command path in the live Click tree, by the words you would type.
 
@@ -276,6 +361,51 @@ def test_every_command_that_took_a_host_list_still_takes_one():
     assert stranded == [], (
         f"these command paths parse --config with no `config` parameter behind "
         f"it, so the value goes nowhere: {stranded}"
+    )
+
+
+def test_the_sweep_for_commands_that_touch_a_host_list_finds_them():
+    """A derived set that quietly went empty would make the test below vacuous,
+    and that test is the one holding the root option's promise up."""
+    assert len(TOUCHES_A_HOST_LIST) >= 15, (
+        f"only {len(TOUCHES_A_HOST_LIST)} entry points look like they touch a "
+        f"host list, and there are eighteen. The walk has stopped following "
+        f"calls, not the tool stopped reading its own config file."
+    )
+    assert ("cli.py", "setup_cmd") in TOUCHES_A_HOST_LIST, (
+        "`setup` writes the host list — it is the command that creates one — and "
+        "if this walk cannot see that, it cannot see the case it exists for"
+    )
+
+
+def test_nothing_touches_a_host_list_without_taking_config():
+    """The promise the root option makes, checked against what commands DO.
+
+    `test_every_command_that_took_a_host_list_still_takes_one` compares two
+    derivations and both of them start from the commands that already have a
+    `config` parameter, so a command outside that set is outside both directions
+    of the comparison. This asks the other question, and it is the one a root
+    option makes necessary: `comfy-qat --help` now tells every reader that
+    subcommands inherit `--config`, so a subcommand that reads or writes a host
+    list and does not take one turns that sentence into a lie the tool acts on.
+
+    `setup` was exactly that. It had no `--config` because before the hoist
+    nobody expected one there, and it wrote ~/.config/comfy-qa-tools/hosts.toml
+    — a file kept by hand with no other copy — while the flag the user passed was
+    accepted, described as inherited, and ignored.
+    """
+    missing = sorted(
+        f"{module}:{name} (reaches {', '.join(markers)})"
+        for (module, name), markers in TOUCHES_A_HOST_LIST.items()
+        if not any(arg.arg == "config"
+                   for arg in ENTRY_POINTS[(module, name)].args.args
+                   + ENTRY_POINTS[(module, name)].args.kwonlyargs)
+    )
+    assert missing == [], (
+        f"these reach a host list and take no `--config`, so the root option "
+        f"promises them a flag they ignore: {missing}. Give each one "
+        f"`config: ConfigOption = None` and pass it down to whatever reads or "
+        f"writes the file."
     )
 
 
