@@ -154,6 +154,38 @@ def test_a_description_is_refused_because_it_could_mean_another_box(cli):
     assert not result.cloud.deleted()
 
 
+def test_a_prefix_of_a_real_name_is_not_that_name(cli):
+    """`delete win` must not reach `comfy-win`. The exact-match lookup is the
+    only thing standing between a half-typed name and a destroyed box, and a
+    substring match would take the FIRST host it happened to hit."""
+    result = cli("delete", "comfy", input="comfy\n")
+
+    assert result.exit_code == 2
+    assert not result.cloud.deleted()
+    assert "exact name" in result.output or "Did you mean" in result.output
+
+
+@pytest.mark.parametrize("typed", ["COMFY-LINUX", "Comfy-Linux", "comfy-LINUX"])
+def test_the_confirmation_is_case_sensitive(cli, typed):
+    """The type-the-name gate is the last thing between a typo and a deleted
+    disk. Accepting a different casing accepts something the user did not type,
+    which is the one thing this prompt exists to prevent."""
+    result = cli("delete", "comfy-linux", input=f"{typed}\n")
+
+    assert result.exit_code == 2
+    assert not result.cloud.deleted()
+    assert "nothing was deleted" in result.output
+
+
+def test_the_exact_name_typed_back_does_delete(cli):
+    """The sibling of the two above: if they passed by refusing everything,
+    they would be worthless."""
+    result = cli("delete", "comfy-linux", input="comfy-linux\n")
+
+    assert result.exit_code == 0
+    assert result.cloud.deleted()
+
+
 def test_the_local_machine_cannot_be_deleted(cli):
     result = cli("delete", "local", input="local\n")
     assert result.exit_code == 2
