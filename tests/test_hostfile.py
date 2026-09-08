@@ -11,6 +11,7 @@ So these tests are about the failure, not the feature.
 from __future__ import annotations
 
 import itertools
+import re
 import tomllib
 
 import pytest
@@ -924,3 +925,166 @@ def test_a_worked_example_in_the_gap_survives_a_removal(shape, victim):
         f"the worked example in the gap was destroyed\n"
         f"shape={shape} victim={victim}\n{out}"
     )
+
+
+# --- the ending survives the READ, not just the transform ----------------------
+#
+# Everything above hands `without` and `rename_and_add` a CRLF string built in
+# the test. Nothing above reads one off disk the way the product does, and that
+# is the entire defect these cover.
+#
+# `Path.read_text()` opens with `newline=None` — universal newline mode — so
+# every `\r\n` becomes `\n` before this module sees it. `_line_ending` then
+# answers `"\n"`, `_in` rewrites nothing, and `apply` writes the whole file back
+# as LF. Both production callers did exactly that: `remove.py` for `delete` and
+# `host.py` for `move`. 512 shapes x 3 victims x 2 functions stayed green the
+# whole time, because their input was a string no caller ever produced.
+#
+# Proportion, so nobody softens these later: the defect the matrix above was
+# built to stop put ONE lone LF into a CRLF file. This put one in every line, on
+# the command that cannot be undone and on the one nobody has run on hardware.
+#
+# So these assert on the FILE, and they get there through `hostfile.read`.
+
+CRLF_HOSTS = HOSTS.replace("\n", "\r\n")
+
+
+def _crlf_file(tmp_path):
+    path = tmp_path / "hosts.toml"
+    path.write_bytes(CRLF_HOSTS.encode("utf-8"))
+    assert lone_line_feeds(path.read_bytes().decode()) == 0, "the fixture is CRLF"
+    return path
+
+
+def test_read_keeps_the_carriage_returns_that_read_text_eats(tmp_path):
+    """The one-line difference the whole finding rests on."""
+    from comfy_qa.hostfile import read
+
+    path = _crlf_file(tmp_path)
+    assert "\r\n" not in path.read_text(encoding="utf-8"), (
+        "read_text is universal-newline mode — if this ever fails, Python "
+        "changed and these tests are the wrong shape")
+    assert "\r\n" in read(path), "hostfile.read must not translate"
+
+
+def test_a_crlf_file_read_from_disk_comes_back_crlf_from_a_removal(tmp_path):
+    """`delete`'s path, end to end, through the file rather than a string."""
+    from comfy_qa.hostfile import read
+
+    path = _crlf_file(tmp_path)
+    out = without(read(path), "comfy-win")
+
+    assert lone_line_feeds(out) == 0, (
+        "every line of a CRLF host list was rewritten as LF by a delete")
+    assert set(tomllib.loads(out)["hosts"]) == {"local", "comfy-linux"}
+
+
+def test_a_crlf_file_read_from_disk_comes_back_crlf_from_a_rename(tmp_path):
+    """`move`'s path. Never run on hardware, so this is the only thing holding
+    it — and R5c in the criteria pack has never been ticked."""
+    from comfy_qa.hostfile import read
+
+    path = _crlf_file(tmp_path)
+    out = rename_and_add(
+        read(path), name="comfy-win", renamed="comfy-win-us-central1-a",
+        renamed_port=8195, added='\n[hosts.comfy-win]\nkind = "gce"\nport = 8190\n')
+
+    assert lone_line_feeds(out) == 0, (
+        "every line of a CRLF host list was rewritten as LF by a move")
+    assert "[hosts.comfy-win-us-central1-a]\r\n" in out
+    assert "[hosts.comfy-win]\r\n" in out, "the appended block took the ending too"
+
+
+def test_the_whole_delete_write_leaves_the_file_crlf(tmp_path):
+    """Through `apply`, so the bytes that land on disk are what is asserted.
+
+    `apply` writes what it is given. If the ending was lost at the read, this is
+    where it becomes permanent, and the file a person opens next is the evidence.
+    """
+    from comfy_qa.hostfile import read
+
+    path = _crlf_file(tmp_path)
+    apply(path, without(read(path), "comfy-win"), expect={"local", "comfy-linux"})
+
+    assert lone_line_feeds(path.read_bytes().decode("utf-8")) == 0
+
+
+# --- the same shapes again, delivered the way the product delivers them --------
+#
+# The matrix above varies the TEXT and holds the DELIVERY constant, and the
+# delivery was the bug. Every one of its 512 shapes is handed to the function as
+# a string built in the test; no caller ever built one that way. Both real
+# callers went through `Path.read_text()`, which normalises `\r\n` to `\n`, so
+# every CRLF path inside this module was unreachable in production for its whole
+# life — green, exhaustive, and about a shape the product could not produce.
+#
+# Switching the callers to `hostfile.read` makes real CRLF text reach `without`
+# and `rename_and_add` FOR THE FIRST TIME. So the matrix has to be re-run through
+# the file, not just re-read: a green run before that change proves nothing about
+# after it, because the matrix is the thing that was testing the unreachable
+# shape.
+#
+# Only the CRLF half of the shapes — the LF half is already the delivered case.
+
+CRLF_SHAPES = [shape for shape in SHAPES if shape[4]]
+
+
+def _on_disk(tmp_path, shape):
+    """A shaped host list written as BYTES and read back through `hostfile.read`."""
+    from comfy_qa.hostfile import read
+
+    text = _lived_in(*shape)
+    path = tmp_path / "hosts.toml"
+    path.write_bytes(text.encode("utf-8"))
+    delivered = read(path)
+    assert delivered == text, "the read changed the file before anything touched it"
+    return delivered
+
+
+def test_the_crlf_half_of_the_matrix_is_actually_half_of_it():
+    """A filter that matched nothing would make both matrices below vacuous."""
+    assert len(CRLF_SHAPES) == len(SHAPES) // 2 == 256
+    assert all(lone_line_feeds(_lived_in(*shape)) == 0 for shape in CRLF_SHAPES)
+
+
+@pytest.mark.parametrize("shape", CRLF_SHAPES)
+@pytest.mark.parametrize("victim", VICTIMS)
+def test_removing_a_host_from_a_crlf_file_read_from_disk(shape, victim, tmp_path):
+    """`delete`, every CRLF shape, delivered through the file."""
+    out = without(_on_disk(tmp_path, shape), victim)
+
+    assert set(tomllib.loads(out)["hosts"]) == set(VICTIMS) - {victim}, (
+        f"shape={shape} victim={victim}\n{out}")
+    assert lone_line_feeds(out) == 0, (
+        f"a CRLF file read from disk came back with LF lines\n"
+        f"shape={shape} victim={victim}\n{out!r}")
+
+
+@pytest.mark.parametrize("shape", CRLF_SHAPES)
+@pytest.mark.parametrize("victim", VICTIMS)
+def test_renaming_a_host_in_a_crlf_file_read_from_disk(shape, victim, tmp_path):
+    """`move`, every CRLF shape, delivered through the file.
+
+    The more expensive half, and the one with no hardware behind it at all:
+    phase R has never been run by anyone, so this is the only thing holding it.
+    """
+    added = '\n[hosts.newcomer]\nkind = "local"\nport = 8199\n'
+    out = rename_and_add(_on_disk(tmp_path, shape), name=victim,
+                         renamed=f"{victim}-us-central1-c", renamed_port=8196,
+                         added=added)
+
+    hosts = tomllib.loads(out)["hosts"]
+    assert set(hosts) == (set(VICTIMS) - {victim}) | {
+        f"{victim}-us-central1-c", "newcomer"}, f"shape={shape} victim={victim}\n{out}"
+    assert lone_line_feeds(out) == 0, (
+        f"a CRLF file read from disk came back with LF lines\n"
+        f"shape={shape} victim={victim}\n{out!r}")
+    # Written to match what `_TRAILING` actually captures, which is the point of
+    # the assertion: indentation before the header, and spaces or a TOML comment
+    # after it, all of which the rewrite has to put back along with the `\r`.
+    # Two earlier drafts of this line failed on 384 shapes each and both times it
+    # was the assertion, not the module — first stripping double spaces, then
+    # requiring `\r\n` flush against the `]`.
+    assert re.search(
+        rf"^[ \t]*\[hosts\.{re.escape(victim)}-us-central1-c\][ \t]*(?:#[^\r\n]*)?\r\n",
+        out, re.MULTILINE), f"the renamed header lost its ending\n{out!r}"

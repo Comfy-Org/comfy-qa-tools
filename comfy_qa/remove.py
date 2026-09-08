@@ -234,11 +234,11 @@ def delete_cmd(
     # list entry holds, and ports come from the same list, so leaving it reserves
     # both for a machine that does not exist — and the refusal arrives weeks later
     # with nothing to connect it to tonight.
-    from .hostfile import HostFileError, apply, without
+    from .hostfile import HostFileError, apply, read, without
 
     path = config or DEFAULT_CONFIG_PATH
     try:
-        text = without(path.read_text(encoding="utf-8"), host.name)
+        text = without(read(path), host.name)
         apply(path, text, expect={h.name for h in hosts} - {host.name})
     except (HostFileError, OSError) as exc:
         say.result(f"\n{host.name} and its disk are gone.")

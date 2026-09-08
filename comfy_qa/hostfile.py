@@ -123,7 +123,15 @@ def _line_ending(text: str) -> str:
     input and hard-codes `\n` — it has no idea what file it is destined for and
     should not. So the line ending is decided here, once, and everything this
     module emits is put into it.
+
+    That holds only if the text handed in still HAS its endings, which is the
+    other half and is not a fact about this module at all: **every
+    read-modify-write of the host list must read it as bytes.** `read_text` is
+    universal newline mode and strips every `\r` before this function is ever
+    called, so it answers LF for a CRLF file and the whole file is rewritten to
+    match. Use `read`, which is the one correct way in.
     """
+
     if "\r\n" not in text:
         return "\n"
     mixed = any(char == "\n" and (index == 0 or text[index - 1] != "\r")
@@ -301,6 +309,43 @@ def without(text: str, name: str) -> str:
             + text[end:].lstrip(ending)).rstrip(ending) + ending
 
 
+def read(path: Path) -> str:
+    """The host list as text, with its line endings intact. The only way in.
+
+    Not `path.read_text()`, and that is the whole function rather than a detail
+    of it. `read_text` opens in UNIVERSAL NEWLINE MODE: every `\r\n` on disk
+    becomes `\n` in the string before any of this module sees it. `_line_ending`
+    then finds no `\r\n`, answers `"\n"`, `_in` rewrites nothing, and `apply`
+    writes the whole file back as LF.
+
+    **This is not a fact about two call sites. It is a property of every
+    read-modify-write of the host list** — any function that reads this file as
+    text and writes the whole thing back has this defect, whether or not it
+    knows a line ending exists. Reach the file through here and the question
+    cannot arise; open it yourself with `read_text` and it does, silently. That
+    is why this is a named function with one spelling rather than a line each
+    caller remembers: three copies of one truth is how this module got six
+    defects in `without` alone.
+
+    Measured on a uniformly-CRLF host list: `without` returned seven lone LFs
+    and `rename_and_add` twenty, against zero for the same file read as bytes,
+    and a 22-line CRLF host list came back entirely LF after one `discover`.
+
+    Every generated case in `test_hostfile.py` passed throughout, because those
+    build a CRLF string in the test rather than reading one the way the product
+    reads one — 512 shapes, three victims, both functions, all green, all about
+    a string no caller could produce.
+
+    Worth keeping in proportion, and the honest version is sharper than
+    "irreversible". `_keep_a_copy` means the file itself is recoverable; the
+    damage is that NOTHING SAYS IT HAPPENED. TOML does not care about line
+    endings, so the rewritten file parses, the loader is happy, every command
+    still works, and the only signal is a hand-maintained file whose every line
+    changed under a `.bak` nobody has a reason to look at.
+    """
+    return path.read_bytes().decode("utf-8")
+
+
 def added(text: str, blocks: list[str]) -> str:
     """`text` with each block on the end, in the line ending the file already uses.
 
@@ -362,12 +407,10 @@ def add(path: Path, blocks: list[str], *, initial: str) -> None:
     so the first write of a host list is one atomic replace rather than a
     `write_text` followed by an append.
     """
-    # `read_bytes().decode` rather than `read_text`, which opens in universal
-    # newline mode and hands back a CRLF file with every `\r` already stripped.
-    # Everything below decides the line ending from this string and writes the
-    # whole file back, so reading it that way would silently convert a CRLF host
-    # list to LF on the first `discover` — a whole-file diff nothing reports.
-    text = path.read_bytes().decode("utf-8") if path.exists() else initial
+    # Through `read`, not a second copy of its one line. This was written
+    # correctly inline and was still the second spelling of the same truth; the
+    # third would have been whoever wrote the next appender.
+    text = read(path) if path.exists() else initial
     fresh: set[str] = set()
     for block in blocks:
         fresh |= declared(block)

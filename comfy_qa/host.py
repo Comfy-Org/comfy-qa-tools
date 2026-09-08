@@ -1971,7 +1971,7 @@ def move_cmd(
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
     from .gcloud import can_prompt
-    from .hostfile import apply, rename_and_add
+    from .hostfile import apply, read, rename_and_add
     from .lifecycle import stop_paying
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
@@ -2133,7 +2133,7 @@ def move_cmd(
             gce_project=host.gce_project, running=True,
         )
         text = rename_and_add(
-            path.read_text(encoding="utf-8"),
+            read(path),
             name=host.name, renamed=retired, renamed_port=freed,
             added=to_toml(moved, host.port),
         )
