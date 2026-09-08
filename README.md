@@ -43,6 +43,27 @@ never collide on `PATH`.
 | `stamp` | shipped — the evidence line |
 | `env` | carried over from v0, unchanged, awaiting its own release |
 
+**Proven against real hardware, 2026-09-08.** Every command above has now run
+against live GCE instances rather than fakes — both operating systems, both
+serving ComfyUI through the tunnel, verified with `gcloud` and `curl` rather
+than by the tool's own output. What that pass found, and what it confirmed:
+
+| behaviour | result |
+|---|---|
+| L4 stockout in a zone | named the zones that *did* have capacity, exit 1 |
+| project GPU ceiling | refused before creating anything, arithmetic correct against live quota |
+| `move` | snapshot → disk → instance → snapshot deleted → host list rewritten → source left stopped and renamed |
+| `move` interrupted by a 300s gcloud timeout | resumed, found the in-flight snapshot, reused it, warned it was billing |
+| `delete` | instance, disk and host list entry, 7s, no orphan |
+| Windows `rdp` | password reset in 8s, warns before the destructive step |
+| `switch`, `discover --prune` | ghost entries ignored, then removed |
+
+Three defects that only a real run could produce were found and fixed the same
+day: a stockout searched four European regions and reported "there is no L4
+anywhere"; an interrupted `move` said nothing about the snapshot it had started;
+and `rdp` printed nothing at all for ten minutes on a call that resets a
+password. None of them was reachable by a test.
+
 **The verbs are at the top level.** It is `comfy-qat go linux`. The `host ...`
 and `auth ...` spellings were a deprecation window rather than a second permanent
 way to type everything, and the window closed at 1.1.0: they are removed, and
