@@ -358,7 +358,7 @@ def test_expect_needs_one_cloud_environment_and_names_the_right_binary(
 def test_expect_passes_when_the_environment_serves_that_sha(monkeypatch, capsys):
     only_local(monkeypatch, cloud_report("testcloud", sha="c143e62b55cec754"))
     env_cmd(targets=["testcloud"], expect="c143e62b", no_local=True)
-    assert "OK" in capsys.readouterr().out
+    assert "ok    testcloud serves" in capsys.readouterr().out
 
 
 def test_expect_fails_when_the_deploy_did_not_land(monkeypatch):

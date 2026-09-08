@@ -1,0 +1,1054 @@
+"""Making a box: the mapping, the quota gate, and falling through a stockout.
+
+The quota payloads here are the shapes read off a live project on 2026-08-28,
+including the two details that a hand-written fixture would never have:
+
+  * `GPUS-ALL-REGIONS-per-project` is **1**. That is the project-wide ceiling
+    across every card, and it is the limit that actually bites — an L4 grant of 1
+    in forty-three regions is worth nothing while a second GPU box is running.
+  * The same card is metered twice, and the two disagree.
+    `NVIDIA-L4-GPUS-per-project-region` is 1 across 43 named regions;
+    `NVIDIA-L4-GPUS-per-project-zone` is **-1** across the 130 zones inside them.
+    -1 is Google's "no explicit limit", not "none".
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from comfy_qa.config import ConfigError, Host, resolve
+from comfy_qa.create import (
+    CARDS,
+    CREATE_FAILED,
+    EXHAUSTED,
+    IMAGES,
+    LINUX_DRIVER,
+    NO_QUOTA,
+    NO_ZONE,
+    WINDOWS_DRIVER,
+    Blueprint,
+    _gpu_boxes_running,
+    build,
+    card_for,
+    check_quota,
+    choose_name,
+    create_in,
+    host_entry,
+    image_for,
+    next_steps,
+    nowhere,
+    order_zones,
+    plan,
+    taken_names,
+)
+from comfy_qa.gcloud import GcloudError
+from comfy_qa.lifecycle import LifecycleError
+from comfy_qa.quota import global_allowance, regions_with_quota
+from comfy_qa.zones import Ordering, region_of
+
+PROJECT = "stately-timing-504610-p1"
+
+# 43 regions on the live project. Five is enough to test the shape.
+L4_REGIONS = ["asia-east1", "europe-west1", "europe-west4", "us-central1", "us-east1"]
+L4_ZONES = [f"{region}-{letter}" for region in L4_REGIONS for letter in "abc"]
+
+L4_REGION_QUOTA = {
+    "quotaId": "NVIDIA-L4-GPUS-per-project-region",
+    "dimensionsInfos": [{
+        "dimensions": None,
+        "details": {"value": "1"},
+        "applicableLocations": L4_REGIONS,
+    }],
+}
+
+# -1 is what a live project reports for the zone-scoped copy of the same grant.
+L4_ZONE_QUOTA = {
+    "quotaId": "NVIDIA-L4-GPUS-per-project-zone",
+    "dimensionsInfos": [{
+        "dimensions": None,
+        "details": {"value": "-1"},
+        "applicableLocations": L4_ZONES + ["australia-southeast2-a"],
+    }],
+}
+
+CEILING = {
+    "quotaId": "GPUS-ALL-REGIONS-per-project",
+    "dimensionsInfos": [{
+        "dimensions": None,
+        "details": {"value": "1"},
+        "applicableLocations": ["global"],
+    }],
+}
+
+# T4 comes back one dimensioned row per region, not one row listing many.
+T4_QUOTA = {
+    "quotaId": "NVIDIA-T4-GPUS-per-project-region",
+    "dimensionsInfos": [
+        {"dimensions": {"region": region}, "details": {"value": "1"},
+         "applicableLocations": [region]}
+        for region in ["asia-east1", "us-central1"]
+    ],
+}
+
+LIVE = [L4_REGION_QUOTA, L4_ZONE_QUOTA, T4_QUOTA, CEILING]
+
+
+def ceiling(value):
+    return {"quotaId": "GPUS-ALL-REGIONS-per-project",
+            "dimensionsInfos": [{"details": {"value": str(value)},
+                                 "applicableLocations": ["global"]}]}
+
+
+def instance(name, *, running=True, gpu=True, zone="us-central1-a"):
+    # The zone arrives as a URL, as it does from `gcloud compute instances list`
+    # — the refusal for a full ceiling has to hand over a command that stops the
+    # box, and `--zone=` is half of that command.
+    body = {"name": name, "status": "RUNNING" if running else "TERMINATED",
+            "zone": f"https://www.googleapis.com/compute/v1/projects/p/zones/{zone}"}
+    if gpu:
+        body["guestAccelerators"] = [{"acceleratorType": ".../nvidia-l4",
+                                      "acceleratorCount": 1}]
+    return body
+
+
+LINUX_L4 = Blueprint(name="comfy-linux", image=IMAGES["linux"], card=CARDS["l4"])
+WIN_L4 = Blueprint(name="comfy-win", image=IMAGES["windows"], card=CARDS["l4"])
+LINUX_T4 = Blueprint(name="comfy-linux", image=IMAGES["linux"], card=CARDS["t4"])
+
+
+# --- the machine type comes from the card ---------------------------------
+
+
+def test_an_l4_is_a_g2_with_the_card_built_in():
+    """Passing --accelerator alongside a G2 is refused by Google.
+
+    This is the most common way a create by hand fails, and the reason the card
+    is the only thing anybody types here.
+    """
+    assert LINUX_L4.machine_type == "g2-standard-8"
+    assert LINUX_L4.card.accelerator_flag is None
+
+
+def test_a_t4_is_an_n1_with_the_card_attached():
+    assert LINUX_T4.machine_type == "n1-standard-8"
+    assert LINUX_T4.card.accelerator_flag == "type=nvidia-tesla-t4,count=1"
+
+
+@pytest.mark.parametrize("gpu,machine_type", [
+    ("l4", "g2-standard-8"),
+    ("t4", "n1-standard-8"),
+    ("p4", "n1-standard-8"),
+    ("p100", "n1-standard-8"),
+    ("v100", "n1-standard-8"),
+    ("k80", "n1-standard-8"),
+    ("a100", "a2-highgpu-1g"),
+    ("a100-80gb", "a2-ultragpu-1g"),
+    ("h100", "a3-highgpu-8g"),
+])
+def test_every_card_names_a_machine_type_that_can_hold_it(gpu, machine_type):
+    assert card_for(gpu).machine_type == machine_type
+
+
+def test_the_attached_cards_are_exactly_the_n1_ones():
+    """If a family is ever added, this is what asks whether it attaches."""
+    for card in CARDS.values():
+        assert card.attached == (not card.machine_type.startswith("n1-")), card.name
+
+
+def test_an_h100_costs_eight_of_the_allowance_not_one():
+    """The smallest H100 machine type is eight cards. Counting one passes the
+    gate and then fails at the create, after the zone has been printed."""
+    assert card_for("h100").count == 8
+
+
+@pytest.mark.parametrize("typed", ["L4", "l4", "nvidia-l4", "NVIDIA_L4", " l4 ", "tesla-t4"])
+def test_a_card_is_recognised_however_it_is_spelt(typed):
+    assert card_for(typed) in (CARDS["l4"], CARDS["t4"])
+
+
+def test_an_unknown_card_lists_what_there_is():
+    with pytest.raises(LifecycleError) as raised:
+        card_for("rtx4090")
+    assert "no card called 'rtx4090'" in str(raised.value)
+    assert "l4" in str(raised.value)
+    assert raised.value.kind == NO_QUOTA
+
+
+@pytest.mark.parametrize("typed,key", [
+    ("linux", "linux"), ("ubuntu", "linux"), ("debian", "linux"),
+    ("windows", "windows"), ("win", "windows"), ("WINDOWS", "windows"),
+])
+def test_an_operating_system_is_recognised_however_it_is_spelt(typed, key):
+    assert image_for(typed).key == key
+
+
+def test_an_unknown_operating_system_names_the_two_there_are():
+    with pytest.raises(LifecycleError) as raised:
+        image_for("freebsd")
+    assert "--os linux or --os windows" in str(raised.value)
+
+
+def test_the_image_describes_itself_the_way_discovery_will_read_it_back():
+    """`host discover` reads the OS off the boot disk's licence.
+
+    A box created here and the same box found by discovery have to describe
+    themselves identically, or `host switch windows` matches one and not the
+    other.
+    """
+    from comfy_qa.discover import _OS_NAMES
+
+    for image in IMAGES.values():
+        assert _OS_NAMES.get(licence_for(image)) == image.os
+
+
+def licence_for(image):
+    """The licence name Google puts on a boot disk made from that image family.
+
+    Not guessed. Read live on 2026-08-28:
+
+        gcloud compute images describe-from-family ubuntu-2204-lts --project=ubuntu-os-cloud
+            ubuntu-2204-jammy-v20260826  ubuntu-2204-lts  .../licenses/ubuntu-2204-lts
+        gcloud compute images describe-from-family windows-2022 --project=windows-cloud
+            windows-server-2022-dc-v20260814  windows-2022  .../licenses/windows-server-2022-dc
+
+    The licence name and the image family are not the same string on Windows,
+    which is exactly the sort of thing a hand-written fixture gets wrong.
+    """
+    return {"ubuntu-2204-lts": "ubuntu-2204-lts",
+            "windows-2022": "windows-server-2022-dc"}[image.family]
+
+
+# --- metadata --------------------------------------------------------------
+
+
+def test_a_windows_box_gets_the_ssh_metadata_without_which_nothing_reaches_it():
+    assert WIN_L4.metadata == "enable-windows-ssh=TRUE"
+
+
+def test_a_linux_box_gets_googles_own_driver_startup_script():
+    assert LINUX_L4.metadata == f"startup-script={LINUX_DRIVER}"
+
+
+def test_the_startup_script_is_googles_file_unedited():
+    """Copied from GoogleCloudPlatform/compute-gpu-installation, linux/startup_script.sh.
+
+    The two guards at the top are what make it safe on every boot, and the
+    installer is the one Google's own "Install GPU drivers" page points at. If
+    somebody rewrites this by hand, these are the lines that must survive.
+    """
+    assert LINUX_DRIVER.startswith("#!/bin/bash\n")
+    assert "if test -f /opt/google/cuda-installer" in LINUX_DRIVER
+    assert "if test -f cuda_installation" in LINUX_DRIVER
+    assert ("curl -fSsL -O https://storage.googleapis.com/compute-gpu-installation-us"
+            "/installer/latest/cuda_installer.pyz") in LINUX_DRIVER
+    assert "python3 cuda_installer.pyz install_driver" in LINUX_DRIVER
+
+
+def test_the_startup_script_carries_no_comma():
+    """gcloud splits `--metadata` on commas.
+
+    One comma in the script body and the value is read as a second key, and the
+    create fails on an argument error that says nothing about a startup script.
+    """
+    assert "," not in LINUX_DRIVER
+
+
+def test_the_windows_driver_is_handed_over_rather_than_guessed_at():
+    """Google documents one way to do this on Windows, and it needs a person.
+
+    There is a `windows-startup-script-url` metadata key and pointing it at that
+    script would probably work. This tool does not ship "probably" on the path
+    where the alternative is a box that bills while running on its CPU.
+    """
+    assert "install_gpu_driver.ps1" in WINDOWS_DRIVER
+    assert WIN_L4.metadata is not None
+    assert "startup-script" not in WIN_L4.metadata
+    told = "\n".join(next_steps(WIN_L4, "us-central1-a"))
+    assert "install_gpu_driver.ps1" in told
+    assert "CPU" in told
+
+
+def test_a_linux_box_is_told_the_driver_install_reboots_it():
+    told = "\n".join(next_steps(LINUX_L4, "us-central1-a"))
+    assert "reboot" in told
+
+
+@pytest.mark.parametrize("blueprint", [LINUX_L4, WIN_L4])
+def test_anything_said_after_the_box_exists_says_how_to_stop_paying(blueprint):
+    assert any("down" in line for line in next_steps(blueprint, "us-central1-a"))
+
+
+# --- naming ----------------------------------------------------------------
+
+
+def test_the_default_name_says_what_the_box_is():
+    assert choose_name(None, IMAGES["linux"], set()) == "comfy-linux"
+    assert choose_name(None, IMAGES["windows"], set()) == "comfy-win"
+
+
+def test_a_taken_default_is_numbered_rather_than_reused():
+    """Two machines that differ only by zone and share a name is how you read a
+    result off the wrong one."""
+    assert choose_name(None, IMAGES["linux"], {"comfy-linux"}) == "comfy-linux-2"
+    assert choose_name(None, IMAGES["linux"],
+                       {"comfy-linux", "comfy-linux-2"}) == "comfy-linux-3"
+
+
+def test_a_name_you_asked_for_that_is_taken_is_refused_not_renamed():
+    with pytest.raises(LifecycleError) as raised:
+        choose_name("comfy-win", IMAGES["windows"], {"comfy-win"})
+    assert "already taken" in str(raised.value)
+    assert raised.value.kind == CREATE_FAILED
+
+
+def test_names_are_checked_against_the_project_as_well_as_the_host_list():
+    hosts = [Host(name="local", kind="local", port=8188)]
+    taken = taken_names(hosts, [instance("comfy-linux")])
+    assert "comfy-linux" in taken
+    assert choose_name(None, IMAGES["linux"], taken) == "comfy-linux-2"
+
+
+def test_a_host_named_differently_from_its_instance_blocks_both_names():
+    hosts = [Host(name="win", kind="gce", port=8190, os="Windows Server 2022", gpu="L4",
+                  gce_instance="comfy-win", gce_zone="us-central1-a", gce_project=PROJECT)]
+    assert taken_names(hosts, []) == {"win", "comfy-win"}
+
+
+# --- the plan --------------------------------------------------------------
+
+
+def test_a_plan_is_made_offline_and_completely():
+    made = plan(os_choice="windows", gpu="l4", disk_gb=500)
+    assert made.name == "comfy-win"
+    assert made.machine_type == "g2-standard-8"
+    assert made.disk_gb == 500
+
+
+def test_a_disk_too_small_for_the_image_is_refused_before_anything_exists():
+    with pytest.raises(LifecycleError) as raised:
+        plan(os_choice="windows", gpu="l4", disk_gb=20)
+    assert "too small" in str(raised.value)
+
+
+def test_the_plan_names_how_the_card_is_ordered():
+    steps = " ".join(LINUX_T4.steps("us-central1-a"))
+    assert "n1-standard-8" in steps
+    assert "--accelerator=type=nvidia-tesla-t4,count=1" in steps
+    assert "us-central1-a" in steps
+
+
+def test_the_plan_for_a_built_in_card_does_not_promise_an_accelerator_flag():
+    steps = " ".join(LINUX_L4.steps("us-central1-a"))
+    assert "built into the machine type" in steps
+    assert "--accelerator" not in steps
+
+
+def test_the_plan_names_the_driver_step_differently_per_os():
+    assert any("startup script" in step for step in LINUX_L4.steps("z"))
+    assert any("NOT installed" in step for step in WIN_L4.steps("z"))
+
+
+# --- reading the allowance -------------------------------------------------
+
+
+def test_the_live_region_grant_is_used_and_not_the_unlimited_zone_one():
+    """Both scopes exist for the same card and they disagree.
+
+    Taking the union would offer `australia-southeast2`, whose region allowance
+    is not granted at all — a create that fails on quota after the zone has been
+    chosen and printed.
+    """
+    assert regions_with_quota("L4", LIVE) == sorted(L4_REGIONS)
+
+
+def test_a_card_metered_one_row_per_region_reads_the_same_way():
+    assert regions_with_quota("T4", LIVE) == ["asia-east1", "us-central1"]
+
+
+def test_a_zone_scoped_grant_is_used_when_it_is_the_only_one():
+    assert regions_with_quota("L4", [L4_ZONE_QUOTA]) == sorted(
+        L4_REGIONS + ["australia-southeast2"])
+
+
+def test_a_card_the_project_has_never_asked_for_has_no_regions():
+    assert regions_with_quota("A100", LIVE) == []
+
+
+# The ceiling metered twice, the way the L4 grant already is in this file: -1 in
+# the zone-scoped copy, 1 in the region-scoped one. A live project carries both.
+CEILING_ZONE_COPY = {
+    "quotaId": "GPUS-ALL-REGIONS-per-project-zone",
+    "dimensionsInfos": [{
+        "dimensions": None,
+        "details": {"value": "-1"},
+        "applicableLocations": L4_ZONES,
+    }],
+}
+
+
+def test_the_project_wide_ceiling_is_read_off_the_live_shape():
+    assert global_allowance(LIVE) == 1
+    assert global_allowance([L4_REGION_QUOTA]) is None
+
+
+def test_the_zone_scoped_copy_of_the_ceiling_does_not_free_the_gate():
+    """The unit is pinned in test_create_hostile.py; this is what it costs.
+
+    The ceiling is 1 on this project, so it governs every create — and read as
+    unlimited the gate goes quiet: no refusal, and no mention of the GPU box
+    that is running and billing, which is the only place `create` says so. Both
+    orderings, because the record order is gcloud's to choose.
+    """
+    for quotas in ([CEILING_ZONE_COPY, *LIVE], [*LIVE, CEILING_ZONE_COPY]):
+        check = check_quota(CARDS["l4"], quotas, [instance("console-box")])
+        assert check.global_limit == 1
+        problem = check.problem()
+        assert problem is not None, "a ceiling of 1 with a box on it must refuse"
+        assert "console-box is already running on it" in str(problem)
+
+
+# --- the gate --------------------------------------------------------------
+
+
+def test_a_project_with_the_grant_and_the_ceiling_free_is_allowed():
+    check = check_quota(CARDS["l4"], LIVE, [])
+    assert check.problem() is None
+    assert check.card_limit == 1 and check.global_limit == 1
+
+
+def test_the_gate_prints_both_allowances_whether_or_not_it_refuses():
+    lines = " ".join(check_quota(CARDS["l4"], LIVE, []).lines())
+    assert "L4: 1" in lines
+    assert "GPUS_ALL_REGIONS" in lines
+
+
+def test_a_card_with_no_grant_is_refused_before_anything_is_created():
+    problem = check_quota(CARDS["a100"], LIVE, []).problem()
+    assert problem is not None
+    assert "no A100 quota" in str(problem)
+    assert "Nothing was created" in str(problem)
+    assert "quota request" in problem.fix
+    assert problem.kind == NO_QUOTA
+
+
+def test_a_card_that_needs_more_of_the_allowance_than_is_granted_is_refused():
+    h100 = {"quotaId": "NVIDIA-H100-80GB-GPUS-per-project-region",
+            "dimensionsInfos": [{"details": {"value": "1"},
+                                 "applicableLocations": ["us-central1"]}]}
+    problem = check_quota(CARDS["h100"], [h100, ceiling(8)], []).problem()
+    assert "needs 8 of this project's GPU allowance and the grant is 1" in str(problem)
+
+
+def test_the_project_wide_ceiling_refuses_even_with_a_card_grant():
+    """The limit that actually bites. A per-card grant of 4 is worth nothing
+    behind a GPUS_ALL_REGIONS of 0."""
+    problem = check_quota(CARDS["l4"], [L4_REGION_QUOTA, ceiling(0)], []).problem()
+    assert "GPUS_ALL_REGIONS is 0" in str(problem)
+    assert "ceiling across every card" in str(problem)
+
+
+def test_a_gpu_box_already_running_on_the_ceiling_is_a_box_to_stop_not_a_quota_to_raise():
+    check = check_quota(CARDS["l4"], LIVE, [instance("comfy-win")])
+    problem = check.problem()
+    assert "comfy-win is already running on it" in str(problem)
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in problem.fix)
+
+
+def test_the_ceiling_refusal_hands_over_a_command_that_runs():
+    """The command a money refusal hands over is one that runs.
+
+    `config.resolve` matches host-list names, then os/gpu descriptions, and never
+    `gce_instance`. The box holding the only slot is usually one somebody started
+    in the console, which is precisely the box absent from the host list — so
+    `comfy-qat down <instance>` would exit "no host called that", and the zone
+    that makes the raw gcloud stop runnable is right there in the payload.
+    """
+    problem = check_quota(CARDS["l4"], [L4_REGION_QUOTA, ceiling(1)],
+                          [instance("console-box", zone="us-west4-b")]).problem()
+    assert problem is not None
+
+    assert ("gcloud compute instances stop console-box --zone=us-west4-b"
+            in problem.fix)
+    assert "comfy-qat down console-box" not in problem.fix
+
+    declared = [Host(name="comfy-win", kind="gce", port=8190,
+                     os="Windows Server 2022", gpu="L4",
+                     gce_instance="console-box", gce_zone="us-central1-a",
+                     gce_project="proj")]
+    with pytest.raises(ConfigError):
+        resolve(declared, "console-box")      # the command it just printed
+
+
+def test_a_stopped_box_does_not_hold_the_ceiling():
+    assert check_quota(CARDS["l4"], LIVE, [instance("comfy-win", running=False)]
+                       ).problem() is None
+
+
+def test_a_running_box_with_no_card_does_not_hold_the_ceiling():
+    assert check_quota(CARDS["l4"], LIVE, [instance("build-box", gpu=False)]
+                       ).problem() is None
+
+
+def test_an_unlimited_ceiling_never_refuses():
+    check = check_quota(CARDS["l4"], [L4_REGION_QUOTA, ceiling(-1)],
+                        [instance("a"), instance("b")])
+    assert check.problem() is None
+    assert "unlimited" in " ".join(check.lines())
+
+
+# A grant whose limit parses and whose region set comes back empty. Two things
+# look like this: a project that really holds a grant covering nowhere, and a
+# payload whose shape was not read — which is why the refusals built on a number
+# that WAS read are asked before it.
+ORPHAN_L4 = {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
+             "dimensionsInfos": [{"details": {"value": "1"},
+                                  "applicableLocations": []}]}
+
+
+def test_a_grant_that_names_no_region_is_refused_rather_than_searched():
+    problem = check_quota(CARDS["l4"], [ORPHAN_L4, ceiling(1)], []).problem()
+    assert "names no region" in str(problem)
+    assert "The grant itself is 1" in str(problem), (
+        "the grant size is what tells this apart from holding no quota at all")
+
+
+def test_a_box_holding_the_ceiling_is_named_even_when_the_grant_names_no_region():
+    """Both are true and only one gets printed, so which one is a money decision.
+
+    The ceiling refusal is the only sentence in `problem()` that says a GPU box
+    is running right now, and its fix stops it tonight. The region wording sends
+    you to Google to wait for a grant. Hiding the first behind the second loses
+    the mention of a live box, and this project's ceiling is 1, so that is the
+    refusal a tester meets most.
+
+    Order-only, and deliberately not a docs echo: moving the missing-region
+    block back to the front of `problem()` — the wording untouched, which is how
+    it got there — turns this red.
+    """
+    problem = check_quota(CARDS["l4"], [ORPHAN_L4, ceiling(1)],
+                          [instance("console-box")]).problem()
+
+    assert "console-box is already running on it" in str(problem)
+    assert "names no region" not in str(problem)
+    assert "gcloud compute instances stop console-box" in problem.fix
+
+
+def test_the_ceiling_itself_is_named_even_when_the_grant_names_no_region():
+    """The same decision with no box running: GPUS_ALL_REGIONS is a number that
+    was read, an empty region set is an absence, and the number wins."""
+    problem = check_quota(CARDS["l4"], [ORPHAN_L4, ceiling(0)], []).problem()
+
+    assert "GPUS_ALL_REGIONS is 0" in str(problem)
+    assert "names no region" not in str(problem)
+
+
+def test_a_project_with_no_record_of_the_card_still_says_so():
+    """The case 3e6feb0 moved the region block to the front to fix, which was
+    never broken. `not regions and card_limit` and `not card_limit` cannot both
+    be true, so the two orderings are indistinguishable here — running the
+    parent commit says exactly this. Pinned so the premise is not re-derived.
+    """
+    problem = check_quota(CARDS["l4"], [ceiling(1)], []).problem()
+
+    assert "this project has no L4 quota" in str(problem)
+
+
+@pytest.mark.parametrize("instances,expected", [
+    ([], []),
+    ([instance("a"), instance("b", running=False)], [("a", "us-central1-a")]),
+    ([instance("a", gpu=False)], []),
+])
+def test_only_running_gpu_boxes_count_against_the_ceiling(instances, expected):
+    assert _gpu_boxes_running(instances) == expected
+
+
+# --- trying the zones ------------------------------------------------------
+
+
+STOCKOUT = (
+    "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n"
+    " - The zone 'projects/p/zones/us-central1-a' does not have enough resources "
+    "available to fulfill the request. Try a different zone, or try again later.\n"
+)
+
+# Google's own wording, as recorded in tests/test_lifecycle.py from a real
+# refusal on this project. `suggested_zones` matches "trying your request in the",
+# and an invented paraphrase of it silently matches nothing.
+SUGGESTS = (
+    "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n"
+    " - A g2-standard-8 VM instance is currently unavailable in the us-central1-a "
+    "zone. Consider trying your request in the us-central1-c zone.\n"
+)
+
+
+class Cloud:
+    """Creates that succeed or refuse, per zone, and a record of every attempt."""
+
+    def __init__(self, refuse=None):
+        self.refuse = dict(refuse or {})
+        self.created: list[tuple[str, str]] = []
+
+    def create_instance_from_image(self, name, zone, project, **kwargs):
+        self.created.append((name, zone))
+        problem = self.refuse.get(zone)
+        if problem is not None:
+            raise GcloudError("Could not fetch resource", raw=problem)
+
+    def machine_types(self, project, zone_list, name):
+        return [{"name": name, "zone": zone} for zone in zone_list]
+
+    def accelerator_types(self, project, name):
+        """Answered even though this file's own `order_zones` never asks.
+
+        A `--zone` override has two halves to check, not one: a zone can offer
+        `n1-standard-8` — nearly every zone does — and have no T4 in it at all,
+        so checking only the machine type passes a zone where the card has never
+        existed. A fake that answers only about machine types cannot tell the
+        difference, and a create.py that closes that hole would fail here with an
+        AttributeError rather than with a result. Answering both halves keeps
+        this file honest against either version.
+        """
+        return [{"name": name, "zone": zone} for zone in
+                (f"{region}-{letter}" for region in L4_REGIONS for letter in "abcf")]
+
+
+def order(*zones_):
+    return Ordering(zones=tuple(zones_), regions=tuple(dict.fromkeys(
+        zone.rsplit("-", 1)[0] for zone in zones_)))
+
+
+def test_the_first_zone_with_room_is_the_one_used():
+    cloud = Cloud()
+    said = []
+    zone = build(cloud, LINUX_L4, order("us-central1-a", "us-central1-b"),
+                 PROJECT, said.append)
+    assert zone == "us-central1-a"
+    assert cloud.created == [("comfy-linux", "us-central1-a")]
+
+
+def test_a_stockout_falls_through_to_the_next_zone():
+    cloud = Cloud(refuse={"us-central1-a": STOCKOUT})
+    said = []
+    zone = build(cloud, LINUX_L4, order("us-central1-a", "us-central1-b"),
+                 PROJECT, said.append)
+    assert zone == "us-central1-b"
+    assert "no L4 free right now" in " ".join(said)
+
+
+def test_every_zone_is_announced_before_it_is_tried():
+    """A silent thirty-second pause reads as a hang, and the pause is normal."""
+    said = []
+    build(Cloud(refuse={"us-central1-a": STOCKOUT}),
+          LINUX_L4, order("us-central1-a", "us-central1-b"), PROJECT, said.append)
+    assert said[0] == "trying us-central1-a…"
+    assert "trying us-central1-b…" in said
+
+
+def test_a_zone_google_suggests_is_tried_before_the_ones_we_ranked():
+    """Google's answer is fresher than anything measured beforehand."""
+    cloud = Cloud(refuse={"us-central1-a": SUGGESTS})
+    zone = build(cloud, LINUX_L4, order("us-central1-a", "us-central1-b"),
+                 PROJECT, lambda line: None)
+    assert zone == "us-central1-c"
+    assert [made[1] for made in cloud.created] == ["us-central1-a", "us-central1-c"]
+
+
+def test_a_suggested_zone_already_tried_is_not_tried_twice():
+    cloud = Cloud(refuse={"us-central1-a": SUGGESTS, "us-central1-c": SUGGESTS})
+    with pytest.raises(LifecycleError):
+        build(cloud, LINUX_L4, order("us-central1-a"), PROJECT, lambda line: None)
+    assert [made[1] for made in cloud.created] == ["us-central1-a", "us-central1-c"]
+
+
+def test_running_out_of_zones_says_nothing_is_billing():
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in ("us-central1-a", "us-central1-b")})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4, order("us-central1-a", "us-central1-b"),
+              PROJECT, lambda line: None)
+    assert "every zone tried is out of L4 capacity" in str(raised.value)
+    assert "nothing is billing" in str(raised.value)
+    assert raised.value.kind == EXHAUSTED
+
+
+def test_a_refusal_that_is_not_a_stockout_stops_rather_than_trying_everywhere():
+    """Trying nine more zones against a bad argument wastes five minutes and
+    tells you nothing new."""
+    denied = "ERROR: (gcloud.compute.instances.create) Required 'compute.instances.create' permission"
+    cloud = Cloud(refuse={"us-central1-a": denied})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4, order("us-central1-a", "us-central1-b"),
+              PROJECT, lambda line: None)
+    assert "Google refused to create comfy-linux in us-central1-a" in str(raised.value)
+    assert raised.value.kind == CREATE_FAILED
+    assert len(cloud.created) == 1
+
+
+def test_a_create_that_timed_out_keeps_the_half_made_box_advice():
+    """A non-capacity refusal always tells you to look for an instance that may
+    exist, whatever gcloud's own advice was.
+
+    A timeout is the case that needs it most — the create may well have made the
+    box — and a timeout is also the refusal that carries a `fix`, so a fallback
+    dropped the console check from exactly the failures that could leave
+    something billing.
+
+    Deliberately not this file's own `Cloud`: that fake raises GcloudError with
+    no `fix`, and a present `exc.fix` is the entire condition under test.
+    """
+    class _Timeout:
+        def create_instance_from_image(self, *args, **kwargs):
+            raise GcloudError(
+                "gcloud timed out after 300s: compute instances create comfy-linux",
+                fix="check your network, then try again",   # what TIMEOUT carries
+                kind="timeout",
+            )
+
+    with pytest.raises(LifecycleError) as caught:
+        build(_Timeout(), LINUX_L4, order("us-central1-a"), PROJECT,
+              lambda line: None)
+
+    # Both: gcloud's advice about the refusal, and the check that finds the box
+    # the refusal may have left behind.
+    assert "check your network, then try again" in caught.value.fix
+    assert "half-made" in caught.value.fix
+
+
+def test_the_create_passes_the_accelerator_only_for_an_attached_card():
+    seen = {}
+
+    class Recording(Cloud):
+        def create_instance_from_image(self, name, zone, project, **kwargs):
+            seen.update(kwargs)
+
+    create_in(Recording(), LINUX_L4, "us-central1-a", PROJECT)
+    assert seen["accelerator"] is None
+    create_in(Recording(), LINUX_T4, "us-central1-a", PROJECT)
+    assert seen["accelerator"] == "type=nvidia-tesla-t4,count=1"
+
+
+def test_the_create_asks_for_the_image_family_and_the_disk_it_planned():
+    seen = {}
+
+    class Recording(Cloud):
+        def create_instance_from_image(self, name, zone, project, **kwargs):
+            seen.update(kwargs)
+
+    create_in(Recording(), Blueprint(name="b", image=IMAGES["windows"],
+                                     card=CARDS["l4"], disk_gb=500),
+              "us-central1-a", PROJECT)
+    assert seen["image_family"] == "windows-2022"
+    assert seen["image_project"] == "windows-cloud"
+    assert seen["disk_gb"] == 500
+    assert seen["metadata"] == "enable-windows-ssh=TRUE"
+
+
+# --- the overrides ---------------------------------------------------------
+
+# The zone the override tests name. `-f` on purpose: it is the odd zone in
+# us-central1 — it has T4 and no G2 on the live project — so a fake that only
+# happens to cover a, b and c would pass these for the wrong reason.
+OVERRIDE_ZONE = "us-central1-f"
+
+
+def test_the_fake_offers_the_card_in_the_zone_the_override_tests_name():
+    """A precondition of the two tests below, asserted rather than assumed.
+
+    `order_zones(zone=...)` has two halves to satisfy: the zone must offer the
+    machine type *and* the card. A `Cloud` whose `accelerator_types` does not
+    cover OVERRIDE_ZONE turns the next test into "us-central1-f has never
+    offered nvidia-l4" — it still fails, but for a reason that has nothing to do
+    with what it is testing, and the message points at the tool rather than at
+    the fixture. This is the line that says so.
+    """
+    offered = {entry["zone"] for entry in Cloud().accelerator_types(PROJECT, "nvidia-l4")}
+    assert OVERRIDE_ZONE in offered, (
+        f"the Cloud fake does not offer the card in {OVERRIDE_ZONE}, which the "
+        f"--zone tests below rely on. Widen its accelerator_types."
+    )
+
+
+def test_an_explicit_zone_is_used_alone_with_no_fall_through():
+    check = check_quota(CARDS["l4"], LIVE, [])
+    ordering = order_zones(Cloud(), PROJECT, LINUX_L4, check, zone=OVERRIDE_ZONE)
+    assert ordering.zones == (OVERRIDE_ZONE,)
+    assert "no fall-through" in ordering.notes[0]
+
+
+def test_an_explicit_zone_that_never_offers_the_machine_type_is_refused():
+    class NoMachines(Cloud):
+        def machine_types(self, project, zone_list, name):
+            return []
+
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as raised:
+        order_zones(NoMachines(), PROJECT, LINUX_L4, check, zone=OVERRIDE_ZONE)
+    assert f"{OVERRIDE_ZONE} does not offer g2-standard-8" in str(raised.value)
+    assert raised.value.kind == NO_ZONE
+
+
+def test_a_region_with_no_quota_is_refused_rather_than_silently_widened():
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as raised:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, region="me-west1")
+    assert "no L4 quota in me-west1" in str(raised.value)
+
+
+def test_nowhere_to_put_it_names_both_halves_of_the_answer():
+    problem = nowhere(LINUX_L4, Ordering(zones=(), regions=()), PROJECT)
+    assert "nowhere to put comfy-linux" in str(problem)
+    assert "accelerator-types list" in problem.fix
+    assert "quota list" in problem.fix
+
+
+# --- the host list entry ---------------------------------------------------
+
+
+def test_the_created_box_is_recorded_the_way_discovery_would_record_it():
+    """Otherwise `host discover` finds this instance and adds it a second time
+    under a different port, and two entries point at one machine."""
+    from comfy_qa.discover import parse
+
+    made = host_entry(WIN_L4, "us-central1-a", PROJECT)
+    found = parse({
+        "name": "comfy-win",
+        "status": "RUNNING",
+        "zone": ".../zones/us-central1-a",
+        "disks": [{"boot": True, "licenses": [".../windows-server-2022-dc"]}],
+        "guestAccelerators": [{"acceleratorType": ".../nvidia-l4"}],
+    }, PROJECT)
+    assert made == found
+
+
+# --- a card is spending from allocation, not from RUNNING --------------------
+
+def _box(status, count=1):
+    return {"name": "b", "status": status, "zone": ".../zones/us-central1-a",
+            "guestAccelerators": [{"acceleratorType": ".../nvidia-l4",
+                                   "acceleratorCount": count}]}
+
+
+@pytest.mark.parametrize("state", ["RUNNING", "STAGING", "PROVISIONING",
+                                   "REPAIRING", "STOPPING", "SUSPENDED"])
+def test_a_box_that_is_not_terminated_holds_the_ceiling(state):
+    """Google counts an accelerator against quota from the moment it is
+    allocated, not from the moment the box finishes booting. A GPU box in STAGING
+    holds the single-GPU ceiling and is billing — and skipping it let `create`
+    start a second one against a project whose only slot was already taken.
+
+    That is a start against a full ceiling, which is the one thing this gate
+    exists to prevent, and the window is the first 30-60 seconds of every box.
+    """
+    from comfy_qa.create import _cards_running, _gpu_boxes_running
+
+    assert _cards_running([_box(state)]) == 1, state
+    assert _gpu_boxes_running([_box(state)]) == [("b", "us-central1-a")], state
+
+
+def test_a_terminated_box_holds_nothing():
+    from comfy_qa.create import _cards_running, _gpu_boxes_running
+
+    assert _cards_running([_box("TERMINATED")]) == 0
+    assert _gpu_boxes_running([_box("TERMINATED")]) == []
+
+
+def test_a_zone_in_an_ungranted_region_says_where_the_grant_does_apply():
+    """A mistyped `--zone` and a real quota gap read identically, and nothing
+    offline can tell them apart — so the message names the regions that DO work.
+
+    `--zone us-central9-a` becomes `us-central9`, which this project genuinely
+    holds no quota in: the sentence is true either way. There is deliberately no
+    built-in list of Google's regions to check against, because Google adds
+    regions and a stale list would refuse a real one. Naming the grant's own
+    regions costs nothing — they are already read — and settles it at a glance:
+    `us-central9` beside a list containing `us-central1` is its own diagnosis.
+    """
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, zone="us-central9-a")
+
+    message = str(caught.value)
+    assert "no L4 quota in us-central9" in message
+    assert "It holds L4 in" in message, message
+    assert check.regions[0] in message, "a region it does hold, named"
+    assert f"and {len(check.regions) - 3} more" in message, (
+        "forty-three regions is not a sentence; three and a count is")
+    # The cheap check first, and never a quota request for a region that may not
+    # exist as the opening move.
+    assert "gcloud compute zones list --filter=name=us-central9-a" in caught.value.fix
+
+
+def test_a_region_with_no_grant_says_where_the_grant_does_apply_and_reads_the_fix():
+    """The sibling above, reached through `--region`, which did not read this way.
+
+    Two commits improved the `--zone` refusal — name the regions the grant DOES
+    apply in, then lead the advice with a spelling check instead of a quota
+    request — and both stopped at that branch. Sixty lines below it `--region`
+    went on saying only "no L4 quota in me-west1", with a fix whose opening move
+    was `quota request --region me-west1`: for a mistyped region, a request to
+    Google for a place it has never had, and days of waiting to find that out.
+
+    Nothing pinned it. Three tests reach this branch and all three assert the
+    half that was never wrong — the reason sentence — and NOT ONE reads `.fix`,
+    so the advice could have said anything at all. This one reads it, and reads
+    the order, because leading with the cheap check is the whole of that fix.
+    """
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, region="me-west1")
+
+    message = str(caught.value)
+    assert "no L4 quota in me-west1" in message
+    assert "It holds L4 in" in message, message
+    assert check.regions[0] in message, "a region it does hold, named"
+    assert f"and {len(check.regions) - 3} more" in message, (
+        "forty-three regions is not a sentence; three and a count is")
+    # `me-west1` is real, and the payload cannot show that. Same bar as the
+    # zone branch: never tell somebody their correct spelling is wrong.
+    for wrong in ("does not exist", "no such", "not a region", "typo"):
+        assert wrong not in message.lower(), message
+
+    fix = caught.value.fix
+    assert "gcloud compute regions list --filter=name=me-west1" in fix, fix
+    assert fix.index("gcloud compute regions list") < fix.index("comfy-qat quota"), (
+        f"the cheap check comes first — a quota request for a region Google may "
+        f"never have had is a slow way to learn you mistyped: {fix}")
+
+
+def test_a_real_region_with_no_grant_is_not_accused_of_being_a_typo():
+    """The refusal reads the same for `me-west1-a` as for `us-central9-a`, and
+    that sameness is the fix, not a gap in it.
+
+    The standing idea for telling them apart is to treat the union of
+    `applicableLocations` across the quota records as a live list of Google's
+    real regions and call anything missing from it a typo. This pins why that is
+    wrong: `Gcloud.gpu_quotas` keeps only GPU-mentioning records, and the
+    region-scoped record lists where the grant APPLIES — so `me-west1`, a real
+    region and the docs' own example of a genuine gap, is absent from the whole
+    payload. Reading absence as "no such region" would tell someone their
+    correct spelling is wrong, which is worse than saying nothing about it.
+    """
+    payload_mentions = {
+        location
+        for quota in LIVE
+        for info in quota["dimensionsInfos"]
+        for location in info.get("applicableLocations") or []
+    }
+    assert not any(place.startswith("me-west1") for place in payload_mentions), (
+        "a real region the project holds no grant in is absent from the payload, "
+        "so absence cannot mean the region does not exist")
+
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, zone="me-west1-a")
+
+    message = str(caught.value)
+    assert "no L4 quota in me-west1" in message
+    assert "It holds L4 in" in message, message
+    # Nothing in here may claim the zone or region is unreal. That claim is only
+    # ever a guess, and it is wrong in exactly this case.
+    for wrong in ("does not exist", "no such", "not a region", "typo"):
+        assert wrong not in message.lower(), message
+
+
+# --- what "every zone tried" is allowed to mean -----------------------------
+
+
+def looked_at(*zones_, offering=()):
+    """An `Ordering` that remembers how much of the world it drew from.
+
+    `order` above leaves `offering` empty on purpose — that is the `--zone` case,
+    where nothing was ranked — so a test about scope has to say so itself.
+    """
+    return Ordering(zones=tuple(zones_),
+                    regions=tuple(dict.fromkeys(region_of(zone) for zone in zones_)),
+                    offering=tuple(offering))
+
+
+def test_running_out_of_the_zones_it_looked_at_is_not_running_out_everywhere():
+    """The most expensive kind of true sentence.
+
+    Six European zones stocked out and the refusal said "every zone tried is out
+    of L4 capacity". Every word was true. `create --region us-central1` succeeded
+    on its second zone immediately afterwards, in the region this project's whole
+    fleet already lives in — so the conclusion a person draws from that sentence,
+    that there is no L4 to be had, was false.
+    """
+    tried = ("europe-west2-a", "europe-west4-a")
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in tried})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at(*tried, offering=["europe-west2", "europe-west4",
+                                          "us-central1", "us-east1"]),
+              PROJECT, lambda line: None)
+    said = str(raised.value)
+    assert "2 of the 4 regions this project can use the card in" in said
+    assert "not everywhere" in said
+    assert raised.value.kind == EXHAUSTED
+
+
+def test_the_refusal_names_the_regions_it_never_reached():
+    """"Somewhere else" is advice nobody can act on. A region name is."""
+    cloud = Cloud(refuse={"europe-west2-a": STOCKOUT})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at("europe-west2-a",
+                        offering=["europe-west2", "us-central1", "us-east1"]),
+              PROJECT, lambda line: None)
+    assert "us-central1, us-east1" in str(raised.value)
+
+
+def test_the_fix_names_the_flag_that_would_have_worked():
+    """`--region` was the flag that found capacity, and it was not mentioned.
+
+    The advice was "wait, or ask for a different card" — which sends someone to a
+    card they may not have quota for, while the card they do have is sitting free
+    two regions away.
+    """
+    cloud = Cloud(refuse={"europe-west2-a": STOCKOUT})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at("europe-west2-a", offering=["europe-west2", "us-central1"]),
+              PROJECT, lambda line: None)
+    assert "--region us-central1" in raised.value.fix
+
+
+def test_a_stockout_everywhere_the_card_may_be_had_says_exactly_that():
+    """The other half of the same honesty. When it IS everywhere, say so."""
+    tried = ("us-central1-a", "us-east1-a")
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in tried})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at(*tried, offering=["us-central1", "us-east1"]),
+              PROJECT, lambda line: None)
+    said = str(raised.value)
+    assert "every region this project can use the card in" in said
+    assert "not everywhere" not in said
+
+
+def test_one_named_zone_claims_nothing_about_how_wide_the_search_was():
+    """`--zone` ranked nothing, so this frame cannot count regions and must not.
+
+    A sentence about how much of the world was considered would be an invention
+    here, and the invented version reads exactly like the measured one.
+    """
+    cloud = Cloud(refuse={"us-central1-f": STOCKOUT})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4, order("us-central1-f"), PROJECT, lambda line: None)
+    said = str(raised.value)
+    assert "every zone tried is out of L4 capacity: us-central1-f" in said
+    assert "regions this project" not in said
+
+
+def test_the_cap_offers_the_flag_that_widens_the_search_as_well_as_the_one_that_narrows_it():
+    """Being told a neighbourhood is short and offered `--zone` asks you to name
+    one machine room in it."""
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in
+                          ("us-central1-a", "us-central1-b", "us-central1-c")})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              order("us-central1-a", "us-central1-b", "us-central1-c"),
+              PROJECT, lambda line: None, limit=2)
+    assert "stopped after 2 zones" in str(raised.value)
+    assert "--region" in raised.value.fix
+    assert "--zone" in raised.value.fix

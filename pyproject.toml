@@ -3,11 +3,29 @@ name = "comfy-qa-tools"
 # The single source of truth for the version. `comfy-qat --version` reads it back
 # out of the installed metadata (or out of this file, in a checkout) — never
 # restate it in Python.
-version = "1.0.0"
+version = "1.1.0"
 description = "QA tooling for testing Comfy — know what you are testing, and record it"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib
 dependencies = ["typer>=0.12.5"]
+
+# NOT a runtime dependency, and the `package` CI job exists to keep it that way:
+# it installs the wheel with `pip install .` and drives `comfy-qat` with no
+# extras, so if `click` ever became genuinely necessary at runtime that job goes
+# red rather than this list quietly absorbing it.
+#
+# The suite needs it and the package does not. `tests/test_interrupt.py` pins
+# `typer.Exit is not click.exceptions.Exit` — the trap being that subclassing
+# the click on PATH produces an exception Typer's handler does not match — and
+# `tests/test_config_inheritance.py` imports it too. Neither can ask the
+# question without the outer click to compare against.
+#
+# It went unnoticed because typer VENDORS click, so a clean install has no
+# top-level `click` at all, while every developer machine here has one pulled in
+# by comfy-cli. The suite passed locally and CI failed, which is the one failure
+# shape nobody can reproduce without building a throwaway venv.
+[project.optional-dependencies]
+test = ["pytest", "click>=8.1"]
 
 [project.scripts]
 comfy-qat = "comfy_qa.cli:main"
@@ -52,3 +70,17 @@ ignore = [
     # it with a `def` is noise, not clarity.
     "E731",
 ]
+
+[tool.pytest.ini_options]
+# An xfail that is not strict PASSES whether the defect is there or not. That is
+# the shape this suite has spent a day finding under other names — a substring
+# match over a whole file, a hand-maintained list nothing derives, a test that
+# vanishes rather than fails, a mutation detector with one branch — and
+# tests/test_config_hostile.py's header records the codebase already meeting it
+# once: "was once a strict xfail recording a rule it did not check".
+#
+# Every xfail here sets `strict=True` by hand today, so this changes nothing now.
+# It changes the DEFAULT, so the next one written without it fails when the
+# defect it records is fixed, rather than going quietly green and staying in the
+# file as decoration.
+xfail_strict = true

@@ -116,7 +116,7 @@ def test_two_hosts_cannot_be_the_same_cloud_box():
 
 
 def test_a_cloud_box_may_not_be_called_local():
-    """`comfy-qat host stamp local` has one obvious meaning: this machine.
+    """`comfy-qat stamp local` has one obvious meaning: this machine.
 
     Nothing stops a `gce` host taking the name, and the starter file teaches
     everyone that `local` is the Mac. Every rule in this file exists to remove
@@ -268,6 +268,111 @@ def test_init_forced_onto_a_directory_is_a_message(tmp_path):
     result = spoke(runner.invoke(app, ["init", "--config", str(place), "--force"]))
     assert result.exit_code == 2
     assert "could not write a host list" in result.output
+
+
+# --- `init --force` is an overwrite, so it is a rewrite -----------------------
+#
+# `hostfile` refuses a move it cannot undo, on the argument that the host list is
+# hand-maintained and has no other copy on this machine. `init --force` overwrote
+# that same file with a bare `write_text` and went through none of it, which made
+# it the only STARTER write in the tool that can destroy a host list — the other
+# three are each guarded by `if not path.exists()`.
+
+LIVED_IN_LIST = """\
+# my own notes, which nothing else has a copy of
+[hosts.local]
+kind = "local"
+port = 8188
+"""
+
+SECOND_BOX = LIVED_IN_LIST + """
+[hosts.comfy-win]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "proj"
+port         = 8190
+"""
+
+
+def test_forcing_a_starter_over_a_host_list_leaves_it_recoverable(tmp_path):
+    """The overwrite is undoable, which it was not.
+
+    Restoring `hosts.toml.bak` has to give back the file that was overwritten.
+    That is the recovery path docs/machines.md and docs/troubleshooting.md both
+    name, and it is what R5d and R5f check by hand.
+    """
+    path = tmp_path / "hosts.toml"
+    path.write_text(LIVED_IN_LIST, encoding="utf-8")
+
+    runner, app = cli()
+    result = spoke(runner.invoke(app, ["init", "--config", str(path), "--force"]))
+    assert result.exit_code == 0, result.output
+
+    assert "my own notes" not in path.read_text(encoding="utf-8"), (
+        "--force is documented as overwriting the file, so it still must")
+    assert (tmp_path / "hosts.toml.bak").read_text(encoding="utf-8") == LIVED_IN_LIST
+
+
+def test_forcing_a_starter_does_not_leave_the_backup_a_rewrite_behind(tmp_path):
+    """The stale `.bak`, which is the half with no defence.
+
+    `apply` keeps the backup exactly one rewrite behind the live file, so after
+    an ordinary rewrite v1 -> v2 the pair reads live=v2, .bak=v1 — correct. When
+    `init --force` then replaced the live file and left the backup alone, the
+    result was:
+
+        live = STARTER,  .bak = STILL v1
+
+    v2 is the state the overwrite actually destroyed, and it was gone with no
+    copy anywhere. Restoring `.bak` silently handed back a host list one rewrite
+    too old and LOOKED LIKE IT HAD WORKED — which is the whole reason this is
+    worse than no backup at all. A missing backup announces itself.
+
+    So the assertion is on the CONTENT, not on the file existing: `.bak` must
+    hold what `--force` destroyed, and v1 must be archived rather than dropped.
+    """
+    from comfy_qa.hostfile import apply
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(LIVED_IN_LIST, encoding="utf-8")
+    apply(path, SECOND_BOX, expect={"local", "comfy-win"})
+    assert (tmp_path / "hosts.toml.bak").read_text(encoding="utf-8") == LIVED_IN_LIST
+
+    runner, app = cli()
+    result = spoke(runner.invoke(app, ["init", "--config", str(path), "--force"]))
+    assert result.exit_code == 0, result.output
+
+    backup = (tmp_path / "hosts.toml.bak").read_text(encoding="utf-8")
+    assert backup == SECOND_BOX, (
+        "hosts.toml.bak holds the state one rewrite BEFORE the one --force "
+        "destroyed, so restoring it gives back the wrong host list")
+    archived = sorted((tmp_path / "backups").glob("hosts.toml.*.bak"))
+    assert [item.read_text(encoding="utf-8") for item in archived] == [LIVED_IN_LIST]
+
+
+def test_a_force_that_cannot_keep_a_copy_does_not_overwrite(tmp_path):
+    """No verified copy, no overwrite — the same answer a move gives.
+
+    Declining an overwrite is recoverable; performing one that cannot be undone
+    is not. The file must still be there afterwards, untouched.
+    """
+    path = tmp_path / "hosts.toml"
+    path.write_text(LIVED_IN_LIST, encoding="utf-8")
+    # A directory nothing can create `hosts.toml.bak` in, with the host list
+    # itself still perfectly readable.
+    os.chmod(tmp_path, 0o500)
+    try:
+        runner, app = cli()
+        result = spoke(runner.invoke(app, ["init", "--config", str(path), "--force"]))
+        assert result.exit_code == 2
+        assert "could not be copied" in result.output
+        assert "Nothing was written" in result.output
+        assert path.read_text(encoding="utf-8") == LIVED_IN_LIST
+    finally:
+        os.chmod(tmp_path, 0o700)
 
 
 def test_open_does_not_claim_a_tunnel_that_goes_somewhere_else(tmp_path, monkeypatch):

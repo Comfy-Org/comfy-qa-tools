@@ -33,7 +33,10 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: pyproject.toml
-      - run: pip install -e . pytest
+      # `.[test]`, not `. pytest`: the suite needs `click` to ask whether
+      # typer still vendors its own, and a clean install has no top-level
+      # click. See the comment on the extra in pyproject.toml.
+      - run: pip install -e ".[test]"
       - run: pytest tests/ -q
 
   lint:
@@ -91,12 +94,21 @@ jobs:
           test "$got" = "comfy-qat $expected" || {
             echo "--version said '$got', expected 'comfy-qat $expected'"; exit 1; }
 
-      - name: the help and the guide stand on their own
-        # `guide` and `--help` are the first thing a new tester reads. Neither may
-        # depend on a docs/ file, because the wheel does not ship one.
+      - name: the help stands on its own
+        # `--help` is the first thing a new tester reads, and it may not depend on
+        # a docs/ file, because the wheel does not ship one. Every top-level
+        # command is asked, so a wheel that forgets a module fails here rather
+        # than the first time somebody types it.
+        #
+        # This step used to run `guide`, `host --help` and `auth --help`. All
+        # three were removed at 1.1.0 and this file was the last consumer of the
+        # old surface that nobody swept — the docs and the suite were done, the
+        # workflow was not, and it failed on the release PR.
         run: |
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/throwaway/bin/comfy-qat" --help
-          "$RUNNER_TEMP/throwaway/bin/comfy-qat" guide
-          "$RUNNER_TEMP/throwaway/bin/comfy-qat" host --help
-          "$RUNNER_TEMP/throwaway/bin/comfy-qat" auth --help
+          qat="$RUNNER_TEMP/throwaway/bin/comfy-qat"
+          "$qat" --help
+          for c in list init discover create up open disconnect down go ssh rdp \
+                   logs switch move stamp status login delete setup quota; do
+            "$qat" "$c" --help > /dev/null || { echo "no help for $c"; exit 1; }
+          done

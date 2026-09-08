@@ -11,8 +11,9 @@ non-interactively — a prompt-only feature is an incomplete one.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import subprocess
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from .config import DEFAULT_CONFIG_PATH
 from .gcloud import Gcloud, GcloudError, console_quota_url, quota_request_command
@@ -79,7 +80,14 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
 
     current = gc.current_project()
     if current:
-        p.say(f"project {current}")
+        # Say WHOSE choice this is. Everything after this line — the billing
+        # check, the quota request, the boxes — happens on this project, and a
+        # bare "project proj-1" reads as a report rather than as a decision the
+        # tool just made on the user's behalf. Somebody who has been working in
+        # another project all week gets their GPU quota requested somewhere they
+        # did not intend, and the only clue was a noun.
+        p.say(f"project {current} — gcloud's current project, used as-is. "
+              f"To use another: comfy-qat setup --project <id>")
         return current
 
     projects = [proj.get("projectId") for proj in gc.list_projects() if proj.get("projectId")]
@@ -101,6 +109,132 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
     gc.set_project(chosen)
     p.say(f"project set to {chosen}")
     return chosen
+
+
+class GcloudNumpy(NamedTuple):
+    """Where gcloud's NumPy would go, and why it might not.
+
+    Named rather than a bare tuple because BOTH strings are paths to the same
+    place and a positional unpack cannot tell them apart. `prefix` exists so the
+    sentence a user reads and the writability test they never see are derived
+    ONCE: the announcement used to compute its own `Path(python).parent.parent`
+    while the gate asked the interpreter for `sys.prefix`, and on any layout
+    where those disagree the tool named a directory it had not tested.
+    """
+
+    python: str
+    prefix: str
+    blocked: str
+    """"" if NumPy can be installed there; otherwise a sentence saying why not."""
+
+
+def gcloud_numpy(gc: Gcloud) -> GcloudNumpy | None:
+    """gcloud's own interpreter and why NumPy is or is not wanted there.
+
+    Returns None when there is nothing to do.
+    """
+    import os
+
+    python = gc.python_location()
+    if not python or not os.path.exists(python):
+        return None
+    try:
+        if subprocess.run([python, "-c", "import numpy"],
+                          capture_output=True, timeout=60).returncode == 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    # Detect, never assume. gcloud's python is a virtualenv in the user's home on
+    # this machine; other installs put it under /usr/lib, which is root-owned.
+    # A setup command that asks for a root password is a different command, and
+    # teaching people to type one into a QA tool is worth more than a fast tunnel.
+    # ASK THE INTERPRETER, do not derive it. `Path(python).resolve()` follows
+    # `bin/python3.x` OUT of the virtualenv to the base interpreter it was built
+    # from, so the two `.parent`s then landed on Homebrew's Cellar rather than on
+    # gcloud's venv. Measured here:
+    #
+    #   python_location  ~/.config/gcloud/virtenv/bin/python3.14
+    #   derived          /opt/homebrew/Cellar/python@3.14/.../Versions/3.14
+    #   sys.prefix       ~/.config/gcloud/virtenv        <- where pip installs
+    #
+    # Both directions bite. A venv the user owns, built on a root-owned
+    # /usr/bin/python3, is judged UNWRITABLE and skipped — and the skip message
+    # then advises `sudo <venv>/bin/python -m pip install`, which leaves
+    # root-owned files inside a user's virtualenv. And an unwritable venv built
+    # on a writable base was waved through.
+    #
+    # The probe below already runs this interpreter; ask it the same way.
+    try:
+        prefix = subprocess.run(
+            [python, "-c", "import sys; print(sys.prefix)"],
+            capture_output=True, text=True, timeout=60,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not prefix:
+        return None
+    root = Path(prefix)
+    if not os.access(root, os.W_OK):
+        return GcloudNumpy(python, str(root),
+                           f"its Python is not writable by you ({root})")
+    return GcloudNumpy(python, str(root), "")
+
+
+def ensure_tunnel_speed(gc: Gcloud, p: Prompts, *, skip: bool = False) -> None:
+    """Put NumPy where gcloud can import it, because every tunnel goes through it.
+
+    gcloud says this itself, on every tunnel it opens:
+
+        To increase the performance of the tunnel, consider installing NumPy.
+
+    Nobody acts on it because the advisory never says WHERE. gcloud runs its own
+    virtualenv, so the obvious `pip install numpy` puts it somewhere gcloud
+    cannot import from. This asks gcloud.
+
+    Announced rather than asked. The test that puts this on the other side of the
+    line from, say, the project: ASK when the answer changes WHAT HAPPENS,
+    ANNOUNCE when it only changes HOW FAST. Same tunnels, same boxes, same bill —
+    a duration. A prompt with no wrong answer is a keystroke tax. But it is said
+    out loud and it names the path, because this modifies software the user did
+    not install: if it goes wrong it breaks GCLOUD, not this tool, and nobody
+    would connect the two.
+
+    `--only-binary=:all:` is not tidiness. Without it, an interpreter with no
+    wheel — gcloud ships 3.14 here — falls back to BUILDING NUMPY FROM SOURCE: a
+    compiler, and minutes, at the very front of the command a newcomer meets
+    first. With it, such a machine fails in about two seconds and gets a sentence.
+
+    Never fatal, and never a reason to stop a setup. A slow tunnel is a working
+    tunnel.
+    """
+    if skip:
+        return
+    found = gcloud_numpy(gc)
+    if found is None:
+        return
+    python = found.python
+    if found.blocked:
+        p.say(f"gcloud's tunnels would be faster with NumPy, but {found.blocked}. "
+              f"Skipping. To do it yourself: sudo {python} -m pip install numpy")
+        return
+
+    p.say(f"gcloud's tunnel is faster with numpy; installing into its own Python "
+          f"({found.prefix})")
+    try:
+        done = subprocess.run(
+            [python, "-m", "pip", "install", "--quiet", "--only-binary=:all:",
+             "numpy"],
+            capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as exc:
+        p.say(f"NumPy would not install, so tunnels stay slower than they "
+              f"could be: {exc}")
+        return
+    if done.returncode == 0:
+        p.say("numpy installed — every tunnel from here is on the fast path")
+    else:
+        p.say(f"NumPy would not install, so tunnels stay slower than they "
+              f"could be. By hand: {python} -m pip install numpy")
 
 
 def ensure_billing(gc: Gcloud, p: Prompts, project: str) -> None:
@@ -129,7 +263,7 @@ def ensure_gpu_quota(
         # Quota is explicitly allowed to fail: it can take days to change and is
         # never a reason to strand someone mid-setup. The first live run crashed
         # here with a traceback, which is the opposite of that intent.
-        p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat auth quota")
+        p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat quota")
         return False
 
     # Read through the same filter the rest of the tool uses. Reporting raw ids
@@ -163,7 +297,7 @@ def ensure_gpu_quota(
         # while this one is holding the ids already.
         offer = [name for name in available_gpus(quotas) if name != GLOBAL_ALLOWANCE]
         card = offer[0].lower() if offer else "<card>"
-        hint = f"comfy-qat auth quota request --gpu {card}"
+        hint = f"comfy-qat quota request --gpu {card}"
         hint += f" --region {region}" if region else " --region <region>"
         p.say(f"skipping the request. Run: {hint}")
         return False
@@ -210,7 +344,11 @@ def add_discovered_hosts(
     ends up quietly wrong.
     """
     from .config import ConfigError, load
-    from .discover import new_hosts, parse as parse_instance, to_toml
+    from .discover import (
+        clash_note, label_clashes, new_hosts, parse as parse_instance, to_toml,
+    )
+    from .host import STARTER
+    from .hostfile import HostFileError, add
 
     try:
         instances = gc.list_instances(project)
@@ -237,13 +375,25 @@ def add_discovered_hosts(
         existing = []
 
     additions = new_hosts(found, existing)
+    clashes = label_clashes(found, existing)
+    for box, label in clashes:
+        p.say(clash_note(box, label))
     if not additions:
-        p.say(f"{len(found)} cloud box(es), all already in your host list")
+        if not clashes:
+            p.say(f"{len(found)} cloud box(es), all already in your host list")
         return 0
 
-    with path.open("a", encoding="utf-8") as handle:
-        for box, port in additions:
-            handle.write(to_toml(box, port))
+    try:
+        # Not `path.open("a")`. `setup` calls the same `new_hosts` `discover`
+        # does and writes the same blocks, so it carried the same brick on a
+        # first run — and this is the command someone runs before they have a
+        # host list worth losing, which is exactly when they cannot tell a tool
+        # that refused from a tool that broke. `hostfile.add` validates with the
+        # real loader and keeps a verified copy before it writes.
+        add(path, [to_toml(box, port) for box, port in additions], initial=STARTER)
+    except HostFileError as exc:
+        p.say(f"your host list could not be updated ({exc}), so nothing was added to it")
+        return 0
 
     for box, port in additions:
         state = "running" if box.running else "stopped"
@@ -272,6 +422,7 @@ def run_setup(
     project: str | None = None,
     region: str | None = None,
     config_path: Path | None = None,
+    no_numpy: bool = False,
 ) -> Path:
     """The whole flow. Raises SetupStopped where a human has to act."""
     if gc.available() is None:
@@ -280,10 +431,20 @@ def run_setup(
             fix="https://cloud.google.com/sdk/docs/install",
         )
 
+    # Before the account sequence, because it is the only part of setup that
+    # depends on gcloud alone — no sign-in, no project, no billing, no quota. A
+    # newcomer stopped at billing has still had their tunnels made faster
+    # forever, which is a real outcome from a run that otherwise produced nothing.
+    ensure_tunnel_speed(gc, p, skip=no_numpy)
     ensure_signed_in(gc, p, interactive=interactive)
     chosen = ensure_project(gc, p, interactive=interactive, wanted=project)
+    # Before billing and quota, for the same reason NumPy goes before the account
+    # sequence: it depends on nothing but the config path, and a newcomer stopped
+    # at billing should still end the run owning something. They did not — and
+    # getting-started.md:64 tells them "`setup` has already written your host
+    # list", which was false for exactly the person most likely to be reading it.
+    path = ensure_host_list(p, config_path)
     ensure_billing(gc, p, chosen)
     ensure_gpu_quota(gc, p, chosen, interactive=interactive, region=region)
-    path = ensure_host_list(p, config_path)
     add_discovered_hosts(gc, p, chosen, path)
     return path

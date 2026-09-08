@@ -87,8 +87,11 @@ def parse(instance: dict, project: str) -> Discovered:
         gce_instance=instance.get("name") or "",
         gce_zone=_tail(instance.get("zone")),
         gce_project=project,
-        # TERMINATED is Google's word for stopped, which reads as broken. It is not.
-        running=(instance.get("status") == "RUNNING"),
+        # TERMINATED is Google's word for stopped, which reads as broken. It is
+        # not. And everything that is not TERMINATED is running or on its way
+        # there — a box in STAGING read as "stopped" here, on the one command
+        # whose job is telling you what exists in a project nothing recorded.
+        running=(instance.get("status") != "TERMINATED"),
     )
 
 
@@ -105,16 +108,56 @@ def next_ports(existing: list[Host], count: int) -> list[int]:
     return chosen
 
 
-def new_hosts(found: list[Discovered], existing: list[Host]) -> list[tuple[Discovered, int]]:
-    """Which discovered boxes are not in the host list yet, and what port each gets.
+def _unrecorded(found: list[Discovered], existing: list[Host]) -> list[Discovered]:
+    """Discovered boxes with no host list entry naming their instance.
 
     Matching is on the GCE instance name, not the host's label, so renaming a host
     in your own file does not make it reappear as a duplicate.
     """
     known = {host.gce_instance for host in existing if host.gce_instance}
-    missing = [box for box in found if box.gce_instance and box.gce_instance not in known]
+    return [box for box in found if box.gce_instance and box.gce_instance not in known]
+
+
+def new_hosts(found: list[Discovered], existing: list[Host]) -> list[tuple[Discovered, int]]:
+    """Which discovered boxes can be added to the host list, and what port each gets.
+
+    Missing by instance is not enough, and the invitation above is why. Rename
+    your entry for a box to `Comfy-Win` and point it at an instance you renamed by
+    hand, and Google's `comfy-win` is genuinely unrecorded — so this returned it,
+    and the block written for it is headed with GOOGLE's name, not yours.
+    `config.parse` refuses two names that differ only in case, correctly, because
+    which machine you reach would then depend on a shift key. The append landed a
+    host list nothing could load, and `discover` said "added 1 host" and exited 0.
+
+    So the label about to be written is compared against the labels already
+    there, case-insensitively — the same fold the loader applies. Anything this
+    returns is something the loader will accept beside what is already in the
+    file. What it leaves out is reported by `label_clashes`, never dropped in
+    silence: the box is on the project and is not in the host list, and a
+    `discover` that says nothing about it looks like one that found nothing to do.
+    """
+    labelled = {host.name.lower() for host in existing}
+    missing = [box for box in _unrecorded(found, existing)
+               if box.name.lower() not in labelled]
     ports = next_ports(existing, len(missing))
     return list(zip(missing, ports))
+
+
+def label_clashes(found: list[Discovered], existing: list[Host]) -> list[tuple[Discovered, str]]:
+    """Boxes `new_hosts` had to leave out, each with the label already holding it."""
+    labelled = {host.name.lower(): host.name for host in existing}
+    return [(box, labelled[box.name.lower()])
+            for box in _unrecorded(found, existing)
+            if box.name.lower() in labelled]
+
+
+def clash_note(box: Discovered, label: str) -> str:
+    """Why a discovered box was left out, said the same way wherever it is said."""
+    return (
+        f"{box.name} was not added: your host list already calls a machine "
+        f"{label!r}, and two names that differ only in case cannot both be "
+        f"declared. Rename {label!r}, or point it at instance {box.gce_instance!r}."
+    )
 
 
 def to_toml(box: Discovered, port: int) -> str:

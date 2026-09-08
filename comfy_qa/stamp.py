@@ -46,6 +46,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
 
+from .osfamily import family
+
 USER_AGENT = "comfy-qa-tools/0.1 (+https://github.com/Comfy-Org/comfy-qa-tools)"
 TIMEOUT = 10
 
@@ -343,7 +345,8 @@ def _where(url: str) -> str:
     return parsed.netloc or url
 
 
-def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
+def fetch(url: str, *, host: str, opener=urllib.request.urlopen,
+          timeout: float = TIMEOUT) -> Stamp:
     """Ask a running ComfyUI what it is.
 
     Tries the bare path first, then the `/api` alias, because a Comfy Cloud
@@ -353,6 +356,14 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
     Everything the far end sends is checked before it is believed: it must not
     have redirected somewhere else, it must be small enough to be that endpoint,
     and it must speak `/system_stats`'s vocabulary rather than merely JSON.
+
+    `timeout` exists for the one caller that is not stamping. `TIMEOUT` is ten
+    seconds because a stamp is the point of the command that asked for it and
+    waiting is better than failing; `list` asks the same question in passing,
+    about a column, and a wedged ComfyUI — accepting the connection and never
+    answering — would hold up a read command for ten seconds per host. Shortening
+    it there is a different trade, not a different probe, so it is a parameter
+    rather than a second function that would drift from this one.
     """
     base = url.rstrip("/")
     http_error: urllib.error.HTTPError | None = None
@@ -369,7 +380,7 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
             ) from exc
 
         try:
-            response = opener(request, timeout=TIMEOUT)
+            response = opener(request, timeout=timeout)
         except urllib.error.HTTPError as exc:
             # Something is definitely there — it just refused this path.
             http_error = exc
@@ -443,49 +454,24 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
     )
 
 
-# Matched as substrings, so every token has to be one that cannot turn up inside
-# another operating system's name: "nt" alone reads "ubuntu" as Windows.
-_OS_FAMILIES = {
-    "windows": ("windows", "win32", "winnt", "microsoft"),
-    "linux": ("linux", "ubuntu", "debian", "centos", "rocky", "fedora"),
-    "darwin": ("darwin", "macos", "mac os", "osx"),
-}
-
-
-def _family(text: str | None) -> str | None:
-    """Which OS family a string names, or `None` when it names none of them.
-
-    `None` is the important return, and the reason this half does not have the
-    bug the card half had. The two sides are written by different systems here
-    too — `discover.operating_system()` writes `Windows Server 2022` or falls
-    back to a raw GCE licence name like `sles-15`, or to `unknown`; ComfyUI
-    reports `sys.platform` on newer builds (`win32`, `linux`, `darwin`) and
-    `os.name` on older ones (`nt`, `posix`), and Comfy Cloud sends `""`. But an
-    unrecognised string comes back `None` and the comparison is skipped, rather
-    than being read as a different family. Checked against every value both sides
-    actually produce: no pairing of a machine with its own declaration is
-    flagged.
-
-    The cost of that is a gap rather than a false alarm: `nt` and `posix` name no
-    family, so a stamp from an older ComfyUI is never compared at all. That is
-    the right way round while the caller refuses on a complaint. Do not close it
-    by adding `"nt"` to the table below — as a substring it reads `ubuntu` as
-    Windows, which is the false positive this comment exists to prevent.
-
-    Half of that gap is not a decision at all: **`posix` cannot be mapped, by any
-    matching technique.** `os.name` is `posix` on macOS and on Linux alike, so
-    the string genuinely names two families and picking either is a coin toss —
-    on a tunnel that really has landed on this Mac, mapping it to `linux` would
-    clear the exact wrong-machine case the caller refuses for. A word-boundary
-    match would make `posix` look safe to close, because it collides with no
-    other OS name; it would still be wrong. Only `nt` is closeable, and that is
-    the judgement call left open above.
-    """
-    lowered = (text or "").lower()
-    for family, words in _OS_FAMILIES.items():
-        if any(word in lowered for word in words):
-            return family
-    return None
+# Which OS family a string names lives in `osfamily`, because five places in this
+# package used to ask that and four of them answered it differently. The table
+# and the whole of the reasoning that shaped it — why `nt` is not in it, why
+# `posix` cannot be — moved there with it, unchanged.
+#
+# What matters at THIS call site is the `None` return, and it is the reason this
+# half does not have the bug the card half had. The two sides are written by
+# different systems: `discover.operating_system()` writes `Windows Server 2022`
+# or falls back to a raw GCE licence name like `sles-15`, or to `unknown`;
+# ComfyUI reports `sys.platform` on newer builds (`win32`, `linux`, `darwin`) and
+# `os.name` on older ones (`nt`, `posix`), and Comfy Cloud sends `""`. An
+# unrecognised string comes back `None` and the comparison is SKIPPED, rather
+# than being read as a different family. Checked against every value both sides
+# actually produce: no pairing of a machine with its own declaration is flagged.
+#
+# The cost of that is a gap rather than a false alarm: `nt` and `posix` name no
+# family, so a stamp from an older ComfyUI is never compared at all. That is the
+# right way round while the caller refuses on a complaint.
 
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -558,7 +544,7 @@ def mismatch(host, stamp: Stamp) -> str | None:
     machine that is fine, over a declaration `host discover` wrote rather than
     anyone typed. Anything this cannot be sure of has to pass.
     """
-    declared, answering = _family(getattr(host, "os", None)), _family(stamp.os)
+    declared, answering = family(getattr(host, "os", None)), family(stamp.os)
     if declared and answering and declared != answering:
         return (
             f"{host.name} is declared as {host.os}, but {stamp.url} answered as "

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import socket
+from pathlib import Path
 
 import pytest
 
@@ -328,3 +329,194 @@ def test_closing_removes_both_the_pid_and_the_record(tmp_path):
 
     assert not pid_file("comfy-win", tmp_path).exists()
     assert not record_file("comfy-win", tmp_path).exists()
+
+
+# --- identity is a process, not a rendering ----------------------------------
+#
+# Every test above models identity as an opaque token — started("boot-A"). The
+# real artefact is `ps -p N -o lstart=,command=`, and `lstart` renders in the
+# CALLER's locale and timezone. One live process, one instant, three answers:
+#
+#     en_GB   Fri  4 Sep 19:34:26
+#     C       Fri Sep  4 19:34:26
+#     TZ=LA   Fri  4 Sep 11:34:26
+#
+# So the equality check was asking "same string", not "same process". Open a
+# tunnel from a terminal and close it from a script, a cron job, a non-login ssh
+# or an agent shell, and `close_tunnel` returns False, does not signal the pid,
+# and still unlinks the records — the forward survives holding the port, silently,
+# because the caller only speaks on True. Measured at 12 of 16 environment pairs.
+#
+# No token fixture can hold this shape, and mutation cannot find it: mutating the
+# equality guard IS killed by boot-A/boot-B. The guard was pinned to the wrong
+# equivalence relation.
+
+
+@pytest.mark.parametrize("environment", [
+    {"LC_ALL": "en_GB.UTF-8"},
+    {"LC_ALL": "C"},
+    {"TZ": "America/Los_Angeles"},
+    {"TZ": "UTC", "LC_ALL": "C"},
+])
+def test_one_process_has_one_identity_whatever_the_shell_looks_like(environment):
+    """Run the probe in a genuinely separate process with a different
+    environment, because that IS the scenario: a tunnel opened from a terminal
+    and closed from a script, a cron job, a non-login ssh or an agent shell.
+
+    Mutating os.environ in-process does not reproduce it faithfully — verified —
+    so this spawns a real interpreter the way the real case does.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    # BOTH sides in real subprocesses. This file has an autouse fixture that
+    # stubs `_identity`, so calling it in-process measures the stub — which is
+    # how the first version of this test passed against the unfixed code.
+    probe = (
+        "import sys; sys.path.insert(0, %r);"
+        "from comfy_qa.tunnel import _identity; print(_identity(%d))"
+    )
+    here = str(Path(__file__).resolve().parent.parent)
+
+    def identity_under(extra):
+        return subprocess.run(
+            [sys.executable, "-c", probe % (here, sleeper.pid)],
+            capture_output=True, text=True, env={**os.environ, **extra},
+        ).stdout.strip()
+
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        time.sleep(0.2)
+        baseline = identity_under({})
+        elsewhere = identity_under(environment)
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+    assert baseline, "the probe returned nothing at all"
+    assert elsewhere == baseline, (
+        f"the same process reads differently under {environment} — a tunnel "
+        "opened in one shell cannot be closed from another"
+    )
+
+
+# --- the same question, asked of the source ---------------------------------
+#
+# This file's subject is "reading a result off a machine you did not mean to be
+# on", and a browser tab is the fastest way there: nothing in it tells two
+# ComfyUIs apart — same title, same canvas, same favicon, and only
+# `127.0.0.1:<port>` between them. `stamp.mismatch` writes the sentence that
+# catches it, and for a long time it had exactly ONE caller, `host stamp`, so
+# `go` opened tabs onto contradicting machines in silence.
+#
+# Fixing the two call sites that existed is not the same as fixing the class of
+# defect. A third browser call added next month would be the same bug again,
+# green suite and all — so the rule is asserted against the SOURCE rather than
+# against the two sites we happen to know about.
+
+
+def _package_functions():
+    """Every function in comfy_qa/, with the calls it makes, by name."""
+    import ast
+
+    package = Path(__file__).resolve().parent.parent / "comfy_qa"
+    functions = {}
+    for path in sorted(package.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+
+        def owner(node):
+            """The named function a node sits in — through lambdas, which is how
+            `host._serve` holds its browser: `lambda url: webbrowser.open(url)`."""
+            while node is not None:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return node
+                node = parents.get(node)
+            return None
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.setdefault(f"{path.name}:{node.name}", set())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            holder = owner(node)
+            if holder is None:
+                continue
+            functions.setdefault(f"{path.name}:{holder.name}", set()).add(
+                _call_name(node.func))
+    return functions
+
+
+def _call_name(func) -> str:
+    """`mismatch`, `webbrowser.open` — dotted when the receiver is a plain name.
+
+    Dotted, because `open` on its own is `Path.open` half the time and the rule
+    would then be reading tea leaves.
+    """
+    import ast
+
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name):
+            return f"{func.value.id}.{func.attr}"
+        return func.attr
+    return ""
+
+
+# What opening a browser looks like in this package: the stdlib call, and the
+# injected seam every caller passes it around as.
+OPENS_A_BROWSER = {"webbrowser.open", "browser", "open_browser"}
+
+
+def test_every_browser_in_the_package_asks_which_machine_first():
+    """No tab is opened onto a host that has not been checked against its stamp.
+
+    Asserted as a closure, not as a list of blessed call sites: a function counts
+    as having asked if it calls `mismatch` itself, or calls something that does.
+    `lifecycle._arrive` reaches it through `_must_be_the_named_machine`, and a
+    guard written tomorrow with a third name is covered without editing this.
+    """
+    functions = _package_functions()
+
+    asks = {"mismatch"}
+    while True:
+        grown = {name for name, calls in functions.items() if calls & asks}
+        grown = {name.split(":", 1)[1] for name in grown} | asks
+        if grown == asks:
+            break
+        asks = grown
+
+    opens = {name for name, calls in functions.items() if calls & OPENS_A_BROWSER}
+    unguarded = sorted(name for name in opens if not (functions[name] & asks))
+
+    assert not unguarded, (
+        f"{', '.join(unguarded)} opens a browser without asking `mismatch` "
+        f"whether the machine that answered is the machine that was named. "
+        f"Nothing in the tab tells the two apart, so a result taken in it is "
+        f"filed under the wrong hardware. Consult `mismatch` before the open, "
+        f"or refuse: `lifecycle._arrive` is the shape."
+    )
+
+
+def test_that_rule_can_actually_fail():
+    """The closure above is subtle enough to be wrong in the safe direction.
+
+    A bug in it — a name never collected, an `opens` set that comes back empty —
+    reports success on a package with no guard at all, which is the failure mode
+    of every structural check. So the machinery is asked a question whose answer
+    is known: the browser sites must be FOUND, and a guardless function must be
+    reported.
+    """
+    functions = _package_functions()
+    opens = {name for name, calls in functions.items() if calls & OPENS_A_BROWSER}
+
+    assert len(opens) >= 2, f"the walk found no browser call sites at all: {opens}"
+    assert any(name.startswith("lifecycle.py") for name in opens), opens
+    assert any(name.startswith("host.py") for name in opens), opens

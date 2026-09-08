@@ -12,6 +12,7 @@ from typing import Annotated, Optional
 
 import typer
 
+from . import say
 from .env import CLOUD_ENVS, LOCAL_DEFAULT, collect
 from .render import as_dict, evidence, table
 
@@ -46,55 +47,55 @@ def env_cmd(
     """
     unknown = [t for t in (targets or []) if t not in CLOUD_ENVS and t != "local"]
     if unknown:
-        typer.echo(f"unknown environment(s): {', '.join(unknown)}. "
-                   f"known: {', '.join(CLOUD_ENVS)}, local", err=True)
-        raise typer.Exit(code=2)
+        say.fail(f"no such environment: {', '.join(unknown)}",
+                 fix=f"known environments: {', '.join(CLOUD_ENVS)}, local", code=2)
 
     # `--json` and `--evidence` are two different answers to the same question,
     # and asking for both silently threw one away. Say so instead.
     if as_json and evidence_for:
-        typer.echo("--json and --evidence produce different output; pick one",
-                   err=True)
-        raise typer.Exit(code=2)
+        say.fail("--json and --evidence produce different output; pick one", code=2)
     if flags_only and not evidence_for:
-        typer.echo("note: --flags only affects the evidence block; add --evidence "
-                   "<env> to see it", err=True)
+        say.warn("--flags only changes the evidence block; add --evidence <env>")
 
     reports = collect(targets, local=not no_local, local_url=local_url, resolve=not no_resolve)
 
     if as_json:
-        typer.echo(json.dumps(as_dict(reports), indent=2))
+        say.result(json.dumps(as_dict(reports), indent=2))
     elif evidence_for:
         match = next((r for r in reports if r.name == evidence_for), None)
         if match is None:
-            typer.echo(f"not probed: {evidence_for}", err=True)
-            raise typer.Exit(code=2)
+            say.fail(f"{evidence_for} was not probed, so there is no evidence for it",
+                     fix=f"probed this run: {', '.join(r.name for r in reports)}",
+                     code=2)
         baseline = next((r for r in reports if r.name == "cloud" and r.flags), None)
         only = [f.strip() for f in flags_only.split(",")] if flags_only else None
         blocks = evidence(match, platform=platform, baseline=baseline, only=only)
-        typer.echo("\n--- one-line (Slack) ---")
-        typer.echo(blocks["oneline"])
-        typer.echo("\n--- bug tracker row ---")
-        typer.echo(blocks["tracker"])
-        typer.echo("\n--- node playbook header ---")
-        typer.echo(blocks["playbook"])
+        say.result("\n--- one-line (Slack) ---")
+        say.result(blocks["oneline"])
+        say.result("\n--- bug tracker row ---")
+        say.result(blocks["tracker"])
+        say.result("\n--- node playbook header ---")
+        say.result(blocks["playbook"])
     else:
-        typer.echo(table(reports))
+        say.result(table(reports))
 
     if expect:
         checked = [r for r in reports if r.kind == "cloud"]
         if len(checked) != 1:
             # The binary is `comfy-qat`; `comfy qa` was v0's, and pasting it
             # into a shell gets "no such command".
-            typer.echo("--expect needs exactly one cloud environment, "
-                       "e.g. `comfy-qat env testcloud --expect <sha>`", err=True)
-            raise typer.Exit(code=2)
+            say.fail("--expect needs exactly one cloud environment",
+                     fix="comfy-qat env testcloud --expect <sha>", code=2)
         got = checked[0].sha or ""
+        # A mismatch is a failure and goes where failures go; the pass is part of
+        # the answer and goes where answers go — but not under `--json`, where
+        # stdout belongs to the document and the exit code already says it passed.
         if not got.startswith(expect):
-            typer.echo(f"\nFAIL  {checked[0].name} serves {got[:8] or '(none)'}, expected {expect[:8]}",
-                       err=True)
-            raise typer.Exit(code=1)
-        typer.echo(f"\nOK    {checked[0].name} serves {expect[:8]} as expected")
+            say.fail(f"{checked[0].name} serves {got[:8] or '(none)'}, "
+                     f"expected {expect[:8]}")
+        if not as_json:
+            say.result("")
+            say.check(True, f"{checked[0].name} serves {expect[:8]} as expected")
 
     if any(r.error for r in reports if r.kind == "cloud"):
         raise typer.Exit(code=1)

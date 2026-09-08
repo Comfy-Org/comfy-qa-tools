@@ -1,6 +1,9 @@
 # Getting started
 
-From nothing to a working setup. You do not need to know what a tunnel is.
+From nothing to a GPU box you are testing on. Three commands do it — `setup`,
+`create`, `go` — and **you never open the Google Cloud console**. You do not need
+to know what a tunnel is, what machine type an L4 needs, or which zone has
+capacity today; those are the parts this tool decides for you.
 
 ## 1. Install
 
@@ -63,32 +66,94 @@ you the command to run. A prompt-only feature is an incomplete one.
 your project. Nothing needed typing: Google knows each box's zone, card and
 operating system already.
 
-Run `comfy-qat host discover` any time you add a box. It only adds what is missing
-and never touches what you have edited. [hosts.md](hosts.md) explains every field.
+```sh
+comfy-qat list
+```
+
+```
+NAME         KIND   OS            GPU  URL                    STATE
+local        local  -             -    http://127.0.0.1:8188  -
+comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190  not tunnelled
+```
+
+Every machine you test on now has a name, and there is no invisible default —
+which is the whole point, because both a local ComfyUI and a cloud box will
+happily answer on the same port and look identical.
+
+Run `comfy-qat discover` any time a box appears on the project that this list does
+not know about. It only adds what is missing and never touches what you have
+edited. [hosts.md](hosts.md) explains every field.
+
+If you are reading notes written before the verbs moved to the top level, you will
+see `comfy-qat host list`, `comfy-qat auth status` and the like. Those spellings
+were removed at 1.1.0 and now exit 2 with `No such command` — take the noun off
+and the rest of the line is right. [commands.md](commands.md) has the whole
+mapping.
+
+## 4. Make a box
+
+If that list has no cloud machine on it — a fresh project usually does not — make
+one. You do not go to the console for this:
 
 ```sh
-comfy-qat host list
+comfy-qat create --os linux --gpu t4
 ```
 
-```
-NAME         KIND   OS            GPU  URL
-local        local  -             -    http://127.0.0.1:8188
-comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190
+**The card is the only real decision.** The machine type follows from it (an L4 is
+a G2 with the GPU built into the machine type; a T4 is an N1 with one attached,
+and getting that the wrong way round is the commonest way a create by hand fails),
+and the zone is chosen for you: regions your project holds quota in, zones inside
+them that offer the card, ranked by latency measured from where you are sitting,
+and tried in order until one has capacity. Quota is checked *before* anything
+exists, because a refusal costs nothing and a quota failure after the instance
+exists costs money and a cleanup.
+
+Run it with `--dry-run` first if you want to see the plan, the quota it read and
+the zone order it would try, without creating anything.
+
+One thing it cannot do for you. **The NVIDIA driver is not in either base image**,
+and a box without one runs ComfyUI on its CPU while looking perfectly healthy. On
+Linux, `create` installs it from a startup script on first boot — which reboots the
+box once or twice, and `go` waits that out. On Windows it does not: Google
+documents exactly one way to install it there and it is a person at a PowerShell
+prompt, so `create` prints those commands for you to run once rather than inventing
+a recipe nobody has tested.
+
+The finished box is added to your host list on a free port, so the next step works
+on it straight away.
+
+## 5. Go to it
+
+```sh
+comfy-qat go comfy-linux
+comfy-qat go linux          # the same box, described rather than named
 ```
 
-That is the setup done. Every machine you test on now has a name, and there is no
-invisible default — which is the whole point, because both a local ComfyUI and a
-cloud box will happily answer on the same port and look identical.
+That starts the machine, installs ComfyUI if it has none, launches it **on the
+box**, forwards a local port to it, opens your browser — and gives you your prompt
+back. ComfyUI keeps running there, so you can bring a second machine up from the
+same terminal.
+
+```sh
+comfy-qat logs linux        # what it is saying, whenever you want to know
+comfy-qat down linux        # close the tunnel, stop the box, stop paying
+```
+
+**`down` is the one to remember.** A GPU box bills for every hour it is on,
+whether or not anything is pointed at it, and nothing on your screen tells you it
+is still there. `comfy-qat down --all` stops every cloud box you have declared, for
+the end of a session when the question is "am I still paying for anything".
+[cost.md](cost.md) has the rest.
 
 ## When something goes wrong
 
 [troubleshooting.md](troubleshooting.md) lists every error this tool can print,
 what causes it, and how to fix it.
 
-## 4. Stamp what you tested
+## 6. Stamp what you tested
 
 ```sh
-comfy-qat host stamp local
+comfy-qat stamp local
 ```
 
 ```

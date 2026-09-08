@@ -44,6 +44,11 @@ class FakeCloud:
         return Gcloud(runner=self._run)
 
     def _run(self, args, mode):
+        if " ".join(args).startswith("info --format=value(basic.python_location)"):
+            # `status` reports whether gcloud's own python has numpy. A path that
+            # does not exist makes the check a no-op, which is what a test wants.
+            return "/no/such/python"
+
         key = " ".join(args)
         self.calls.append(key)
 
@@ -123,7 +128,7 @@ def run(cloud, *args, clock=None):
         patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
         if clock is not None:
             patch.setattr("comfy_qa.auth.time", clock)
-        return runner.invoke(app, ["auth", *args])
+        return runner.invoke(app, [*args])
 
 
 # --- status ------------------------------------------------------------------
@@ -135,7 +140,7 @@ def test_status_reports_every_check_when_everything_is_ready():
     assert result.exit_code == 0, result.output
     for name in ["gcloud", "account", "project", "billing", "gpu quota"]:
         assert name in result.output
-    assert "FAIL" not in result.output
+    assert "fail" not in result.output
 
 
 @pytest.mark.parametrize("cloud,last,unseen", [
@@ -150,10 +155,10 @@ def test_status_stops_at_the_first_failure_rather_than_reporting_five(cloud, las
     result = run(cloud, "status")
 
     assert result.exit_code == 1
-    lines = [line for line in result.output.splitlines() if line.startswith(("ok", "FAIL"))]
-    assert lines[-1].startswith("FAIL")
+    lines = [line for line in result.output.splitlines() if line.startswith(("ok", "fail"))]
+    assert lines[-1].startswith("fail")
     assert last in lines[-1]
-    assert sum(line.startswith("FAIL") for line in lines) == 1
+    assert sum(line.startswith("fail") for line in lines) == 1
     for name in unseen:
         assert name not in result.output, f"{name} was checked after a failure"
 
@@ -168,7 +173,7 @@ def test_status_json_is_the_same_facts_in_a_fixed_shape():
 
     payload = json.loads(result.stdout)
     assert [c["name"] for c in payload] == [
-        "gcloud", "account", "project", "billing", "gpu quota",
+        "gcloud", "account", "project", "billing", "gpu quota", "numpy",
     ]
     for check in payload:
         assert set(check) == {"name", "ok", "detail", "fix"}
@@ -241,12 +246,12 @@ def test_login_hands_over_the_commands_and_signs_nobody_in(monkeypatch):
         raise AssertionError("login must not touch gcloud")
 
     monkeypatch.setattr("comfy_qa.auth.Gcloud", explode)
-    result = runner.invoke(app, ["auth", "login"])
+    result = runner.invoke(app, ["login"])
 
     assert result.exit_code == 0
     assert "gcloud auth login" in result.output
     assert "gcloud config set project" in result.output
-    assert "comfy-qat auth status" in result.output
+    assert "comfy-qat status" in result.output
 
 
 # --- quota list --------------------------------------------------------------
@@ -302,14 +307,14 @@ def test_quota_json_is_clean_on_stdout_with_the_slow_warning_on_stderr():
     assert set(payload) == {"project", "gpus", "by_region"}
     assert payload["project"] == "proj-1"
     assert {card["gpu"] for card in payload["gpus"]} == {"L4", "A100"}
-    assert "takes about a minute" in result.stderr
+    assert "reading quota (about a minute)" in result.stderr
 
 
 def test_nothing_usable_prints_the_command_that_fixes_it():
     result = run(FakeCloud(quotas=[T4, A100]), "quota", "list")
 
-    assert "Nothing is usable yet" in result.output
-    assert "comfy-qat auth quota request --gpu" in result.output
+    assert "nothing is usable yet" in result.output
+    assert "comfy-qat quota request --gpu" in result.output
 
 
 def test_a_pending_request_is_shown_as_pending_not_missing():
@@ -411,7 +416,7 @@ def test_still_pending_is_exit_75_and_says_how_to_pick_it_up_again():
     assert result.exit_code == 75
     assert "still pending: t4, a100" in result.output
     assert "Approval can take days" in result.output
-    assert "comfy-qat auth quota" in result.output
+    assert "comfy-qat quota" in result.output
 
 
 def test_only_the_cards_still_waiting_are_named():
@@ -449,6 +454,31 @@ def test_the_wait_is_one_window_for_the_command_not_one_per_card():
     assert clock.slept, "it really did wait — on a clock that costs nothing"
 
 
+def test_the_wait_window_is_half_an_hour_and_that_is_written_down_here():
+    """The sibling above calls it "the documented half hour". Nothing documented it.
+
+    Its assertion is `clock.t == WAIT_TIMEOUT_SECONDS` — the measured value
+    checked against the constant that produced it, so both sides move together
+    and the comparison holds for any value at all. Measured: `30 * 60` changed
+    to `3 * 60` left the whole suite identical, pass for pass. And until this
+    line, no literal `1800`, "30 minutes" or "half an hour" appeared anywhere in
+    `docs/`, `comfy_qa/` or `tests/` either — so the window `quota request`
+    waits before handing back exit 75 could be cut to three minutes or pushed to
+    six hours and nothing would notice.
+
+    So here is the oracle, independent of its subject the way "stopping after 6
+    zones" pins `MAX_ATTEMPTS`. Half an hour is the trade: long enough that a
+    grant landing while you wait is caught by the command that asked for it —
+    approvals do arrive in minutes — and short enough that a terminal is not
+    held all afternoon for a decision that can take days. Change the number and
+    change this line, deliberately; that is the point of it.
+    """
+    from comfy_qa.auth import WAIT_TIMEOUT_SECONDS
+
+    assert WAIT_TIMEOUT_SECONDS == 1800, (
+        f"half an hour, in seconds — this is {WAIT_TIMEOUT_SECONDS / 60:g} minutes")
+
+
 def test_request_with_no_project_says_which_command_sets_one():
     """The exception carries the fix and `request` was throwing it away, so the
     same failure that `quota list` explains left this command silent."""
@@ -464,7 +494,7 @@ def test_a_card_this_project_does_not_offer_lists_what_it_does():
 
     assert result.exit_code == 2
     assert "this project reports no quota for 'h100'" in result.stderr
-    assert "Available: A100, L4, T4" in result.stderr
+    assert "ask for one of: A100, L4, T4" in result.stderr
 
 
 def test_a_card_offered_elsewhere_says_where_rather_than_contradicting_itself():
@@ -475,14 +505,14 @@ def test_a_card_offered_elsewhere_says_where_rather_than_contradicting_itself():
 
     assert result.exit_code == 2
     assert "no quota for 'l4' in europe-west4" in result.stderr
-    assert "It is metered in us-central1" in result.stderr
+    assert "it is metered in us-central1" in result.stderr
 
 
 def test_a_project_with_no_gpu_quota_at_all_offers_nothing():
     result = run(FakeCloud(quotas=[]), "quota", "request", "--gpu", "l4")
 
     assert result.exit_code == 2
-    assert "Available: none" in result.stderr
+    assert "no GPU quota at all" in result.stderr
 
 
 def test_a_request_google_refuses_is_not_a_success():
@@ -534,4 +564,4 @@ def test_the_status_quota_line_is_one_row_per_card_and_admits_truncation():
     assert result.exit_code == 0
     assert line.count("K80") == 1, f"one row per card, not per region: {line}"
     assert "L4=1" in line, "the card you would actually use must survive the cut"
-    assert "+2 more" in line and "6 card(s) ready" in line
+    assert "+2 more" in line and "6 cards ready" in line

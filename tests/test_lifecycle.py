@@ -16,6 +16,9 @@ from comfy_qa.lifecycle import (
     bring_up,
     how_to_get_in,
     put_away,
+    serve,
+    start_detached,
+    stop_paying,
 )
 from comfy_qa.stamp import Stamp
 
@@ -50,6 +53,10 @@ def gcloud(statuses, **extra):
             return ""
         if "NetFirewallRule" in key or "ufw" in key:
             return "ALREADY"
+        if "--command=echo ok" in key:
+            # A box this run started is asked whether sshd is listening before a
+            # tunnel is opened into it. RUNNING is the VM powered on, not sshd up.
+            return "ok"
         raise AssertionError(f"unexpected: {key}")
 
     gc = Gcloud(runner=runner)
@@ -112,15 +119,16 @@ def test_a_booted_box_with_no_comfyui_is_a_failure_not_a_success(tmp_path):
     message = str(caught.value)
     assert "ComfyUI is not answering" in message
     assert "billing" in message, "say that it is costing money right now"
-    assert "reset-windows-password" in caught.value.fix
+    assert "comfy-qat rdp" in caught.value.fix
 
 
 def test_the_way_in_matches_the_operating_system():
     """Printing the Windows recipe for a Linux box sends someone down a dead end."""
-    assert "reset-windows-password" in how_to_get_in(WIN)
+    assert "comfy-qat rdp" in how_to_get_in(WIN)
     assert "Remote Desktop" in how_to_get_in(WIN)
-    assert "compute ssh" in how_to_get_in(LINUX)
-    assert "reset-windows-password" not in how_to_get_in(LINUX)
+    assert "comfy-qat ssh" in how_to_get_in(LINUX)
+    assert "comfy-qat rdp" not in how_to_get_in(LINUX)
+    assert "comfy-qat ssh" in how_to_get_in(LINUX)
 
 
 def test_a_box_that_never_reaches_running_gives_up_rather_than_hanging(tmp_path):
@@ -132,10 +140,40 @@ def test_a_box_that_never_reaches_running_gives_up_rather_than_hanging(tmp_path)
 
 
 def test_a_failure_to_start_names_the_box(tmp_path):
+    """Two reads: the one before the start, and the one that asks whether the
+    box came up anyway after the start reported a failure."""
     _, say = said()
-    gc = gcloud(["TERMINATED"], fail=GcloudError("quota exceeded"))
+    gc = gcloud(["TERMINATED", "TERMINATED"], fail=GcloudError("quota exceeded"))
     with pytest.raises(LifecycleError, match="could not start comfy-win"):
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+
+def test_a_start_whose_answer_was_lost_is_not_reported_as_nothing_happening(tmp_path):
+    """The request reached Google; the reply did not come back. The obvious
+    reading — "nothing happened, try again" — is the expensive one: the box is
+    coming up and the client is the only party that does not know.
+
+    The fixture taught this mistake too. fakes.py asserted in a comment that "a
+    start that raised leaves the box off, and nothing is billing"."""
+    _, say = said()
+    gc = gcloud(["TERMINATED", "STAGING"], fail=GcloudError("gcloud timed out"))
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert "it started, and it is billing" in str(caught.value)
+    assert "comfy-qat down comfy-win" in caught.value.fix
+    assert "nothing needs retrying" in caught.value.fix
+
+
+def test_a_start_that_really_failed_still_says_a_timeout_may_have_landed(tmp_path):
+    _, say = said()
+    gc = gcloud(["TERMINATED", "TERMINATED"], fail=GcloudError("gcloud timed out"))
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert "list --live" in caught.value.fix
 
 
 def test_local_up_means_is_it_answering(tmp_path):
@@ -156,18 +194,47 @@ def test_local_down_hands_over_the_start_command(tmp_path):
 
 def test_put_away_stops_the_box(tmp_path):
     lines, say = said()
-    gc = gcloud([])
+    gc = gcloud(["RUNNING"])
     put_away(gc, WIN, say, tunnel_dir=tmp_path)
     assert any(key.startswith("compute instances stop") for key in gc.calls)
-    assert any("stopped" in line for line in lines)
+    assert any("was running — stopped it" in line for line in lines)
 
 
 def test_keep_running_says_plainly_that_it_still_costs(tmp_path):
     lines, say = said()
-    gc = gcloud([])
-    put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
+    gc = gcloud(["RUNNING"])
+    still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
     assert not any(key.startswith("compute instances stop") for key in gc.calls)
     assert any("still billing" in line for line in lines)
+    assert still == "billing"
+
+
+def test_keep_running_does_not_invent_a_bill_for_a_stopped_box(tmp_path):
+    """A live run printed "left running — it is still billing" about four hosts
+    while three of them were TERMINATED. The day before, the same command claimed
+    it had stopped machines it had deliberately left on. Both are one defect: a
+    statement about money the tool never checked."""
+    lines, say = said()
+    gc = gcloud(["TERMINATED"])
+    still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
+    assert still == "idle"
+    assert not any("billing" in line for line in lines), lines
+    assert any("already stopped" in line for line in lines)
+
+
+def test_not_knowing_whether_it_is_running_is_said_out_loud(tmp_path):
+    """Not knowing is its own answer, and it is not "it is fine"."""
+    from comfy_qa.gcloud import GcloudError
+
+    def refuses(args, mode):
+        raise GcloudError("credentials expired")
+
+    gc = Gcloud(runner=refuses)
+    lines, say = said()
+    still = put_away(gc, WIN, say, tunnel_dir=tmp_path, keep_running=True)
+    assert still == "unknown"
+    assert any("could not tell" in line for line in lines)
+    assert any("list --live" in line for line in lines)
 
 
 def test_put_away_never_stops_a_local_comfyui(tmp_path):
@@ -190,7 +257,8 @@ def test_only_a_missing_comfyui_is_worth_continuing_past(tmp_path):
     assert absent.value.kind == COMFYUI_ABSENT
 
     with pytest.raises(LifecycleError) as failed:
-        bring_up(gcloud(["TERMINATED"], fail=GcloudError("no capacity")), WIN, say,
+        bring_up(gcloud(["TERMINATED", "TERMINATED"],
+                        fail=GcloudError("no capacity")), WIN, say,
                  tunnel_dir=tmp_path, sleep=lambda _: None)
     assert failed.value.kind != COMFYUI_ABSENT, "a failed start must stop `go`"
 
@@ -234,7 +302,7 @@ def test_waiting_for_ssh_gives_up_with_the_manual_way_in():
     with pytest.raises(LifecycleError) as caught:
         wait_for_ssh(Gcloud(runner=runner), WIN, say, timeout=0, sleep=lambda _: None)
     assert "not accepting commands" in str(caught.value)
-    assert "reset-windows-password" in caught.value.fix
+    assert "comfy-qat rdp" in caught.value.fix
 
 
 def test_a_zone_with_no_capacity_is_named_as_such(tmp_path):
@@ -322,7 +390,7 @@ def test_a_stockout_points_at_the_command_that_fixes_it(tmp_path):
     gc = gcloud(["TERMINATED"], fail=GcloudError("---", raw=STOCKOUT_OUTPUT))
     with pytest.raises(LifecycleError) as caught:
         bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
-    assert "comfy-qat host move comfy-win --to us-central1-b" in caught.value.fix
+    assert "comfy-qat move comfy-win --to us-central1-b" in caught.value.fix
 
 
 # --- what the end-to-end harness turned up --------------------------------
@@ -473,6 +541,225 @@ def test_the_browser_is_not_opened_after_a_launch_that_failed():
     assert opened == []
 
 
+# --- and the same refusal on the path people actually take -----------------
+#
+# A box that is ALREADY serving never reaches `serve` or `start_detached`:
+# `bring_up` comes back with a stamp, `go` sees one, and `host._serve` opens the
+# browser itself. That is reconnecting to a running box — the everyday case — so
+# a refusal that guarded only the launch would have guarded the rare route and
+# left the common one open.
+
+
+LOCAL_MAC = Host(name="local", kind="local", port=8188, os="macOS 15.5")
+
+
+def test_bring_up_refuses_a_box_that_answers_as_a_different_machine(tmp_path):
+    """`go` on an already-serving box, which is most `go`s."""
+    _, say = said()
+    mac = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"],
+                comfyui_version="0.33.0")
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: mac)
+
+    assert "answered as darwin" in str(caught.value)
+    assert "That port is not reaching comfy-win" in str(caught.value)
+    assert stop_paying(WIN) in (caught.value.fix or ""), "the box is still billing"
+
+
+def test_up_refuses_it_too_even_though_it_opens_nothing(monkeypatch, tmp_path,
+                                                       run_main):
+    """`up` is the same question with no browser at the end of it.
+
+    It exists to certify that a machine is up, and certifying the wrong one is
+    `host stamp`'s failure with the same consequences. Driven through the real
+    command rather than through `bring_up`, because the claim is about what `up`
+    now does: it exits 1 and says which two machines disagree, instead of
+    printing `open http://127.0.0.1:8190` under a name that is not what answered.
+    """
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import lifecycle as lifecycle_module
+
+    class Cloud:
+        def instance_status(self, instance, zone, project):
+            return "RUNNING"
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(
+        "[hosts.comfy-win]\n"
+        'kind = "gce"\n'
+        'os = "Windows Server 2022"\n'
+        'gpu = "L4"\n'
+        'gce_instance = "comfy-win"\n'
+        'gce_zone = "us-central1-a"\n'
+        'gce_project = "proj"\n'
+        "port = 8190\n",
+        encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Cloud())
+    monkeypatch.setattr(lifecycle_module, "probe", lambda host: Stamp(
+        host="comfy-win", url=WIN.url, os="darwin", devices=["mps"]))
+
+    code, output = run_main(["up", "comfy-win", "--config", str(path)])
+
+    assert code == 1, output
+    assert "answered as darwin" in output, output
+    assert "open http://127.0.0.1:8190" not in output, (
+        f"`up` certified a machine that contradicted itself: {output}"
+    )
+
+
+def test_the_handover_in_go_refuses_before_it_opens_anything(monkeypatch, capsys):
+    """`host._serve`'s fast return — the line that actually opens the browser.
+
+    Lives here rather than in a host test because it is the same refusal as the
+    three above, and because reaching it through `go` is no longer possible:
+    `bring_up` now refuses first, so the only way to put a contradicting `Ready`
+    in front of this branch is to hand it one. That is the point of guarding
+    both — one refuses to RETURN a machine it cannot identify, the other refuses
+    to OPEN one, and the second is what a future caller with its own `Ready`
+    will meet.
+    """
+    import typer
+
+    from comfy_qa.host import _serve
+    from comfy_qa.lifecycle import Ready
+
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    mac = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"])
+
+    with pytest.raises(typer.Exit) as caught:
+        _serve(gcloud(["RUNNING"]), WIN,
+               Ready(host=WIN, stamp=mac, started=False, tunnelled=True))
+
+    assert caught.value.exit_code == 1
+    assert opened == [], "a browser was opened onto a contradicting machine"
+    printed = capsys.readouterr()
+    assert "answered as darwin" in printed.err, printed.err
+    # The handover is two `say.result` lines — the url, then the stamp — and
+    # stdout is where a person copies from. Neither may be there.
+    assert mac.line() not in printed.out, (
+        f"the contradicting machine was handed over anyway: {printed.out!r}"
+    )
+    assert WIN.url not in printed.out, printed.out
+
+
+def test_a_local_machine_that_answers_as_another_one_is_refused_without_a_bill(tmp_path):
+    """A local host declares what it runs too, and `comfy-qat down local` is not
+    a command that stops paying for anything."""
+    _, say = said()
+    windows = Stamp(host="local", url=LOCAL_MAC.url, os="Windows Server 2022")
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud([]), LOCAL_MAC, say, tunnel_dir=tmp_path,
+                 probe_fn=lambda host: windows)
+
+    assert "That port is not reaching local" in str(caught.value)
+    assert "comfy-qat down" not in (caught.value.fix or ""), (
+        f"a local machine was invoiced: {caught.value.fix!r}"
+    )
+
+
+# --- nor onto a machine that is not the one you named ----------------------
+#
+# A launch that answers is not a launch that answered from the right box. Both
+# ComfyUIs look identical in a browser — same title, same canvas, same favicon,
+# and only `127.0.0.1:<port>` between them — so a tab opened onto the wrong one
+# is never noticed, and every result taken in it is filed under the machine that
+# was asked for. `mismatch` writes the sentence; until this, only `host stamp`
+# ever asked it.
+
+MAC = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"],
+            comfyui_version="0.33.0")
+
+
+def box_holding_its_port(holder="2804 python"):
+    """A box whose ComfyUI port is already held — the "it is already up" path."""
+    def runner(args, mode):
+        joined = " ".join(args)
+        if mode == "output" and ("NetTCPConnection" in joined or "sport = :" in joined):
+            return holder
+        return 0
+
+    return Gcloud(runner=runner)
+
+
+def test_serve_refuses_a_machine_that_answers_as_a_different_one(tmp_path):
+    """Refused, not warned — the treatment `host stamp` already gives this.
+
+    `stamp` refuses because its line gets pasted into a bug report and a warning
+    on stderr does not survive being copied. A browser session is the same
+    artefact with nothing to copy: the warning scrolls away, the tab stays, and
+    what is generated in it is attributed to the machine that was named.
+    """
+    opened = []
+    lines, say = said()
+
+    with pytest.raises(LifecycleError) as caught:
+        serve(box_holding_its_port(), WIN, say, open_browser=opened.append,
+              probe_fn=lambda host: MAC, sleep=lambda _: None, timeout=0,
+              tunnel_dir=tmp_path)
+
+    assert "answered as darwin" in str(caught.value)
+    assert opened == [], "a browser was opened onto a contradicting machine"
+    assert stop_paying(WIN) in (caught.value.fix or ""), "the box is still billing"
+
+
+def test_serve_names_the_machine_beside_the_url_it_hands_over(tmp_path):
+    """The url and the identity on one line, because by the time a url is
+    printed the "ComfyUI answering" line is a whole startup log above it."""
+    lines, say = said()
+    opened = []
+
+    serve(box_holding_its_port(), WIN, say, open_browser=opened.append,
+          probe_fn=lambda host: STAMP, sleep=lambda _: None, timeout=0,
+          tunnel_dir=tmp_path)
+
+    assert opened == [WIN.url]
+    beside = [line for line in lines if WIN.url in line and STAMP.line() in line]
+    assert beside, (
+        f"nothing said the url and the machine it reaches together: {lines}"
+    )
+
+
+def test_the_follow_watcher_never_opens_a_tab_onto_a_contradicting_machine(tmp_path):
+    """The `--follow` path, where the browser is opened from a watcher thread.
+
+    A thread cannot fail the command from where it stands, so the contradiction
+    has to travel back: nothing is opened, the sentence is said as it happens,
+    and `serve` raises rather than returning 0 for a launch that showed you
+    somebody else's machine.
+    """
+    import threading
+
+    told = threading.Event()
+    lines = []
+    opened = []
+
+    def say(line):
+        lines.append(line)
+        if "That port is not reaching" in line:
+            told.set()
+
+    def runner(args, mode):
+        # The launch holds the terminal while ComfyUI runs, which is what gives
+        # the watcher something to run alongside. Bounded, so a watcher that
+        # never decides fails this test rather than hanging it.
+        if mode == "stream":
+            told.wait(10)
+        return 0
+
+    with pytest.raises(LifecycleError) as caught:
+        serve(Gcloud(runner=runner), WIN, say, open_browser=opened.append,
+              probe_fn=lambda host: MAC, sleep=lambda _: None, timeout=30,
+              tunnel_dir=tmp_path)
+
+    assert told.is_set(), f"the watcher said nothing about the machine: {lines}"
+    assert "answered as darwin" in str(caught.value)
+    assert opened == []
+
+
 def test_an_expired_credential_is_not_waited_out(tmp_path):
     """gcloud only offers to reauthenticate when stdin and stderr are terminals,
     and everything here captures output — so it does not ask, it fails, and it
@@ -557,6 +844,93 @@ def test_an_install_that_reports_success_but_installed_nothing_is_caught():
     assert "reported success" in str(caught.value)
 
 
+# --- Ctrl-C during an install leaves nothing ticking --------------------------
+#
+# `ensure_installed` and the torch repair are the only two `output.slow` calls in
+# this module that run on a THREAD; every other one passes background=False and
+# has nothing to stop. Both were guarded by `except GcloudError`, and Ctrl-C is a
+# BaseException, so it walked past untouched and left the ticker running.
+#
+# Measured before the fix: the thread survives the interrupt and outlives the
+# whole run. Daemon, so nothing hangs — what it CAN do is print "still going"
+# over the tool's own last words. `Can`, not `does`: the real tick is
+# STREAM_TICK_SECONDS, a minute, so it lands inside the report only when the
+# Ctrl-C falls in the last milliseconds before a tick.
+#
+# So the case is the SHAPE, not the window — a thread with no owner, whose
+# visibility depends on when somebody happened to press a key. These tests assert
+# the shape, which is why they check `_stop.is_set()` rather than watching for a
+# line, and why they hold at any tick interval.
+
+
+class _Interrupting:
+    """A Gcloud whose streaming ssh is interrupted, as a Ctrl-C makes it."""
+
+    def __init__(self, answer="MISSING"):
+        self.answer = answer
+
+    def ssh_output(self, instance, zone, project, remote):
+        return self.answer
+
+    def ssh(self, instance, zone, project, remote, *, stream=True):
+        raise KeyboardInterrupt
+
+
+def _watch_tickers(monkeypatch):
+    """Record every `output.slow` the module starts, so a test can inspect it."""
+    from comfy_qa import lifecycle as lifecycle_module
+
+    started = []
+    real = lifecycle_module.output.slow
+
+    def watched(*args, **kwargs):
+        ticker = real(*args, **kwargs)
+        started.append(ticker)
+        return ticker
+
+    monkeypatch.setattr(lifecycle_module.output, "slow", watched)
+    return started
+
+
+def test_an_interrupted_install_leaves_no_ticker_running(monkeypatch):
+    """PINS: every background ticker is stopped on the way out, Ctrl-C included."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    started = _watch_tickers(monkeypatch)
+    _, say = said()
+
+    with pytest.raises(KeyboardInterrupt):
+        ensure_installed(_Interrupting(), WIN, say)
+
+    # Selected on "would have started a thread", not on `_thread is not None`:
+    # stopping one sets `_thread = None`, so the obvious filter excludes exactly
+    # the tickers this is about and the test passes by checking none of them.
+    threaded = [t for t in started if t._background and t._every > 0]
+    assert threaded, "no background ticker was started — the test proves nothing"
+    for ticker in threaded:
+        assert ticker._stop.is_set(), (
+            "a ticker is still running after the interrupt; it will print "
+            "'still going' over the report the tool is trying to make"
+        )
+
+
+def test_an_interrupted_torch_repair_leaves_no_ticker_running(monkeypatch):
+    """The sibling site, which is the more likely of the two to be interrupted."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    started = _watch_tickers(monkeypatch)
+    _, say = said()
+
+    # INSTALLED, so the install is skipped and `_verify` reaches the torch fetch.
+    with pytest.raises(KeyboardInterrupt):
+        ensure_installed(_Interrupting("INSTALLED\nNO_TORCH"), WIN, say)
+
+    threaded = [t for t in started if t._background and t._every > 0]
+    assert threaded, "no background ticker was started — the test proves nothing"
+    for ticker in threaded:
+        assert ticker._stop.is_set(), "a ticker outlived the interrupt"
+
+
 def test_a_successful_install_is_confirmed_on_the_box_not_assumed():
     from comfy_qa.lifecycle import ensure_installed
 
@@ -619,7 +993,183 @@ def test_every_failure_after_the_box_is_running_says_how_to_stop_paying(tmp_path
         monkeypatch.undo()
 
     for failure in failures:
-        assert "comfy-qat host down comfy-win" in (failure.fix or ""), str(failure)
+        assert "comfy-qat down comfy-win" in (failure.fix or ""), str(failure)
+
+
+class _SshRaises:
+    """A Gcloud whose `ssh` raises, as a vanished binary does. Port is free."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def ssh_output(self, instance, zone, project, remote):
+        return "PORT_FREE"
+
+    def ssh(self, instance, zone, project, remote, *, stream=True):
+        raise self.exc
+
+
+# `serve` and `start_detached` both wrap their `gc.ssh` launch, so a local gcloud
+# fault at the launch goes through `_give_up` like every other failure past the
+# point the machine is on: tunnel closed, and the bill named. `serve`'s call is
+# also inside a try/FINALLY, which tidies the remote process; the catch is
+# outside that, so the tidy-up runs first and the refusal is still ours.
+#
+# Reachable by a LOCAL fault only: `Gcloud.ssh` raises GcloudError when the binary
+# has left PATH mid-session, or OSError out of subprocess.run. A failed REMOTE ssh
+# returns a non-zero exit code, and every non-zero code is handled.
+
+
+@pytest.mark.parametrize("launch", (serve, start_detached))
+def test_a_gcloud_failure_at_the_launch_leaves_the_tunnel_open(tmp_path, launch):
+    """A launch that raises still closes the tunnel it opened.
+
+    Otherwise the box is left running and billing with a local port held open
+    onto it, and the exception carries gcloud's own advice rather than this
+    tool's.
+    """
+    from comfy_qa import tunnel as tunnel_module
+
+    _, say = said()
+    tunnel_module.open_tunnel(WIN, tmp_path)
+    assert tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+    with pytest.raises(LifecycleError):
+        launch(_SshRaises(GcloudError("gcloud is not installed or not on PATH.")),
+               WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
+               tunnel_dir=tmp_path)
+
+    assert not tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+
+@pytest.mark.parametrize("launch", (serve, start_detached))
+def test_a_gcloud_failure_at_the_launch_never_says_how_to_stop_paying(tmp_path, launch):
+    """Every failure after the machine is on names `stop_paying(host)` — the
+    rule this module's own docstring states.
+
+    And gcloud's own advice survives alongside it: signing in again is the right
+    first move, and it says nothing about the box that is on while you make it.
+    """
+    lines, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        launch(_SshRaises(GcloudError("your gcloud session has expired",
+                                      fix="gcloud auth login")),
+               WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
+               tunnel_dir=tmp_path)
+
+    whole = "\n".join(lines) + f"\n{caught.value}\n{caught.value.fix}"
+    assert stop_paying(WIN) in whole
+    assert "gcloud auth login" in whole
+    assert "your gcloud session has expired" in str(caught.value)
+
+
+class _EverythingRaises:
+    """A Gcloud where every call fails, including the ones asked BEFORE the
+    launch — which is where an OSError used to get out."""
+
+    def __init__(self, exc):
+        self.exc = exc
+
+    def __getattr__(self, name):
+        def call(*args, **kwargs):
+            raise self.exc
+        return call
+
+
+@pytest.mark.parametrize("launch", (serve, start_detached))
+def test_an_oserror_anywhere_in_the_launch_still_names_the_bill(tmp_path, launch):
+    """The same failure by the other route out of `subprocess`.
+
+    `Gcloud.ssh` raises GcloudError when the binary has gone, and OSError —
+    EMFILE, ENOMEM — when the process cannot be spawned at all. The launch call
+    itself catches both, but `_port_holder` runs first and caught only
+    GcloudError, so an OSError escaped as a traceback past every handler in the
+    tool: tunnel open, box billing, nothing said. The four best-effort asks on
+    this path now treat a local fault as one more way for a box not to answer.
+    """
+    from comfy_qa import tunnel as tunnel_module
+
+    _, say = said()
+    tunnel_module.open_tunnel(WIN, tmp_path)
+
+    with pytest.raises(LifecycleError) as caught:
+        launch(_EverythingRaises(OSError(24, "Too many open files")),
+               WIN, say, probe_fn=lambda host: None, sleep=lambda _: None,
+               tunnel_dir=tmp_path)
+
+    assert stop_paying(WIN) in (caught.value.fix or "")
+    assert not tunnel_module.pid_file("comfy-win", tmp_path).exists()
+
+
+# --- interrupting the one command whose job is stopping the bill -----------
+
+
+def test_stopping_says_so_before_it_starts_rather_than_only_afterwards():
+    """A real `down` was blank for 30 seconds and then printed one line.
+
+    Measured by driving it against a fake gcloud that sleeps: nothing at all
+    reaches the terminal while the stop is in flight. That silence is also why
+    an interrupt here felt like nothing had happened.
+    """
+    from comfy_qa.lifecycle import put_away
+
+    lines, say = said()
+    put_away(gcloud(["RUNNING"]), WIN, say)
+
+    def first(fragment: str) -> int:
+        return next(i for i, line in enumerate(lines) if fragment in line)
+
+    assert first("stopping comfy-win") < first("stopped it"), lines
+
+
+def test_an_interrupted_stop_is_not_silent_about_the_machine(capsys):
+    """The mirror of an interrupted create, and the more expensive direction.
+
+    `down` exists to stop the bill, so the person who typed it believes the bill
+    stopped — and an interrupt printed NOTHING: exit 130, stdout and stderr both
+    empty, not even a progress line. The stop request has already gone to
+    Google, Ctrl-C reaches only the local gcloud, and nothing here can say
+    whether it landed.
+    """
+    from comfy_qa import inflight
+    from comfy_qa.lifecycle import put_away
+
+    class _Interrupted:
+        def instance_status(self, *args):
+            return "RUNNING"
+
+        def stop_instance(self, *args):
+            raise KeyboardInterrupt
+
+    with pytest.raises(inflight.Interrupted):
+        put_away(_Interrupted(), WIN, lambda line: None)
+
+    # The report fires inside `may_leave` now rather than in `cli.main`, so what
+    # survives the raise is the printed message rather than the record. Reading
+    # the message is the stronger check anyway: it is what the person who pressed
+    # Ctrl-C actually sees, and the record was only ever a proxy for it.
+    report = capsys.readouterr().err
+
+    assert "comfy-win (comfy-win in us-central1-a)" in report, report
+    assert "this may still be running" in report, (
+        "an interrupted `down` needs its own sentence, and neither of the other "
+        "two headings is true here: the box certainly exists, and whether the "
+        "stop landed is the unknown"
+    )
+    # Re-running is free — stopping an already-stopped box succeeds trivially —
+    # so the first thing offered is the command that settles it.
+    assert "comfy-qat down comfy-win" in report
+    assert "comfy-qat list --live" in report
+
+
+def test_a_stop_that_returns_leaves_nothing_registered():
+    """The guard on the registration: a `down` that finished has nothing to say
+    about a machine that may still be running."""
+    from comfy_qa import inflight
+    from comfy_qa.lifecycle import put_away
+
+    put_away(gcloud(["RUNNING"]), WIN, lambda line: None)
+    assert inflight.pending() == []
 
 
 def test_a_local_host_that_names_a_cloud_instance_is_never_called_stopped(tmp_path):
@@ -696,3 +1246,315 @@ def test_a_port_held_by_a_working_comfyui_is_used_not_refused(tmp_path):
     assert "using it rather than starting a second one" in told
     assert "tunnel closed" not in told, "it tore down a working tunnel"
     assert not any("starting ComfyUI on" in line for line in lines), "no second one"
+
+
+def test_a_box_this_run_started_is_not_tunnelled_before_ssh_answers(tmp_path):
+    """RUNNING is the VM powered on, not sshd listening.
+
+    A real run started an Ubuntu box, saw RUNNING in 25s, opened the tunnel
+    immediately and got `failed to connect to backend ... Failed to connect to
+    port 22`. The tunnel process died, `go` reported "the tunnel closed", and
+    nothing about that message points at the actual cause. The wait already
+    existed and was already used before the install; the tunnel just raced it.
+    """
+    from comfy_qa.tunnel import TunnelError
+
+    order: list[str] = []
+    gc = gcloud(["TERMINATED", "RUNNING"])
+    real_ssh = gc.ssh_output
+
+    def watched(*args, **kwargs):
+        order.append("ssh")
+        return real_ssh(*args, **kwargs)
+
+    gc.ssh_output = watched
+    lines, say = said()
+
+    def launcher(*a, **k):
+        order.append("tunnel")
+        raise TunnelError("stop here — the ordering is the whole assertion")
+
+    with pytest.raises(LifecycleError):
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, launcher=launcher,
+                 probe_fn=lambda host: STAMP, sleep=lambda _: None)
+
+    assert order[:2] == ["ssh", "tunnel"], (
+        f"the tunnel was opened before sshd was known to be up: {order}"
+    )
+
+
+def test_a_box_already_running_is_not_made_to_prove_ssh_again(tmp_path):
+    """It has had its chance to finish booting. Paying an SSH round trip on
+    every `go` to re-establish that is a cost with no failure behind it."""
+    asked: list[str] = []
+    gc = gcloud(["RUNNING"])
+    real_ssh = gc.ssh_output
+
+    def watched(*args, **kwargs):
+        asked.append("ssh")
+        return real_ssh(*args, **kwargs)
+
+    gc.ssh_output = watched
+    lines, say = said()
+    bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None,
+             probe_fn=lambda host: STAMP)
+
+    assert not asked
+
+
+# --- a new box installs its driver, and reboots doing it ---------------------
+#
+# `create` announces this: "installing the NVIDIA driver from its startup
+# script, which reboots it once or twice. `go` waits that out." It did not. A
+# real zero-setup run began installing prerequisites, the reboot dropped the
+# session mid-apt, and it was reported as "the ComfyUI install did not finish"
+# about a box that was merely restarting.
+
+LINUX_GPU = Host(name="comfy-linux-2", kind="gce", port=8194, os="Ubuntu 22.04",
+                 gpu="L4", gce_instance="comfy-linux-2", gce_zone="europe-west4-c",
+                 gce_project="proj")
+
+
+def _driver(answers):
+    """A box that refuses `nvidia-smi` until the driver install has finished."""
+    seen = iter(answers)
+
+    def runner(args, mode):
+        key = " ".join(args)
+        if "nvidia-smi -L" in key:
+            nxt = next(seen)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+        raise AssertionError(f"unexpected: {key}")
+
+    return Gcloud(runner=runner)
+
+
+def test_a_dropped_connection_means_rebooting_not_broken(tmp_path):
+    """The exact failure: the driver reboot closes the session mid-command."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    dropped = GcloudError(
+        "client_loop: send disconnect: Broken pipe",
+        raw="Connection to compute.129506869159352883 closed by remote host.",
+    )
+    gc = _driver([dropped, dropped, "GPU 0: NVIDIA L4"])
+    lines, say = said()
+    wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None, tunnel_dir=tmp_path)
+
+    assert any("waiting for the NVIDIA driver" in line for line in lines), lines
+
+
+def test_a_box_whose_driver_is_ready_is_not_made_to_wait(tmp_path):
+    from comfy_qa.lifecycle import wait_for_driver
+
+    gc = _driver(["GPU 0: NVIDIA L4"])
+    lines, say = said()
+    wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None, tunnel_dir=tmp_path)
+    assert not any("waiting" in line for line in lines), lines
+
+
+def test_windows_is_not_waited_on_because_its_driver_is_manual(tmp_path):
+    """Google documents no unattended method, so there is nothing to wait for."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    def refuses(args, mode):
+        raise AssertionError("Windows must not be probed for a driver")
+
+    lines, say = said()
+    wait_for_driver(Gcloud(runner=refuses), WIN, say, tunnel_dir=tmp_path)
+    assert lines == []
+
+
+def test_giving_up_on_the_driver_says_the_box_is_billing(tmp_path):
+    """It is running by definition — it was created and started to get here."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    clock = iter([0, 1, 10_000, 10_001, 10_002])
+    dropped = GcloudError("Broken pipe", raw="closed by remote host")
+    gc = _driver([dropped, dropped, dropped])
+    lines, say = said()
+
+    with pytest.raises(LifecycleError) as caught:
+        wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None,
+                        now=lambda: next(clock), tunnel_dir=tmp_path)
+
+    assert "running and billing" in str(caught.value)
+    assert "comfy-qat down comfy-linux-2" in caught.value.fix
+    assert "installer.log" in caught.value.fix, "the installer keeps its own log"
+
+
+# --- a machine has eight states, not two ------------------------------------
+#
+# `down` asked "is it RUNNING?" to decide whether to stop it, which treats the
+# other six states as safe. A box in STAGING is thirty seconds from billing. The
+# suite already knew STAGING existed — three tests feed it to `bring_up` — but
+# nothing had ever fed a transitional state to the STOP path, and that asymmetry
+# is why this survived a commit written specifically about telling the truth
+# about money.
+
+@pytest.mark.parametrize("state", ["STAGING", "PROVISIONING", "REPAIRING",
+                                   "STOPPING", "SUSPENDING"])
+def test_a_box_that_is_not_terminated_is_stopped_not_waved_through(tmp_path, state):
+    lines, say = said()
+    gc = gcloud([state])
+    found = put_away(gc, WIN, say, tunnel_dir=tmp_path)
+
+    assert any(key.startswith("compute instances stop") for key in gc.calls), (
+        f"a box in {state} was left running and called already stopped"
+    )
+    assert found == "caught", found
+    assert not any("already stopped" in line for line in lines), lines
+
+
+@pytest.mark.parametrize("state", ["STAGING", "PROVISIONING", "REPAIRING"])
+def test_keep_running_counts_a_starting_box_as_billing(tmp_path, state):
+    """The under-reporting half, surviving inside the fix for the over-reporting
+    half: this branch was corrected today for claiming a stopped box was billing,
+    and still claimed a starting box was not."""
+    lines, say = said()
+    found = put_away(gcloud([state]), WIN, say, tunnel_dir=tmp_path,
+                     keep_running=True)
+
+    assert found == "billing", found
+    assert any("still billing" in line for line in lines), lines
+
+
+def test_only_terminated_counts_as_already_stopped(tmp_path):
+    lines, say = said()
+    gc = gcloud(["TERMINATED"])
+    assert put_away(gc, WIN, say, tunnel_dir=tmp_path) == "idle"
+    assert not any(key.startswith("compute instances stop") for key in gc.calls)
+
+
+def test_a_describe_that_says_nothing_is_not_evidence_the_box_started(tmp_path):
+    """`instance_status` returned the literal "UNKNOWN" when the describe came
+    back empty, and "UNKNOWN" is neither TERMINATED nor RUNNING — so it was read
+    as a real transitional state and took the CONFIDENT branch: "it started, and
+    it is billing", with "nothing needs retrying". That asserts a bill on a read
+    that told us nothing, and the advice is actively wrong if the box is off.
+
+    The empty answer is a third outcome, not a state."""
+    _, say = said()
+    gc = gcloud(["TERMINATED", ""], fail=GcloudError("gcloud timed out"))
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, WIN, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert "it started, and it is billing" not in str(caught.value)
+    assert "nothing needs retrying" not in (caught.value.fix or "")
+    assert "list --live" in caught.value.fix, "it has to say how to find out"
+
+
+# --- a read that succeeded and said nothing --------------------------------
+#
+# `instance_status` returns "" when the describe worked and carried no state.
+# That is a third answer, and it is falsy where the old "UNKNOWN" sentinel was
+# truthy — so every `if state:` and every `!= RUNNING` downstream changed
+# behaviour silently rather than comparing wrong. Nine call sites; one was
+# taught about it when the sentinel changed.
+
+def test_keep_running_does_not_bill_you_on_a_read_that_said_nothing(tmp_path):
+    """The honest branch existed two lines above and fired only on GcloudError,
+    so an empty answer fell into the confident billing claim instead."""
+    lines, say = said()
+    found = put_away(gcloud([""]), WIN, say, tunnel_dir=tmp_path, keep_running=True)
+
+    assert found == "unknown", found
+    assert not any("still billing" in line for line in lines), lines
+    assert any("could not tell" in line for line in lines)
+
+
+def test_the_stop_path_does_not_leave_a_gap_where_the_state_goes(tmp_path):
+    lines, say = said()
+    put_away(gcloud(["", ""]), WIN, say, tunnel_dir=tmp_path)
+    assert not any(" was  — " in line for line in lines), lines
+
+
+# --- and the arm under that one, for a state nobody could read at all ---------
+#
+# `None` is the OTHER not-a-state, and it is not this one. `""` means the
+# describe succeeded and carried no status. `None` means the read itself raised
+# — and every call site that holds a `None` state routes AROUND `readable_state`
+# to a sentence that names the bill instead: `put_away` returns "unknown" before
+# reaching its `before` interpolation, and `put_away`'s re-read and
+# `_probe_failed`'s both guard on `not in (None, "")`. Those three sentences are
+# already held, by name, in this file and in test_host_costs.py.
+#
+# So nothing reaches this arm today. Measured rather than argued: readable_state
+# was wrapped for a whole run and saw RUNNING, STAGING, PROVISIONING, REPAIRING,
+# SUSPENDED, STOPPING, SUSPENDING and "", across all five of its call sites, and
+# never once `None`. Dropping the arm changes nothing anyone can currently see,
+# which is exactly why the suite stayed green when it was dropped.
+#
+# It is pinned anyway, and the pin below is a CONTRACT test and not a path test.
+# Saying which it is matters: the two tests above are the path ones, they cover
+# the reachable half, and a third that only looked like them would be cover this
+# does not have. `str | None` is the signature's promise; two of the five call
+# sites interpolate the result into a refusal with no guard in front of it; and
+# the value they interpolate sits one line from a variable that is already
+# sometimes `None` elsewhere in the same module. The arm is what stands between
+# that and a traceback, in a command whose whole job is to say what a machine is
+# doing.
+
+
+def test_a_state_nobody_could_read_at_all_is_still_words():
+    """The arm no caller reaches yet. `str | None` is the promise; this holds it."""
+    from comfy_qa.lifecycle import readable_state
+
+    assert readable_state(None) == "in an unknown state"
+
+
+def test_a_describe_carrying_no_status_reads_back_empty_and_never_none():
+    """Why `None` cannot reach it — held next to the arm that would catch it.
+
+    `delete` and `bring_up` interpolate `instance_status` straight into a
+    sentence with nothing in between. They are safe only because this answers
+    `""` and not `None` for a describe that carried no status. If that ever
+    flips, this is the test that says so, and the arm above is what keeps those
+    two printing a sentence rather than raising.
+    """
+    for answer in ({}, {"status": None}, {"status": ""}, None):
+        gc = Gcloud(runner=lambda args, mode, reply=answer: reply)
+        state = gc.instance_status("comfy-win", "us-central1-a", "proj")
+
+        assert state is not None, f"a describe answering {answer!r} produced None"
+        assert state == Gcloud.UNKNOWN_STATE
+
+
+def test_logs_does_not_claim_a_box_is_off_from_a_read_that_said_nothing(tmp_path):
+    from comfy_qa.lifecycle import read_logs
+
+    with pytest.raises(LifecycleError) as caught:
+        read_logs(gcloud([""]), WIN, said()[1])
+
+    assert "could not tell" in str(caught.value)
+    assert "not running" not in str(caught.value)
+
+
+def test_a_linux_box_is_not_told_that_windows_is_slow(tmp_path):
+    """Observed on a real run: an Ubuntu box that came up in nine seconds printed
+    "waiting for the machine to accept commands — Windows takes a few minutes".
+
+    A sentence about a different operating system is the tool sounding like it
+    does not know which machine it is talking to, in the one command whose whole
+    job is being certain of that."""
+    from comfy_qa.gcloud import GcloudError
+    from comfy_qa.lifecycle import wait_for_ssh
+
+    answers = iter([GcloudError("not up yet"), "ok"])
+
+    def runner(args, mode):
+        nxt = next(answers)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt
+
+    for host, expected in ((LINUX_GPU, False), (WIN, True)):
+        answers = iter([GcloudError("not up yet"), "ok"])
+        lines, say = said()
+        wait_for_ssh(Gcloud(runner=runner), host, say, sleep=lambda _: None,
+                     tunnel_dir=tmp_path)
+        said_windows = any("Windows takes" in line for line in lines)
+        assert said_windows is expected, (host.name, lines)

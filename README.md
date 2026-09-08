@@ -23,36 +23,16 @@ never collide on `PATH`.
 
 ## Status
 
-**Release 1 — `host` and `auth` — is code complete.** Every command below is
-implemented and tested. Phases A to D and I to J of
-[`docs/test-criteria.md`](docs/test-criteria.md) have been run against a real
-Google Cloud project by someone who did not write the tool; the phases that start
-a GPU box have not, and are recorded as not run rather than assumed.
+**1.1.0. Every command is implemented, tested, and has run against real GCE
+hardware on both Linux and Windows** — not against fakes.
 
-| area | state |
-|---|---|
-| `setup`, `guide` | shipped — one-command first run |
-| `auth status`, `auth login` | shipped |
-| `auth quota list`, `auth quota request` | shipped |
-| `host init`, `list`, `discover` | shipped — offline, no cloud call |
-| `host up`, `open`, `down`, `go` | shipped — start, tunnel, stop |
-| `host switch` | shipped — stop the box you were on, go to the one you want |
-| `host move` | shipped — escape a zone with no GPU capacity |
-| `host stamp` | shipped — the evidence line |
-| `host create` | **not built.** Boxes are made in the console, then `host discover` |
-| `env` | carried over from v0, unchanged, awaiting its own release |
+The verbs are at the top level: `comfy-qat go linux`. The `host ...` and
+`auth ...` spellings were a deprecation window rather than a second permanent way
+to type everything, and it closed at 1.1.0 — typing one now exits 2. An old run
+sheet that says `host create` or `auth status` wants the noun taken off.
 
-Version **1.0.0**, 1049 tests. They run on Python 3.11, 3.12 and 3.13, on Ubuntu
-and macOS, and CI builds the wheel, installs it into a throwaway virtualenv and
-runs the binary from outside the checkout — because testing the source tree never
-proved the thing people actually install works.
+`env` is carried over from v0, hidden, and awaiting its own release.
 
-Three rules hold the docs to the code, each enforced by a test: every error the
-tool can print has an entry in [troubleshooting](docs/troubleshooting.md), every
-command in the binary appears in this README and every command in this README
-exists in the binary, and no test file may vanish from the suite unnoticed.
-
----
 
 ## Install
 
@@ -118,17 +98,18 @@ it stops and prints the link. Run it again afterwards; it skips what is already 
 It works without prompts too: `--project`, `--region`, `--non-interactive`.
 
 ```sh
-comfy-qat host list       # see your machines
-comfy-qat auth status     # re-check readiness at any time
-comfy-qat guide           # the short version, in the terminal
+comfy-qat list            # see your machines
+comfy-qat status          # re-check readiness at any time
 ```
 
 ## Everyday use
 
 ```sh
-comfy-qat host go windows       # start it, tunnel in, run ComfyUI where you can watch
-comfy-qat host stamp windows    # the line that says what produced your result
-comfy-qat host down windows     # close the tunnel, stop the box, stop paying
+comfy-qat go windows       # start it, tunnel in, leave ComfyUI running on the box
+comfy-qat logs windows     # what that ComfyUI is saying, whenever you want it
+comfy-qat stamp windows    # the line that says what produced your result
+comfy-qat down windows     # close the tunnel, stop the box, stop paying
+comfy-qat down --all       # stop every cloud box you have declared
 ```
 
 `windows` there is not a special name — it is the machine described rather than
@@ -146,72 +127,95 @@ picking one. Names always win over a description.
 Changing machine is one command, which stops the box you were on:
 
 ```sh
-comfy-qat host switch linux     # start the Linux box, then stop the Windows one
+comfy-qat switch linux     # start the Linux box, then stop the Windows one
 ```
+
+Making the box is one command too, and the card is the only real decision:
+
+```sh
+comfy-qat create --os linux --gpu t4
+```
+
+The machine type follows from the card — an L4 is a G2 with the GPU built in, a
+T4 is an N1 with one attached — and **the zone is chosen rather than typed**:
+regions this project holds quota in, zones inside them that offer the card and
+the machine type, ranked by latency measured from your machine, and tried in
+order until one has capacity. Quota is checked before anything exists, both the
+card's own grant and `GPUS_ALL_REGIONS`, the project-wide ceiling that is the one
+that usually bites. `--dry-run` prints the plan, the quota it read and the zone
+order it would try, and creates nothing. The finished box is added to your host
+list on a free port, so `go` works on it straight away.
+
+**The NVIDIA driver is not in either base image**, and a box without one runs
+ComfyUI on its CPU while looking perfectly healthy. Linux boxes install it from a
+startup script on first boot. Windows boxes do not: Google documents exactly one
+way to do it there and it is a person at a PowerShell prompt, so `create` prints
+those commands rather than guessing at a recipe it cannot test.
 
 `go` is the one command worth memorising. It starts the instance, installs
 ComfyUI if the box has none — with a torch built for that box's CUDA — launches
-it in the foreground with its startup log on your terminal exactly as a local
-`main.py` would print it, and forwards a local port to it as soon as it is
-listening. The forward is an `ssh -L` over Identity-Aware Proxy: it reaches the
-box's own loopback, so nothing is exposed on any interface and no firewall rule
-is involved. Ctrl-C stops ComfyUI and leaves the box running; `down`
-is what stops the billing.
+it **on the box**, and forwards a local port to it as soon as it is listening.
+The forward is an `ssh -L` over Identity-Aware Proxy: it reaches the box's own
+loopback, so nothing is exposed on any interface and no firewall rule is
+involved.
+
+**ComfyUI stays running there and you get your prompt back.** It used to be
+launched in the foreground with its log streamed onto your terminal, which meant
+one machine per terminal and a Ctrl-C that killed ComfyUI. Now `logs <host>`
+reads that log whenever you want it, `--follow` brings the old streaming back for
+when you are debugging a launch, `--new-window` hands the whole thing to a new
+macOS Terminal window, and **two boxes can be up at once from one prompt**. What
+has not changed: `go` still does not return until ComfyUI has really answered on
+the tunnel, because a box that booted and serves nothing bills exactly like one
+that works.
+
+`down` is what stops the billing — and `down --all` stops every declared cloud
+box, because the question at the end of a session is never "is comfy-win
+stopped", it is "am I still paying for anything".
 
 [`docs/machines.md`](docs/machines.md) covers the whole loop, including what to do
 when a zone has no GPUs left.
 
-## Command reference
+## Commands
 
-Every target is a **declared host**, local or cloud. Naming them all is the point:
-local stops being an invisible default, so picking the wrong one becomes something
-you do on purpose.
-
-`<host>` below is a name, or a description of the machine you want — `windows`,
-`l4`, `windows/l4`. A description that fits exactly one declared host is used and
-printed; one that fits two is refused with both named.
+Every target is a **declared host**, local or cloud — naming them all is the
+point, so local stops being an invisible default and picking the wrong machine
+becomes something you do on purpose.
 
 | command | what it does |
 |---|---|
-| `comfy-qat --version` | what you are running — `comfy-qat 1.0.0 (0d27bd4)` from a checkout. Paste it with any result |
-| `comfy-qat setup` | first run: sign-in, project, billing, quota, host list |
-| `comfy-qat guide` | the first-run instructions, in the terminal |
-| `comfy-qat auth status` | signed in? which project? billing? GPU quota? — `--json` too |
-| `comfy-qat auth login` | prints the sign-in commands; gcloud does the signing in |
-| `comfy-qat auth quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
-| `comfy-qat auth quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait |
-| `comfy-qat host` | same as `list` — read-only is the safe default |
-| `comfy-qat host list` | show every declared machine, where it answers, and what is up. `--live` asks Google whether each box is running |
-| `comfy-qat host init` | write a starter host list you can edit |
-| `comfy-qat host discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
-| `comfy-qat host up <host>` | start it and wait until ComfyUI actually answers |
-| `comfy-qat host open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
-| `comfy-qat host down <host>` | close the tunnel and stop the machine. `--keep-running` closes only the tunnel |
-| `comfy-qat host go <host>` | up + install if needed + serve in the foreground. `--no-browser`, `--no-install` |
-| `comfy-qat host switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
-| `comfy-qat host move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |
-| `comfy-qat host stamp <host>` | ask a machine what it is. `--json` |
+| `comfy-qat setup` | get this machine ready, in one command |
+| `comfy-qat status` | signed in? which project? billing and GPU quota? |
+| `comfy-qat login` | print the sign-in commands |
+| `comfy-qat quota list` | what cards you can start, and where — `--by-region` |
+| `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` |
+| `comfy-qat init` | write a starter host list you can edit |
+| `comfy-qat list` | every declared machine and what is up — `--live` asks Google |
+| `comfy-qat discover` | find cloud boxes and add them — `--prune` drops ones that are gone |
+| `comfy-qat create` | make a GPU box; the zone is chosen, not typed |
+| `comfy-qat delete` | remove a box and its disk, permanently |
+| `comfy-qat go` | start it, make sure ComfyUI is on it, hand the prompt back |
+| `comfy-qat up` | start a machine and wait until ComfyUI answers |
+| `comfy-qat open` | tunnel to a machine already running |
+| `comfy-qat disconnect` | close the tunnel, leave the machine running |
+| `comfy-qat down` | close the tunnel and stop the machine, so it stops costing |
+| `comfy-qat ssh` | a shell on a box, through the tunnel |
+| `comfy-qat rdp` | reset the Windows password and forward RDP |
+| `comfy-qat logs` | read the ComfyUI log on a box — `--tail N` to stop at the end |
+| `comfy-qat stamp` | ask a machine what it is, and print the line you paste |
+| `comfy-qat switch` | start the one you want, stop the one you were on |
+| `comfy-qat move` | move a box to a zone with capacity, keeping its ComfyUI |
+| `comfy-qat --version` | what you are running, with the commit |
 
-| `comfy-qat env` | v0's build and feature-flag check for deployed environments |
+**[docs/commands.md](docs/commands.md)** has the flags and which to reach for.
+`comfy-qat <command> --help` says the same at the prompt.
 
-Every command takes `--config` to point at a host list somewhere other than the
-default.
-
-### The stamp
-
-```
-local · local-git · ComfyUI 0.33.0 · darwin · mps (32GB) · torch 2.13.0 · python 3.12.13
-```
-
-That line is the point. It is the record nothing else keeps — paste it into a report
-and nobody has to ask which machine produced the result. `--json` gives the same
-thing using ComfyUI's own field names.
 
 ## The host list
 
 Lives at `~/.config/comfy-qa-tools/hosts.toml`. `comfy-qat setup` writes it and
 fills in your cloud boxes automatically — Google already knows each one's zone,
-card and operating system, so none of it needs typing. `comfy-qat host discover`
+card and operating system, so none of it needs typing. `comfy-qat discover`
 does the same on demand, and never touches entries you already have.
 
 ```toml
@@ -229,17 +233,23 @@ gce_project  = "your-project-id"
 port         = 8190
 ```
 
-Two rules are enforced offline, before anything else runs:
+Seven rules are enforced offline, before anything else runs. The two you meet
+first:
 
 - **No cloud host may use 8188.** That is the local ComfyUI's port; a tunnel on it
   would silently point you at the wrong machine, so it is refused, not warned about.
 - **No two hosts may share a port.** If two do, you cannot tell which one you reached.
 
+The other five — one box per cloud instance, no two names differing only in case,
+`local` reserved for this machine, no `gce_` fields on a `local` host, and a name
+that is actually typeable — are in [`docs/hosts.md`](docs/hosts.md) with the
+reason for each.
+
 Unknown fields are rejected rather than ignored, and the message names the typo and
 what it was probably meant to be:
 
 ```
-host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?).
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.
 ```
 
 Switching OS means switching host: one box per OS, and nothing is ever reimaged.
@@ -252,13 +262,16 @@ per OS you never have to remember what you called it. Every field is documented 
 Everything lives under `~/.config/comfy-qa-tools/`:
 
 - `hosts.toml` — the host list, and the only file you would ever edit.
+- `zone-latency.json` — how long a TCP connect to each Google Cloud region took
+  from this machine, measured by `create` and reused for a week. Delete it to
+  re-measure; nothing else reads it.
 - `tunnels/<host>.pid`, `tunnels/<host>.json` and `tunnels/<host>.log` — written by
-  `host open`, `up` and `go`. A tunnel outlives the command that started it, so
+  `open`, `up` and `go`. A tunnel outlives the command that started it, so
   what it is gets recorded rather than assumed: the pid, the moment that process
   started, and which instance, zone and port it goes to. Pids are recycled, so the
   number alone is not an identity and a record that no longer fits is treated as
   stale rather than trusted. The log is what gcloud said while opening it. All
-  three are removed by `host down`.
+  three are removed by `down`.
 
 Signing in is gcloud's job, so credentials live in gcloud's own store
 (`~/.config/gcloud/`) and are refreshed by it. **This tool never sees, stores or
@@ -268,15 +281,18 @@ It does not touch your ComfyUI installs, your `PATH`, your shell config, or any
 service on this machine. It will not overwrite a host list you already have, and
 running `setup` again is safe — it skips whatever is already done.
 
-On a **cloud box**, `host go` does install software: ComfyUI into `C:\ComfyUI`
+On a **cloud box**, `go` does install software: ComfyUI into `C:\ComfyUI`
 (Windows) or `/opt/comfyui` (Linux), with a Python 3.12 environment beside it.
 That only ever happens on a declared `gce` host, never locally.
 
 ## Docs
 
-[getting started](docs/getting-started.md) · [the everyday loop](docs/machines.md) ·
-[the host list](docs/hosts.md) · [troubleshooting](docs/troubleshooting.md) ·
-[cost](docs/cost.md) · [test criteria](docs/test-criteria.md)
+[getting started](docs/getting-started.md) · [every command](docs/commands.md) ·
+[the everyday loop](docs/machines.md) · [the host list](docs/hosts.md) ·
+[troubleshooting](docs/troubleshooting.md) · [cost](docs/cost.md) ·
+[when your session expires](docs/session-expiry.md) ·
+[test criteria](docs/test-criteria.md) ·
+[tests that cannot fail](docs/tests-that-cannot-fail.md)
 
 ## Design
 

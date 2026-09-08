@@ -69,6 +69,7 @@ from hashlib import blake2s
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, Host
+from .gcloud import Relay
 
 COMFYUI_PORT = 8188
 
@@ -252,6 +253,27 @@ def _identity(pid: int) -> str:
         done = subprocess.run(
             ["ps", "-p", str(pid), "-o", "lstart=,command="],
             capture_output=True, text=True, timeout=10,
+            # `lstart` renders in the CALLER's locale and timezone, and this
+            # string is compared for equality against one recorded earlier. One
+            # live process, one instant, three answers:
+            #
+            #   en_GB   Fri  4 Sep 19:34:26
+            #   C       Fri Sep  4 19:34:26
+            #   TZ=LA   Fri  4 Sep 11:34:26
+            #
+            # So `recorded == now` was asking "same string", not "same process".
+            # Open a tunnel from a terminal and close it from a script, a cron
+            # job, a non-login ssh or an agent shell, and the identities differ:
+            # `close_tunnel` returns False, does NOT signal the pid, and still
+            # unlinks both records — so the forward stays alive holding the port,
+            # nothing is printed because the caller only speaks on True, and the
+            # next `open` reports a stranger on the port and sends you to lsof.
+            # Measured: 12 of 16 environment pairs.
+            #
+            # Pinning both makes the comparison about the process again. It has
+            # to be on every call, not just the recording one, or the two sides
+            # disagree exactly as before.
+            env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -368,6 +390,17 @@ def command(host: Host) -> list[str]:
     `localhost` resolves to `::1` first on macOS, so ssh bound IPv6 only and
     every probe of `http://127.0.0.1:<port>` was refused while the forward sat
     there working perfectly over IPv6. Verified both ways on a real box.
+
+    `--quiet` because this is the worst place in the tool to be asked a question.
+    The first `gcloud compute ssh` on a machine generates
+    `~/.ssh/google_compute_engine` and prompts for a passphrase, and this one is
+    detached with its output going to a file — so the prompt is not on any screen,
+    `ssh-keygen` is waiting on `/dev/tty` for an answer nobody can see to give,
+    and `_spawn` watches for `SPAWN_GRACE` seconds, sees a process still running,
+    and records its pid as an open tunnel. A tunnel that forwards nothing,
+    recorded as one that does, is the single thing this file exists to prevent.
+    `open` can be the first command anyone runs, so it cannot rely on `go` having
+    made the key first.
     """
     if not host.is_remote:
         raise TunnelError(
@@ -378,6 +411,7 @@ def command(host: Host) -> list[str]:
         f"--zone={host.gce_zone}",
         f"--project={host.gce_project}",
         "--tunnel-through-iap",
+        "--quiet",
         "--", "-N",
         "-L", f"127.0.0.1:{host.port}:127.0.0.1:{COMFYUI_PORT}",
     ]
@@ -389,6 +423,12 @@ def last_words(log: Path, lines: int = 6) -> str:
     A detached tunnel writes its only explanation here. When it dies on startup
     this is the difference between "ComfyUI is not answering" and "your gcloud
     session has expired", which are the same silence and opposite fixes.
+
+    Read through `Relay`, which is not only about the paste. Six lines is the
+    whole budget, and the tunnel is the one place gcloud's NumPy advisory is
+    guaranteed to appear — it is advice about IAP forwarding, printed by every
+    IAP forward. Four lines of it in a six-line tail pushes the sentence that
+    names the cause off the top of the message meant to carry it.
     """
     try:
         text = log.read_text(errors="replace").strip()
@@ -396,7 +436,10 @@ def last_words(log: Path, lines: int = 6) -> str:
         return ""
     if not text:
         return ""
-    return "\n        ".join(text.splitlines()[-lines:])
+    relay = Relay()
+    kept = [line for raw in text.splitlines() for line in relay.line(raw)]
+    kept += relay.rest()
+    return "\n        ".join(kept[-lines:])
 
 
 def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
@@ -514,6 +557,14 @@ def _claim(host: str, directory: Path, now=time.time) -> Path:
     return lock
 
 
+def _abandon(pid: int) -> None:
+    """Close a tunnel we started and could not record. Never raises."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError, PermissionError):
+        pass
+
+
 def open_tunnel(
     host: Host,
     directory: Path | None = None,
@@ -545,7 +596,7 @@ def open_tunnel(
             f"a tunnel called {host.name!r} is already open (pid {existing.pid}), but it "
             f"goes to {existing.instance} in {existing.zone} on port {existing.port}, "
             f"not to {host.gce_instance} in {host.gce_zone} on port {host.port}.",
-            fix=f"comfy-qat host down {host.name}, then open this one",
+            fix=f"comfy-qat down {host.name}, then open this one",
         )
 
     try:
@@ -576,26 +627,56 @@ def open_tunnel(
                 fix="check that gcloud is installed and on your PATH",
             ) from exc
 
-        # The record goes down before the pid, so a reader never finds a pid with
-        # nothing saying where it goes.
-        record = {"pid": pid, "identity": identify(pid) or None,
-                  "opened": time.time(), **_destination(host)}
         try:
+            # Inside the guard, not above it. Building the record calls
+            # `identify`, which shells out to `ps -p N -o lstart=,command=` with
+            # a ten-second timeout — so this line was both the slowest thing
+            # between the spawn and the writes and the only one unprotected.
+            # Measured here, median of seven, twice: ~3.6 ms and ~4.2 ms for
+            # the `ps` call against ~0.3 ms for the two writes. The durable
+            # claims are the RATIO — thirteen to fourteen times the window the
+            # guard covered — and the ten-second timeout, which is the ceiling;
+            # the figures themselves are one machine's and move by tenths of a
+            # millisecond between runs, so the window has a floor in
+            # milliseconds and no ceiling.
+            #
+            # The record goes down before the pid, so a reader never finds a pid
+            # with nothing saying where it goes.
+            record = {"pid": pid, "identity": identify(pid) or None,
+                      "opened": time.time(), **_destination(host)}
             _write(record_file(host.name, directory), json.dumps(record))
             _write(pid_file(host.name, directory), str(pid))
         except OSError as exc:
             # A tunnel nobody has a record of cannot be closed by `down`: it holds
             # the local port, and points at a machine you are still paying for,
             # until someone finds it by hand. Better to not have started it.
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (OSError, ProcessLookupError, PermissionError):
-                pass
+            _abandon(pid)
             raise TunnelError(
                 f"the tunnel to {host.name} started (pid {pid}) but could not be "
                 f"recorded: {exc}, so it was closed again.",
                 fix=f"check the permissions on {directory}",
             ) from exc
+        except BaseException:
+            # The same reasoning, through the door the OSError branch left open:
+            # a Ctrl-C anywhere between the spawn above and the two writes here
+            # produces exactly the state that branch exists to prevent — a live
+            # ssh holding the port, pointing at a box that is billing, and no
+            # file naming it, so `down` cannot close it and nothing on screen
+            # says it is there.
+            #
+            # "The milliseconds between the spawn and the two writes" is what
+            # this used to say, and it was wrong twice: the window is dominated
+            # by the `ps` call in the record above — which sat OUTSIDE this try
+            # until it was moved in — and `ps` has a ten-second timeout, so the
+            # window has a floor in milliseconds and no ceiling.
+            #
+            # The only leftover in this tool that cannot be handed over as a
+            # command: the pid is the only handle and it is about to be lost. So
+            # it is undone here rather than reported, which is why this needs no
+            # `inflight` registration — there is nothing left to register by the
+            # time the exception carries on.
+            _abandon(pid)
+            raise
     finally:
         lock.unlink(missing_ok=True)
 

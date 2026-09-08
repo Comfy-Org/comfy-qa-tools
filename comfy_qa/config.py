@@ -8,12 +8,16 @@ starting a GPU instance.
 
 from __future__ import annotations
 
+from . import osfamily
+
 import difflib
 import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from .osfamily import DARWIN, FAMILY_WORDS, LINUX, WINDOWS
 
 # ComfyUI's own default. The primary local install on this machine holds it, and
 # forwarding a remote onto it is the single mistake this tool exists to prevent,
@@ -160,6 +164,8 @@ def _parse_host(name: str, raw: object) -> Host:
                 f"host {name!r}: kind 'gce' requires {', '.join(missing)}"
             )
 
+    _check_os_is_not_a_typo(name, raw.get("os"))
+
     return Host(
         name=name,
         kind=kind,
@@ -188,7 +194,33 @@ def parse(data: dict) -> list[Host]:
 
     hosts_table = data.get("hosts")
     if not isinstance(hosts_table, dict) or not hosts_table:
-        raise ConfigError("no [hosts.<name>] tables found")
+        # Refusing is deliberate and troubleshooting.md says why: a tool that
+        # silently operates nothing is worse than one that stops. What was
+        # missing is the way out — every other refusal in this file names one,
+        # and this was four words with nothing to do about them.
+        #
+        # THE ADVICE HERE MUST BE SAFE IN BOTH CONTEXTS, and an earlier version
+        # of it was not. `parse` validates two different things: a real file
+        # being loaded, and a CANDIDATE REWRITE that `hostfile.apply` is about
+        # to write. It cannot tell them apart, and it is quoted verbatim into
+        # the rewrite's refusal.
+        #
+        # So `init --force` — which was here — reached the user at the one
+        # moment it was destructive. `delete` removing the last cloud host
+        # produces a candidate this function rejects, `apply` refuses and
+        # re-raises this text, and remove.py prints it immediately above its own
+        # "take the table out by hand". Two remedies, adjacent, disagreeing, the
+        # overwriting one first — while the file is still intact and still holds
+        # the hand-written comments this module's textual rewrite exists to
+        # preserve.
+        #
+        # Nothing here suggests overwriting anything. Naming the shape that is
+        # missing is true of a file and of a rewrite alike; `init --force`
+        # documents itself for whoever actually wants it.
+        raise ConfigError(
+            "no [hosts.<name>] tables found — the file parses, and declares no "
+            "machines. Every host is a table named for it, like [hosts.local]."
+        )
 
     hosts = [_parse_host(name, raw) for name, raw in hosts_table.items()]
 
@@ -246,7 +278,7 @@ def load(path: Path | None = None) -> list[Host]:
     path = path or DEFAULT_CONFIG_PATH
     if not path.exists():
         raise ConfigError(
-            f"no host list at {path}. Run `comfy-qat host init` to write a starter one."
+            f"no host list at {path}. Run `comfy-qat init` to write a starter one."
         )
     # `exists()` is true of a directory, of a file owned by someone else, and of
     # a file that is not text at all. Each of those reaches `read_text` and, until
@@ -291,13 +323,27 @@ def load(path: Path | None = None) -> list[Host]:
 # written by discover from Google's licence names — "Ubuntu 22.04", "Debian 12",
 # "Windows Server 2022" — so "linux" has to cover the distributions, because no
 # host is ever labelled "Linux".
+#
+# THE FAMILY ROWS ARE NOT WRITTEN OUT HERE. Three of these words also had to be
+# recognised by `stamp.mismatch`, which was keeping its own copy of them, and the
+# two copies drifted: this one knew `rhel` and `suse` and that one did not, so a
+# box declared `rhel-9` was linux to `switch` and unclassifiable to the stamp.
+# `osfamily` holds them now and both read the same tuple.
+#
+# What is NOT shared, and is the reason this table survives rather than being
+# replaced: THESE ARE SELECTOR WORDS, NOT FAMILIES. A family puts every host in
+# exactly one bucket; a selector has to let one host answer to several words at
+# several grains, so `ubuntu` and `linux` both find an Ubuntu box and both must
+# keep working. And `local` is not an operating system at all — it means "the
+# machine I am sitting at" and is matched on `kind`, below. Those three rows are
+# this module's own and belong to nothing else.
 OS_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "windows": ("windows",),
-    "linux": ("linux", "ubuntu", "debian", "rocky", "centos", "rhel", "fedora", "suse"),
+    "windows": FAMILY_WORDS[WINDOWS],
+    "linux": FAMILY_WORDS[LINUX],
     "ubuntu": ("ubuntu",),
     "debian": ("debian",),
-    "macos": ("macos", "mac os", "darwin"),
-    "local": ("macos", "mac os", "darwin"),
+    "macos": FAMILY_WORDS[DARWIN],
+    "local": FAMILY_WORDS[DARWIN],
 }
 
 # These two mean "the machine I am sitting at", so a `kind = "local"` host
@@ -314,6 +360,76 @@ _WRONG_SEPARATORS = re.compile(r"[-_,+\s]+")
 _BY_SPECIFICITY = ("windows", "ubuntu", "debian", "macos", "linux", "local")
 
 
+# Every word that makes an `os` field recognisable, from BOTH vocabularies that
+# read it rather than written out again. `osfamily.FAMILY_WORDS` is the evidence
+# side — what a machine reports about itself, and what `is_windows` dispatches on
+# — and `OS_KEYWORDS` above is the selector side, what a person types. A value in
+# this field is read by both, so a typo is a typo against the union. Derived, so
+# a family added to either one is covered here without anybody remembering to.
+_OS_VOCABULARY = sorted({
+    word
+    for source in (OS_KEYWORDS, osfamily.FAMILY_WORDS)
+    for tokens in source.values() for token in tokens for word in token.split()
+})
+
+# How close a word has to be to one of those before it is called a typo rather
+# than an operating system nobody has taught this tool about. Measured against
+# every value either side actually produces: 22 real ones pass, and `windwos`,
+# `windos`, `wnidows`, `widnows`, `linx`, `ubunut`, `ubunutu`, `debain`, `fedroa`
+# and `centso` are all caught at 0.83 or above, while `sles-15`, `cos-101-lts`,
+# `opensuse-leap-15` and `freebsd-14` sit below 0.7. Words shorter than four
+# letters are not near-matched at all: nothing that long can reach 0.8 against a
+# two-letter token, so `os` and `mac` cannot drag an unrelated word in.
+_OS_TYPO_CUTOFF = 0.8
+_OS_SHORTEST_WORD = 4
+
+
+def _check_os_is_not_a_typo(name: str, declared: str | None) -> None:
+    """Refuse an `os` that is a misspelling of one this tool acts on.
+
+    `kind` and `port` were validated and `os` was not, and `os` has the widest
+    blast radius of the three. `osfamily.is_windows` picks between two entirely
+    different command sets and answers "not Windows" for anything it does not
+    recognise — correctly, since an unfamiliar cloud image is POSIX. So
+    `os = "Windwos Server 2022"` is not a near miss: it is a Windows box handed
+    the whole Linux command set, `cd /opt/comfyui` and `apt-get` and all. It also
+    swaps the two access commands over, because `ssh` refuses a Windows box and
+    `rdp` refuses everything else — so the only command that can reach it is the
+    one that says it cannot. Nothing prints a word about any of it.
+
+    An UNRECOGNISED `os` is deliberately still allowed, and that is the half that
+    matters more. `discover` writes this field from Google's licence names and
+    falls back to a raw tail like `sles-15`, or to `unknown`. Rejecting
+    everything outside the table would let `discover` write a host list that
+    `load` then refuses — and a host list this tool will not read is a machine
+    nobody can stop. That is worse than the defect being fixed here, and it is
+    the same reasoning `hostfile.apply` exists on.
+
+    So the rule is narrow on purpose: a word that is NEARLY one of ours is a
+    typo, a word that is nothing like any of them is an operating system we have
+    not met. One consequence worth knowing rather than hiding: a string with one
+    good word and one typo — `Rocky Linx 9` — passes, because the good word
+    classifies it correctly and there is nothing to save it from.
+    """
+    words = [word for word in re.split(r"[^a-z0-9]+", (declared or "").lower()) if word]
+    if not words or any(word in _OS_VOCABULARY for word in words):
+        return
+    for word in words:
+        if len(word) < _OS_SHORTEST_WORD:
+            continue
+        near = difflib.get_close_matches(
+            word, _OS_VOCABULARY, n=1, cutoff=_OS_TYPO_CUTOFF)
+        if near:
+            raise ConfigError(
+                f"host {name!r}: os {declared!r} looks like a misspelling of "
+                f"{near[0]!r}. The os field decides which commands this box is "
+                f"sent — anything not recognised as Windows is given the Linux "
+                f"command set, and 'ssh' and 'rdp' swap over with it. Fix the "
+                f"spelling, or use a name this tool does not recognise at all if "
+                f"the box really is something else."
+            )
+
+
 def describe(host: Host) -> str:
     """How a host reads in a one-line answer: what it runs, and on what card."""
     detail = ", ".join(part for part in (host.os, host.gpu) if part and part != "none")
@@ -321,6 +437,12 @@ def describe(host: Host) -> str:
 
 
 def _matches_os(host: Host, keyword: str) -> bool:
+    # This branch is a SECOND MECHANISM, not a shortcut, and deleting it as
+    # redundant breaks the one config every new user has. The starter hosts.toml
+    # declares the local install as `kind = "local"` and `port = 8188` and
+    # NOTHING ELSE — no `os` field at all — so `go local` and `go macos` resolve
+    # off `kind` here and never reach the word table below. The `macos` row
+    # looking like it already covers this is exactly the trap.
     if keyword in _LOCAL_KEYWORDS and host.kind == "local":
         return True
     declared = (host.os or "").lower()
@@ -391,7 +513,7 @@ def resolve(hosts: list[Host], name: str) -> Resolution:
             raise ConfigError(
                 f"nothing declared matches {selector!r}. Declared: {_inventory(hosts)}. "
                 "Create the box in the Google Cloud console, then "
-                "`comfy-qat host discover` to add it to your host list."
+                "`comfy-qat discover` to add it to your host list."
             )
         listed = ", ".join(f"{h.name} ({describe(h)})" for h in candidates)
         # "Add the other half" is only advice when there is another half to add.

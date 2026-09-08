@@ -51,6 +51,12 @@ class FakeCloud:
         key = " ".join(args)
         self.calls.append(key)
 
+        if key.startswith("info --format=value(basic.python_location)"):
+            # setup asks where gcloud's own python is, to put NumPy there. A path
+            # that does not exist makes the step a no-op, which is what a flow
+            # test wants — nothing should be installed by running a test.
+            return "/no/such/python"
+
         if key == "auth login":
             assert mode == "interactive", "sign-in must attach the terminal"
             if self.login == 0:
@@ -112,8 +118,12 @@ COMFY_WIN = {
 def hosts(tmp_path, monkeypatch):
     """Point the CLI's default host list somewhere disposable.
 
-    `setup` takes no --config, so without this the first run of this suite would
-    rewrite the tester's own host list.
+    `setup` takes `--config` now, but these tests deliberately do not pass it —
+    they are about the default path, which is the one a newcomer gets. So the
+    default has to be moved, or the first run of this suite would rewrite the
+    tester's own host list. That `setup` writes at all is what made the missing
+    `--config` a defect rather than an inconsistency; the flag reaching the file
+    is pinned in `test_config_inheritance.py`.
     """
     path = tmp_path / "hosts.toml"
     monkeypatch.setattr("comfy_qa.setup.DEFAULT_CONFIG_PATH", path)
@@ -141,7 +151,7 @@ def test_a_completely_fresh_machine_is_walked_all_the_way_to_a_host_list(hosts):
     assert "billing linked to proj-1" in result.output
     assert "GPU quota is zero on this project" in result.output
     assert hosts.exists(), "a host list is written even with nothing else ready"
-    assert "Ready — 1 machine(s), 0 in the cloud." in result.output
+    assert "ready — 1 machine, 0 in the cloud" in result.output
 
 
 def test_a_fresh_machine_with_no_terminal_stops_at_sign_in_and_says_the_command(hosts):
@@ -208,7 +218,7 @@ def test_a_bad_number_asks_again_rather_than_guessing(hosts):
     result = run(cloud, input="9\nnope\n1\n")
 
     assert result.exit_code == 0, result.output
-    assert "Pick a number between 1 and 2." in result.output
+    assert "pick a number between 1 and 2" in result.output
     assert "config set project alpha" in cloud.calls
 
 
@@ -247,7 +257,16 @@ def test_billing_not_linked_stops_and_links_that_exact_project(hosts):
     assert result.exit_code == 1
     assert "no billing account is linked to proj-2" in result.stderr
     assert "linkedaccount?project=proj-2" in result.stderr
-    assert not hosts.exists(), "nothing is written once setup has stopped"
+    # The host list IS written, and that is the fix rather than a regression.
+    # It depends on the config path and nothing else — not the project, not
+    # billing, not quota — and getting-started.md tells the reader "`setup` has
+    # already written your host list", which was false for exactly the person
+    # most likely to be reading it: the newcomer setup stopped. A run that ends
+    # in a refusal should still leave behind the one thing it could always have
+    # produced. Nothing project-scoped is written, which is what "stopped"
+    # has to keep meaning.
+    assert hosts.exists(), "the local starter host list survives a stop at billing"
+    assert "quota" not in result.output.lower(), "nothing past billing ran"
 
 
 def test_a_billing_read_that_fails_stops_with_its_own_fix(hosts):
@@ -278,7 +297,7 @@ def test_quota_that_cannot_be_read_is_reported_and_stepped_over(hosts):
 
     assert result.exit_code == 0, "quota can take days; it never strands anyone"
     assert "could not read GPU quota" in result.output
-    assert "comfy-qat auth quota" in result.output
+    assert "comfy-qat quota" in result.output
     assert hosts.exists()
 
 
@@ -335,7 +354,7 @@ def test_no_terminal_names_a_card_it_can_see_rather_than_a_placeholder_id(hosts)
     result = run(cloud, "--non-interactive", "--region", "us-central1")
 
     assert result.exit_code == 0
-    assert "comfy-qat auth quota request --gpu l4 --region us-central1" in result.output
+    assert "comfy-qat quota request --gpu l4 --region us-central1" in result.output
     assert cloud.requests == [], "--non-interactive asks Google for nothing"
 
 
@@ -371,9 +390,11 @@ def test_discovery_adds_the_box_and_the_sign_off_does_not_ask_for_it_by_hand(hos
 
     assert result.exit_code == 0, result.output
     assert "added comfy-win" in result.output
-    assert "Ready — 2 machine(s), 1 in the cloud." in result.output
+    assert "ready — 2 machines, 1 in the cloud" in result.output
     assert "by hand" not in result.output
-    assert "host discover" not in result.output
+    # The command, not the word: the temp path in this output contains the
+    # test's own name, which includes "discovery".
+    assert "comfy-qat discover" not in result.output
 
 
 def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
@@ -381,9 +402,14 @@ def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
     result = run(cloud)
 
     assert "no cloud boxes on this project yet" in result.output
-    assert "Ready — 1 machine(s), 0 in the cloud." in result.output
-    assert "Add one by hand" in result.output
-    assert "comfy-qat host discover" in result.output
+    assert "ready — 1 machine, 0 in the cloud" in result.output
+    assert "no cloud boxes yet" in result.output
+    # The end of the command whose job is getting a newcomer ready must point at
+    # this tool, not at the Google Cloud console. It said "create one in Google
+    # Cloud and run `comfy-qat discover`" — written before `create` existed.
+    assert "comfy-qat create" in result.output
+    assert "in Google Cloud" not in result.output
+    assert "comfy-qat discover" in result.output
 
 
 def test_discovery_failing_still_finishes_and_says_so(hosts):
@@ -393,7 +419,7 @@ def test_discovery_failing_still_finishes_and_says_so(hosts):
 
     assert result.exit_code == 0
     assert "could not list cloud boxes" in result.output
-    assert "Ready — 1 machine(s), 0 in the cloud." in result.output
+    assert "ready — 1 machine, 0 in the cloud" in result.output
 
 
 def test_a_discovered_box_lands_on_a_port_that_is_not_the_local_comfyui(hosts):
@@ -422,7 +448,7 @@ def test_a_second_run_changes_nothing_and_asks_nothing(hosts):
     assert again.exit_code == 0, again.output
     assert hosts.read_text() == before, "a re-run rewrote the host list"
     assert "1 cloud box(es), all already in your host list" in again.output
-    assert "host list at" in again.output, "the starter is not written twice"
+    assert "list at" in again.output, "the starter is not written twice"
     assert "Which project?" not in again.output
 
 
@@ -505,3 +531,24 @@ def test_missing_gcloud_stops_before_it_asks_for_anything(hosts, monkeypatch):
     assert result.exit_code == 1
     assert "gcloud is not installed or not on PATH" in result.stderr
     assert "sdk/docs/install" in result.stderr
+
+
+def test_the_project_line_says_whose_choice_it_was(hosts):
+    """`setup` adopts gcloud's current project without asking, which is right —
+    but it used to announce it as a bare noun, `project proj-1`, indistinguishable
+    from a report.
+
+    Everything after that line happens on that project: the billing check, the
+    GPU quota request, every box. Somebody who has spent the week in another
+    project gets quota requested somewhere they did not intend, and the only
+    clue was a word. The adoption is fine; the silence was not.
+    """
+    cloud = FakeCloud(projects=["proj-1"], project="proj-1")
+    result = run(cloud)
+
+    assert "gcloud's current project" in result.output, (
+        "the line must say whose choice this was, not just name it"
+    )
+    assert "comfy-qat setup --project" in result.output, (
+        "and how to choose a different one"
+    )

@@ -3,6 +3,45 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.1.0 — the deprecation window closes
+
+One release of notice, and the second spellings are gone. Nothing here adds a
+capability; it removes ways of typing the ones that were already there.
+
+### Removed
+
+- **`comfy-qat host <verb>` and `comfy-qat auth <verb>`.** Every verb has stood on
+  its own at the top level since 1.0.0, and these were the same `Command` objects
+  registered a second time under a hidden noun — **42 invocable paths for 22
+  distinct implementations**, walked out of the live Click tree rather than
+  counted by hand. They were hidden from `--help` and warned on stderr each time
+  anyone used one, naming the verb to type instead. That is what made them a
+  window rather than a second permanent spelling, and 1.0.0 said the window would
+  close at the next minor. This is it. **42 command paths become 22.** Typing one
+  now gets click's `No such command 'host'.` and exit 2 — take the noun off, and
+  the rest of the line is right. [`docs/commands.md`](docs/commands.md) has the
+  whole mapping.
+
+- **`comfy-qat guide`.** One line, printing the first-run text. A first-run text
+  you have to know a command name to reach is not serving first runs, so the text
+  moved to where the question is actually asked: **bare `comfy-qat` with no host
+  list now prints it**, under the help, in place of the single "start with
+  `setup`" line it used to print there. Same words, one fewer command, and
+  reachable by somebody who knows nothing yet.
+  [`docs/getting-started.md`](docs/getting-started.md) still has the long version.
+
+### Changed
+
+- Bare `comfy-qat` with no host list prints `--help` and then the full first-run
+  text. It used to print `--help` and one line.
+
+- The acceptance pack moved with the surface, in the same commit, because a run
+  sheet that types a command the build no longer has is how a criterion comes to
+  be ticked on faith. `A5a`/`A5b` check the old spellings are **gone**; `A6`
+  checks the first-run text where the root callback prints it; `B4` checks the
+  bare `comfy-qat` listing that the bare `host` one became; `A3` lists 20
+  commands rather than 21.
+
 ## 1.0.0 — release 1: `host` and `auth`
 
 Code complete, and numbered accordingly: the command surface below is the one
@@ -11,7 +50,31 @@ awaiting an end-to-end pass on a real project by someone who did not write it
 ([`docs/test-criteria.md`](docs/test-criteria.md)) — which is the reason the
 build now has a version worth quoting.
 
+**The `host` and `auth` nouns are a deprecation window, not a second permanent
+spelling.** Every verb below is also reachable at the top level without its noun,
+and that shorter spelling is the one to learn. The nouns are hidden from `--help`
+and kept working so that nothing written down before the move breaks. **They close
+at the next minor release** — a version and not a date, because `pyproject.toml`
+is the one place the version is written and `--version` reads it back. *(They did:
+see 1.1.0.)*
+
 ### Machines
+
+- `host create` — the box itself, which was the one thing still made by hand in
+  the console. `--os linux --gpu t4` is the whole command: the machine type
+  follows from the card (an L4 is a G2 with the GPU built in and refuses
+  `--accelerator`; a T4 is an N1 with one attached), Windows gets
+  `enable-windows-ssh=TRUE` without which nothing here can reach it, and Linux
+  gets Google's own driver startup script, because the NVIDIA driver is not in
+  the base image and a box without it runs ComfyUI on the CPU while looking
+  healthy. **The zone is chosen, not typed**: regions the project holds quota in,
+  zones inside them offering the card and the machine type, ranked by latency
+  measured from this machine — the `<region>-<service>.googleapis.com` names all
+  resolve to one anycast front end, so the regional `compute.<region>.rep.` ones
+  are what get timed — and tried in order, falling through on a stockout.
+  Quota is read before anything exists, the card's grant *and* `GPUS_ALL_REGIONS`,
+  the project-wide ceiling that is 1 here and is the limit that actually bites.
+  `--zone`, `--region`, `--name`, `--disk`, `--yes`, `--dry-run`.
 
 - `host init`, `host list`, `host discover` — declare the machines you test on,
   or have them read out of Google Cloud. Bare `host` lists, because read-only is
@@ -56,6 +119,47 @@ build now has a version worth quoting.
 
 ### Fixes worth knowing
 
+- **A stockout could put the box in a zone you had ruled out.** `--zone` means
+  this zone or nothing, and `order_zones` said exactly that in the note it
+  attached to the ordering — but `build` never read the note. Google's refusal
+  names another zone, that zone went to the front of the queue, and the box was
+  created there: billing, in the one place the caller had excluded, and reported
+  as a success. The same path walked out of `--region`, and out of the regions
+  the project holds any quota in at all. A suggestion is now only ever followed
+  inside the ordering that was already chosen, and never when `--zone` was given.
+- **`MAX_ATTEMPTS` was documented and not enforced.** Six, "because each attempt
+  is a real instance create that takes the better part of a minute when it
+  fails" — and `build` capped nothing, so a queue that every refusal could refill
+  drained no faster than it grew. Giving up at the cap now says it was a cap, not
+  the whole world, because "everywhere is short" and "I stopped after six" are
+  different facts and only one of them means waiting will not help.
+- **`--disk` had a floor and no ceiling.** The disk bills by the gigabyte
+  provisioned from the moment the box exists, so `--disk 20000` for `2000` is one
+  keystroke and eighteen silent terabytes. Capped at 4 TB.
+- The project-wide ceiling was counted in boxes, not in cards. One
+  `a3-highgpu-8g` is a single instance and **eight** of `GPUS_ALL_REGIONS`, so an
+  H100 block already running read as holding one — and the gate waved through a
+  create Google then refused, after the zone probing and after somebody had
+  confirmed it. A running GPU box reporting no `acceleratorCount` is now read as
+  holding one rather than none, because an unfamiliar payload is not evidence of
+  an empty machine.
+- An instance name is now checked against Google's rule before anything is
+  contacted, rather than a minute of quota reads, four latency probes and a
+  confirmation prompt later. Python thinks `é` and `ボ` are alphanumeric; Google
+  does not, so a name could survive cleaning and still be refused.
+- `--zone me-west1-a` sailed past the quota gate that already refused `--region
+  me-west1`, and found out from gcloud instead.
+- The latency cache is now stamped with a version, written atomically, and holds
+  only numbers a connection could have taken. Unstamped, a file measured against
+  the anycast `<region>-<service>.googleapis.com` names — four near-identical
+  numbers that look like measurements and rank nothing — would have outlived the
+  fix for a week. It also no longer remembers a region that did **not** answer:
+  one run behind a dropped VPN used to write "unreachable" for everything and
+  keep it for seven days, leaving the ordering alphabetical long after the
+  network came back. A negative or `NaN` round trip is discarded rather than
+  ranked first — `json.loads` accepts a bare `NaN`, and one of them makes
+  `sorted` return an order that depends on its input, which breaks the one thing
+  the ranking promises: that a dry run and the real run try the same zones.
 - **`host move --dry-run` started a GPU instance.** Nothing answers "where is
   there an L4 free", so `move` finds out by trying to start the box and reading
   the suggested zone out of the refusal — and `--dry-run` was not consulted until

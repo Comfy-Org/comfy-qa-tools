@@ -269,3 +269,151 @@ def available_gpus(quotas: list[dict]) -> list[str]:
     """Every card name this project could ask for, for error messages."""
     names = {friendly_name(q.get("quotaId") or "") for q in quotas}
     return sorted(n for n in names if n)
+
+
+# --- where can this project actually start one -----------------------------
+#
+# `readiness` answers "what can I run", one row per card and place, for a person
+# reading a table. Choosing a zone needs the other shape: the bare set of region
+# names, with the per-region grant preferred over the per-zone one. Doing that on
+# `readiness` output would mean parsing back out of "all regions", which is a
+# label, not a place.
+
+_REGION_SCOPED = "-per-project-region"
+_ZONE_SCOPED = "-per-project-zone"
+
+# Google reports "no explicit limit" as -1, not as a missing value. Live proof,
+# read off this project on 2026-08-28: `NVIDIA-L4-GPUS-per-project-region` is 1
+# across 43 regions, while `NVIDIA-L4-GPUS-per-project-zone` is **-1** across the
+# 130 zones inside them. Reading -1 as "none" would drop every zone-scoped grant;
+# reading it as a number would rank an unlimited allowance below a limit of 1.
+UNLIMITED = -1
+
+
+def _region_name(location: str) -> str:
+    """`us-central1-a` -> `us-central1`. A region is returned unchanged.
+
+    Zone-scoped quota lists zones; region-scoped quota lists regions. Both end up
+    in the same set, so both are reduced to the region, which is the unit a
+    grant is actually made in.
+    """
+    head, _, tail = location.rpartition("-")
+    return head if head and len(tail) == 1 and tail.isalpha() else location
+
+
+def _granted_regions(quota: dict) -> set[str]:
+    """Every region one quota record grants a non-zero allowance in."""
+    granted: set[str] = set()
+    for where, limit, locations in _rows(quota):
+        if limit == 0:
+            continue
+        places = locations or ([where] if where not in ("global", "all regions") else [])
+        for place in places:
+            if place and place != "global":
+                granted.add(_region_name(place))
+    return granted
+
+
+def _binding(gpu: str, quotas: list[dict]) -> list[dict]:
+    """The quota records that decide whether a card can start, and no others.
+
+    A project routinely carries both scopes for the same card, and they disagree:
+    this one has L4 at **1** across 43 named regions
+    (`NVIDIA-L4-GPUS-per-project-region`) and an **unlimited** per-zone allowance
+    across the 130 zones inside them (`...-per-project-zone`, value -1). Read
+    together, the card looks unlimited and available in a region the project has
+    no grant in. The region-scoped record is the one that binds, so where there
+    is one it is the only one read.
+    """
+    return _prefer_region_scope(
+        [q for q in quotas if matches(gpu, q.get("quotaId") or "")])
+
+
+def _prefer_region_scope(records: list[dict]) -> list[dict]:
+    """Drop the zone-scoped copies when a region-scoped record exists.
+
+    Written once because both the per-card path and the project-wide ceiling
+    need it and only one of them had it. A project carries both scopes of the
+    same quota, `friendly_name` maps them to the same label, and the zone-scoped
+    copy is the one that says -1.
+    """
+    region_scoped = [r for r in records
+                     if not (r.get("quotaId") or "").lower().endswith(_ZONE_SCOPED)]
+    return region_scoped or records
+
+
+def regions_with_quota(gpu: str, quotas: list[dict]) -> list[str]:
+    """Regions where this project could start `gpu` today, as far as quota knows."""
+    granted: set[str] = set()
+    for quota in _binding(gpu, quotas):
+        granted |= _granted_regions(quota)
+    return sorted(granted)
+
+
+def allowance(gpu: str, quotas: list[dict], *, region: str | None = None) -> int | None:
+    """The largest grant this project holds for a card. None if it reports none.
+
+    `UNLIMITED` (-1) is passed through as itself rather than flattened to a big
+    number, so a caller can say "unlimited" instead of inventing a ceiling.
+    """
+    best: int | None = None
+    for quota in _binding(gpu, quotas):
+        for where, limit, locations in _rows(quota):
+            if region and not _applies(where, locations, region):
+                continue
+            if limit == UNLIMITED:
+                return UNLIMITED
+            if best is None or limit > best:
+                best = limit
+    return best
+
+
+def global_allowance(quotas: list[dict]) -> int | None:
+    """`GPUS_ALL_REGIONS` — the project-wide ceiling across every card.
+
+    Not a card you can pick, and the limit that most often actually bites: it is
+    **1** on this project, so a second GPU box cannot start while the first one
+    is running, whatever the per-card grant says. None when the project reports
+    no such quota at all.
+
+    EVERY matching record is read and then reduced. This returned on the FIRST
+    match, so the answer depended on the order gcloud happened to list the
+    records in — which is not a contract gcloud offers — and the project carries
+    two of them, `GPUS-ALL-REGIONS-per-project` and its `-per-project-zone`
+    copy, which `friendly_name` maps to the same label. The zone-scoped copy is
+    -1, so whenever it sorted first the one limit that governs every create on
+    this project read as UNLIMITED.
+
+    Two defences, because the ordering between records was not the only way in:
+
+    **The zone-scoped copy drops out when a region-scoped record exists**, which
+    is what `_binding` already did for the per-card path, for the same reason.
+
+    **And a real limit beats -1 wherever the two meet**, which the scope filter
+    does not cover: one correctly region-scoped record carrying an unlimited row
+    AND a row of 1 also read as unlimited, in any row order. -1 is Google's
+    "this record sets no explicit limit" — the ABSENCE of a constraint, not a
+    grant of infinity — and letting an absence overrule a number that was read
+    is how a tool cheerfully starts a second box on a ceiling of one. So
+    UNLIMITED is the answer only when nothing else was found.
+
+    Among real limits the largest wins, as in `allowance`. Two records
+    disagreeing about the project-wide ceiling is not a shape any live project
+    has shown, and guessing low would refuse a create the project is entitled
+    to — the strict direction is not free either.
+    """
+    records = _prefer_region_scope(
+        [q for q in quotas
+         if friendly_name(q.get("quotaId") or "") == GLOBAL_ALLOWANCE])
+
+    best: int | None = None
+    unlimited = False
+    for quota in records:
+        for _where, limit, _locations in _rows(quota):
+            if limit == UNLIMITED:
+                unlimited = True
+            elif best is None or limit > best:
+                best = limit
+    if best is not None:
+        return best
+    return UNLIMITED if unlimited else None

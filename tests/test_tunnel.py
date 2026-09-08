@@ -22,6 +22,7 @@ from comfy_qa.tunnel import (
     log_file,
     open_tunnel,
     pid_file,
+    record_file,
     status,
 )
 
@@ -266,3 +267,99 @@ def test_the_grace_outlasts_gcloud_own_connection_test():
     from comfy_qa.tunnel import SPAWN_GRACE
 
     assert SPAWN_GRACE >= 5, "gcloud's own check takes seconds against Windows"
+
+
+def test_an_interrupt_between_the_spawn_and_the_record_closes_the_tunnel(
+        tmp_path, monkeypatch, processes):
+    """The one leftover in this tool that cannot be handed over as a command.
+
+    `open_tunnel` spawns ssh and then writes the record, and the OSError branch
+    between them already says why the gap matters: "a tunnel nobody has a record
+    of cannot be closed by `down`" — it holds the local port, points at a box
+    that is billing, and nothing on screen says it is there. A Ctrl-C in the
+    milliseconds between the two produces exactly that state and walked past the
+    branch built to prevent it.
+
+    Undone rather than reported, and that is why it needs no `inflight`
+    registration: the pid is the only handle on the process and it is about to be
+    lost, so there is nothing left to register by the time the exception carries
+    on.
+    """
+    from comfy_qa import tunnel as tunnel_module
+
+    process = _something_else(processes)
+    real_write = tunnel_module._write
+
+    def interrupt_the_first_write(path, text):
+        if path.suffix == ".json":
+            raise KeyboardInterrupt
+        return real_write(path, text)
+
+    monkeypatch.setattr(tunnel_module, "_write", interrupt_the_first_write)
+
+    with pytest.raises(KeyboardInterrupt):
+        open_tunnel(WIN, tmp_path, launcher=lambda cmd, log: process.pid)
+
+    process.wait(timeout=5)
+    assert process.poll() is not None, (
+        "a live ssh with no record is unreachable by every command this tool has"
+    )
+    assert not pid_file("comfy-win", tmp_path).exists()
+
+
+def test_the_interrupt_guard_covers_the_ps_call_that_dominates_the_window(
+        tmp_path, processes):
+    """The same state, reached through the slowest line the guard did not cover.
+
+    The test above interrupts a write. Building the record calls `identify`,
+    which shells out to `ps -p N -o lstart=,command=` with a ten-second timeout,
+    and that line sat OUTSIDE the `try` — so the guard covered the fast half of
+    the window and not the slow one. Measured here, median of seven, on two
+    separate runs: ~3.6 ms and ~4.2 ms for the `ps` call against ~0.3 ms for the
+    two writes. Thirteen to fourteen times the window that was protected — and
+    the ratio is the durable part, not the figures, which are one machine's and
+    move run to run. The ten-second `ps` timeout is the real ceiling.
+
+    So the comment saying "the milliseconds between the spawn above and the two
+    writes here" was wrong in both halves: the window is mostly the `ps` call,
+    and it has no ceiling.
+
+    Liveness by `poll()`, which reaps, and never `os.kill(pid, 0)`, which
+    succeeds on a zombie — a child that was SIGTERMed and not yet waited on
+    reads as alive, and the guard that works then looks broken. That instrument
+    error reported both windows as leaking when only one did.
+    """
+    process = _something_else(processes)
+
+    def interrupt_the_identity_lookup(pid):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        open_tunnel(WIN, tmp_path, launcher=lambda cmd, log: process.pid,
+                    identify=interrupt_the_identity_lookup,
+                    port_busy=lambda port: False)
+
+    # Waited for, not asserted on immediately — the SIGTERM has to be delivered.
+    # But the wait must not be what fails: `process.wait(timeout=5)` raises
+    # `TimeoutExpired` on the leak, and a reader of that traceback learns that a
+    # sleep did not finish rather than that a tunnel was left running. Swallow
+    # the timeout so the assertion below is what speaks.
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    assert process.poll() is not None, (
+        "a Ctrl-C during the `ps` lookup left a live ssh holding the port, "
+        "pointing at a billing box, with no record naming it"
+    )
+    assert not pid_file("comfy-win", tmp_path).exists()
+    assert not record_file("comfy-win", tmp_path).exists()
+
+    # The guard's own reasoning, held to: the tunnel is undone here rather than
+    # reported, because the pid was the only handle on it and it is gone. So
+    # nothing may be left registered for `cli.main` to print either.
+    from comfy_qa import inflight
+
+    assert inflight.pending() == [], (
+        "the process was killed, so there is no leftover to report"
+    )

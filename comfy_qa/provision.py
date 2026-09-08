@@ -13,7 +13,12 @@ times in ways that all look like something else:
   2. A BOM-less .ps1 is read as CP1252, so a UTF-8 dash becomes a stray quote and
      breaks the parse tens of lines later. Everything here is ASCII only.
   3. `Split-Path` with an empty value prompts, which hangs a non-interactive SSH
-     command forever. Nothing here prompts, and PowerShell runs -NonInteractive.
+     command forever. Nothing here prompts, and PowerShell runs -NonInteractive
+     -NoProfile. `-NonInteractive` alone is not the whole guard: a machine-wide
+     or per-user profile runs BEFORE it takes effect, so a box whose profile
+     asks anything hangs a command that carries every protection this file
+     documents. `-NoProfile` also makes the invocation the same on every box,
+     which is what a QA tool is for.
 
 Because 1 rules out `-ErrorActionPreference Stop`, PowerShell carries on after a
 failed step, and an install whose clone failed still ends by printing "install
@@ -27,6 +32,7 @@ from __future__ import annotations
 import re
 
 from .config import Host
+from .osfamily import is_windows
 from .tunnel import COMFYUI_PORT
 
 # Where ComfyUI lives on each kind of box. Windows matches the convention already
@@ -34,8 +40,93 @@ from .tunnel import COMFYUI_PORT
 WINDOWS_ROOT = r"C:\ComfyUI"
 LINUX_ROOT = "/opt/comfyui"
 
+# Where an interpreter can be on a box, in the order it is looked for. An install
+# can be a venv, the Windows portable bundle, or a system interpreter, and
+# assuming one of them is how a working box reported "python.exe is not
+# recognized".
+#
+# ONE list, asked by every command that has to find the interpreter. It used to
+# be three: the full four Windows layouts here, a two-layout chain written out
+# again inside `verify_command`, and the same short chain a third time in
+# `repair_command`. Proven on a sandbox whose only interpreter was
+# `.venv/bin/python` — a layout `launch_command` explicitly supports — carrying
+# a torch that reported `2.5.1+cu121`:
+#
+#     verify says:      NO_TORCH
+#     launch would use: <root>/.venv/bin/python
+#
+# So the tool said "installed but cannot start" about a box it could start, sent
+# the tester to reinstall something that already worked, and the machine billed
+# throughout. That is the expensive direction.
+#
+# `hostfile` had this exact shape and it cost six defects before its three
+# copies of one regex were made module-level constants; this is the same fix.
+# The order is a search order, so it is part of the truth: the venv the tool
+# builds itself comes first, and a system interpreter is the last resort.
+WINDOWS_PYTHONS = (
+    r"venv\Scripts\python.exe",
+    r"python_embeded\python.exe",
+    r".venv\Scripts\python.exe",
+    r"ComfyUI_windows_portable\python_embeded\python.exe",
+)
+LINUX_PYTHONS = ("venv/bin/python", ".venv/bin/python")
+
+
+def windows_python_search(fallback: str) -> str:
+    """PowerShell that leaves the box's ComfyUI interpreter in `$py`.
+
+    `fallback` is the PowerShell expression used when none of the layouts is
+    there, and it is the one thing the callers genuinely disagree about — not
+    the list. A launch wants `(Get-Command python).Source` so it can tell an
+    absent interpreter from a present one and exit `NO_PYTHON`; a check wants
+    the bare name `'python'` so it still reaches a verdict instead of dying
+    before it prints one. That difference is deliberate and is kept.
+    """
+    candidates = ", ".join(f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS)
+    return (
+        f"$candidates = @({candidates}); "
+        "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
+        f"if (-not $py) {{ $py = {fallback} }}; "
+    )
+
+
+def linux_python_search() -> str:
+    """sh that leaves the box's ComfyUI interpreter in `$py`, empty if none.
+
+    `command -v python3` is last for the same reason it is last in
+    `install_command`: it is whatever the image happens to ship, which on a
+    newer one is a series ComfyUI's custom nodes have no wheels for. It is
+    resolved to a path rather than left as a bare name so `[ -x ]` can answer
+    for it like any other candidate.
+    """
+    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
+    return (
+        f'py=""; for p in {candidates} $(command -v python3); do '
+        '  if [ -x "$p" ]; then py="$p"; break; fi; done; '
+    )
+
+
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
+
+# Linux cannot pin it the way Windows can. Windows installs the interpreter it
+# wants (winget carries every series); a Linux image ships exactly one python3
+# and the archive holds no other — Ubuntu 22.04 has 3.10, 24.04 has 3.12. So the
+# box is asked what it has, newest first, and anything 3.13+ is passed over
+# rather than used. Assuming `python3.12` was there is what made the first real
+# Linux box fail: it fell through to `python3` (3.10) and then to a venv module
+# Ubuntu does not install by default.
+PYTHON_SERIES_SUPPORTED = ("3.12", "3.11", "3.10")
+
+# apt on a freshly booted cloud image is usually already busy — cloud-init and
+# unattended-upgrades both hold the dpkg lock for the first minute or two, and
+# the failure is an immediate "could not get lock", not a wait. Every apt call
+# here carries this rather than racing it.
+APT_LOCK_WAIT = 300
+
+# Where `rdp` forwards Remote Desktop to. 3389 locally would collide with a real
+# RDP server on this Mac; the far side is always 3389 because that is Windows.
+RDP_PORT = 33389
 
 # Google's Identity-Aware Proxy forwards from this range and only this range.
 # A rule scoped to it is not an opening to the internet: reaching the port still
@@ -49,25 +140,93 @@ FIREWALL_RULE = "comfy-qat-iap-comfyui"
 # the caller can recognise it rather than reporting a generic non-zero exit.
 NO_PYTHON_EXIT = 3
 
+# `logs_command`'s word for "this box has no ComfyUI log". Reserved for the same
+# reason: "the file is not there" and "the box would not answer" are different
+# facts with different fixes, and a generic non-zero exit cannot tell them apart.
+NO_LOG_EXIT = 4
 
-def is_windows(host: Host) -> bool:
-    return "windows" in (host.os or "").lower()
+# Where a detached ComfyUI's output goes, on the box. A launch nobody is watching
+# has to write its log somewhere or the whole point of detaching is lost: the
+# terminal is free and the startup log is gone with it.
+WINDOWS_LOG = rf"{WINDOWS_ROOT}\comfyui.log"
+LINUX_LOG = f"{LINUX_ROOT}/comfyui.log"
+
+# What a detached launch prints once ComfyUI is running on the box and this
+# command is free to return. It is not "serving" — nothing has been asked yet —
+# and the caller is expected to go on and prove that separately.
+STARTED = "STARTED"
+
+# What `alive_command` prints. GONE is the useful one: it turns a three-minute
+# wait for something that died in four seconds into an immediate answer.
+ALIVE = "ALIVE"
+GONE = "GONE"
+
+
+# `is_windows` is imported, not written here. It was written here AND in
+# `lifecycle`, byte for byte, and this module and that one decide different halves
+# of the same session about the same box — which path root to install into, and
+# whether to tell the tester to open RDP or SSH. Two copies of one predicate is
+# how they come to disagree.
 
 
 def root_for(host: Host) -> str:
     return WINDOWS_ROOT if is_windows(host) else LINUX_ROOT
 
 
+def log_for(host: Host) -> str:
+    """Where this box's detached ComfyUI writes its log, in the box's own terms.
+
+    Named in messages rather than kept private, because "read the log" is not an
+    instruction anyone can follow without the path — and the path is on a machine
+    they would have to tunnel into to look.
+    """
+    return WINDOWS_LOG if is_windows(host) else LINUX_LOG
+
+
 def check_command(host: Host) -> str:
-    """Print INSTALLED or MISSING. Nothing else, so the caller can branch on it."""
+    """Print INSTALLED or MISSING. Nothing else, so the caller can branch on it.
+
+    An install is main.py *and* an environment that can install into itself. It
+    used to be main.py alone, and a real box proved why: the first attempt cloned
+    ComfyUI, then failed to build the venv because Ubuntu ships venv in a separate
+    package. main.py was there, so the next run reported "ComfyUI is already
+    installed", skipped the install, and died several steps later on
+    `No module named pip` — a message about a missing venv, printed by a run that
+    had just declared the install complete.
+
+    A venv that cannot run pip is not an environment; it is a directory. If one
+    is present it has to work. A portable bundle carries no venv at all, which is
+    why this asks rather than requires.
+
+    On Windows the probe is wrapped in `try`, and that is not belt-and-braces.
+    The venv this check exists to catch is one whose `pyvenv.cfg` names an
+    interpreter that is no longer on the box, and a `python.exe` that cannot
+    start is not a native command that exits non-zero — PowerShell cannot launch
+    it at all, which is a *terminating* error even at `Continue`, and a
+    terminating error here aborts the script before it prints anything. The
+    caller reads an empty answer and a non-zero exit as "the box would not answer",
+    so the one case this was written for would have come back as `could not run a
+    command on comfy-win` — a sentence about the network, printed about a broken
+    venv. `$ok` starts false, so every way of not proving pip works says MISSING,
+    and every branch still prints one word and exits 0.
+    """
     if is_windows(host):
+        python = f"{WINDOWS_ROOT}\\venv\\Scripts\\python.exe"
         return (
-            "powershell -NonInteractive -Command "
-            f"\"if (Test-Path '{WINDOWS_ROOT}\\main.py') "
-            "{ Write-Output 'INSTALLED' } else { Write-Output 'MISSING' }\""
+            "powershell -NoProfile -NonInteractive -Command "
+            f"\"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            "{ Write-Output 'MISSING'; exit 0 }; "
+            f"if (Test-Path '{python}') {{ $ok = $false; "
+            f"try {{ & '{python}' -m pip --version *> $null; "
+            "$ok = ($LASTEXITCODE -eq 0) } catch { $ok = $false }; "
+            "if (-not $ok) { Write-Output 'MISSING'; exit 0 } }; "
+            "Write-Output 'INSTALLED'\""
         )
     return (
-        f"if [ -f {LINUX_ROOT}/main.py ]; then echo INSTALLED; else echo MISSING; fi"
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo MISSING; "
+        f"elif [ -e {LINUX_ROOT}/venv ] && "
+        f"! {LINUX_ROOT}/venv/bin/python -m pip --version >/dev/null 2>&1; "
+        "then echo MISSING; else echo INSTALLED; fi"
     )
 
 
@@ -108,7 +267,7 @@ def cuda_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             "$smi = (& nvidia-smi 2>$null | Out-String); "
             f"if (-not $smi) {{ Write-Output '{NO_NVIDIA}'; exit 0 }}; "
             "$m = [regex]::Match($smi, 'CUDA Version:\\s*\\d+\\.\\d+'); "
@@ -172,15 +331,12 @@ def verify_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
             f"{{ Write-Output '{NO_COMFYUI}'; exit 0 }}; "
             f"Set-Location '{WINDOWS_ROOT}'; "
-            "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
-            "{ '.\\venv\\Scripts\\python.exe' } "
-            "elseif (Test-Path '.\\python_embeded\\python.exe') "
-            "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
-            "$v = (& $py -m pip show torch 2>$null | Select-String '^Version:'); "
+            + windows_python_search("'python'")
+            + "$v = (& $py -m pip show torch 2>$null | Select-String '^Version:'); "
             f"if (-not $v) {{ Write-Output '{NO_TORCH}'; exit 0 }}; "
             f"if ($v -match '\\+cu') {{ Write-Output '{READY}' }} "
             f"else {{ Write-Output '{TORCH_NO_CUDA}' }}\""
@@ -188,8 +344,9 @@ def verify_command(host: Host) -> str:
     return (
         f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo {NO_COMFYUI}; exit 0; fi; "
         f"cd {LINUX_ROOT}; "
-        "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi; "
-        f"$PY -c \"import torch, sys; "
+        + linux_python_search()
+        + '[ -n "$py" ] || py=python3; '
+        + f"\"$py\" -c \"import torch, sys; "
         f"sys.stdout.write('{READY}' if torch.cuda.is_available() else '{TORCH_NO_CUDA}')\" "
         f"2>/dev/null || echo {NO_TORCH}"
     )
@@ -210,7 +367,7 @@ def firewall_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"if (-not (Get-NetFirewallRule -DisplayName '{FIREWALL_RULE}' "
             "-ErrorAction SilentlyContinue)) { "
             f"New-NetFirewallRule -DisplayName '{FIREWALL_RULE}' -Direction Inbound "
@@ -236,7 +393,7 @@ def port_holder_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"$c = Get-NetTCPConnection -LocalPort {COMFYUI_PORT} -State Listen "
             "-ErrorAction SilentlyContinue | Select-Object -First 1; "
             f"if (-not $c) {{ Write-Output '{PORT_FREE}'; exit 0 }}; "
@@ -255,9 +412,16 @@ def port_holder_command(host: Host) -> str:
 def stop_command(host: Host, pid: str) -> str:
     """Stop a process on the box by pid. Used only on one this tool started."""
     if is_windows(host):
-        return ("powershell -NonInteractive -Command "
+        return ("powershell -NoProfile -NonInteractive -Command "
                 f"\"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue\"")
     return f"kill {pid} 2>/dev/null || true"
+
+
+# What a repair says when there is no checkout under it. The caller judges this
+# command by its exit code, so this is for whoever is reading the streamed log:
+# "pip could not find requirements.txt" is a sentence about pip, printed about a
+# box that has no ComfyUI on it.
+NOTHING_TO_REPAIR = "NOTHING_TO_REPAIR: no main.py, so there is nothing to repair"
 
 
 def repair_command(host: Host, *, force_torch: bool = False,
@@ -287,14 +451,25 @@ def repair_command(host: Host, *, force_torch: bool = False,
     force = "--force-reinstall --no-deps " if force_torch else ""
     index = index or TORCH_INDEX
     if is_windows(host):
-        python = (
-            "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
-            "{ '.\\venv\\Scripts\\python.exe' } "
-            "elseif (Test-Path '.\\python_embeded\\python.exe') "
-            "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
-        )
+        python = windows_python_search("'python'")
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
+            # The guard `install_command` has and this did not. Its comment names
+            # the hazard exactly — "Without this the next line fails quietly and
+            # everything after it installs into whatever directory PowerShell
+            # happened to be in" — and it bites harder here, because rule 1 keeps
+            # PowerShell at `Continue`, where a failed `Set-Location` is
+            # NON-TERMINATING. The script carries on and spends several minutes
+            # putting 2.5 GB of CUDA torch, then a requirements file, into
+            # whatever directory the session started in.
+            #
+            # Linux guards its own `cd` and says why one line below. Only the
+            # Windows half could silently continue — parallel code, one side
+            # guarded, which is the shape this project keeps finding. Both sides
+            # now say the same sentence, so the answer does not depend on which
+            # box you are on.
+            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            f"{{ Write-Output '{NOTHING_TO_REPAIR}'; exit 1 }}; "
             f"Set-Location '{WINDOWS_ROOT}'; "
             + python
             + "Write-Output 'installing torch for this GPU (the slow part)'; "
@@ -304,10 +479,18 @@ def repair_command(host: Host, *, force_torch: bool = False,
             "& $py -m pip install -r requirements.txt\""
         )
     return (
-        f"cd {LINUX_ROOT} && "
-        "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi && "
-        f"$PY -m pip install {force}torch torchvision torchaudio && "
-        "$PY -m pip install -r requirements.txt"
+        # `|| exit 1`, because this was `cd ... &&` and a repair that cannot
+        # reach the checkout must not go on to pip-install into whatever
+        # directory the shell landed in. The `main.py` check above it is the
+        # same question asked one step earlier, and it is here so that both
+        # operating systems answer a missing checkout with the same sentence
+        # rather than one getting a shell error and the other a message.
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo '{NOTHING_TO_REPAIR}'; exit 1; fi; "
+        f"cd {LINUX_ROOT} || exit 1; "
+        + linux_python_search()
+        + '[ -n "$py" ] || py=python3; '
+        + f'"$py" -m pip install {force}torch torchvision torchaudio && '
+        + '"$py" -m pip install -r requirements.txt'
     )
 
 
@@ -322,7 +505,7 @@ def install_command(host: Host, index: str | None = None) -> str:
     if is_windows(host):
         # winget is present on Server 2022 images; git and python come from there.
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             "Write-Output 'installing prerequisites'; "
             "winget install --id Git.Git -e --silent "
             "--accept-source-agreements --accept-package-agreements; "
@@ -346,31 +529,64 @@ def install_command(host: Host, index: str | None = None) -> str:
             "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; "
             "Write-Output 'install complete'\""
         )
+    # `env DEBIAN_FRONTEND=noninteractive`, not `sudo DEBIAN_FRONTEND=...`:
+    # command-line environment assignments go through sudoers, and a hardened
+    # one refuses them outright. `env` is a binary run as root and always works.
+    #
+    # Without it apt opens with three lines that read exactly like a crash —
+    # "debconf: unable to initialize frontend: Dialog", "(Dialog frontend will
+    # not work on a non-interactive terminal…)", "falling back to frontend:
+    # Readline" — four lines into an install whose next stretch is silent while
+    # torch downloads. That combination is where `go` gets interrupted: nothing
+    # here has failed, and the only output on the screen says it has.
+    apt = (f"sudo env DEBIAN_FRONTEND=noninteractive "
+           f"apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT} -y -qq")
+    series = " ".join(PYTHON_SERIES_SUPPORTED)
     return (
         "set -e; "
+        "echo 'installing prerequisites'; "
+        f"{apt} update; "
+        f"{apt} install git; "
+        # The interpreter is discovered, not assumed. `python3` is deliberately
+        # last: on 24.04 it is 3.12 and fine, on 22.04 it is 3.10 and also fine,
+        # but on an image that has moved to 3.13 it is the one answer that must
+        # not win, so it is only reached when no supported series is installed.
+        f'PY=""; for v in {series}; do '
+        'if command -v "python$v" >/dev/null 2>&1; then PY="python$v"; break; fi; '
+        "done; "
+        f'if [ -z "$PY" ]; then for v in {series}; do '
+        f'if {apt} install "python$v-venv" >/dev/null 2>&1; '
+        'then PY="python$v"; break; fi; done; fi; '
+        'if [ -z "$PY" ]; then '
+        "echo 'INSTALL_INCOMPLETE: no supported python (3.10-3.12) on this image'; "
+        "exit 1; fi; "
+        # Debian and Ubuntu ship venv as a separate package, so a present
+        # interpreter is not a usable one. Installing it is cheap and idempotent.
+        f'{apt} install "$PY-venv"; '
+        'echo "building with $PY"; '
         f"echo 'cloning ComfyUI into {LINUX_ROOT}'; "
         f"sudo mkdir -p {LINUX_ROOT} && sudo chown \"$USER\" {LINUX_ROOT}; "
         f"git clone https://github.com/comfyanonymous/ComfyUI.git {LINUX_ROOT} || true; "
         f"cd {LINUX_ROOT}; "
-        f"python{PYTHON_SERIES} -m venv venv || python3 -m venv venv; "
+        # --clear when one is already there. A venv built before python3.10-venv
+        # was installed has no pip in it, and `python -m venv` over the top of it
+        # leaves that as it is; --clear empties it first. Scoped to the venv
+        # directory, so a re-run never touches the clone or the models beside it.
+        'if ./venv/bin/python -m pip --version >/dev/null 2>&1; '
+        'then echo "reusing the venv"; '
+        'else "$PY" -m venv --clear venv; fi; '
+        # Without this the pip lines below run against a half-made venv and the
+        # error surfaces a hundred lines later as a missing module.
+        "if ! ./venv/bin/python -m pip --version >/dev/null 2>&1; then "
+        "echo 'INSTALL_INCOMPLETE: the venv has no pip'; exit 1; fi; "
         "echo 'installing torch (this is the slow part)'; "
         "./venv/bin/python -m pip install --upgrade pip; "
-        "./venv/bin/python -m pip install torch torchvision torchaudio; "
-        "./venv/bin/python -m pip install -r requirements.txt; "
+        "./venv/bin/python -m pip install torch torchvision torchaudio"
+        + (f" --index-url {index}; " if index else "; ")
+        + "./venv/bin/python -m pip install -r requirements.txt; "
         f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo INSTALL_INCOMPLETE; exit 1; fi; "
         "echo 'install complete'"
     )
-
-
-# An install can be a venv, the Windows portable bundle, or a system interpreter.
-# Assuming one of them is how a working box reported "python.exe is not recognized".
-WINDOWS_PYTHONS = (
-    r"venv\Scripts\python.exe",
-    r"python_embeded\python.exe",
-    r".venv\Scripts\python.exe",
-    r"ComfyUI_windows_portable\python_embeded\python.exe",
-)
-LINUX_PYTHONS = ("venv/bin/python", ".venv/bin/python")
 
 
 def launch_command(host: Host) -> str:
@@ -391,25 +607,130 @@ def launch_command(host: Host) -> str:
     """
     listen = "127.0.0.1"
     if is_windows(host):
-        candidates = "; ".join(
-            f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS
-        )
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
-            f"$candidates = @({candidates.replace('; ', ', ')}); "
-            "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
-            "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
-            f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
-            "Write-Output ('using ' + $py); "
-            f"& $py main.py --listen {listen} --port {COMFYUI_PORT}\""
+            + windows_python_search(
+                "(Get-Command python -ErrorAction SilentlyContinue).Source")
+            + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
+            + "Write-Output ('using ' + $py); "
+            + f"& $py main.py --listen {listen} --port {COMFYUI_PORT}\""
         )
-    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
     return (
         f"cd {LINUX_ROOT}; "
-        f"for p in {candidates} $(command -v python3); do "
-        "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
-        f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
-        "echo \"using $py\"; "
-        f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
+        + linux_python_search()
+        + f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
+        + "echo \"using $py\"; "
+        + f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
+    )
+
+
+def launch_detached_command(host: Host) -> str:
+    """Start ComfyUI on the box and come straight back, with its log on the box.
+
+    The same interpreter search as `launch_command`, and the same loopback bind
+    for the same reason — the forward is an `ssh -L`, so `127.0.0.1` on the box
+    is exactly where the tunnel arrives. Only two things differ, and both follow
+    from nobody watching:
+
+      * **Its output goes to a file on the box**, not down the SSH channel. A
+        detached launch whose log went nowhere would trade a blocked terminal for
+        a ComfyUI you cannot debug, which is the worse of the two.
+      * **The file is truncated, not appended to.** `host logs` is asked about
+        *this* ComfyUI, and yesterday's traceback sitting above today's startup is
+        how you spend twenty minutes fixing something that is already fixed.
+
+    Windows detaches with `Start-Process`, which cannot merge stdout and stderr
+    into one file — it refuses the same path twice. So it starts a hidden
+    PowerShell that redirects all of its own streams with `*>`, which can. That
+    nesting is also why the inner command quotes the interpreter with
+    `[char]34`: the outer command is already inside double quotes by the time it
+    reaches the box, and a literal `"` here would end it. Rule 3 at the top of
+    this file applies with full force — nothing below prompts, so nothing below
+    can hang a non-interactive SSH command forever.
+
+    Prints `using <interpreter>` and then STARTED. STARTED means the process was
+    launched, never that it is serving: proving that is the caller's job, and
+    conflating them is exactly the "a booted VM is up" mistake one level down.
+    """
+    listen = "127.0.0.1"
+    if is_windows(host):
+        return (
+            "powershell -NoProfile -NonInteractive -Command \""
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            + windows_python_search(
+                "(Get-Command python -ErrorAction SilentlyContinue).Source")
+            + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
+            + "Write-Output ('using ' + $py); "
+            + "$q = [char]34; "
+            + "$inner = '& ' + $q + $py + $q + "
+            + f"' main.py --listen {listen} --port {COMFYUI_PORT} *> ' + $q + "
+            + f"'{WINDOWS_LOG}' + $q; "
+            + "Start-Process -FilePath 'powershell' "
+            + "-ArgumentList '-NoProfile', '-NonInteractive', '-Command', $inner "
+            + f"-WorkingDirectory '{WINDOWS_ROOT}' -WindowStyle Hidden; "
+            + f"Write-Output '{STARTED}'\""
+        )
+    return (
+        f"cd {LINUX_ROOT}; "
+        + linux_python_search()
+        + f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
+        + "echo \"using $py\"; "
+        + f"nohup \"$py\" main.py --listen {listen} --port {COMFYUI_PORT} "
+        + f"> {LINUX_LOG} 2>&1 < /dev/null & "
+        + f"echo {STARTED}"
+    )
+
+
+def alive_command(host: Host) -> str:
+    """Is a ComfyUI still running on the box at all?
+
+    Asked while waiting for a detached launch to answer, and only for the sake of
+    the bad case: a ComfyUI that dies four seconds in is otherwise indistinguishable
+    from one that is slow, so the wait runs to its full timeout on a machine that
+    is billing the whole time.
+
+    Wrong in the safe direction, deliberately. A false ALIVE costs the wait we
+    would have had anyway; a false GONE would report a working box as broken. So
+    Linux matches the actual command line, and Windows — where matching one is
+    expensive — settles for "is any Python running", which is over-broad and never
+    wrong in the direction that matters. The bracket in `[m]ain.py` keeps pgrep
+    from matching the shell that carries this very command.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NoProfile -NonInteractive -Command \""
+            "$p = Get-Process -Name python, pythonw -ErrorAction SilentlyContinue; "
+            f"if ($p) {{ Write-Output '{ALIVE}' }} else {{ Write-Output '{GONE}' }}\""
+        )
+    return (
+        f"if pgrep -f '[m]ain.py --listen' >/dev/null 2>&1; then echo {ALIVE}; "
+        f"else echo {GONE}; fi"
+    )
+
+
+def logs_command(host: Host, *, tail: int = 200, follow: bool = False) -> str:
+    """Read the detached ComfyUI's log on the box — the last lines, or forever.
+
+    Exits `NO_LOG_EXIT` and says nothing when the file is not there, so the
+    caller can tell "ComfyUI has never been started here" from "the box would not
+    answer". Printing a marker instead would put a word nobody asked for at the
+    top of a log the tester is reading.
+
+    Following is `tail -f` / `Get-Content -Wait`, which reads a file and touches
+    nothing. Ending it stops reading and stops nothing else — which is the whole
+    difference between this and `go --follow`, where Ctrl-C reaches ComfyUI.
+    """
+    lines = max(1, int(tail))
+    if is_windows(host):
+        wait = " -Wait" if follow else ""
+        return (
+            "powershell -NoProfile -NonInteractive -Command \""
+            f"if (-not (Test-Path '{WINDOWS_LOG}')) {{ exit {NO_LOG_EXIT} }}; "
+            f"Get-Content -Path '{WINDOWS_LOG}' -Tail {lines}{wait}\""
+        )
+    follow_flag = " -f" if follow else ""
+    return (
+        f"if [ ! -f {LINUX_LOG} ]; then exit {NO_LOG_EXIT}; fi; "
+        f"tail -n {lines}{follow_flag} {LINUX_LOG}"
     )

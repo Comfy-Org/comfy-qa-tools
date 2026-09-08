@@ -24,8 +24,13 @@ but nothing about the result depends on what the OS would have said about them.
 
 from __future__ import annotations
 
+import importlib
+import itertools
+import os
+import socket
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -102,7 +107,414 @@ def never_start_a_real_tunnel(monkeypatch, request):
             pass
 
 
+# The developer's own configuration directory, resolved ONCE before anything is
+# redirected, so the tripwire below still knows where it is afterwards.
+REAL_CONFIG_DIR = (Path.home() / ".config" / "comfy-qa-tools").resolve()
+
+# Every module that bound `DEFAULT_CONFIG_PATH` at import time. Patching
+# `config.DEFAULT_CONFIG_PATH` alone reaches NONE of them — `from .config import
+# DEFAULT_CONFIG_PATH` copies the value — and that is precisely the mistake the
+# old version of this fixture made one level down.
+_BINDS_THE_DEFAULT_PATH = ("config", "host", "setup", "tunnel", "zones", "remove")
+
+# Loopback is not a leak. The end-to-end tests run a real fake ComfyUI on
+# 127.0.0.1 and really connect to it, which is the point of them.
+_LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
+
+
+@pytest.fixture(scope="session")
+def _config_redirect_root(tmp_path_factory):
+    """One numbered temp directory for the whole run, not one per test.
+
+    `tmp_path_factory.mktemp` is not a `mkdir`. It calls pytest's
+    `make_numbered_dir`, which LISTS the base temp directory to find the highest
+    number already there, and pytest keeps the last three runs' directories
+    around. So the cost of handing out the Nth directory grows with N, and the
+    fixture below is autouse over ~6100 tests: measured, asking for a second
+    numbered directory per test took the suite's fixture SETUP to 77s of a 105s
+    run, and the growth is superlinear (500 tests 2.2s, 1000 6.4s, 2000 24.2s,
+    4000 67.3s on a probe that did nothing else).
+
+    Each test still gets its own directory underneath this one — it has to, or
+    one test's host list would be the next test's — but by a plain `mkdir` with
+    a counter, which is one syscall and does not care how many came before it.
+    """
+    root = tmp_path_factory.mktemp("config-redirect")
+    counter = itertools.count(1)
+
+    def next_directory() -> Path:
+        made = root / str(next(counter))
+        made.mkdir()
+        return made
+
+    return next_directory
+
+
 @pytest.fixture(autouse=True)
-def never_write_to_the_real_config(monkeypatch, tmp_path):
-    """The tunnel directory defaults beside the user's own host list."""
+def never_write_to_the_real_config(monkeypatch, tmp_path, _config_redirect_root):
+    """Nothing in this suite touches the user's own configuration directory.
+
+    THE NAME IS THE PROMISE, AND IT USED TO BE FALSE. This fixture patched one
+    attribute in one module — `tunnel.TUNNEL_DIR` — while its name and docstring
+    said the directory was covered. `zone-latency.json` is written into that same
+    directory by `zones.py`, and it went straight past: measured, a run under a
+    cold HOME really created `~/.config/comfy-qa-tools/zone-latency.json`.
+    Everyone downstream read the name and took the coverage, which is the same
+    shape as a check whose remedy defeats it, sitting in the safety half of the
+    suite.
+
+    So it now redirects every name that resolves into that directory, in every
+    module that bound one, and `no_test_writes_to_the_real_config` below fails
+    the run if anything still gets there.
+
+    WHAT THIS DOES NOT COVER, in the negative, because a docstring describing the
+    mechanism instead of the promise is what let the first version sit:
+
+    * A path a test builds from `Path.home()` itself rather than from one of
+      these constants. The tripwire catches the write; nothing catches the read.
+    * Anywhere else under the user's home. This is scoped to one directory, and
+      `~/.ssh/google_compute_engine` is the other one this tool can create — via
+      `gcloud compute ssh`, which `never_start_a_real_tunnel` above stops.
+    * Reads. A test may still READ the real host list and quietly depend on it;
+      that is what `test_readme.py::test_bare_comfy_qat_lists_your_machines` did,
+      and only a cold HOME revealed it.
+    """
+    # Not inside `tmp_path`: a test's own tmp_path is something tests assert on
+    # — one of them lists it and expects exactly one entry — so the redirect
+    # must not appear in it. Hence a separate root, made once per session.
+    redirected = _config_redirect_root()
+
+    for name in _BINDS_THE_DEFAULT_PATH:
+        module = importlib.import_module(f"comfy_qa.{name}")
+        if hasattr(module, "DEFAULT_CONFIG_PATH"):
+            monkeypatch.setattr(module, "DEFAULT_CONFIG_PATH",
+                                redirected / "hosts.toml")
     monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
+
+
+@pytest.fixture(autouse=True)
+def no_test_reaches_the_network(monkeypatch):
+    """A unit suite may not open a socket to anything but this machine.
+
+    Two tests did. `order_zones` with neither `config=` nor `probe=` measured
+    real latency to `compute.{europe-west4,us-central1}.rep.googleapis.com:443`
+    — three connections across the two — while asserting on a boolean and on a
+    lowercased string. Neither wanted a latency number; that is what made it
+    invisible.
+
+    WHY THIS HAS TO EXIST RATHER THAN JUST FIXING THOSE TWO. A probe only fires
+    for a region ABSENT from the cache, and the cache lives in the developer's
+    home. So the first run on a machine and every run after it exercise
+    different code, both green, the second far faster — and a full suite run on
+    a warm machine writes nothing and connects to nothing. The leak is invisible
+    exactly where people look for it. That also means THIS TRIPWIRE WILL NEVER
+    FIRE ON A WARM MACHINE, so it will look like dead weight; it is not, and
+    deleting it restores a defect nobody can see locally.
+
+    Patched at `socket.create_connection`, which is low enough to catch
+    `urllib`, `http.client` and anything built on them, and low enough that the
+    suite's own fakes — `test_zones.py` patches this same attribute — replace it
+    rather than being caught by it.
+
+    NOT COVERED, deliberately and worth knowing: a raw `socket.socket().connect`
+    that bypasses `create_connection`; `os.execvp`, which replaces this process
+    entirely and is stubbed elsewhere; DNS, which `socket.getaddrinfo` can issue
+    without connecting; and any subprocess, which has its own network namespace
+    as far as this is concerned. `gcloud` is the one that matters there, and it
+    is fenced by the fakes rather than by this.
+    """
+    real = socket.create_connection
+
+    def guarded(address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) and address else address
+        if str(host) not in _LOOPBACK:
+            raise AssertionError(
+                f"this test opened a socket to {address!r}. A unit suite that "
+                f"reaches the network measures the runner, not the tool — and "
+                f"this one wrote its answer into the developer's home. Pass the "
+                f"seam: `probe=` for latency, `config=` for where the cache goes."
+            )
+        return real(address, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "create_connection", guarded)
+
+
+@pytest.fixture(autouse=True)
+def no_test_writes_to_the_real_config(monkeypatch):
+    """The tripwire behind the redirect above, so the promise is enforced.
+
+    The redirect is the fix; this is what says so. If a new module binds
+    `DEFAULT_CONFIG_PATH` and is not added to `_BINDS_THE_DEFAULT_PATH`, the
+    redirect silently stops covering it and only this notices.
+
+    Every primitive this package actually writes through is wrapped:
+    `Path.write_text`, `Path.open`, `Path.mkdir`, `Path.replace`, `os.replace`
+    and `os.open` — the last two because `zones.write_cache` and `tunnel._claim`
+    use them directly and would otherwise walk past a `pathlib`-only guard.
+    """
+    def refuse(path):
+        try:
+            resolved = Path(path).resolve()
+        except (OSError, ValueError):
+            return
+        if resolved == REAL_CONFIG_DIR or REAL_CONFIG_DIR in resolved.parents:
+            raise AssertionError(
+                f"this test wrote {resolved} — inside the user's own "
+                f"configuration directory. Use the `--config` seam, or "
+                f"`config=`/`path=` where the call takes one."
+            )
+
+    def wrap(owner, name, index=0, when=lambda a, k: True):
+        original = getattr(owner, name)
+
+        def guarded(*args, **kwargs):
+            if when(args, kwargs):
+                refuse(args[index])
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, guarded)
+
+    writing = lambda args, kwargs: (
+        "w" in str(kwargs.get("mode", args[1] if len(args) > 1 else "r"))
+        or "a" in str(kwargs.get("mode", args[1] if len(args) > 1 else "r"))
+        or "x" in str(kwargs.get("mode", args[1] if len(args) > 1 else "r"))
+    )
+
+    wrap(Path, "write_text")
+    wrap(Path, "write_bytes")
+    wrap(Path, "mkdir")
+    wrap(Path, "open", when=writing)
+    wrap(Path, "replace", index=1)
+    wrap(os, "replace", index=1)
+    wrap(os, "open", when=lambda a, k: bool(
+        (k.get("flags", a[1] if len(a) > 1 else 0)) & (os.O_WRONLY | os.O_RDWR | os.O_CREAT)))
+
+
+@pytest.fixture(autouse=True)
+def an_empty_inflight_record():
+    """The record is module state, and an interrupt is what leaves it non-empty.
+
+    A test that interrupts a command and does not report leaves its leftover
+    registered, and the next test's report would name a resource from a run that
+    is already over. Cleared on the way in as well as the way out, so the order
+    tests happen to run in cannot decide what one of them prints.
+    """
+    from comfy_qa import inflight
+
+    inflight.clear()
+    yield
+    inflight.clear()
+
+
+@pytest.fixture
+def run_main(monkeypatch, capsys):
+    """Drive the real entry point, which is where an interrupt is reported.
+
+    `CliRunner` calls the Click command with `standalone_mode=False` and never
+    reaches `cli.main`, so it cannot see the one handler this tool has for
+    Ctrl-C — and it is the handler, not the command, that has to be right. This
+    is also the only way to assert on the exit CODE the shell would see, which
+    for an interrupt is the whole point: 130, not the 1 a failure uses.
+
+    Returns `(code, combined output)`. Combined because the report is on stderr
+    and everything leading up to it is on both, and a test that split them would
+    be asserting on `say`'s stream rule rather than on the message. `test_say.py`
+    owns that rule.
+    """
+    from comfy_qa.cli import main
+
+    def run(argv):
+        monkeypatch.setattr(sys, "argv", ["comfy-qat", *argv])
+        code = 0
+        try:
+            main()
+        except SystemExit as exit_:
+            code = exit_.code if isinstance(exit_.code, int) else 1
+        captured = capsys.readouterr()
+        return code, captured.out + captured.err
+
+    return run
+
+
+# --- did the whole suite actually run? --------------------------------------
+#
+# A run that was CUT SHORT and a run that merely failed are typographically
+# identical, and this is the only place in a pytest run that can tell them
+# apart.
+#
+# Measured, on four tests with one stray SIGINT still in flight from the first:
+# four collected, one reported, three never executed, and the last line pytest
+# printed was `1 failed in 2.95s`. On a slightly different landing it was
+# `no tests ran in 0.78s` with four unrun. Nothing in either says "three tests
+# did not run" — not the summary, not the counts, and `!!! KeyboardInterrupt !!!`
+# only appears for the one cause that happens to raise it.
+#
+# `test_suite_integrity.py` already records what a silent loss of cover costs
+# here: 40 tests dropped by a merge, unnoticed for three commits, because the
+# TOTAL WENT UP. This is the same loss through a different door. The tests are
+# still on disk and still green in anyone's memory; they simply did not run, and
+# "did not run" reads as "fine".
+#
+# WHY A SESSION HOOK AND NOT A TEST. A test executes DURING the session, so it
+# cannot see how the session ended — the run it would need to describe is one in
+# which later tests, possibly including itself, never start. There is nothing
+# for a test to assert. `pytest_sessionfinish` runs on every exit path pytest
+# has, INCLUDING the KeyboardInterrupt abort; checked rather than assumed, it is
+# called from the `finally` in `_pytest.main.wrap_session`, which is the one
+# path that loses tests without saying so.
+#
+# WHY NOT A DOCUMENTED SHELL COMMAND. `pytest --collect-only | tail -1` beside
+# the summary line does reconcile, and it depends on somebody remembering to run
+# it and reading two integers correctly. The header of `test_suite_integrity.py`
+# has the receipts on where that ends: TWO mutation sweeps voided by shell-side
+# result reading, both because `xfailed` contains the substring `failed`.
+# Another arithmetic-in-a-shell ritual reproduces the defect class this is meant
+# to close. The arithmetic below is in Python, runs itself, and cannot be
+# forgotten.
+#
+# It is split into a pure function, a hook that decides, and a hook that prints,
+# because only the first can be tested against counts no real run has to
+# produce. `test_suite_integrity.py` owns those tests and owns the one that goes
+# red if this is deleted.
+
+# Every stats key that means "a collected test reached an outcome". NOT
+# `deselected` — those are already subtracted from the collected total before it
+# reaches here — and not `warnings` or `''`, which are not outcomes.
+#
+# THIS LIST IS HAND-TYPED AND DELIBERATELY NOT GUARDED, which is the opposite of
+# the house rule two files over, so here is the reason. `REQUIRED` in
+# test_suite_integrity.py is guarded because going stale makes it MISS things
+# silently. This one degrades the other way, and it was checked rather than
+# assumed: drop `xfailed` and every healthy run with an xfail in it starts
+# shouting SESSION TRUNCATED. It over-reports. A missing outcome kind can only
+# ever inflate `missing`, never hide it, so the failure is a loud false alarm on
+# a green suite — annoying, immediate, and impossible to ship past. Guarding it
+# would buy nothing that the next run does not already tell you.
+OUTCOMES = ("passed", "failed", "error", "skipped", "xfailed", "xpassed")
+
+TRUNCATION = pytest.StashKey[int]()
+
+
+def unaccounted_for(collected: int, stats: dict[str, int]) -> int:
+    """How many collected tests the run never reported an outcome for.
+
+    Zero is a session that finished. A POSITIVE number is a session that ended
+    early, and those tests are unknown — not green.
+
+    A NEGATIVE number is not truncation and is deliberately not reported as one:
+    a test that fails in its call phase and then errors in teardown lands in two
+    buckets, so the sum can honestly exceed the collected count.
+    """
+    return collected - sum(stats.get(name, 0) for name in OUTCOMES)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Decide. Printing is the next hook down; the exit status is decided here.
+
+    Split that way because `pytest_terminal_summary` does not run for every exit
+    code — `--no-summary` and an internal error both skip it — and the exit
+    status is the half a script reads. It must not depend on the banner being
+    printable.
+    """
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None or session.config.option.collectonly:
+        return
+
+    missing = unaccounted_for(
+        session.testscollected,
+        {name: len(reports) for name, reports in reporter.stats.items()},
+    )
+    if missing <= 0:
+        return
+
+    session.config.stash[TRUNCATION] = missing
+
+    # A truncated run that would otherwise have exited 0 is the dangerous one: a
+    # green shell, a green eye, and part of the suite never executed. `-x` and
+    # `--maxfail` truncate too, and the missing tests are just as unknown, but
+    # the operator asked for that — it is reported and the status left alone.
+    if exitstatus == 0 and not _asked_to_stop(session):
+        session.exitstatus = 2
+
+
+def _asked_to_stop(session) -> bool:
+    return bool(
+        getattr(session, "shouldstop", False)
+        or getattr(session, "shouldfail", False)
+        or session.config.option.maxfail
+    )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Say it, as low on the screen as a plugin can put it.
+
+    NOT `print`, and not `pytest_sessionfinish`. A bare `print` at session end
+    goes into pytest's global capture, which is still installed, and is
+    discarded — checked, after the first version of this produced nothing at all
+    on the very run it was written for. And the terminal reporter implements
+    `pytest_sessionfinish` as a WRAPPER, so anything written from an ordinary
+    `sessionfinish` impl lands ABOVE the failure list however `trylast` is
+    spelled; measured, it came out on line 1 of a 38-line run. From here it sits
+    just above `short test summary info`, where the counts it is contradicting
+    are.
+    """
+    missing = config.stash.get(TRUNCATION, 0)
+    if not missing:
+        return
+
+    session = getattr(terminalreporter, "_session", None)
+    collected = getattr(session, "testscollected", missing)
+    asked_for = session is not None and _asked_to_stop(session)
+    ran = collected - missing
+
+    terminalreporter.write_line("")
+    terminalreporter.write_sep("=", "SESSION TRUNCATED", red=not asked_for,
+                               bold=True)
+    terminalreporter.write_line(
+        f"{missing} of {collected} collected tests never ran.")
+    terminalreporter.write_line(
+        "You asked for this (-x / --maxfail)." if asked_for
+        else "They are UNKNOWN, not passed. Nothing else here says so.")
+    terminalreporter.write_line(
+        f"Every count below describes only the {ran} test"
+        f"{'' if ran == 1 else 's'} that did run. Do not report a number from "
+        f"this session; rerun it.")
+    terminalreporter.write_sep("=", red=not asked_for, bold=True)
+
+
+# --- the suite renders the same everywhere ------------------------------------
+
+@pytest.fixture(autouse=True, scope="session")
+def _render_like_a_pipe():
+    """Rich decides colour from the environment, not only from a tty.
+
+    `CI=true` — which GitHub Actions sets on every runner — makes Rich force
+    colour ON regardless of whether the stream is a terminal. The real binary is
+    unaffected: `comfy-qat --help > file` carries no escapes on a runner or a
+    laptop, checked both ways. But `CliRunner` captures through a pipe that Rich
+    then colours anyway, so five tests that assert on help TEXT saw escape codes
+    and wrapped columns instead.
+
+    They were right to assert what they assert. `test_no_colour` says it plainly:
+    "a redirect is not a terminal, so Rich writes none" — true of the tool, and
+    not true of this harness under CI. So the harness is pinned to the plain-pipe
+    case the tests describe, rather than the assertions being widened to tolerate
+    an environment the tool never actually produces.
+
+    COLUMNS is pinned for the same reason: at 40 columns Rich wraps an option
+    name and `--new-window in help` becomes false for a rendering reason rather
+    than a real one. A test that means to vary width sets its own, as
+    `test_version` does.
+
+    NO_COLOR is deliberately NOT set. Only the three variables CI actually
+    changes are removed, and Rich's own tty detection is left alone — because
+    `test_no_colour` has a sibling asserting that Typer DOES still colour a
+    terminal, and forcing colour off globally would make that one pass for the
+    wrong reason. Both halves of that pair have to keep meaning what they say.
+    """
+    for var in ("CI", "GITHUB_ACTIONS", "FORCE_COLOR"):
+        os.environ.pop(var, None)
+    os.environ.setdefault("COLUMNS", "120")
+    yield
