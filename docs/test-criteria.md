@@ -20,6 +20,7 @@ who did not write the tool. Rather than repeat it, this is what it covered:
 | | |
 |---|---|
 | **passed** | phases A–D, G, H and I in full; plus E4, F1, F2, J1–J9 and J12–J14 |
+| **passed on the path that does nothing** | **D4, F1 and F2** — the only ticks `open`, `up` and `go` carry. Read the next section before you carry any of the three forward |
 | **not run** | J10/J11, and all of phase M — they need quota for **two GPU boxes at once**, and this project's `GPUS_ALL_REGIONS` ceiling is 1 |
 | **not run** | phase K (`create`) and phase L (`logs`) — both landed after that pass, so nothing in them has ever been run |
 | **not run** | E1, E2, E3, E3b, E5, E6, E7, F3–F8, J15 — see the note on each |
@@ -42,6 +43,70 @@ pack** — so a tester could complete the whole thing, sign off release 1, and n
 once exercise the only command in the tool that cannot be undone. They were
 missing because nothing failed when they were left out. Nothing here cross-checks
 the criteria against the binary; until something does, the check is you.
+
+## Three commands that passed on the path that does nothing
+
+Read this before you carry anything forward. **`open`, `up` and `go` are all
+recorded as passed, and in each case the code the criterion named never ran.**
+
+| | what was ticked | what it actually exercised |
+|---|---|---|
+| `open` | **D4**, `qat open local` | the early return. `open` prints `local — there is nothing to tunnel` and returns **before `open_tunnel` is called** — no port check, no `ssh -L`, no identity record. The run of `open` is now **E6d** |
+| `up` | **F1**, on a box already up | `bring_up` read RUNNING and skipped `start_instance`, the boot wait, the ssh wait, the stockout branch and the interrupt guard. That path is now **F1b**; the run of `up` is **F0/F1/F1a** |
+| `go` | **F2**, `--no-install` on a box that had ComfyUI | `_serve` returned on the stamp before `no_install` was read — the flag could have done anything. The install is now **E3/E3c**; the flag is **E0b** |
+
+Each tick was honest. What was missing in all three is the same thing this pack
+audits everywhere else: **an observation the failure could not also produce.** A
+criterion whose expected result is printed on both branches grades nothing, and
+three of them sat in the phases that cost money.
+
+## The nine commands nothing has ever run, sorted by what they cost
+
+`move`, `create`, `logs`, `ssh`, `rdp`, `disconnect`, `delete`, `discover` and
+`quota request` have never been run against real hardware. They do not all need
+it. Sorting them is the difference between a nine-command backlog and a
+forty-minute evening:
+
+**Offline. No gcloud, no project, no money — run these tonight.** Each is refused
+from the host list alone, before a `Gcloud` object is built, so a throwaway
+`--config` is enough and no cloud credentials are needed:
+
+| command | checks | why it is free |
+|---|---|---|
+| `delete` | N1, N2, N3, N4, N5 | resolved and refused by name against the host list; `Gcloud()` is constructed only after the state read, which none of these reach |
+| `ssh` | S1a, S1c | `local` and a Windows box are both refused before `Gcloud()` |
+| `rdp` | S1b, S1d | same shape: not a Windows cloud box, refused first |
+| `logs` | L5a | the `kind == "local"` branch of `read_logs` raises before any gcloud call |
+| `disconnect` | S0 | closes local tunnel records, then the local branch returns `idle` — nothing is contacted |
+| `move` | R2, R2c | `--dry-run` with no `--to` is refused inside `_zone_with_capacity`, which is the guard, and `move local` never gets that far |
+| `create` | K3, K4, K4d | `plan()` is offline and total and runs **before** the project read and the minute of quota — a bad card, a bad OS and `--zone` with `--region` are all string checks |
+
+**Cloud reads. Needs `gcloud auth login` and a project; costs nothing and creates
+nothing.** No box required, so these can be run straight after phase C:
+
+| command | checks | what it reads |
+|---|---|---|
+| `discover` | E1 | one `instances list` on the project. Nothing written under `--dry-run` |
+| `create` | K1, K2, K4b, K4c | the project, the instance list, and about a minute of quota |
+| `quota request` | C9, C9b, C9d | C9 reads only; C9b files a real request, which costs no money and cannot be withdrawn |
+
+**Needs hardware, and it bills.** There is no cheaper route to any of these, and
+every one of them leaves something running or something deleted:
+
+| command | checks | cost, and what to check when it ends |
+|---|---|---|
+| `create` | K5–K7 | creates a GPU box. It bills from K5 until phase G. Check `gcloud compute instances list` reads TERMINATED |
+| `logs` | L1–L3, L5b, L7 | needs a box that has served. L5b needs it stopped — free once it is |
+| `ssh` | S2, S2b | a running box. Reading only; the bill is the box |
+| `rdp` | S3 | a **running Windows** box, so a second OS and a second create |
+| `disconnect` | S4–S6 | deliberately leaves the box billing. S4b is the criterion that it says so |
+| `delete` | N6, N7, N7b, N9–N15 | destroys a machine and its disk, and cannot be undone. N11 and N14 are what tell you the money stopped |
+| `move` | R0b, R3, R4–R9 | the largest untested surface here: a snapshot, a 300 GB disk and a second instance. R7 and phase I are the accounting |
+| `quota request` | C9c | no money, but it holds the terminal for up to 30 minutes and files a request a human reads |
+
+**Nothing in the first two tables needs a box, a card, or a night.** If time is
+short, they are the cheapest ticks in the pack and they are the ones nobody has
+ever taken.
 
 ## The preamble
 
@@ -111,7 +176,9 @@ echo "=== A5c and env, which is hidden too"; qat env --help >/dev/null 2>&1; ech
 echo "=== A6 guide"; qat guide
 cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
 echo "=== A8 no message offers the old spelling"
-grep -rn "comfy-qat host \|comfy-qat auth " comfy_qa/ || echo "clean"
+grep -rn "comfy-qat host \|comfy-qat auth " comfy_qa/; echo "exit $? (1 = clean)"
+echo "=== A8b the same grep, pointed at a spelling that IS there"
+grep -rc "comfy-qat down " comfy_qa/ | grep -v ":0$"; echo "exit $? (0 = the grep can see)"
 ```
 
 - [ ] **A0** — prints `comfy-qat <version> (<sha>)`. **Record this line — every
@@ -139,14 +206,25 @@ grep -rn "comfy-qat host \|comfy-qat auth " comfy_qa/ || echo "clean"
       `auth status`, that is a fail.
 - [ ] **A7** — every test passes.
 - [ ] **A8** — **no message the tool prints offers the old spelling.** The grep
-      finds nothing. It is a grep and not a judgement call because the old forms
-      are a deprecation window: a tool that still teaches the spelling it is
-      retiring never finishes retiring it.
-      **This fails today**, on three sites — `auth.py` twice (`comfy-qat auth
-      quota request ...`) and `gcloud.py` once (`comfy-qat auth status ...`).
-      Record it as a fail with those line numbers. Do not skip it because it is
-      known: the reason it survived this long is that the pack used to tell you
-      not to report it.
+      prints nothing and **exits 1**. It is a grep and not a judgement call
+      because the old forms are a deprecation window: a tool that still teaches
+      the spelling it is retiring never finishes retiring it.
+      **This passes as of `442f867`.** The three sites the pack used to name —
+      `auth.py` twice (`comfy-qat auth quota request ...`) and `gcloud.py` once
+      (`comfy-qat auth status ...`) — are gone, and the pack said "this fails
+      today" for long enough that a tester following it recorded a fail against a
+      build that passed. Any hit here now is a **regression**: write it up with
+      the file and line numbers the grep prints, and say which commit you ran.
+- [ ] **A8b** — **the grep can still find something.** This is the criterion, not
+      A8. `grep … || echo "clean"` — which this block used to be — prints
+      `clean` when the pattern is absent, when `comfy_qa/` is not there, and when
+      `cd "$REPO"` in A7 failed and you are somewhere else entirely. Three
+      worlds, one word, and only one of them is a pass. A8b runs the same grep
+      against `comfy-qat down `, a spelling the tool really does print, and it
+      must come back with a **count against several files** and exit 0 — seven of
+      them on `442f867`, and the number is not the check; a non-empty result is.
+      **A8 is a pass only if A8b found lines**; if A8b is empty you are not in
+      the checkout and A8 graded nothing.
 
 *Ran 2026-08-27 and passed — but against the old command tree, so **A3, A4 and A5
 are new wording and have not been run**. A0–A2, A6 and A7 stand.*
@@ -234,6 +312,19 @@ echo "=== C7 quota json"; qat quota list --json 2>&1 | head -20
 echo "=== C9 asking for a card, without asking"; qat quota request --gpu l4 --region us-central1 --dry-run; echo "exit $?"
 ```
 
+`--dry-run` is not this command's default. **`--wait` is, and it is on**, so the
+form above is the one path in `quota request` that submits nothing and returns at
+once — which is why C9 has been the only criterion here. The default submits, then
+holds the terminal polling every 30 seconds for up to 30 minutes. Run C9b and C9c
+**on their own**, deliberately, once you have read what they do:
+
+```sh
+echo "=== C9b submit, and do not wait"; qat quota request --gpu l4 --region us-central1 --no-wait; echo "exit $?"
+echo "=== C9c the default: submit, then wait. Up to 30 minutes."
+time qat quota request --gpu l4 --region us-central1; echo "exit $?"
+echo "=== C9d what it left"; qat quota list --region us-central1
+```
+
 - [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota.
       Stops at the first failure rather than printing five. **If this fails, stop:
       nothing else in phases C to G can pass.**
@@ -254,12 +345,39 @@ echo "=== C9 asking for a card, without asking"; qat quota request --gpu l4 --re
 - [ ] **C8** — if nothing is usable, it prints the exact `quota request` command
       to fix that. *(Only reachable on a project with no approved card. If C4 found
       one, record C8 as not run — it cannot be forced from here.)*
-- [ ] **C9** — `quota request --dry-run` shows the request it would submit — the
-      card, the region, the value and the justification — and **submits nothing**.
-      Requesting costs no money, but it is a request to Google that a human may
-      read, so the dry run is the check that belongs in a pack. Running the real
-      thing is optional and is C9b: it submits and then waits for the answer,
-      which can take days, so `--no-wait` is the form to use here.
+- [ ] **C9** — `quota request --dry-run` prints the `gcloud` call it would make —
+      the card, the region, the value and the justification — and **submits
+      nothing**: it returns before `gc.run` and before the wait, so it is the one
+      path here that reaches no branch of the default. Confirm it submitted
+      nothing rather than reading it off the word "dry": `qat quota list --region
+      us-central1` shows no new pending request. Exit 0.
+- [ ] **C9b** — **a real submission, with the waiting turned off.** It prints
+      `requested l4 = 1 in us-central1` and then `track them: <console URL>`, and
+      **returns immediately** — seconds, not minutes. This is the first half of
+      the default path and it is where the money question is settled: a quota
+      request creates no instance and no disk and **costs nothing**. What it does
+      cost is a request to Google that a human may read and that **cannot be
+      withdrawn**, and re-running it files a second one. Ask for a card you
+      actually want. *(Skip it, and say so, if you would rather not file a
+      request on this project — but then C9c is unreachable too.)*
+- [ ] **C9c** — **the default path, which no criterion has ever covered.**
+      `--wait` is on unless you turn it off, so this — not C9 — is what a tester
+      following the README gets. It submits, prints the tracking URL, and then
+      **polls every 30 seconds for up to 30 minutes**, saying so rather than
+      going silent. Two endings, and they are different claims:
+      - granted inside the window: `granted: l4`, exit 0.
+      - still pending at 30 minutes: a `still pending: l4` line saying approval
+        can take days and naming `comfy-qat quota` to check, and **exit 75**.
+      **75 is the criterion.** Not 0 and not 1: 0 tells a script the quota was
+      granted when it was not, and 1 says something broke when nothing did. On a
+      project with an approved L4 the request is usually granted at once, so the
+      pending branch may not be reachable — record which ending you got, and
+      record the other as not run. *(Interactive and slow: run it on its own, and
+      `time` it so the 30-minute bound is a measurement and not a belief.)*
+- [ ] **C9d** — **and nothing else changed.** `quota list` for that region names
+      the card and its status, and agrees with the console URL C9b printed. A
+      quota request must not appear anywhere as an instance or a disk; if you
+      have run `Q0` already, `diff` its `instances.txt` and expect no change.
 
 *Ran 2026-08-27 — **all of phase C passed**, C4b included. That check exists
 because it caught a real defect: `status` counted 25 grants of which 18 could not
@@ -296,7 +414,14 @@ echo "=== D5 stamp with nothing serving"; qat stamp local; echo "exit $?"
 - [ ] **D3b** — every value in the line traces to that raw payload, and anything
       the payload does not contain is **absent** from the line rather than
       guessed or shown as a placeholder.
-- [ ] **D4** — says local needs no tunnel and prints the URL. Does not start anything.
+- [ ] **D4** — says `local — there is nothing to tunnel` and prints the URL, and
+      starts nothing. **This is not a run of `open`, and it must not be recorded
+      as one.** `open` returns on that sentence before `open_tunnel` is called,
+      so nothing this command exists for — the port check, the spawned
+      `gcloud compute ssh -L`, the identity record that stops a tunnel opened
+      under the right NAME pointing at the wrong MACHINE — is reached. D4 grades
+      one early return. The command itself is graded at **E6d**, and until
+      2026-09-08 D4 was the only `open` this pack had ever run.
 - [ ] **D5** — says nothing answered, names the URL, exit 1. Not a traceback.
 
 *Ran 2026-08-27 — **all of phase D passed**.*
@@ -347,6 +472,7 @@ echo "=== K1 the plan, and nothing else"; qat create --os linux --gpu t4 --dry-r
 echo "=== K2 a card you have no quota for"; qat create --os linux --gpu a100 --dry-run; echo "exit $?"
 echo "=== K3 a card that does not exist"; qat create --os linux --gpu rtx4090 --dry-run; echo "exit $?"
 echo "=== K4 an OS that does not exist"; qat create --os plan9 --gpu t4 --dry-run; echo "exit $?"
+echo "=== K4d two flags that cannot both be right"; qat create --os linux --gpu t4 --zone us-central1-a --region europe-west2 --dry-run; echo "exit $?"
 echo "=== K4b nothing was written"; ls -l ~/.config/comfy-qa-tools/
 echo "=== K4c and nothing was CREATED"; diff ~/qa-before/instances.txt <(gcloud compute instances list --project $P) && echo "IDENTICAL"
 ```
@@ -361,7 +487,23 @@ echo "=== K4c and nothing was CREATED"; diff ~/qa-before/instances.txt <(gcloud 
       the phase: a quota refusal after the instance exists costs money and a
       cleanup, and refusing costs nothing.
 - [ ] **K3/K4** — names what there is rather than failing obscurely. Exit 2, no
-      traceback.
+      traceback. **These two are offline** — `plan()` runs before the project
+      read, the instance list and the minute of quota, so they need no cloud
+      credentials at all. The check that they are still offline is the **time
+      against K1**: K1 reads quota and takes about a minute, and K3/K4 must come
+      back in roughly the time `qat --version` takes. `--os freebsd` once cost 64
+      seconds to be told freebsd is not an operating system, and a build that
+      regressed to that prints exactly this refusal, just a minute later — the
+      wording cannot tell you, only the clock can.
+- [ ] **K4d** — **`--zone` and `--region` together are refused, not resolved.**
+      They are not an expressible intention: `--zone` pins one zone, `--region`
+      asks for a choice inside one. `--zone` used to win silently, so
+      `--region europe-west2 --zone us-central1-a` created a box in Iowa without
+      mentioning the region it discarded. The refusal names **both** flags and
+      prints the two commands that are each one intention. Exit 2, and offline
+      like K3/K4 — a refusal that takes as long as K1 was made after the quota
+      read, and a flag conflict decided after a minute of reading Google is the
+      wrong refusal wearing the right words.
 - [ ] **K4b** — `--dry-run` wrote nothing **to your host list**. No new entry.
       `zone-latency.json` may appear or change — a fresh latency measurement is
       expected on the first run and is cached for a week — so that file is not
@@ -411,25 +553,78 @@ echo "=== K7 and Google agrees"; gcloud compute instances list
 
 ## Phase E — a cloud box, start to serving *(this bills)*
 
-Replace `BOX` with a cloud host from `list` — the one phase K just made, if you
-ran it.
+**`BOX` must be the box phase K just made**, and this is not a convenience. E3 is
+the only place in this pack where `go` **installs** ComfyUI, and it can only do
+that on a box that has never had it. On a box that already serves, `go` takes an
+early return in `_serve` — URL, stamp, stop line — and installs nothing; that path
+is E7, and it is what the 2026-08-27 pass ticked as `go`. If you are reusing an
+existing box, say so and record **E3c as not run**: you are running E7 twice.
 
 **`go` is detached now**, so this phase no longer needs two terminals: it returns
 to your prompt with ComfyUI still running on the box. The second-terminal
 instruction that used to be here is gone, and E3 and E7 are rewritten.
 
+**Before you start `go`, capture the state it is about to change.** E0 is that
+capture and it takes ten seconds; without it E3's install cannot be told from
+E7's early return, because both end with the same URL and the same stop line.
+
 ```sh
-BOX=comfy-win
+BOX=qa-linux                 # the box K5 made. Not one that has already served.
+echo "=== E0 BEFORE: this box has never had ComfyUI launched on it"
+qat logs $BOX --tail 20; echo "exit $?"
+echo "=== E0b and --no-install says so without installing anything"
+qat go $BOX --no-browser --no-install; echo "exit $?"
 echo "=== E1 discover is idempotent"; qat discover --dry-run
 echo "=== E2 tunnel command"; qat open $BOX --dry-run
-echo "=== E3 go (long, but it comes back)"; time qat go $BOX; echo "exit $?"
+echo "=== E3 go — and on this box it is the one that installs"; time qat go $BOX; echo "exit $?"
 echo "=== E4 stamp the cloud box"; qat stamp $BOX
 echo "=== E5 tunnel is recorded"; ls -l ~/.config/comfy-qa-tools/tunnels/
-echo "=== E6 open twice does not stack"; qat open $BOX
 echo "=== E7 go again, on a box already serving"; qat go $BOX; echo "exit $?"
 ```
 
+Then the tunnel, on its own, because it needs the box taken apart and put back:
+
+```sh
+echo "=== E6 BEFORE: the tunnel E3 opened, and the process behind it"
+cat ~/.config/comfy-qa-tools/tunnels/$BOX.json; echo
+PORT=$(sed -n 's/.*"port"[^0-9]*\([0-9][0-9]*\).*/\1/p' ~/.config/comfy-qa-tools/tunnels/$BOX.json)
+PID1=$(cat ~/.config/comfy-qa-tools/tunnels/$BOX.pid); echo "port $PORT pid $PID1"
+echo "=== E6a open twice does not stack"; qat open $BOX; echo "exit $?"
+lsof -nP -iTCP:$PORT -sTCP:LISTEN
+echo "=== E6b let the tunnel go, keep the machine"; qat disconnect $BOX; echo "exit $?"
+echo "=== E6c BASELINE: no records, and nothing on the port"
+ls -l ~/.config/comfy-qa-tools/tunnels/; lsof -nP -iTCP:$PORT -sTCP:LISTEN || echo "port free"
+echo "=== E6d open it for real, from nothing"; qat open $BOX; echo "exit $?"
+echo "=== E6e AFTER: three files, a new pid, the same machine"
+ls -l ~/.config/comfy-qa-tools/tunnels/; cat ~/.config/comfy-qa-tools/tunnels/$BOX.json; echo
+echo "pid was $PID1, is now $(cat ~/.config/comfy-qa-tools/tunnels/$BOX.pid)"
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:$PORT/system_stats
+```
+
+- [ ] **E0** — **the baseline for E3, and E3 means nothing without it.** `logs`
+      on a box that is running with nothing ever launched says there is no log
+      file at that path *and that the machine is running and billing*. That
+      absent log is the evidence that ComfyUI has never started here, and it is
+      the only cheap evidence there is. Record the sentence. If instead you get
+      a log, this box has served before: E3 will take the reuse path and you
+      record E3c as not run. *(This is the state L5c grades; it is reachable
+      exactly here, between `create` and the first `go`.)*
+- [ ] **E0b** — **`--no-install` refuses, and that is the run of the flag.**
+      `ComfyUI is not answering and --no-install was given`, **exit 1**, and
+      nothing installed. F2 is the same flag on a box that already serves, where
+      `_serve` returns on the stamp before `no_install` is read at all — so F2
+      cannot fail whatever the flag does, and the 2026-08-27 tick against it was
+      a tick on a branch that never ran. This is the branch. Costs nothing: the
+      box is already up, and this touches it for seconds.
 - [ ] **E1** — reports every box already present; adds nothing; writes nothing.
+      It ends `--dry-run: nothing written` — and that sentence prints after the
+      decision either way, so the check is that `qat list` still matches
+      `~/qa-before/list.txt` from `Q0`, plus whatever `create` added and nothing
+      else. **This needs no box.** `discover` has never been run, and it is one
+      `instances list` on the project, so it can also be run straight after phase
+      C, before anything exists — where "no cloud boxes on `<project>`", or a list
+      of boxes you did not declare, is itself the answer. It is the only
+      `discover` check in the pack and it costs nothing.
 - [ ] **E2** — prints a `gcloud compute ssh ... -N -L 127.0.0.1:<your port>:127.0.0.1:8188`
       line and does not run it. Both ends say `127.0.0.1` and not `localhost`:
       macOS resolves that name to `::1` first, and ssh then binds IPv6 only while
@@ -444,6 +639,19 @@ echo "=== E7 go again, on a box already serving"; qat go $BOX; echo "exit $?"
       Detaching must not soften what "up" means: a box that booted and serves
       nothing looks like success and bills like success. If the prompt comes back
       before the URL works, that is a fail, and a bad one.
+- [ ] **E3c** — **this `go` installed ComfyUI, and you can say how you know.**
+      Three things distinguish an install from the reuse path, and the closing
+      lines distinguish neither — they are identical in both worlds, which is
+      how `go` came to be recorded as passed with the install never having run:
+      1. E0 found **no log**, and after E3 `qat logs $BOX --tail 200 | head`
+         shows this ComfyUI starting from its first line;
+      2. the step lines name **installing** — E7's do not, and neither does
+         anything the reuse path prints;
+      3. `time` reads in **minutes**, not the seconds E7 takes.
+      All three, or it is not this criterion. **Cost:** the box runs from K5
+      until phase G stops it; the install itself adds no GPU-hours beyond the
+      time it takes. *(Needs a box that has never served — the one K5 made. On a
+      reused box, record E3c as not run and say which box you used.)*
 - [ ] **E4** — the stamp names the **cloud** box's GPU and OS, not your laptop's.
       This is the single most important check in the run. *(Passed 2026-08-27.)*
 - [ ] **E5** — **three** files for that host: `.pid`, `.log` and `.json`. The
@@ -451,14 +659,46 @@ echo "=== E7 go again, on a box already serving"; qat go $BOX; echo "exit $?"
       the one that matters: it is what stops a tunnel opened under the right NAME
       from pointing at the wrong MACHINE, which is the failure this whole tool
       exists to prevent. A run that checks only the `.pid` never checks it.
-- [ ] **E6** — says a tunnel is already open and gives the pid. Does not open a second.
+- [ ] **E6** — **the before-capture, and the reason this block exists.** You have
+      the `.json` on screen, `PORT` and `PID1` set from the files, and you have
+      read them. Every check below is a comparison against those two values; a
+      comparison with nothing recorded is what D4 has been standing in for.
+- [ ] **E6a** — a second `open` prints **`tunnel already open (pid N)`** and `N`
+      **equals `PID1`**, and `lsof` shows **one** listener on `$PORT`. The tool
+      prints `tunnel open` for a fresh one and `tunnel already open` for a reuse,
+      so the words are the check and not the URL: a build that quietly started a
+      second `ssh -L` prints a URL just as happily, and the second forward cannot
+      bind the port, so the URL still answers — from the first tunnel.
+- [ ] **E6b/E6c** — `disconnect` leaves the machine running, and then **all three
+      files for that host are gone and `lsof` says the port is free**. This is
+      the baseline for E6d and it is the whole point of taking the tunnel down:
+      without it, E6d cannot tell a tunnel it opened from the one that was
+      already there. If `lsof` still shows a listener, stop — something else
+      holds that port and E6d will be refused for a reason that has nothing to
+      do with `open`.
+- [ ] **E6d** — **this is the run of `open` this pack has never had.** From the
+      E6c baseline it goes through `open_tunnel` for real: the port check, the
+      spawned `gcloud compute ssh -L`, and the three records written. It prints
+      **`tunnel open (pid N)`** — the fresh-open wording, not `tunnel already
+      open` — with **`N` different from `PID1`**, and exits 0. `qat open local`
+      reaches none of this: it returns at `local — there is nothing to tunnel`
+      before `open_tunnel` is called, which is why D4 is not a substitute and
+      why `open` was recorded as passed while the code under test never ran.
+- [ ] **E6e** — **three files again, and the `.json` names the same machine.**
+      Instance, zone, project and port identical to the E6 capture, and `curl`
+      returns **200** on `$PORT`. A tunnel opened onto the wrong machine and one
+      opened onto the right one both print `tunnel open` and both answer on the
+      port — the identity record is the only thing that tells them apart, and it
+      is the thing this command exists for.
 - [ ] **E7** — a second `go` on a box that is already serving gives you the URL and
       the stamp straight away and **installs and restarts nothing**. *(Rewritten:
       the old E7 tested a Ctrl-C that stopped ComfyUI. That behaviour now lives
       behind `--follow` and is checked in L4.)*
 
-*Not run: E1, E2, E3, E3b, E5, E6, E7. Only **E4 passed** on 2026-08-27, and E3/E7
-did not exist in this form.*
+*Not run: E0, E0b, E1, E2, E3, E3b, E3c, E5, E6–E6e, E7. Only **E4 passed** on
+2026-08-27, and E3/E7 did not exist in this form. **`open` has never been run
+against a real tunnel by anyone** — the one tick it carries is D4, the local
+early return, which does not call `open_tunnel`. E6d is that run.*
 
 ## Phase L — the log, and the ways of watching it *(this bills)*
 
@@ -478,9 +718,10 @@ L7's `go` also puts the box back up, which phases S, M, F and G all need.
 
 L5c is the third answer and it is only reachable in one place: a box that is
 **running with nothing ever launched on it**, which is true exactly once — between
-`create` in phase K and the first `go` in phase E. Run `qat logs $BOX` there, or
-record L5c as not run. It is not reachable from here, because L7's truncation
-means a box that has ever served has a log.
+`create` in phase K and the first `go` in phase E. That is the `=== E0` step,
+which runs `qat logs $BOX --tail 20` for exactly this reason and doubles as the
+baseline for E3. If you skipped it, record L5c as not run: it is not reachable
+from here, because L7's truncation means a box that has ever served has a log.
 
 - [ ] **L1** — follows by default, because "what is it doing now" is the question
       people have. It reads a file on the box and touches nothing else.
@@ -497,7 +738,10 @@ means a box that has ever served has a log.
       — a Ctrl-C into a live stream. Run it by hand, not from the block.)*
 - [ ] **L5a** — `local` says your own ComfyUI's log is in the terminal you started
       it in, and offers the `main.py` line to start it there. Exit non-zero, and
-      no wait.
+      no wait. **Offline**: the `local` branch of `read_logs` raises before any
+      gcloud call, so this needs no project and no box and can be run the moment
+      you have a host list — it is the one `logs` check that does not need this
+      phase's box.
 - [ ] **L5b** — a **stopped** box says it is not running, so it has no ComfyUI and
       no log, and points at `go`. It must **answer**, not hang: a command that
       waits silently on a stopped box is the worst of the three, because the box
@@ -506,7 +750,8 @@ means a box that has ever served has a log.
       at that path *and that the machine is running and billing*. **The billing
       sentence is the criterion**, not a nicety — this is the state where you have
       a GPU box costing money and nothing to show for it, and the message is the
-      only thing that tells you. *(Run between phase K and phase E; see above.)*
+      only thing that tells you. *(Run between phase K and phase E — that is the
+      `=== E0` step, which grades the same output as the baseline for E3.)*
 - [ ] **L6** — `qat go $BOX --new-window` opens a macOS Terminal window running
       `--follow` and leaves this terminal free. Anywhere that is not a Mac with
       `osascript`, it **says so and starts nothing**, printing the exact command
@@ -554,10 +799,26 @@ echo "=== M5 and Google agrees"; gcloud compute instances list
 
 ## Phase F — the failure paths *(this bills)*
 
-Only F1 and F2 are always runnable; F3 depends on Google being out of capacity.
+Only F0–F2 are always runnable; F3 depends on Google being out of capacity.
+
+**F0–F1 stop the box and start it again**, on purpose. `up` has only ever been
+run against a box that was already up, where `bring_up` reads RUNNING, skips
+`start_instance`, the boot wait, the stockout branch and the interrupt guard
+entirely, and prints the same closing lines a real start does. There is no way to
+exercise a start except to have something to start, so this costs one stop, one
+start, and the GPU-hours from here to phase G. Run it while you are at the
+terminal, not on the way to bed.
 
 ```sh
-echo "=== F1 up on a box that is already up"; qat up $BOX
+echo "=== F0 BEFORE: what Google says, and what tunnel files exist"
+gcloud compute instances list --project $P
+ls -l ~/.config/comfy-qa-tools/tunnels/
+echo "=== F0b stop it, so up has something to start"; qat down $BOX; echo "exit $?"
+gcloud compute instances list --project $P     # $BOX must read TERMINATED here
+ls -l ~/.config/comfy-qa-tools/tunnels/
+echo "=== F1 up a box that is NOT already up"; time qat up $BOX; echo "exit $?"
+echo "=== F1a AFTER"; gcloud compute instances list --project $P; ls -l ~/.config/comfy-qa-tools/tunnels/
+echo "=== F1b up again, now that it is up"; time qat up $BOX; echo "exit $?"
 echo "=== F2 go with --no-install on a box that has ComfyUI"; qat go $BOX --no-browser --no-install
 echo "=== F3 move, plan only"; qat move $BOX --to us-central1-b --dry-run   # a zone the box is NOT in
 echo "=== F3b and without --to"; qat move $BOX --dry-run; echo "exit $?"
@@ -566,8 +827,35 @@ echo "=== F4 unknown host"; qat stamp not-a-machine; echo "exit $?"
 echo "=== F5 unknown host, lifecycle"; qat down not-a-machine; echo "exit $?"
 ```
 
-- [ ] **F1** — recognises it is already up and serving; does not restart anything.
-- [ ] **F2** — serves without reinstalling.
+- [ ] **F0** — **the baseline, and F1 is unfalsifiable without it.** You have
+      Google's own line for `$BOX` reading **TERMINATED** after F0b, and the
+      tunnels directory holding **no files for that host**. Both, and you looked.
+      `up` ends with `open <url>` and `comfy-qat down <name>` whether it started
+      a machine or found one already running, so the closing lines cannot tell
+      you which happened and neither can exit 0.
+- [ ] **F1** — **it starts a box that was not running, and says so as it goes.**
+      The step lines name the state it found and the wake: `<name> is stopped —
+      starting it`, with the timer ticking while it waits, then `running`, then
+      the ssh wait, then `tunnel open`, and only then the ComfyUI wait. **`time`
+      reads in minutes.** A box that was already running prints `<name> is
+      running` and `tunnel already open` and returns in seconds — that is F1b,
+      and it is a different sentence, not a faster version of this one.
+- [ ] **F1a** — **and the world changed.** `gcloud` reads **RUNNING** where F0
+      read TERMINATED, and the three tunnel files exist where F0b showed none.
+      That pair is the observation; the URL and the stop line are printed on both
+      paths and are evidence of nothing. **The box is billing again from here
+      until phase G stops it** — if you stop the run at F1, run `qat down $BOX`
+      and check `gcloud compute instances list` before you leave.
+- [ ] **F1b** — the already-up path: `<name> is running`, `tunnel already open`,
+      nothing restarted, back in seconds. **This is the only `up` the 2026-08-27
+      pass ran**, and on its own it exercises no start at all — it is here as the
+      contrast that makes F1 legible, not as a run of the command.
+- [ ] **F2** — serves without reinstalling. **On a box that is already serving
+      this does not exercise `--no-install`**: `go` returns on the stamp before
+      the flag is read, so the same output appears whatever the flag does. The
+      run of the flag is **E0b**, on a box that has no ComfyUI, where it must
+      refuse with exit 1. Tick F2 for what it is — the reuse path — and record
+      E0b separately.
 - [ ] **F3** — with `--to`, a numbered plan naming the snapshot, the new disk, the
       new instance and the target zone, then it stops.
 - [ ] **F3c** — **and the snapshot list is unchanged.** A `move --dry-run` prints
@@ -596,12 +884,17 @@ echo "=== F5 unknown host, lifecycle"; qat down not-a-machine; echo "exit $?"
       gives up and goes back to the console. *(Needs a real stockout, like F6 and
       F7. Record as not run rather than assumed.)*
 
-*Ran 2026-08-27: **F1 and F2 passed**. F3–F5 not run; F6–F8 depend on Google
-actually being out of capacity at that moment and cannot be scheduled — the
-2026-08-26 observation in F6 is a real sighting, not a run of this block.*
+*Ran 2026-08-27: what passed was **F1b and the reuse half of F2** under the ids
+`F1` and `F2`. Both ticks were honest and neither reached the code the criterion
+named: `up` found the box already RUNNING and never started anything, and `go`
+returned on the stamp without reading `--no-install`. **F0, F1, F1a and E0b have
+never been run.** F3–F5 not run; F6–F8 depend on Google actually being out of
+capacity at that moment and cannot be scheduled — the 2026-08-26 observation in
+F6 is a real sighting, not a run of this block.*
 
-Old spellings in the output of F6–F8 are covered by **A8**, and A8 is a fail while
-any remain. Report what you see there against A8 rather than treating it as noise.
+Old spellings in the output of F6–F8 are covered by **A8**, which passes as of
+`442f867`. Anything you see there is therefore a regression A8's grep missed —
+write it up with the sentence you saw and the command that printed it.
 
 ## Phase S — onto the box, and off it again *(needs the box from E; S4 leaves it billing)*
 
@@ -612,8 +905,17 @@ could not see; `delete` is the fourth and is phase N.
 `ssh` and `rdp` **replace this terminal** — they `execvp` gcloud, so nothing after
 them in a pasted block runs. Run S1 as a block; run S2 and S3 one at a time.
 
+**S0 and S1a–S1d are offline** and belong to no phase in particular: all five are
+refused from the host list before a `Gcloud` object is built, so they need no
+credentials, no project and no box. Run them the moment phase B has given you a
+host list with a `local` entry and one of each OS — they are among the cheapest
+ticks in the pack and nobody has ever taken them.
+
 ```sh
 WINBOX=comfy-win; LINUXBOX=comfy-linux   # whatever `qat list` calls yours
+echo "=== S0 disconnect on your own machine"; qat disconnect local; echo "exit $?"
+SC=$(mktemp -d); printf '[hosts.local]\nkind = "local"\nport = 8188\ngce_instance = "somebox"\n' > $SC/local.toml
+echo "=== S0b a local entry that names a cloud instance"; qat disconnect local --config $SC/local.toml; echo "exit $?"
 echo "=== S1a your own machine has no box to ssh to"; qat ssh local; echo "exit $?"
 echo "=== S1b nor to rdp to"; qat rdp local; echo "exit $?"
 echo "=== S1c ssh at a Windows box"; qat ssh $WINBOX; echo "exit $?"
@@ -632,6 +934,26 @@ echo "=== S6 the box is still up"; qat list; gcloud compute instances list
 echo "=== S7 the old flag"; qat down $BOX --keep-running; echo "exit $?"
 ```
 
+- [ ] **S0** — **`disconnect local` says the local ComfyUI is left running and
+      that this tool did not start it**, and exits 0. It is not an error and it
+      is not a refusal: there is no tunnel to close and nothing that bills, so a
+      statement is the honest answer. It also prints `comfy-qat down local` —
+      read that line and say whether it reads right on a machine that costs
+      nothing to leave on; every other host `disconnect` is given is one you are
+      paying for, and this is the one where the standing rule and the situation
+      disagree. Offline; nothing is contacted, and exit 0 here is the answer and
+      not an absence of one.
+- [ ] **S0b** — **a `local` entry that also names a cloud instance is refused, and
+      it is refused at load.** Put `kind = "local"` and a `gce_instance` in a
+      scratch host list and point `disconnect --config` at it: the host list
+      loader rejects the file with `kind 'local' cannot carry gce_instance`, and
+      it gives the reason: stopping is decided from `kind`, so a cloud box
+      declared local is never stopped and keeps billing. Exit 2, and `disconnect`
+      itself never runs. `put_away` carries a second refusal for the same case;
+      **that one is not reachable from a host list** and this criterion does not
+      claim it. The pass is the config refusal and the exit 2 — anything that
+      reports that host as idle is a blocker. *(The in-code branch needs a `Host`
+      built in Python rather than a file; record it as not run.)*
 - [ ] **S1a/S1b** — `local` is refused by name: `ssh` says to open a terminal,
       `rdp` says it is not a Windows cloud box. Exit 2 for both, and **no gcloud
       call is made** — these refuse from the host list alone, so they cost nothing
@@ -777,9 +1099,17 @@ step below runs against a realistic file.
 
 ```sh
 echo "=== R1 the plan"; qat move $BOX --to $TARGET_ZONE --dry-run; echo "exit $?"
-echo "=== R2 no zone, no dry run allowed"; qat move $BOX --dry-run; echo "exit $?"
+echo "=== R2 no zone, no dry run allowed"; time qat move $BOX --dry-run; echo "exit $?"
+echo "=== R2c nowhere to move your own machine to"; time qat move local --dry-run; echo "exit $?"
 echo "=== R2b nothing happened"; diff ~/move-before/instances.txt <(gcloud compute instances list --project $P) && echo "unchanged"
 ```
+
+**R2 and R2c are offline**, and that is worth knowing before you book a night for
+this phase: both refuse before a single call reaches Google, so they can be run
+against a throwaway `--config` with no project, no credentials and no box. R2 is
+the blocker check in the whole pack — a `--dry-run` that goes looking for a zone
+starts a GPU box — and it has never been run, on a machine where running it costs
+nothing.
 
 **What phase R does not prove.** Every `move` below names a zone with `--to`,
 because a repeatable procedure has to. The other path — `move` with no `--to`,
@@ -799,6 +1129,17 @@ finished phase R as "move works".
       that, in those terms, and print the `--to … --dry-run` form as the fix.
       Exit 2. A `--dry-run` that goes looking for a zone is a **blocker**: it is
       the one command promising to change nothing, spending the most.
+      **`time` it, and compare against R1.** The guard sits inside
+      `_zone_with_capacity`, ahead of the call that would start the box, so a
+      correct build refuses without contacting Google at all and comes back far
+      faster than R1's plan, which reads the instance. A refusal that takes as
+      long as R1 or longer was made after something was asked of Google — and a
+      refusal printed after a start reads on the terminal exactly like this one.
+- [ ] **R2c** — **`move local` says there is nowhere to move it to.** Exit 2, and
+      the refusal comes from the host list before a `Gcloud` object exists — so
+      like R2 it is instant and free. It is the only `move` path in this pack
+      that needs neither a project nor a box, which makes it the one check of
+      this command anybody can run tonight.
 - [ ] **R2b** — the instance list is byte-identical to R0's. `--dry-run` created
       nothing, and you checked rather than believed the word "dry".
 
@@ -1149,6 +1490,15 @@ N1–N7 are refusals. They cost nothing and destroy nothing, and they are most o
 the value of this phase: everything worth protecting here is protected before the
 prompt, not by it.
 
+**N1–N5 are offline**, which is stronger than "cheap". All five are resolved and
+refused against the host list before `delete` builds a `Gcloud` object, so they
+need no project, no credentials and **no box at all** — a throwaway `--config`
+holding a `local` entry and one `gce` entry is enough, and `$BOX` need only be a
+name that file contains. Run them tonight; they are five of the seven ticks
+`delete` has never had. **N6 onwards is where the cloud starts**: N6 reads the
+instance's state, and N7 reaches the prompt only after that read, so both need a
+real declared box (a stopped one is fine and costs only its disk).
+
 ```sh
 echo "=== N1 a description is not a name"; qat delete windows; echo "exit $?"
 echo "=== N2 no name at all";              qat delete;         echo "exit $?"
@@ -1445,12 +1795,25 @@ phase and check id, what it printed, and the exit code. A check that could not b
 run — no capacity, no second box — is "not run", not a pass.
 
 A release-1 pass needs: every box in phases A–D, G, H and I ticked **except I5,
-which only exists if a `move` ran**; **K1–K7 and E3, E3b and E4** ticked;
-**L1–L3, L5a, L5b and L7** ticked; **J1–J7** ticked; **S1a–S1b, S4, S4b, S5 and
-S6** ticked; **N1–N5, N7, N10, N11, N12 and N14** ticked; **R0–R3b** ticked —
-they are free, and R3b is the one that proves a refusal costs nothing; **Q0**
-ticked, without which I1–I3 cannot be; and no unexplained traceback anywhere in
-the run.
+which only exists if a `move` ran**; **K1–K7, K4d and E0, E0b, E3, E3b, E3c, E4,
+E6–E6e** ticked; **F0, F1 and F1a** ticked — the run of `up` this pack has never
+had; **L1–L3, L5a, L5b and L7** ticked; **J1–J7** ticked; **S0, S1a–S1b, S4, S4b,
+S5 and S6** ticked; **N1–N5, N7, N10, N11, N12 and N14** ticked; **R0–R3b and
+R2c** ticked — they are free, and R3b is the one that proves a refusal costs
+nothing; **Q0** ticked, without which I1–I3 cannot be; and no unexplained
+traceback anywhere in the run.
+
+**Six of those are new because the old ones passed on a path that does nothing.**
+`E6d` replaces D4 as the run of `open`, `F0/F1/F1a` replace F1 as the run of
+`up`, and `E3c` and `E0b` replace F2 as the run of `go` and of `--no-install`.
+D4, F1b and F2 stay in the pack and stay tickable — they grade real early returns
+— but a release cannot be signed off on them alone, which is what happened twice.
+
+**C9c is not in the required set**, deliberately. It covers `quota request`'s
+default `--wait`, which files a request that cannot be withdrawn and can hold the
+terminal for half an hour. It costs no money and it is the path a reader of the
+README actually gets, so it is worth running once and recording — but a release
+should not wait on Google's approvals queue.
 
 **Phase R's billing half (R4–R7) is the most valuable thing in this pack and the
 least proved.** It is not in the required set, because a pass should not be
@@ -1465,11 +1828,12 @@ G6 came to be ticked on faith for a release.
 
 Two of those need saying plainly. **N11** — the disk gone with the instance — is a
 blocker on its own: a delete that leaves the disk behind bills for a machine that
-no longer exists. And **A8 is expected to fail today.** Record the fail, with the
-three line numbers, in the report; it is a known open defect about wording and it
-is not a blocker for release 1. That is a release decision and it is written here
-so that it is one — an earlier version of this page told the tester not to report
-the defect at all, which is not the same thing and is worse.
+no longer exists. And **A8 now passes**, as of `442f867`: the three sites it used
+to name are gone. This page told the tester "this fails today" after they were
+fixed, which is the same defect as a tick with no observation attached, running
+the other way — a stale criterion grades a correct build as broken, and a tester
+who trusts the page writes up a defect that is not there. If A8 does hit, treat it
+as a regression against the commit A0 recorded.
 
 **What the next run is actually for.** `create` and `logs` have never been run at
 all, and the detached `go` has never been run in the form E3 now describes. Those
@@ -1484,7 +1848,7 @@ words:
 
 | | |
 |---|---|
-| **A3, A6, A8** | A3 listed 17 commands where the binary has 21; A6 quoted guide text that no longer exists — both failed a correct build. A8 is new and **expected to fail** |
+| **A3, A6, A8** | A3 listed 17 commands where the binary has 21; A6 quoted guide text that no longer exists — both failed a correct build. **A8 did the same in reverse**: it told the tester "this fails today" about three sites that had been fixed. It passes as of `442f867`, and A8b is the new check that the grep can see anything at all |
 | **B2, B2b, B0b** | "Nothing overwritten" had no step that could notice; B0b stops the page teaching invented project ids |
 | **C8, C9** | C8 says when it is unreachable; C9 covers `quota request`, which the pack never ran |
 | **G1, G2, G4, G5, G6a–G6d** | G4 checked one instance and phase R makes two; G5 passed on a `down` that did nothing; G6 required behaviour no block ran |
