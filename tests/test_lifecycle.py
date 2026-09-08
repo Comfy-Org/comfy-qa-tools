@@ -1472,6 +1472,57 @@ def test_the_stop_path_does_not_leave_a_gap_where_the_state_goes(tmp_path):
     assert not any(" was  — " in line for line in lines), lines
 
 
+# --- and the arm under that one, for a state nobody could read at all ---------
+#
+# `None` is the OTHER not-a-state, and it is not this one. `""` means the
+# describe succeeded and carried no status. `None` means the read itself raised
+# — and every call site that holds a `None` state routes AROUND `readable_state`
+# to a sentence that names the bill instead: `put_away` returns "unknown" before
+# reaching its `before` interpolation, and `put_away`'s re-read and
+# `_probe_failed`'s both guard on `not in (None, "")`. Those three sentences are
+# already held, by name, in this file and in test_host_costs.py.
+#
+# So nothing reaches this arm today. Measured rather than argued: readable_state
+# was wrapped for a whole run and saw RUNNING, STAGING, PROVISIONING, REPAIRING,
+# SUSPENDED, STOPPING, SUSPENDING and "", across all five of its call sites, and
+# never once `None`. Dropping the arm changes nothing anyone can currently see,
+# which is exactly why the suite stayed green when it was dropped.
+#
+# It is pinned anyway, and the pin below is a CONTRACT test and not a path test.
+# Saying which it is matters: the two tests above are the path ones, they cover
+# the reachable half, and a third that only looked like them would be cover this
+# does not have. `str | None` is the signature's promise; two of the five call
+# sites interpolate the result into a refusal with no guard in front of it; and
+# the value they interpolate sits one line from a variable that is already
+# sometimes `None` elsewhere in the same module. The arm is what stands between
+# that and a traceback, in a command whose whole job is to say what a machine is
+# doing.
+
+
+def test_a_state_nobody_could_read_at_all_is_still_words():
+    """The arm no caller reaches yet. `str | None` is the promise; this holds it."""
+    from comfy_qa.lifecycle import readable_state
+
+    assert readable_state(None) == "in an unknown state"
+
+
+def test_a_describe_carrying_no_status_reads_back_empty_and_never_none():
+    """Why `None` cannot reach it — held next to the arm that would catch it.
+
+    `delete` and `bring_up` interpolate `instance_status` straight into a
+    sentence with nothing in between. They are safe only because this answers
+    `""` and not `None` for a describe that carried no status. If that ever
+    flips, this is the test that says so, and the arm above is what keeps those
+    two printing a sentence rather than raising.
+    """
+    for answer in ({}, {"status": None}, {"status": ""}, None):
+        gc = Gcloud(runner=lambda args, mode, reply=answer: reply)
+        state = gc.instance_status("comfy-win", "us-central1-a", "proj")
+
+        assert state is not None, f"a describe answering {answer!r} produced None"
+        assert state == Gcloud.UNKNOWN_STATE
+
+
 def test_logs_does_not_claim_a_box_is_off_from_a_read_that_said_nothing(tmp_path):
     from comfy_qa.lifecycle import read_logs
 
