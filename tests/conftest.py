@@ -305,3 +305,141 @@ def run_main(monkeypatch, capsys):
         return code, captured.out + captured.err
 
     return run
+
+
+# --- did the whole suite actually run? --------------------------------------
+#
+# A run that was CUT SHORT and a run that merely failed are typographically
+# identical, and this is the only place in a pytest run that can tell them
+# apart.
+#
+# Measured, on four tests with one stray SIGINT still in flight from the first:
+# four collected, one reported, three never executed, and the last line pytest
+# printed was `1 failed in 2.95s`. On a slightly different landing it was
+# `no tests ran in 0.78s` with four unrun. Nothing in either says "three tests
+# did not run" — not the summary, not the counts, and `!!! KeyboardInterrupt !!!`
+# only appears for the one cause that happens to raise it.
+#
+# `test_suite_integrity.py` already records what a silent loss of cover costs
+# here: 40 tests dropped by a merge, unnoticed for three commits, because the
+# TOTAL WENT UP. This is the same loss through a different door. The tests are
+# still on disk and still green in anyone's memory; they simply did not run, and
+# "did not run" reads as "fine".
+#
+# WHY A SESSION HOOK AND NOT A TEST. A test executes DURING the session, so it
+# cannot see how the session ended — the run it would need to describe is one in
+# which later tests, possibly including itself, never start. There is nothing
+# for a test to assert. `pytest_sessionfinish` runs on every exit path pytest
+# has, INCLUDING the KeyboardInterrupt abort; checked rather than assumed, it is
+# called from the `finally` in `_pytest.main.wrap_session`, which is the one
+# path that loses tests without saying so.
+#
+# WHY NOT A DOCUMENTED SHELL COMMAND. `pytest --collect-only | tail -1` beside
+# the summary line does reconcile, and it depends on somebody remembering to run
+# it and reading two integers correctly. The header of `test_suite_integrity.py`
+# has the receipts on where that ends: TWO mutation sweeps voided by shell-side
+# result reading, both because `xfailed` contains the substring `failed`.
+# Another arithmetic-in-a-shell ritual reproduces the defect class this is meant
+# to close. The arithmetic below is in Python, runs itself, and cannot be
+# forgotten.
+#
+# It is split into a pure function, a hook that decides, and a hook that prints,
+# because only the first can be tested against counts no real run has to
+# produce. `test_suite_integrity.py` owns those tests and owns the one that goes
+# red if this is deleted.
+
+# Every stats key that means "a collected test reached an outcome". NOT
+# `deselected` — those are already subtracted from the collected total before it
+# reaches here — and not `warnings` or `''`, which are not outcomes.
+OUTCOMES = ("passed", "failed", "error", "skipped", "xfailed", "xpassed")
+
+TRUNCATION = pytest.StashKey[int]()
+
+
+def unaccounted_for(collected: int, stats: dict[str, int]) -> int:
+    """How many collected tests the run never reported an outcome for.
+
+    Zero is a session that finished. A POSITIVE number is a session that ended
+    early, and those tests are unknown — not green.
+
+    A NEGATIVE number is not truncation and is deliberately not reported as one:
+    a test that fails in its call phase and then errors in teardown lands in two
+    buckets, so the sum can honestly exceed the collected count.
+    """
+    return collected - sum(stats.get(name, 0) for name in OUTCOMES)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session, exitstatus):
+    """Decide. Printing is the next hook down; the exit status is decided here.
+
+    Split that way because `pytest_terminal_summary` does not run for every exit
+    code — `--no-summary` and an internal error both skip it — and the exit
+    status is the half a script reads. It must not depend on the banner being
+    printable.
+    """
+    reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+    if reporter is None or session.config.option.collectonly:
+        return
+
+    missing = unaccounted_for(
+        session.testscollected,
+        {name: len(reports) for name, reports in reporter.stats.items()},
+    )
+    if missing <= 0:
+        return
+
+    session.config.stash[TRUNCATION] = missing
+
+    # A truncated run that would otherwise have exited 0 is the dangerous one: a
+    # green shell, a green eye, and part of the suite never executed. `-x` and
+    # `--maxfail` truncate too, and the missing tests are just as unknown, but
+    # the operator asked for that — it is reported and the status left alone.
+    if exitstatus == 0 and not _asked_to_stop(session):
+        session.exitstatus = 2
+
+
+def _asked_to_stop(session) -> bool:
+    return bool(
+        getattr(session, "shouldstop", False)
+        or getattr(session, "shouldfail", False)
+        or session.config.option.maxfail
+    )
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Say it, as low on the screen as a plugin can put it.
+
+    NOT `print`, and not `pytest_sessionfinish`. A bare `print` at session end
+    goes into pytest's global capture, which is still installed, and is
+    discarded — checked, after the first version of this produced nothing at all
+    on the very run it was written for. And the terminal reporter implements
+    `pytest_sessionfinish` as a WRAPPER, so anything written from an ordinary
+    `sessionfinish` impl lands ABOVE the failure list however `trylast` is
+    spelled; measured, it came out on line 1 of a 38-line run. From here it sits
+    just above `short test summary info`, where the counts it is contradicting
+    are.
+    """
+    missing = config.stash.get(TRUNCATION, 0)
+    if not missing:
+        return
+
+    session = getattr(terminalreporter, "_session", None)
+    collected = getattr(session, "testscollected", missing)
+    asked_for = session is not None and _asked_to_stop(session)
+    ran = collected - missing
+
+    terminalreporter.write_line("")
+    terminalreporter.write_sep("=", "SESSION TRUNCATED", red=not asked_for,
+                               bold=True)
+    terminalreporter.write_line(
+        f"{missing} of {collected} collected tests never ran.")
+    terminalreporter.write_line(
+        "You asked for this (-x / --maxfail)." if asked_for
+        else "They are UNKNOWN, not passed. Nothing else here says so.")
+    terminalreporter.write_line(
+        f"Every count below describes only the {ran} test"
+        f"{'' if ran == 1 else 's'} that did run. Do not report a number from "
+        f"this session; rerun it.")
+    terminalreporter.write_sep("=", red=not asked_for, bold=True)

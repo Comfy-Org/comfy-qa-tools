@@ -32,11 +32,121 @@ import stat
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from comfy_qa import inflight
 from comfy_qa.gcloud import Gcloud
+
+# --- sending yourself a signal without leaving one in flight ----------------
+#
+# THE DEFECT THIS REPLACES, because it is the reason for every awkward line
+# below. The test underneath used to start a `sleep 2` subprocess and a thread
+# that slept 0.4s and then signalled, and hoped the 0.4 landed inside the 2. It
+# passes 5/5 alone. Under contention — twenty pytest processes on this machine,
+# load average 37 — the 0.4s thread does not get scheduled until after the 2s
+# child has exited, `Gcloud.run` returns normally, and `pytest.raises` sees
+# nothing.
+#
+# The failure everyone looks at is `DID NOT RAISE`, and it is the harmless half.
+# THE SIGINT IS NOT CANCELLED BY LOSING. It is delivered whenever the thread
+# finally runs, which is somewhere inside a LATER test, and pytest treats a
+# KeyboardInterrupt in a test body as a session abort. Measured with three
+# innocent tests after it: four collected, one reported, three never ran, and
+# the summary line said `1 failed in 2.95s` — typographically identical to a run
+# in which one test failed and everything else passed.
+#
+# So the fix is not a longer sleep. A longer sleep makes the race rarer and the
+# suite slower, and rarer is worse: the same corrupted session, arriving on a
+# day nobody is looking for it. The fix is to stop racing.
+#
+#   1. The child ANNOUNCES itself — writes a file — before it blocks. The
+#      signal is not sent until that file exists, so the child is provably
+#      alive and the parent is provably inside `subprocess.run` at the moment
+#      the signal is sent. There is no window left to lose.
+#   2. The interrupter can STAND DOWN. If the announcement never comes, or the
+#      call under test ends for its own reasons first, the thread returns
+#      WITHOUT signalling. A lost race leaves nothing in flight, so it can cost
+#      this test a failure and can never cost the session the rest of the run.
+#   3. It signals at most once, under a lock the stand-down also takes, so
+#      "check whether we were told to stop" and "signal" cannot be split.
+#
+# The polling loop below sleeps, and that is not the thing being removed. A
+# poll interval is bounded by a PREDICATE — it ends when the file appears — and
+# the same shape is already `wait_until` in tests/test_lifecycle_e2e.py. What
+# was wrong before was a sleep used as a DEADLINE, standing in for a fact
+# nobody checked.
+
+
+class Interrupter:
+    """One SIGINT to this process, after `announcement` appears, or none at all.
+
+    Used as a context manager around the call being interrupted. On the way out
+    it stands down and joins, so no thread outlives the test that started it and
+    no signal outlives the call it was meant for.
+    """
+
+    def __init__(self, announcement: Path, timeout: float = 30.0) -> None:
+        self.announcement = announcement
+        self.timeout = timeout
+        self.signalled = False
+        self.late = False
+        self.why = "the interrupter never ran at all"
+        self._lock = threading.Lock()
+        self._stood_down = False
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._wait_then_signal, daemon=True)
+
+    def _wait_then_signal(self) -> None:
+        deadline = time.monotonic() + self.timeout
+        while not self.announcement.exists():
+            if self._stop.wait(0.005):
+                self.why = (
+                    "the call ended before the child ever announced itself, so "
+                    "no signal was sent — nothing is in flight"
+                )
+                return
+            if time.monotonic() >= deadline:
+                self.why = (
+                    f"{self.announcement} never appeared within {self.timeout}s, "
+                    f"so the stand-in for gcloud never started and no signal was "
+                    f"sent. This is a broken fixture, not a broken premise."
+                )
+                return
+        with self._lock:
+            if self._stood_down:
+                self.why = (
+                    "the child announced itself, but the call had already "
+                    "returned by then, so the signal was withheld"
+                )
+                return
+            self.signalled = True
+            self.why = "SIGINT was sent while the child was provably running"
+            os.kill(os.getpid(), signal.SIGINT)
+
+    def __enter__(self) -> "Interrupter":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exception) -> bool:
+        self._stop.set()
+        try:
+            with self._lock:
+                self._stood_down = True
+            self._thread.join(timeout=10)
+        except KeyboardInterrupt:
+            # Ours, arriving a beat after the call it was aimed at finished.
+            # It stops HERE, inside the test that sent it, which is the whole
+            # difference between a failing test and a truncated session.
+            self.late = True
+            self._thread.join(timeout=10)
+        assert not self._thread.is_alive(), (
+            "the interrupter thread outlived the test that started it; it may "
+            "still signal this process during a later one"
+        )
+        return False
+
 
 # --- the premise ------------------------------------------------------------
 
@@ -44,32 +154,63 @@ from comfy_qa.gcloud import Gcloud
 def test_gcloud_run_gives_the_handler_no_exit_code_when_it_is_interrupted(tmp_path):
     """The measurement, as a test. No cloud: `gcloud` is a shell script here.
 
-    Marked slow by nothing and costing two seconds, because the only way to
-    observe what an interrupt does to a call in flight is to have a call in
-    flight. A mock cannot: the behaviour under test belongs to `subprocess.run`,
-    not to this codebase, and stubbing it out would test the stub.
+    The only way to observe what an interrupt does to a call in flight is to
+    have a call in flight. A mock cannot: the behaviour under test belongs to
+    `subprocess.run`, not to this codebase, and stubbing it out would test the
+    stub.
+
+    HOW THE TIMING IS PINNED, since a test that sends itself a signal is the one
+    shape that can take the whole session down with it. The stand-in writes
+    `announced` and only then blocks, and `Interrupter` will not signal until it
+    sees that file. So by the time SIGINT is sent the child is running and this
+    thread is inside `subprocess.run` waiting for it — both facts checked, not
+    assumed — and the interrupt lands where it is meant to however starved the
+    machine is.
+
+    The 30s in the stand-in is NOT a deadline anybody has to beat; nothing races
+    it. It is the ceiling on how long a broken fixture can hang, and it is never
+    reached: in the healthy case this test costs the handshake, a few
+    milliseconds, which is faster than the 0.4s it replaced.
+
+    `pytest.raises` is deliberately not used. Its failure is `DID NOT RAISE`,
+    which does not distinguish "the signal was sent and the call swallowed it"
+    — a real finding, and the thing this test exists for — from "the stand-in
+    never started". `Interrupter.why` says which, and the assertion prints it.
     """
     marker = tmp_path / "created"
+    announced = tmp_path / "announced"
     fake = tmp_path / "gcloud"
-    fake.write_text(f"#!/bin/sh\nsleep 2\n: > {marker}\necho '{{}}'\n")
+    fake.write_text(
+        f"#!/bin/sh\n: > {announced}\nsleep 30\n: > {marker}\necho '{{}}'\n")
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
 
     gc = Gcloud()
     gc.require = lambda: str(fake)  # type: ignore[method-assign]
 
-    def interrupt_soon():
-        time.sleep(0.4)
-        os.kill(os.getpid(), signal.SIGINT)
-
-    threading.Thread(target=interrupt_soon, daemon=True).start()
-
     returned = "not reached"
-    with pytest.raises(KeyboardInterrupt):
-        returned = gc.run(["compute", "instances", "create", "x"], parse_json=False)
+    interrupted = False
+    with Interrupter(announced) as interrupter:
+        try:
+            returned = gc.run(["compute", "instances", "create", "x"],
+                              parse_json=False)
+        except KeyboardInterrupt:
+            interrupted = True
 
+    assert interrupted, (
+        f"`Gcloud.run` did not hand the caller a KeyboardInterrupt. "
+        f"{interrupter.why}."
+        + (" The signal arrived after the call had already returned, which "
+           "means `subprocess.run` stopped propagating it — re-read this "
+           "file's header, because the premise the whole feature rests on has "
+           "changed." if interrupter.late else "")
+    )
+    assert interrupter.signalled, interrupter.why
     assert returned == "not reached", (
         "if a value ever comes back from an interrupted call, the report can stop "
         "saying 'may' — and this test is where that gets noticed"
+    )
+    assert not marker.exists(), (
+        "the child ran to completion, so the interrupt did not reach it"
     )
 
 
