@@ -1,52 +1,62 @@
 """A money sentence and the advice printed under it must agree.
 
 `down` answers one question — am I still paying for anything — and it answers it
-with a verdict sentence followed, sometimes, by the way to stop paying. Nothing
-held the two together. Inverting the `billing` verdict of `down <name>` to
+with a sentence followed, sometimes, by the way to stop paying. Nothing held the
+two together, and a systematic census of `host.py` found six sentences that can
+be inverted with the whole suite green. Four of them lie in the direction that
+costs money:
 
-    f"\n{host.name} is left running, and it is not billing."
+    is left running, and it is billing        -> ...is not billing
+    running and billing from now              -> stopped and not billing from now
+    {host} is still running                   -> {host} is not running
+    or look at what is running:               -> or look at what is stopped:
 
-left the whole suite green, and three lines below it the same command still
-printed
+and two more over-report, which is safe and equally uncaught:
+
+    was not running, so nothing was billing   -> was running, so it was billing
+    nothing else is running, nothing to stop  -> everything else is running...
+
+Each keeps its neighbours. The `billing` verdict of `down <name>` still printed
 
     comfy-qat down comfy-win   # stop the box, stop paying
 
-— the box is not billing, and here is how to stop it billing, in consecutive
-lines. The same inversion in the other direction survived too: `down --all
---keep-running`'s "nothing was running, so nothing is billing." became "…so
-everything is billing." and nothing objected, because nothing anywhere read a
-money sentence and its own follow-up together.
+three lines under "it is not billing", and `go --follow` still offered the same
+command under "comfy-win is not running". **An inversion keeps every literal run
+it had, so it stays documented under its old wording and no presence check can
+see it.** Only reading a claim together with its own advice can.
 
-**This file does not hold a list of sentences.** A list covers the cases its
-author had in hand, which is how both of those got through: the nine sentences
-pinned in `tests/test_money_sentences.py` are a different and legitimate set, and
-simply do not include these two. What is written here is a rule, applied to
-whatever the command actually prints:
+**What the sentences have in common, and what this file is built on.** Whether a
+GPU box is costing money is asserted three separate ways — by the word *billing*,
+by whether the machine is said to be *running* or *stopped*, and by whether a way
+to stop paying is offered at all. They are three readings of one fact, so they
+must agree:
 
-    Within one money paragraph:
-      a present-tense claim that something IS billing must be accompanied by a
-      way to stop paying;
-      a present-tense claim that nothing IS billing must NOT be.
+    (a) a paragraph that says it is OFF may not offer a way to stop paying;
+    (b) a paragraph that says it is ON may not say there is nothing to stop;
+    (c) a paragraph saying something IS or WAS billing must either stop it or
+        say how;
+    (d) no paragraph may say both, because a box that runs, bills.
 
-Past tense is exempt in both directions and deliberately so — "was billing.
-Stopped." is the correct thing to say with no stop command under it, and "nothing
-was billing" is correct with none either. So is a hedge: "may have been billing"
-claims nothing, and its advice is `list --live`, which is how to find out rather
-than how to stop.
+Past tense and hedges make no claim about now and are exempt from (a) and (b) —
+that is what keeps "was billing. Stopped." correct with no command under it, and
+"it may have been billing" correct with `list --live` under it. (c) is what
+separates "was billing. **Stopped.**" from a bare "it was billing", which reports
+a bill and walks away.
 
-The verdicts are not transcribed. `down`'s single-host form is driven once per
-entry in `comfy_qa.host.VERDICTS` — the tuple whose own comment says adding a
-fifth should be one edit and not a search — so a fifth verdict is held to this
-rule the day it is added, and a fifth verdict that never reaches the sentence map
-fails here as a KeyError rather than as silence.
+**Nothing here is a list of sentences.** A list covers the cases its author had
+in hand, which is how all six got through: the nine sentences pinned in
+`tests/test_money_sentences.py` are a legitimate set and simply do not include
+them. The verdicts come from `comfy_qa.host.VERDICTS` — the tuple whose own
+comment says adding a fifth should be one edit and not a search — and `down` is
+driven once per entry, so a fifth verdict is held to the rule the day it is added
+and one that never reaches the sentence map fails as a KeyError.
 
-A paragraph is what the command's own formatting already marks out: every money
-sentence is written with a leading newline and its advice without one, so a blank
-line separates one verdict's claim from the next one's. That is what keeps the
-`down --all` summary and the undeclared-machines block from being read as each
-other's advice — the block offers `gcloud compute instances stop` and says
-nothing about billing, correctly, because those are machines this tool will not
-touch.
+**Two readers, because the sentences live in two places.** `down`'s are reachable
+by running it, and are read off stdout. `move`'s, `go`'s, `switch --dry-run`'s and
+`_probe_failed`'s need a relocation, a served ComfyUI or a capacity failure to
+print, so those are read where they are written. Both apply the same three rules,
+and both are pinned as non-vacuous: a reader that recognises nothing agrees with
+everything.
 """
 
 from __future__ import annotations
@@ -58,9 +68,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.host import VERDICTS, app
-from comfy_qa.config import Host
 from comfy_qa.lifecycle import _raw_stop, stop_paying
 
 HOSTS = """\
@@ -85,86 +95,129 @@ WIN = Host(name="comfy-win", kind="gce", os="Windows Server 2022", gpu="L4",
 
 # --- reading a money paragraph ------------------------------------------------
 
-# Tense, hedge and negation, as words rather than as sentences. Each list is a
-# grammatical family, not a transcription of what the tool says today: a new
-# sentence built out of these words is classified without editing this file.
+# Tense, hedge and negation as WORDS. Each is a grammatical family rather than a
+# transcription of what the tool says today, so a sentence written next month out
+# of the same words is classified without editing this file.
 _PAST = re.compile(r"\b(?:was|were|been|had)\b", re.I)
-_HEDGE = re.compile(r"\b(?:may|might|could|cannot|unchecked|unknown|if)\b", re.I)
+_HEDGE = re.compile(r"\b(?:may|might|could|cannot|unchecked|unknown|if|whether)\b", re.I)
 _NEGATED = re.compile(r"\b(?:not|nothing|no|never|none)\b", re.I)
 
-# "how to stop paying", in the two shapes it takes: a command, and a sentence
+# The state of the machine, said in words rather than the word "billing" — which
+# is how three of the six inversions dodged every check that looks for a bill. A
+# box that is running is billing; one that is stopped is not.
+_STOPPED = re.compile(
+    r"\b(?:is|are) not running\b|\bnothing(?: else)? is running\b"
+    r"|\b(?:is|are) stopped\b|\bwhat is stopped\b", re.I)
+_RUNNING = re.compile(
+    r"\b(?:is|are)(?: still| now)? running\b|\bleft running\b"
+    r"|\b(?:is|are) up\b|\bwhat is running\b", re.I)
+
+# "How to stop paying", in the two shapes it takes: a command, and a sentence
 # telling you to stop. The commands are COMPUTED from the host rather than
-# quoted, so renaming `down` or changing `_raw_stop`'s flags cannot leave this
-# looking for a string nothing prints any more.
+# quoted, so renaming `down` cannot leave this looking for a string nothing
+# prints. The lookbehind matters: "nothing to stop" is the OPPOSITE of an offer
+# and contains the words of one.
 _STOP_ADVICE = re.compile(
-    r"\bto stop\b|\bstop (?:them|it|the box|the machine|paying)\b", re.I)
+    r"(?<!nothing )\bto stop\b|\bstop (?:them|it|the box|the machine|paying)\b", re.I)
+_NOTHING_TO_STOP = re.compile(r"\bnothing to stop\b", re.I)
+# The other way a bill is settled: it was stopped, so there is nothing to offer.
+_IT_STOPPED = re.compile(r"\bstopped\b", re.I)
 
-AFFIRMED = "says something IS billing"
-DENIED = "says nothing IS billing"
+BILLING_NOW = "says it IS billing"
+NOT_BILLING_NOW = "says it is NOT billing"
+WAS_BILLING = "says it WAS billing"
+RUNNING_NOW = "says the machine IS running"
+STOPPED_NOW = "says the machine is NOT running"
 
-
-def _paragraphs(out: str) -> list[str]:
-    """The command's own paragraphs: a money sentence and the advice under it."""
-    return [block for block in re.split(r"\n\s*\n", out) if block.strip()]
+ON = {BILLING_NOW, RUNNING_NOW}
+OFF = {NOT_BILLING_NOW, STOPPED_NOW}
 
 
 def _clauses(paragraph: str) -> list[str]:
     """Sentences, then clauses — a negator binds to the clause it sits in.
 
     "nothing was running, so nothing is billing." is two claims about two
-    different things, and only the second one is about the bill.
+    different things, and only the second is about the bill. The em dash ends a
+    clause as firmly as a comma: "started in us-central1-b and is billing — no
+    move needed" carries a "no" that negates the move, not the bill.
     """
     parts: list[str] = []
-    # The em dash ends a clause as firmly as a comma does here — "started in
-    # us-central1-b and is billing — no move needed" carries a "no" that negates
-    # the move and not the bill, and reading it as one would let the tool say a
-    # running box is not billing.
     for sentence in re.split(r"(?<=[.;:])\s+|\n|—", paragraph):
         parts.extend(sentence.split(","))
     return [part for part in parts if part.strip()]
 
 
-def _present_claims(paragraph: str) -> set[str]:
-    """What this paragraph asserts about the bill RIGHT NOW, if anything."""
-    claims = set()
+def _stance(paragraph: str) -> set[str]:
+    """Everything this paragraph asserts about whether money is being spent."""
+    read: set[str] = set()
     for clause in _clauses(paragraph):
-        if "billing" not in clause.lower():
+        hedged = bool(_HEDGE.search(clause))
+        if "billing" in clause.lower() and not hedged:
+            if _NEGATED.search(clause):
+                if not _PAST.search(clause):
+                    read.add(NOT_BILLING_NOW)
+            else:
+                read.add(WAS_BILLING if _PAST.search(clause) else BILLING_NOW)
+        if hedged or _PAST.search(clause):
             continue
-        if _HEDGE.search(clause) or _PAST.search(clause):
-            continue  # claims nothing about now: a guess, or a finished state
-        claims.add(DENIED if _NEGATED.search(clause) else AFFIRMED)
-    return claims
+        if _STOPPED.search(clause):
+            read.add(STOPPED_NOW)
+        elif _RUNNING.search(clause):
+            read.add(RUNNING_NOW)
+    return read
 
 
-def _offers_a_way_to_stop(paragraph: str, hosts: tuple[Host, ...] = (WIN,)) -> bool:
-    """Does this paragraph hand over a way to stop the bill?"""
-    commands = [command(host) for host in hosts for command in (stop_paying, _raw_stop)]
-    return (any(command in paragraph for command in commands)
-            or bool(_STOP_ADVICE.search(paragraph)))
+def _offers_a_way_to_stop(paragraph: str) -> bool:
+    return bool(stop_paying(WIN) in paragraph or _raw_stop(WIN) in paragraph
+                or _STOP_ADVICE.search(paragraph))
+
+
+def disagreements(text: str, *, offers: bool, resolvable: bool = True) -> list[str]:
+    """Every way this paragraph contradicts itself about the bill."""
+    read = _stance(text)
+    found = []
+    if (read & ON) and (read & OFF):
+        found.append(f"it {' and '.join(sorted(read & ON))} and in the same breath "
+                     f"{' and '.join(sorted(read & OFF))} — a box that runs, bills")
+    if (read & OFF) and offers:
+        found.append(f"it {' and '.join(sorted(read & OFF))}, and then offers a "
+                     f"way to stop paying — which only makes sense if it is")
+    if (read & ON) and _NOTHING_TO_STOP.search(text):
+        found.append(f"it {' and '.join(sorted(read & ON))}, and then says there "
+                     f"is nothing to stop")
+    if (resolvable and {BILLING_NOW, WAS_BILLING} & read
+            and not offers and not _IT_STOPPED.search(text)):
+        found.append("it reports a bill and neither stops it nor says how to")
+    return found
 
 
 def check_agreement(out: str, where: str) -> set[str]:
-    """Hold every money paragraph to the rule; return the claims it made.
+    """Hold every money paragraph in `out` to the three rules.
 
-    The claims come back so a caller can assert the corpus was not silent. A
-    checker that reads nothing agrees with everything.
+    The stance comes back so a caller can assert the corpus was not silent.
     """
     seen: set[str] = set()
     for paragraph in _paragraphs(out):
-        claims = _present_claims(paragraph)
-        seen |= claims
-        offered = _offers_a_way_to_stop(paragraph)
-        if AFFIRMED in claims:
-            assert offered, (
-                f"{where}: this paragraph {AFFIRMED} and gives no way to stop "
-                f"paying:\n{paragraph}"
-            )
-        elif DENIED in claims:
-            assert not offered, (
-                f"{where}: this paragraph {DENIED} and then offers a way to stop "
-                f"paying, which only makes sense if it is:\n{paragraph}"
-            )
+        seen |= _stance(paragraph)
+        for problem in disagreements(paragraph, offers=_offers_a_way_to_stop(paragraph)):
+            raise AssertionError(f"{where}: {problem}:\n{paragraph}")
     return seen
+
+
+def _paragraphs(out: str) -> list[str]:
+    """The command's own paragraphs: a money sentence and the advice under it.
+
+    Every money sentence is written with a leading newline and its advice
+    without one, so a blank line separates one verdict's claim from the next
+    one's. That is what keeps the `down --all` summary and the undeclared-machines
+    block from being read as each other's advice — the block offers `gcloud …
+    stop` and says nothing about billing, correctly, because those are machines
+    this tool will not touch.
+    """
+    return [block for block in re.split(r"\n\s*\n", out) if block.strip()]
+
+
+# --- driving the commands -----------------------------------------------------
 
 
 @pytest.fixture
@@ -199,7 +252,7 @@ class Cloud:
 
     def list_instances(self, project):
         # No undeclared machines, so every paragraph in the output belongs to the
-        # money summary. The undeclared block is covered separately, below.
+        # money summary. The undeclared block is its own paragraph either way.
         return []
 
     def __getattr__(self, name):
@@ -217,8 +270,10 @@ def test_each_down_verdict_agrees_with_the_advice_under_it(cli, monkeypatch, ver
 
     `put_away` is replaced by its answer, because the answer is the whole input to
     the sentence being checked and building four cloud states to reach four
-    strings tests gcloud rather than the wording. A verdict added to `VERDICTS`
-    and forgotten in the sentence map arrives here as a KeyError.
+    strings tests gcloud rather than the wording. The four sentences live in a
+    dict indexed by the verdict, which is why they are covered here and not by
+    the source reader below: their advice sits in a separate `if`, and only the
+    run knows which sentence went with which branch.
     """
     from comfy_qa import lifecycle
 
@@ -263,64 +318,22 @@ def test_the_down_all_summary_agrees_with_its_own_advice(cli, case):
     check_agreement(result.stdout, f"down --all ({case})")
 
 
-# --- 3. the checker is not agreeing with everything ---------------------------
+# --- 3. the same rule over the source -----------------------------------------
 
-
-def test_both_kinds_of_claim_are_actually_read(cli, monkeypatch):
-    """A rule that never recognises a claim passes anything.
-
-    So the corpus is required to contain both halves of it: a run that says
-    something IS billing, and a run that says nothing is. If a rewording makes
-    every sentence unreadable to `_present_claims`, this fails while the checks
-    above quietly stop checking.
-    """
-    from comfy_qa import lifecycle
-
-    seen: set[str] = set()
-    for args, status in ALL_RUNS.values():
-        seen |= check_agreement(cli(*args, cloud=Cloud(status=status)).stdout, "corpus")
-    for verdict in VERDICTS:
-        monkeypatch.setattr(lifecycle, "put_away", lambda *a, **k: verdict)
-        seen |= check_agreement(cli("down", "comfy-win").stdout, "corpus")
-
-    assert AFFIRMED in seen, "no run said anything IS billing; the rule read nothing"
-    assert DENIED in seen, "no run said nothing IS billing; the rule read nothing"
-
-
-def test_the_claim_reader_tells_the_two_apart():
-    """The classifier itself, on the two shapes the tool writes and their
-    inversions — so a change that makes it answer the same thing every time is a
-    failure here rather than a silent hole above."""
-    assert _present_claims("comfy-win is left running, and it is billing.") == {AFFIRMED}
-    assert _present_claims("comfy-win is left running, and it is not billing.") == {DENIED}
-    assert _present_claims("nothing was running, so nothing is billing.") == {DENIED}
-    assert _present_claims("nothing was running, so everything is billing.") == {AFFIRMED}
-    # Past and hedge claim nothing about now, in either direction.
-    assert _present_claims("comfy-win was billing. Stopped.") == set()
-    assert _present_claims("it may have been billing.") == set()
-
-
-def test_the_offer_reader_tells_advice_from_a_full_stop():
-    """"Stopped." is a report, not an offer, and reading it as one would make the
-    `caught` verdict fail for saying the true thing."""
-    assert _offers_a_way_to_stop(f"  {stop_paying(WIN)}   # stop the box, stop paying")
-    assert _offers_a_way_to_stop("Run without --keep-running to stop them.")
-    assert _offers_a_way_to_stop(f"  {_raw_stop(WIN)}")
-    assert not _offers_a_way_to_stop("comfy-win was billing. Stopped.")
-    assert not _offers_a_way_to_stop("  comfy-qat list --live")
-
-
-# --- 4. the same rule over the source, for commands not driven above ----------
-
-# `move`'s money line and the "already where you wanted it" line in `_offer_move`
-# both sit behind a relocation, and building one to read two sentences tests
-# gcloud rather than the wording. So they are read where they are written.
+# `move`'s money line, `go`'s two exit lines, `switch --dry-run`'s plan and
+# `_probe_failed`'s fix all sit behind a relocation, a served ComfyUI or a
+# capacity failure, and building one to read a sentence tests gcloud rather than
+# the wording. So they are read where they are written.
 #
-# `stop_paying`, `_raw_stop` and `_with_the_bill` ARE the offer — the last one is
+# `stop_paying`, `_raw_stop` and `_with_the_bill` ARE the offer — the last is
 # named for it: "a fix that ends by saying how to stop paying". A paragraph that
-# calls any of them offers a way to stop, whatever the surrounding prose says, so
-# they are looked for as calls rather than as text.
+# calls any of them offers a way to stop, so they are looked for as calls rather
+# than as text.
 OFFERING_HELPERS = {"_with_the_bill", "stop_paying", "_raw_stop"}
+
+# A message and its own remedy in one node. `say.result` has no such pairing —
+# its advice is the next statement — so those are grouped by paragraph instead.
+CARRIES_ITS_OWN_FIX = {"LifecycleError", "error", "fail", "warn"}
 
 SOURCE = Path(__file__).resolve().parent.parent / "comfy_qa"
 
@@ -338,42 +351,6 @@ def _is_an_offer(node: ast.AST) -> bool:
             or bool(_STOP_ADVICE.search(_literals(node))))
 
 
-def _written_paragraphs() -> list[tuple[str, str, bool]]:
-    """(where, text, offers a way to stop) for each money paragraph in the source.
-
-    A paragraph is a run of consecutive `say.result` calls, starting again at each
-    one whose text opens with a newline — the command's own convention, the same
-    one the runs above read off stdout. Only `say.result`: `warn`, `step` and
-    `detail` are the story on stderr, and the rule here is about the answer.
-
-    A call that SELECTS a sentence — the verdict map — is skipped, because its
-    four sentences are four paragraphs and reading them together says nothing
-    about any of them. Those are driven for real, one verdict at a time, above.
-    """
-    found: list[tuple[str, str, bool]] = []
-    for path in sorted(SOURCE.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            for field in ("body", "orelse", "finalbody"):
-                block = getattr(node, field, None)
-                if not isinstance(block, list):
-                    continue
-                current: list | None = None
-                for statement in block:
-                    call = _a_result_call(statement)
-                    if call is None or (call.args and isinstance(call.args[0], ast.Subscript)):
-                        current = None
-                        continue
-                    text = _literals(call)
-                    if text.startswith("\n") or current is None:
-                        current = [f"{path.name}:{call.lineno}", text, _is_an_offer(call)]
-                        found.append(current)  # type: ignore[arg-type]
-                    else:
-                        current[1] += " " + text
-                        current[2] = current[2] or _is_an_offer(call)
-    return [(where, text, offer) for where, text, offer in found]
-
-
 def _a_result_call(statement: ast.stmt) -> ast.Call | None:
     if (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
             and ast.unparse(statement.value.func) == "say.result"):
@@ -381,29 +358,172 @@ def _a_result_call(statement: ast.stmt) -> ast.Call | None:
     return None
 
 
+def _written_paragraphs() -> list[tuple[str, str, bool]]:
+    """(where, text, offers a way to stop) for each money paragraph in the source.
+
+    A paragraph is a run of consecutive `say.result` calls, starting again at each
+    one whose text opens with a newline — the command's own convention, the same
+    one the runs above read off stdout. Only `say.result`: `warn`, `step` and
+    `detail` are the story on stderr, and these rules are about the answer.
+
+    A call that PICKS a sentence is handled two ways. `A if cond else B` is two
+    alternative paragraphs and each is judged alone — reading them together made
+    `switch --dry-run` look as though it said a thing and its opposite. A dict
+    indexed by a verdict is skipped entirely: its advice is in a separate branch,
+    so nothing here can pair them, and those are driven for real above.
+    """
+    found: list[tuple[str, str, bool]] = []
+    for path in sorted(SOURCE.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            for field in ("body", "orelse", "finalbody"):
+                block = getattr(node, field, None)
+                if isinstance(block, list):
+                    found.extend(_paragraphs_in(path.name, block))
+    return found
+
+
+def _paragraphs_in(where: str, block: list[ast.stmt]) -> list[tuple[str, str, bool]]:
+    found: list[list] = []
+    current: list | None = None
+    for statement in block:
+        call = _a_result_call(statement)
+        if call is None or (call.args and isinstance(call.args[0], ast.Subscript)):
+            current = None
+            continue
+        picked = call.args[0] if call.args else None
+        if isinstance(picked, ast.IfExp):
+            for arm in (picked.body, picked.orelse):
+                found.append([f"{where}:{call.lineno}", _literals(arm), _is_an_offer(call)])
+            current = None
+            continue
+        text = _literals(call)
+        if text.startswith("\n") or current is None:
+            current = [f"{where}:{call.lineno}", text, _is_an_offer(call)]
+            found.append(current)
+        else:
+            current[1] += " " + text
+            current[2] = current[2] or _is_an_offer(call)
+    return [(a, b, c) for a, b, c in found]
+
+
+def _fix_carrying_calls() -> list[tuple[str, str, bool]]:
+    """(where, text, offers a way to stop) for each message that carries its fix."""
+    found = []
+    for path in sorted(SOURCE.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call):
+                continue
+            if ast.unparse(node.func).split(".")[-1] not in CARRIES_ITS_OWN_FIX:
+                continue
+            text = _literals(node)
+            if not ("billing" in text.lower() or _STOPPED.search(text)
+                    or _RUNNING.search(text)):
+                continue
+            found.append((f"{path.name}:{node.lineno}", text, _is_an_offer(node)))
+    return found
+
+
 def test_every_money_paragraph_in_the_source_agrees_with_itself():
     """The rule, applied where the sentences are written rather than printed.
 
-    This is what covers `move` — "is now in us-central1-b, running and billing
-    from now" and the `stop_paying` line under it — and `_offer_move`'s "started
-    in <zone> and is billing — no move needed", neither of which is reachable
-    without faking a relocation.
+    This is what covers `move`'s "running and billing from now", `go --follow`'s
+    "{host} is still running" over a `stop_paying` line, and `switch --dry-run`'s
+    "nothing else is running, so nothing to stop".
     """
     for where, text, offers in _written_paragraphs():
-        claims = _present_claims(text)
-        if AFFIRMED in claims:
-            assert offers, f"{where}: {AFFIRMED} and gives no way to stop paying:\n{text}"
-        elif DENIED in claims:
-            assert not offers, (
-                f"{where}: {DENIED} and then offers a way to stop paying:\n{text}")
+        for problem in disagreements(text, offers=offers):
+            raise AssertionError(f"{where}: {problem}:\n{text}")
 
 
-def test_the_source_reader_finds_the_claims_that_are_there():
-    """Non-vacuity for the check above, which would otherwise pass on a reader
-    that has stopped recognising `say.result` — or the whole of `comfy_qa`."""
+def test_every_message_agrees_with_the_fix_it_carries():
+    """The same, for a message and its own `fix=` — one node, both halves.
+
+    This is what covers `_probe_failed`'s "or look at what is running:" standing
+    over `gcloud compute instances stop`: invert the label and the fix tells you
+    to look at what is stopped and then to stop something.
+
+    Rule (c) is not applied here. A failure's remedy is legitimately something
+    other than stopping — sign in, install a driver, try another zone — and
+    saying a box is billing while telling you to fix the driver is correct.
+    """
+    for where, text, offers in _fix_carrying_calls():
+        for problem in disagreements(text, offers=offers, resolvable=False):
+            raise AssertionError(f"{where}: {problem}:\n{text}")
+
+
+# --- 4. none of the readers is agreeing with everything -----------------------
+
+
+def test_both_kinds_of_claim_are_actually_read(cli, monkeypatch):
+    """A rule that never recognises a claim passes anything.
+
+    So the corpus is required to contain both halves of it: a run that says
+    something IS billing, and a run that says nothing is. If a rewording makes
+    every sentence unreadable to `_stance`, this fails while the checks above
+    quietly stop checking.
+    """
+    from comfy_qa import lifecycle
+
+    seen: set[str] = set()
+    for args, status in ALL_RUNS.values():
+        seen |= check_agreement(cli(*args, cloud=Cloud(status=status)).stdout, "corpus")
+    for verdict in VERDICTS:
+        monkeypatch.setattr(lifecycle, "put_away", lambda *a, **k: verdict)
+        seen |= check_agreement(cli("down", "comfy-win").stdout, "corpus")
+
+    assert BILLING_NOW in seen, "no run said anything IS billing; the rule read nothing"
+    assert NOT_BILLING_NOW in seen, "no run said nothing IS billing; the rule read nothing"
+    assert WAS_BILLING in seen, "no run reported a finished bill; the rule read nothing"
+
+
+def test_the_source_readers_find_the_claims_that_are_there():
+    """Non-vacuity for the two readers above, which would otherwise pass on a
+    walker that has stopped recognising `say.result` — or the whole package."""
     paragraphs = _written_paragraphs()
     assert len(paragraphs) > 50, "far too few money paragraphs found; the reader is broken"
-    claimed = {claim for _, text, _ in paragraphs for claim in _present_claims(text)}
-    assert claimed == {AFFIRMED, DENIED}, (
-        f"the source reader found {claimed or 'no claims at all'}; it must find both"
+    assert len(_fix_carrying_calls()) > 15, "far too few messages with a fix; likewise"
+
+    read = {claim for _, text, _ in paragraphs + _fix_carrying_calls()
+            for claim in _stance(text)}
+    assert read >= {BILLING_NOW, NOT_BILLING_NOW, WAS_BILLING, RUNNING_NOW, STOPPED_NOW}, (
+        f"the source readers found only {sorted(read)}; every kind of claim the "
+        f"rules turn on must be one they can see"
     )
+
+
+def test_the_reader_tells_the_six_inversions_from_what_is_written():
+    """The classifier itself, on each sentence the census inverted and on its
+    inversion — so a change that makes it answer the same thing every time fails
+    here rather than leaving a silent hole above."""
+    # (a) the four that cost money, each said to be OFF over an offer to stop.
+    for said in ("comfy-win is left running, and it is not billing.",
+                 "comfy-win is now in us-central1-b, stopped and not billing from now.",
+                 "ComfyUI exited (1). comfy-win is not running.",
+                 "or look at what is stopped:"):
+        assert disagreements(said, offers=True, resolvable=False), f"missed: {said}"
+        # ... and each is silent when it says the true thing.
+    for said in ("comfy-win is left running, and it is billing.",
+                 "comfy-win is now in us-central1-b, running and billing from now.",
+                 "ComfyUI exited (1). comfy-win is still running.",
+                 "or look at what is running:"):
+        assert not disagreements(said, offers=True, resolvable=False), f"false alarm: {said}"
+    # (b) ON over "nothing to stop", and (c) a bill reported and abandoned.
+    assert disagreements("  - everything else is running, so nothing to stop", offers=False)
+    assert not disagreements("  - nothing else is running, so nothing to stop", offers=False)
+    assert disagreements("comfy-win was running, so it was billing.", offers=False)
+    assert not disagreements("comfy-win was not running, so nothing was billing.", offers=False)
+    # Past tense and hedges claim nothing about now, in either direction.
+    assert not disagreements("comfy-win was billing. Stopped.", offers=False)
+    assert not disagreements("it may have been billing.", offers=False)
+
+
+def test_the_offer_reader_tells_advice_from_a_full_stop():
+    """"Stopped." is a report, not an offer, and "nothing to stop" is its
+    opposite while containing every word of one."""
+    assert _offers_a_way_to_stop(f"  {stop_paying(WIN)}   # stop the box, stop paying")
+    assert _offers_a_way_to_stop("Run without --keep-running to stop them.")
+    assert _offers_a_way_to_stop(f"  {_raw_stop(WIN)}")
+    assert not _offers_a_way_to_stop("comfy-win was billing. Stopped.")
+    assert not _offers_a_way_to_stop("  comfy-qat list --live")
+    assert not _offers_a_way_to_stop("  - nothing else is running, so nothing to stop")
