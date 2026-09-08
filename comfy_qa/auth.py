@@ -247,7 +247,9 @@ def quota_list_cmd(
     region: Annotated[Optional[str], typer.Option("--region", help="Only this region.")] = None,
     by_region: Annotated[bool, typer.Option(
         "--by-region", help="One row per region instead of one per card.")] = False,
-    as_json: Annotated[bool, typer.Option("--json")] = False,
+    as_json: Annotated[bool, typer.Option(
+        "--json", help="Print JSON instead of the table: project, gpus (one per card), "
+                       "by_region (one per card and place).")] = False,
 ) -> None:
     """What can I run today, what is waiting on Google, what did I never ask for."""
     gc = Gcloud()
@@ -307,8 +309,13 @@ def quota_request_cmd(
     quota_id: Annotated[Optional[str], typer.Option(
         "--quota-id", help="Raw quota id, if you would rather name it exactly.")] = None,
     value: Annotated[int, typer.Option("--value", help="How many of each card.")] = 1,
-    region: Annotated[Optional[str], typer.Option("--region")] = None,
-    justification: Annotated[Optional[str], typer.Option("--justification")] = None,
+    region: Annotated[Optional[str], typer.Option(
+        "--region", help="The region to be granted the quota in — where the cards you are "
+                         "approved for may then be started. Not `quota list --region`, "
+                         "which only narrows what that table shows.")] = None,
+    justification: Annotated[Optional[str], typer.Option(
+        "--justification", help="Why you need it, passed to Google verbatim — this is what a "
+                                "human reviewer reads. Left off, nothing is sent at all.")] = None,
     wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait for approval. On by default.")] = True,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Print the gcloud calls instead of running them.")] = False,
 ) -> None:
