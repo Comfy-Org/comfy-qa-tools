@@ -1437,11 +1437,27 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     from .gcloud import GcloudError
     from .lifecycle import (
         ensure_installed, serve, start_detached, stop_paying, wait_for_ssh,
+        wrong_machine_fix,
     )
+    from .stamp import mismatch
 
     browser = None if no_browser else (lambda url: webbrowser.open(url))
 
     if ready is not None and ready.stamp is not None:
+        # The everyday route to a browser tab, and the one that never touches
+        # `serve` or `start_detached`: a box that is ALREADY serving comes back
+        # from `bring_up` with a stamp and is handed over right here. Guarding
+        # only the launch would have covered the rare path — the machine that
+        # had to be started — and left the ordinary one open, which is close to
+        # no guard at all, because the person it protects is the one who
+        # reconnects to a running box, which is everybody, most days.
+        #
+        # `bring_up` refuses to RETURN a machine it cannot identify; this refuses
+        # to OPEN one. Two answers to the same question, deliberately, because
+        # this is the line that actually points a browser at a host.
+        problem = mismatch(host, ready.stamp)
+        if problem is not None:
+            say.fail(problem, fix=wrong_machine_fix(host), code=1, blank_line=False)
         say.result(f"\n{host.url}")
         say.result(ready.stamp.line())
         if browser:
