@@ -614,3 +614,56 @@ def test_the_layout_the_installer_builds_is_the_one_searched_first(host):
     assert not any(other in built for other in layouts[1:]), (
         "the installer builds more than one layout; which one wins is no longer "
         "decided by this list")
+
+def test_a_repair_checks_there_is_something_to_repair_on_both_boxes():
+    """The guard `install_command` has had all along, which this did not.
+
+    `install_command`'s comment names the hazard exactly — "Without this the next
+    line fails quietly and everything after it installs into whatever directory
+    PowerShell happened to be in" — and it bites harder here. Rule 1 keeps
+    PowerShell at `Continue`, where a failed `Set-Location` is NON-TERMINATING,
+    so the script carried on and spent several minutes putting 2.5 GB of CUDA
+    torch, and then a requirements file, into whatever directory the session
+    started in.
+
+    Linux guards its own `cd` and says why; Windows did not. Parallel code, one
+    side guarded — the shape this project keeps finding — so both sides are
+    asserted here rather than only the one that was broken, and both answer a
+    missing checkout with the same sentence rather than one getting a shell error
+    and the other a message.
+    """
+    from comfy_qa.provision import NOTHING_TO_REPAIR, repair_command
+
+    for host in ALL:
+        command = repair_command(host)
+        assert NOTHING_TO_REPAIR in command, f"{host.os}: no guard"
+        assert command.index(NOTHING_TO_REPAIR) < command.index("pip install"), (
+            f"{host.os}: the guard runs after the install it exists to prevent")
+        assert "exit 1" in command, f"{host.os}: it must fail, not just say so"
+
+
+def test_the_repair_guard_names_the_root_before_the_install_directory_is_used():
+    """Windows specifically: the `Set-Location` is what the guard protects, so
+    the check has to precede it and not merely precede pip."""
+    from comfy_qa.provision import NOTHING_TO_REPAIR, repair_command
+
+    windows = repair_command(WIN)
+    assert windows.index(NOTHING_TO_REPAIR) < windows.index("Set-Location")
+
+
+@pytest.mark.parametrize("build", EVERY_BUILDER)
+def test_no_windows_command_runs_the_boxs_powershell_profile(build):
+    """`-NonInteractive` is not the whole guard against a prompt.
+
+    A machine-wide or per-user PowerShell profile runs BEFORE `-NonInteractive`
+    takes effect, so a box whose profile asks anything hangs a command carrying
+    every other protection in this file — the one failure that reports nothing
+    at all while the machine goes on billing. `-NoProfile` also makes the
+    invocation identical on every box, which is the point of a QA tool.
+    """
+    command = build(WIN)
+    if "powershell" not in command:
+        pytest.skip("this builder emits no PowerShell on Windows")
+    assert "-NoProfile" in command
+    assert command.index("-NoProfile") < command.index("-Command"), (
+        "it has to come before the command it is protecting")

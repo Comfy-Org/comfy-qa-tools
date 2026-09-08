@@ -13,7 +13,12 @@ times in ways that all look like something else:
   2. A BOM-less .ps1 is read as CP1252, so a UTF-8 dash becomes a stray quote and
      breaks the parse tens of lines later. Everything here is ASCII only.
   3. `Split-Path` with an empty value prompts, which hangs a non-interactive SSH
-     command forever. Nothing here prompts, and PowerShell runs -NonInteractive.
+     command forever. Nothing here prompts, and PowerShell runs -NonInteractive
+     -NoProfile. `-NonInteractive` alone is not the whole guard: a machine-wide
+     or per-user profile runs BEFORE it takes effect, so a box whose profile
+     asks anything hangs a command that carries every protection this file
+     documents. `-NoProfile` also makes the invocation the same on every box,
+     which is what a QA tool is for.
 
 Because 1 rules out `-ErrorActionPreference Stop`, PowerShell carries on after a
 failed step, and an install whose clone failed still ends by printing "install
@@ -204,7 +209,7 @@ def check_command(host: Host) -> str:
     if is_windows(host):
         python = f"{WINDOWS_ROOT}\\venv\\Scripts\\python.exe"
         return (
-            "powershell -NonInteractive -Command "
+            "powershell -NoProfile -NonInteractive -Command "
             f"\"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
             "{ Write-Output 'MISSING'; exit 0 }; "
             f"if (Test-Path '{python}') {{ $ok = $false; "
@@ -258,7 +263,7 @@ def cuda_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             "$smi = (& nvidia-smi 2>$null | Out-String); "
             f"if (-not $smi) {{ Write-Output '{NO_NVIDIA}'; exit 0 }}; "
             "$m = [regex]::Match($smi, 'CUDA Version:\\s*\\d+\\.\\d+'); "
@@ -322,7 +327,7 @@ def verify_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
             f"{{ Write-Output '{NO_COMFYUI}'; exit 0 }}; "
             f"Set-Location '{WINDOWS_ROOT}'; "
@@ -358,7 +363,7 @@ def firewall_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"if (-not (Get-NetFirewallRule -DisplayName '{FIREWALL_RULE}' "
             "-ErrorAction SilentlyContinue)) { "
             f"New-NetFirewallRule -DisplayName '{FIREWALL_RULE}' -Direction Inbound "
@@ -384,7 +389,7 @@ def port_holder_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"$c = Get-NetTCPConnection -LocalPort {COMFYUI_PORT} -State Listen "
             "-ErrorAction SilentlyContinue | Select-Object -First 1; "
             f"if (-not $c) {{ Write-Output '{PORT_FREE}'; exit 0 }}; "
@@ -403,9 +408,16 @@ def port_holder_command(host: Host) -> str:
 def stop_command(host: Host, pid: str) -> str:
     """Stop a process on the box by pid. Used only on one this tool started."""
     if is_windows(host):
-        return ("powershell -NonInteractive -Command "
+        return ("powershell -NoProfile -NonInteractive -Command "
                 f"\"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue\"")
     return f"kill {pid} 2>/dev/null || true"
+
+
+# What a repair says when there is no checkout under it. The caller judges this
+# command by its exit code, so this is for whoever is reading the streamed log:
+# "pip could not find requirements.txt" is a sentence about pip, printed about a
+# box that has no ComfyUI on it.
+NOTHING_TO_REPAIR = "NOTHING_TO_REPAIR: no main.py, so there is nothing to repair"
 
 
 def repair_command(host: Host, *, force_torch: bool = False,
@@ -437,7 +449,23 @@ def repair_command(host: Host, *, force_torch: bool = False,
     if is_windows(host):
         python = windows_python_search("'python'")
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
+            # The guard `install_command` has and this did not. Its comment names
+            # the hazard exactly — "Without this the next line fails quietly and
+            # everything after it installs into whatever directory PowerShell
+            # happened to be in" — and it bites harder here, because rule 1 keeps
+            # PowerShell at `Continue`, where a failed `Set-Location` is
+            # NON-TERMINATING. The script carries on and spends several minutes
+            # putting 2.5 GB of CUDA torch, then a requirements file, into
+            # whatever directory the session started in.
+            #
+            # Linux guards its own `cd` and says why one line below. Only the
+            # Windows half could silently continue — parallel code, one side
+            # guarded, which is the shape this project keeps finding. Both sides
+            # now say the same sentence, so the answer does not depend on which
+            # box you are on.
+            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            f"{{ Write-Output '{NOTHING_TO_REPAIR}'; exit 1 }}; "
             f"Set-Location '{WINDOWS_ROOT}'; "
             + python
             + "Write-Output 'installing torch for this GPU (the slow part)'; "
@@ -449,7 +477,11 @@ def repair_command(host: Host, *, force_torch: bool = False,
     return (
         # `|| exit 1`, because this was `cd ... &&` and a repair that cannot
         # reach the checkout must not go on to pip-install into whatever
-        # directory the shell landed in.
+        # directory the shell landed in. The `main.py` check above it is the
+        # same question asked one step earlier, and it is here so that both
+        # operating systems answer a missing checkout with the same sentence
+        # rather than one getting a shell error and the other a message.
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo '{NOTHING_TO_REPAIR}'; exit 1; fi; "
         f"cd {LINUX_ROOT} || exit 1; "
         + linux_python_search()
         + '[ -n "$py" ] || py=python3; '
@@ -469,7 +501,7 @@ def install_command(host: Host, index: str | None = None) -> str:
     if is_windows(host):
         # winget is present on Server 2022 images; git and python come from there.
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             "Write-Output 'installing prerequisites'; "
             "winget install --id Git.Git -e --silent "
             "--accept-source-agreements --accept-package-agreements; "
@@ -572,7 +604,7 @@ def launch_command(host: Host) -> str:
     listen = "127.0.0.1"
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
             + windows_python_search(
                 "(Get-Command python -ErrorAction SilentlyContinue).Source")
@@ -620,7 +652,7 @@ def launch_detached_command(host: Host) -> str:
     listen = "127.0.0.1"
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
             + windows_python_search(
                 "(Get-Command python -ErrorAction SilentlyContinue).Source")
@@ -631,7 +663,7 @@ def launch_detached_command(host: Host) -> str:
             + f"' main.py --listen {listen} --port {COMFYUI_PORT} *> ' + $q + "
             + f"'{WINDOWS_LOG}' + $q; "
             + "Start-Process -FilePath 'powershell' "
-            + "-ArgumentList '-NonInteractive', '-Command', $inner "
+            + "-ArgumentList '-NoProfile', '-NonInteractive', '-Command', $inner "
             + f"-WorkingDirectory '{WINDOWS_ROOT}' -WindowStyle Hidden; "
             + f"Write-Output '{STARTED}'\""
         )
@@ -663,7 +695,7 @@ def alive_command(host: Host) -> str:
     """
     if is_windows(host):
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             "$p = Get-Process -Name python, pythonw -ErrorAction SilentlyContinue; "
             f"if ($p) {{ Write-Output '{ALIVE}' }} else {{ Write-Output '{GONE}' }}\""
         )
@@ -689,7 +721,7 @@ def logs_command(host: Host, *, tail: int = 200, follow: bool = False) -> str:
     if is_windows(host):
         wait = " -Wait" if follow else ""
         return (
-            "powershell -NonInteractive -Command \""
+            "powershell -NoProfile -NonInteractive -Command \""
             f"if (-not (Test-Path '{WINDOWS_LOG}')) {{ exit {NO_LOG_EXIT} }}; "
             f"Get-Content -Path '{WINDOWS_LOG}' -Tail {lines}{wait}\""
         )
