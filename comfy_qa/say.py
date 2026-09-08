@@ -22,10 +22,31 @@ The stream rule in one sentence: **stdout carries the answer, stderr carries the
 story**. `comfy-qat env --json | jq` never sees a progress line, and
 `comfy-qat go 2>&1 | tee run.log` never loses one.
 
-What is deliberately absent: spinners, progress bars, cursor movement, colour.
-This tool's output is read twice — once in a terminal and once in a Slack code
-block — and everything that redraws survives only the first reading. A long step
-says so by printing another whole line, which is the one shape that pastes.
+What is deliberately absent from these seven writers: spinners, progress bars,
+cursor movement, colour. This tool's output is read twice — once in a terminal
+and once in a Slack code block — and everything that redraws survives only the
+first reading. A long step says so by printing another whole line, which is the
+one shape that pastes.
+
+Read that as being about `say`, because that is all it was ever true of. Without
+a subject it read as a claim about the tool, and the tool does emit colour:
+`comfy-qat --help` is rendered by Typer through Rich, and in a terminal it comes
+out in several hundred SGR escapes. Two reasons that is a caveat rather than a
+defect, both worth writing down because neither is obvious.
+
+Rich emits them only when stdout is a terminal. Redirect the help and there is
+not one escape in it, so they cannot reach the Slack paste this paragraph is
+about — and colour does not redraw, which is the property the paragraph is
+actually about. And there is no single seam to turn it off at:
+`rich_markup_mode=None` on every `typer.Typer()` in the package would take the
+help layout with it and the next sub-app added would silently opt back in, and
+the alternative is assigning to a module-level constant inside Typer, where the
+way you learn that an upgrade renamed it is that colour comes back with nothing
+said.
+
+`tests/test_no_colour.py` holds down all three: that `say` writes no escape even
+to a terminal, that Typer's help still writes some, and that a redirect gets
+none. If Typer ever stops, the second goes red and this caveat can go with it.
 
 Exit codes, so the fourteen places that used to pick their own agree:
 

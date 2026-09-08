@@ -79,6 +79,7 @@ REQUIRED = {
     "test_lifecycle",
     "test_lifecycle_e2e",
     "test_move",
+    "test_no_colour",
     "test_option_help",
     "test_provision",
     "test_quota",
