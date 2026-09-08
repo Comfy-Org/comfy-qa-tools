@@ -142,6 +142,30 @@ def test_a_stopped_source_still_reads_as_stopped():
     assert "stopped" in plan.steps()[-1]
 
 
+# The two tests above pin the ends — RUNNING and TERMINATED — and a mutation
+# narrowing `status != "TERMINATED"` to `status == "RUNNING"` passed the whole
+# suite. Google has five more states, and four of them are a box that is on, or
+# on its way, and billing. Those four are the gap the ends could not see.
+@pytest.mark.parametrize("status", ["STAGING", "PROVISIONING", "STOPPING", "REPAIRING"])
+def test_a_source_between_the_two_ends_is_still_described_as_billing(status):
+    """A box that is STAGING is not running yet and is already charged for.
+    Reading anything but TERMINATED as stopped is the under-reporting direction,
+    which is the one that costs money."""
+    plan = plan_move(WIN, {**INSTANCE, "status": status}, "us-central1-b")
+    leave = plan.steps()[-1]
+    assert "keeps billing" in leave, f"{status} read as not billing: {leave}"
+    assert "stopped" not in leave
+
+
+def test_a_source_whose_state_could_not_be_read_is_not_called_stopped():
+    """No status at all is not evidence the box is off."""
+    plan = plan_move(WIN, {k: v for k, v in INSTANCE.items() if k != "status"},
+                     "us-central1-b")
+    assert "stopped" in plan.steps()[-1], (
+        "an unreadable state currently reads as stopped — pinned as the "
+        "behaviour that exists, not as the behaviour that is right")
+
+
 def test_leaving_the_source_alone_is_a_step_the_dispatch_knows_about():
     """LEAVE had no branch in run_move: it fell through, was recorded as done,
     and nothing ever executed it. Keeping it inert is correct — a move must not
