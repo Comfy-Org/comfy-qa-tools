@@ -25,6 +25,7 @@ but nothing about the result depends on what the OS would have said about them.
 from __future__ import annotations
 
 import importlib
+import itertools
 import os
 import socket
 import subprocess
@@ -121,8 +122,36 @@ _BINDS_THE_DEFAULT_PATH = ("config", "host", "setup", "tunnel", "zones", "remove
 _LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
 
 
+@pytest.fixture(scope="session")
+def _config_redirect_root(tmp_path_factory):
+    """One numbered temp directory for the whole run, not one per test.
+
+    `tmp_path_factory.mktemp` is not a `mkdir`. It calls pytest's
+    `make_numbered_dir`, which LISTS the base temp directory to find the highest
+    number already there, and pytest keeps the last three runs' directories
+    around. So the cost of handing out the Nth directory grows with N, and the
+    fixture below is autouse over ~6100 tests: measured, asking for a second
+    numbered directory per test took the suite's fixture SETUP to 77s of a 105s
+    run, and the growth is superlinear (500 tests 2.2s, 1000 6.4s, 2000 24.2s,
+    4000 67.3s on a probe that did nothing else).
+
+    Each test still gets its own directory underneath this one — it has to, or
+    one test's host list would be the next test's — but by a plain `mkdir` with
+    a counter, which is one syscall and does not care how many came before it.
+    """
+    root = tmp_path_factory.mktemp("config-redirect")
+    counter = itertools.count(1)
+
+    def next_directory() -> Path:
+        made = root / str(next(counter))
+        made.mkdir()
+        return made
+
+    return next_directory
+
+
 @pytest.fixture(autouse=True)
-def never_write_to_the_real_config(monkeypatch, tmp_path, tmp_path_factory):
+def never_write_to_the_real_config(monkeypatch, tmp_path, _config_redirect_root):
     """Nothing in this suite touches the user's own configuration directory.
 
     THE NAME IS THE PROMISE, AND IT USED TO BE FALSE. This fixture patched one
@@ -150,10 +179,10 @@ def never_write_to_the_real_config(monkeypatch, tmp_path, tmp_path_factory):
       that is what `test_readme.py::test_bare_comfy_qat_lists_your_machines` did,
       and only a cold HOME revealed it.
     """
-    # `tmp_path_factory`, not `tmp_path`: a test's own tmp_path is something
-    # tests assert on — one of them lists it and expects exactly one entry — so
-    # the redirect must not appear inside it.
-    redirected = tmp_path_factory.mktemp("config-redirect")
+    # Not inside `tmp_path`: a test's own tmp_path is something tests assert on
+    # — one of them lists it and expects exactly one entry — so the redirect
+    # must not appear in it. Hence a separate root, made once per session.
+    redirected = _config_redirect_root()
 
     for name in _BINDS_THE_DEFAULT_PATH:
         module = importlib.import_module(f"comfy_qa.{name}")

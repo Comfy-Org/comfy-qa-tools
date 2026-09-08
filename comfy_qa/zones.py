@@ -97,6 +97,22 @@ CACHE_TTL = 7 * 24 * 60 * 60
 # outlived the fix by a week and made the ordering look like it was working.
 CACHE_VERSION = 1
 
+# How wide to probe. Every one of these threads is asleep on a TCP connect — no
+# CPU, no lock, nothing to contend over — so the pool wants to be as wide as the
+# list, and 8 was costing six sequential waves on a live project's forty-three
+# regions. Measured, 43 regions with a 250 ms round trip: 1.52s at 8 workers,
+# 0.26s at 43.
+#
+# The case that actually hurts is the degraded one. A region that does not answer
+# costs the full PROBE_TIMEOUT, and `_worth_keeping` deliberately refuses to
+# cache an unreachable region — so when the network is bad this is paid again on
+# every single create, not once a week. All forty-three timing out: 12.02s at 8
+# workers, 2.01s at 43.
+#
+# Capped rather than simply `len(regions)` so a pathological region list cannot
+# ask for an unbounded number of threads.
+PROBE_WORKERS = 64
+
 # How many regions get their zones looked up. Latency ranks every region the
 # project has quota in — forty-three of them on a live project — and asking
 # `machine-types list` about a hundred and thirty zones is slow for an answer
@@ -169,7 +185,8 @@ def _connect(region: str, *, timeout: float = PROBE_TIMEOUT) -> float:
         return UNREACHABLE
 
 
-def measure(regions: list[str], *, probe=None, workers: int = 8) -> dict[str, float]:
+def measure(regions: list[str], *, probe=None,
+            workers: int = PROBE_WORKERS) -> dict[str, float]:
     """Time every region, in parallel. Serial, forty-three of these is a minute."""
     probe = probe or _connect
     regions = list(dict.fromkeys(regions))

@@ -133,20 +133,37 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
     """
     from .tunnel import status as tunnel_status
 
-    gc = None
+    # One read for every cloud box, not one per box. `instance_statuses` asks
+    # `instances list` once per distinct project; this loop used to spawn a
+    # `gcloud compute instances describe` process per host, serially, so a host
+    # list with eight boxes meant eight of them.
+    live_states: dict[tuple[str, str, str], str] = {}
+    if live:
+        from .gcloud import Gcloud, GcloudError
+
+        remote = [(host.gce_instance, host.gce_zone, host.gce_project)
+                  for host in hosts if host.is_remote]
+        if remote:
+            try:
+                live_states = Gcloud().instance_statuses(remote)
+            except GcloudError:
+                # Unchanged in kind: not knowing was never a reason to fail
+                # `list`. It is now all-or-nothing per read rather than per box,
+                # which is what one call instead of N means.
+                live_states = {}
+
     states: dict[str, str] = {}
     for host in hosts:
         parts = []
         if host.is_remote:
             if live:
-                from .gcloud import Gcloud, GcloudError
-
-                gc = gc or Gcloud()
-                try:
-                    state = gc.instance_status(
-                        host.gce_instance, host.gce_zone, host.gce_project)
-                except GcloudError:
-                    state = "unknown"
+                # `or "unknown"`, so all three ways of not knowing land on the
+                # same word: the read failed, the machine is not on the project
+                # any more, or Google answered without a status. A declared box
+                # that has been deleted used to raise and be reported "unknown";
+                # it is now simply absent from the list, and must still say so.
+                key = (host.gce_instance, host.gce_zone, host.gce_project)
+                state = live_states.get(key) or "unknown"
                 # TERMINATED is Google's word for stopped, and reads as broken.
                 parts.append({"RUNNING": "running", "TERMINATED": "stopped"}.get(
                     state, state.lower()))
@@ -1738,6 +1755,23 @@ def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
     """
     if not others or not host.is_remote or not host.gpu:
         return None
+    # WHY THE READ CANNOT BE SKIPPED HERE, checked 2026-09-08 and written down
+    # because it looks exactly like the case `relocate._within_the_allowance`
+    # already optimises — "nothing can be over the ceiling while nothing holds
+    # any of it", pay the ~58-second `gpu_quotas` only when the answer could be
+    # no. Tried, and reverted:
+    #
+    # `relocate` counts cards in a live instance list, which really can be zero.
+    # `others` here cannot. It comes from `running_elsewhere`, which returns
+    # only hosts whose `kind` is not "local" — and `Kind` is `local | gce`, so
+    # every one of them is remote — while `config.py` REQUIRES a truthy `gpu` on
+    # every gce host (`_REQUIRED_FOR_GCE`). So `running` below is always exactly
+    # `len(others)`, and `others` is non-empty by the line above. The free half
+    # is already known to be non-zero before it is computed, and hoisting it
+    # buys nothing.
+    #
+    # The remaining question is whether `len(others) >= ceiling`, and nothing
+    # answers that without the read.
     try:
         from .quota import global_allowance
 

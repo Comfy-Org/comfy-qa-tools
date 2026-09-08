@@ -1843,18 +1843,35 @@ def running_elsewhere(
     case. Local hosts never appear: this tool did not start the local ComfyUI and
     does not get to stop it.
     """
+    candidates = [host for host in hosts
+                  if host.name != target.name and host.kind != "local"]
+
+    # One read for all of them, not one each. This loop used to spawn a
+    # `gcloud compute instances describe` process per candidate, serially, and
+    # `switch` and `go` both survey through here — so the cost grew with the
+    # size of the host list for an answer that one `instances list` carries.
+    # `instance_statuses` makes one call per distinct `gce_project`, because a
+    # host list may legitimately name several.
+    states = gc.instance_statuses(
+        [(host.gce_instance, host.gce_zone, host.gce_project)
+         for host in candidates]) if candidates else {}
+
     found: list[tuple[Host, str]] = []
-    for host in hosts:
-        if host.name == target.name or host.kind == "local":
-            continue
+    for host in candidates:
         reasons = []
         # Not `== RUNNING`. This decides which boxes `switch` stops before it
         # starts another, and the project ceiling is one GPU — so a box in
         # STAGING that is not counted here is a box that does not get stopped,
         # and the switch then fails on the ceiling it was trying to respect.
         # Fifth site of the same mistake; the other four were fixed today.
-        if gc.instance_status(host.gce_instance, host.gce_zone,
-                              host.gce_project) != TERMINATED:
+        #
+        # A machine absent from its project's list reads as UNKNOWN_STATE, which
+        # is not TERMINATED and so still counts as running. That is the same way
+        # round as before — an unreadable box was never assumed to be off — and
+        # it is the safe direction: a box wrongly counted gets stopped, a box
+        # wrongly skipped keeps billing and breaks the switch it was blocking.
+        if states.get((host.gce_instance, host.gce_zone,
+                       host.gce_project), "") != TERMINATED:
             reasons.append("running")
         if tunnel_status(host.name, tunnel_dir).running:
             reasons.append("tunnelled")

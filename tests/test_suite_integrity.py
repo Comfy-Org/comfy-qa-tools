@@ -101,6 +101,7 @@ REQUIRED = {
     "test_stamp_mismatch",
     "test_stamp_payloads",
     "test_suite_integrity",
+    "test_speed_guards",
     "test_switch",
     "test_tripwire",
     "test_tunnel",

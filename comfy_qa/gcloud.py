@@ -668,6 +668,48 @@ class Gcloud:
             "compute", "instances", "list", f"--project={project}",
         ]) or []
 
+    def instance_statuses(
+        self, wanted: list[tuple[str, str, str]],
+    ) -> dict[tuple[str, str, str], str]:
+        """The state of several machines, in one call per project rather than one each.
+
+        `instance_status` is a whole `gcloud` process per machine, and the two
+        callers that ask about a *list* of machines — `list --live` and
+        `running_elsewhere`, which is what `switch` and `go` survey with — were
+        paying that serially. Counted at the runner seam, `list --live` made
+        exactly one call per declared cloud box: eight boxes, eight processes.
+
+        `instances list` already returns every instance on a project WITH its
+        status, and `discover`, `create` and `relocate` already read it that way.
+
+        ONE CALL PER DISTINCT PROJECT, NOT ONE OVERALL. A host list may name
+        several `gce_project`s — nothing stops it, and `hosts.toml` carries the
+        project per host precisely because they can differ — so collapsing this
+        to a single call would silently report every host on the other projects
+        as unknown.
+
+        Matched on name AND zone, because an instance name is only unique within
+        a zone, and a project can hold `comfy-win` in two of them.
+
+        A machine that is absent from its project's list gets `UNKNOWN_STATE` —
+        the same answer `instance_status` gives for a read that succeeded and
+        said nothing, which is what this is. A project whose read FAILS raises,
+        as the per-machine call did; callers that treat not-knowing as survivable
+        catch `GcloudError` around this exactly as they did around that.
+        """
+        out: dict[tuple[str, str, str], str] = {}
+        for project in dict.fromkeys(project for _n, _z, project in wanted):
+            found = {}
+            for instance in self.list_instances(project):
+                zone = (instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+                found[(instance.get("name") or "", zone)] = (
+                    instance.get("status") or self.UNKNOWN_STATE)
+            for name, zone, owner in wanted:
+                if owner == project:
+                    out[(name, zone, owner)] = found.get(
+                        (name, zone), self.UNKNOWN_STATE)
+        return out
+
     #: What `instance_status` returns when Google answered but said nothing about
     #: the machine's state. It is deliberately NOT a state name: callers compare
     #: against TERMINATED and against RUNNING, and any string that is neither gets

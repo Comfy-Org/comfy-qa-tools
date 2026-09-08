@@ -101,22 +101,60 @@ LOCAL = Host(name="local", kind="local", port=8188)
 STAMP = Stamp(host="comfy-win", url="http://127.0.0.1:8190", comfyui_version="0.33.0")
 
 
-def gcloud(statuses: dict[str, object], fail: Exception | None = None):
-    """A Gcloud answering `describe` from a table, recording every call.
+def gcloud(statuses: dict[str, object], fail: Exception | None = None,
+           declared: str = ""):
+    """A Gcloud answering `describe` AND `list` from one table, recording every call.
 
     A status may be a list, which is read one entry at a time and then holds —
     that is how a box that is TERMINATED and then RUNNING is described.
+
+    `instances list` is modelled as well as `instances describe` because
+    `list --live` and `running_elsewhere` now read every box in one call per
+    project instead of one `describe` each. The two share the table and the same
+    read-once-then-hold rule, so a test that scripts a box TERMINATED-then-
+    RUNNING gets the same sequence whichever call the tool happens to make. The
+    declared host list is parsed for the zones, because a list answer carries
+    them and matching is on name AND zone.
     """
+    import tomllib
+
     calls: list[str] = []
     table = {name: list(value) if isinstance(value, list) else [value]
              for name, value in statuses.items()}
+
+    boxes = []
+    for name, entry in (tomllib.loads(declared).get("hosts") or {}).items():
+        if entry.get("kind") == "gce":
+            boxes.append((entry.get("gce_instance") or name,
+                          entry.get("gce_zone") or "",
+                          entry.get("gce_project") or ""))
+
+    def state_of(name: str, *, advance: bool = True) -> str:
+        """The box's state now, advancing a scripted sequence only on a `describe`.
+
+        A sequence like ["TERMINATED", "RUNNING"] means "stopped when first
+        asked, running once we have acted on it". The acting is always a
+        describe/start/stop against that one box, so only a describe consumes an
+        entry. A `list` answer carries every box on the project whether or not
+        the caller cared about it, and popping there advanced the state of
+        machines nobody had touched — which read as the switch target having
+        started itself.
+        """
+        states = table.get(name) or ["TERMINATED"]
+        if advance and len(states) > 1:
+            return states.pop(0)
+        return states[0]
 
     def runner(args, mode):
         key = " ".join(args)
         calls.append(key)
         if key.startswith("compute instances describe"):
-            states = table.get(args[3]) or ["TERMINATED"]
-            return {"status": states.pop(0) if len(states) > 1 else states[0]}
+            return {"status": state_of(args[3])}
+        if key.startswith("compute instances list"):
+            project = key.rsplit("--project=", 1)[-1].split()[0]
+            return [{"name": name, "status": state_of(name, advance=False),
+                     "zone": f"https://x/projects/{project}/zones/{zone}"}
+                    for name, zone, owner in boxes if owner == project]
         if key.startswith("compute instances start"):
             if fail is not None:
                 raise fail
@@ -166,7 +204,7 @@ def cli(tmp_path, monkeypatch):
         path = tmp_path / "hosts.toml"
         path.write_text(declared, encoding="utf-8")
 
-        gc = gcloud(statuses or {}, fail=fail)
+        gc = gcloud(statuses or {}, fail=fail, declared=declared)
         opened: list[str] = []
         closed: list[str] = []
 
@@ -396,7 +434,10 @@ def test_live_asks_google_and_says_stopped_rather_than_terminated(cli):
     assert "running" in rows["comfy-win"]
     assert "stopped" in rows["comfy-linux"]
     assert "TERMINATED" not in result.output
-    assert any(call.startswith("compute instances describe") for call in result.calls)
+    # `list`, not `describe`, and exactly one of them for two cloud boxes on one
+    # project. This used to assert a `describe`, of which there was one PER BOX.
+    reads = [call for call in result.calls if call.startswith("compute instances")]
+    assert reads == ["compute instances list --project=proj"], reads
 
 
 # --- the pieces, without the CLI in the way -------------------------------
@@ -523,8 +564,12 @@ def test_a_box_that_is_starting_counts_as_one_to_stop_first():
     from comfy_qa.lifecycle import running_elsewhere
 
     def runner(args, mode):
-        if " ".join(args).startswith("compute instances describe"):
-            return {"status": "STAGING"}
+        # `running_elsewhere` reads every candidate in one `instances list` per
+        # project now, rather than a `describe` each. What is under test is
+        # unchanged: STAGING is not TERMINATED, so the box counts.
+        if " ".join(args).startswith("compute instances list"):
+            return [{"name": "b", "status": "STAGING",
+                     "zone": "https://x/projects/p/zones/z"}]
         raise AssertionError(" ".join(args))
 
     target = Host(name="a", kind="gce", port=8190, os="Ubuntu 22.04", gpu="L4",
