@@ -87,6 +87,7 @@ REQUIRED = {
     "test_old_spellings",
     "test_option_help",
     "test_os_families",
+    "test_prune",
     "test_provision",
     "test_quota",
     "test_quota_regions",

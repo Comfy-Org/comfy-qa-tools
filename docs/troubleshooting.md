@@ -173,6 +173,41 @@ not the folder it goes in`**
 `comfy-qat init` could not create the file. Either the folder is not writable, or
 `--config` was pointed at a directory. It names the path it tried.
 
+## Entries for machines that no longer exist
+
+Boxes disappear without this tool: deleted in the console, deleted by a
+colleague, deleted with raw `gcloud`, or left behind under a new name by a
+`move`. The entry stays, and it is not harmless — `create` refuses a name an
+entry holds, ports are handed out from the same list, and `comfy-qat go linux`
+refuses as ambiguous once several of the machines it matches do not exist.
+
+`comfy-qat list --live` names them: the STATE column reads **`not on the
+project`** for a box Google was asked about and does not have, which is a
+different answer from `unknown` — that one means the read failed and nobody
+knows. `comfy-qat discover --prune` removes the first kind and never the second.
+It names every entry before it removes anything and asks first; `--yes` skips the
+question for scripts, and `--dry-run` shows what would go without writing.
+
+```sh
+comfy-qat discover --prune
+```
+
+**`could not be listed, so nothing was checked on it — any entry naming it was left alone`**
+One of the projects your host list names could not be listed, so nothing on it
+was compared and nothing on it was removed. A listing that fails is not a listing
+that came back empty: an entry taken out on that basis would be an entry
+destroyed because the network was down. Fix the access — usually
+`gcloud auth login`, or a project you no longer have rights on — and run it
+again. The other projects were still checked.
+
+**`the entries could not be removed`** / **`take them out of the host list by hand — while they are there, `create` refuses those names, their ports stay reserved, and a description that matches several of them refuses as ambiguous`**
+The boxes really are gone and the host list could not be rewritten. The message
+after the colon says why — most often the file is read-only or on a full disk.
+Nothing was half-written: the rewrite is validated and replaced atomically, and a
+copy stays beside it as `hosts.toml.bak`. Fix the file's permissions and run
+`comfy-qat discover --prune` again, or delete the `[hosts.<name>]` blocks
+yourself.
+
 ## Setup
 
 Setup stops rather than guessing whenever the fix is something only you can do. It

@@ -356,20 +356,134 @@ def init_cmd(
     say.result("add your cloud boxes to it, then: comfy-qat list")
 
 
+def _ghosts(gc, hosts: list[Host]) -> tuple[list[tuple[Host, str]], list[str]]:
+    """Declared cloud boxes that their own project says it does not have.
+
+    Returns the ghosts, and the projects that could not be read — because those
+    two must never be confused. A listing that SUCCEEDED and does not contain the
+    instance is Google saying it is gone; a listing that FAILED is nobody having
+    asked, and an entry removed on that basis is an entry destroyed because the
+    network was down. `instance_statuses` draws exactly this line and returns
+    `GONE` for the first, which is what makes pruning safe to write at all.
+
+    ONE READ PER DECLARED PROJECT, and not `current_project()`. A host list may
+    name several — `hosts.toml` carries the project per host precisely because
+    they can differ — so reconciling everything against the project gcloud
+    happens to be pointed at would call every host on the others a ghost, and
+    delete them.
+
+    A project is read on its own so one unreadable project cannot hide the
+    ghosts on the others: they are separate questions and they get separate
+    answers.
+    """
+    from .gcloud import GONE, GcloudError
+
+    ghosts: list[tuple[Host, str]] = []
+    unreadable: list[str] = []
+    declared = [host for host in hosts if host.is_remote]
+    for project in dict.fromkeys(host.gce_project for host in declared):
+        mine = [host for host in declared if host.gce_project == project]
+        try:
+            states = gc.instance_statuses(
+                [(host.gce_instance, host.gce_zone, host.gce_project) for host in mine])
+        except GcloudError:
+            unreadable.append(project)
+            continue
+        ghosts.extend(
+            (host, project) for host in mine
+            if states.get((host.gce_instance, host.gce_zone, host.gce_project)) == GONE)
+    return ghosts, unreadable
+
+
+def _say_unreadable(projects: list[str]) -> None:
+    """Projects that could not be read, said out loud rather than counted as clean.
+
+    Silence here would read as "nothing else to remove", which is the one
+    sentence this command must never imply on no evidence.
+    """
+    for project in projects:
+        # Not "could not be read": that four-word run is one config.py also
+        # builds, and the docs walk then pulls this whole entry into the pool of
+        # ConfigError quotations and fails it for not being one. `lifecycle.py`
+        # was reworded for the same collision.
+        say.warn(f"{project} could not be listed, so nothing was checked on it — "
+                 f"any entry naming it was left alone")
+
+
+def _forget(path: Path, hosts: list[Host], *, yes: bool) -> None:
+    """Take the named entries out of the host list, once the user has said so.
+
+    Through `hostfile.apply`, the same route `delete` and `move` take: validated
+    with the real loader, an atomic replace, a copy kept beside it, and read back
+    afterwards. The file is hand-maintained and has no other copy on this
+    machine, which is the whole argument in `hostfile`'s docstring, and it does
+    not stop being true because the entries being removed are stale.
+
+    `expect` is what the file must contain when it is read back — the names that
+    were there minus the ones going out — so a rewrite that removed the wrong
+    block is caught here rather than by the user, weeks later, wondering where a
+    host went.
+    """
+    from .hostfile import HostFileError, apply, declared, read, without
+
+    names = [host.name for host in hosts]
+    if not yes and not typer.confirm(
+            f"\nTake {say.count(len(names), 'entry', 'entries')} out of {path}?"):
+        say.result("nothing removed")
+        return
+
+    try:
+        text = read(path)
+        remaining = {name for name in declared(text)} - set(names)
+        for name in names:
+            text = without(text, name)
+        apply(path, text, expect=remaining)
+    except (HostFileError, OSError) as exc:
+        # One uninterrupted sentence, no interpolation: `delete`'s equivalent
+        # warning names the host inside the string and is split into three
+        # fragments by the docs walk, none of which is quotable on its own.
+        say.warn(f"the entries could not be removed: {exc}")
+        say.warn("take them out of the host list by hand — while they are "
+                 "there, `create` refuses those names, their ports stay "
+                 "reserved, and a description that matches several of them "
+                 "refuses as ambiguous")
+        raise typer.Exit(code=1) from exc
+    say.result(f"\nremoved {say.count(len(names), 'entry', 'entries')} from {path}")
+
+
 @app.command("discover")
 def discover_cmd(
     config: ConfigOption = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Show what would be added without writing anything.")] = False,
+    prune: Annotated[bool, typer.Option(
+        "--prune", help="Also remove entries for boxes the project no longer has.")] = False,
+    yes: Annotated[bool, typer.Option(
+        "--yes", help="Skip the confirmation before removing entries.")] = False,
 ) -> None:
     """Find cloud boxes on your project and add the ones you do not have yet.
 
     Google already knows each box's zone, card and operating system, so nothing
     here needs typing by hand. Existing entries are never touched.
 
+    `--prune` reconciles the other way as well, and it is the same job: it names
+    the entries whose box the project no longer has, and removes them once you
+    say so. Boxes disappear without this tool — deleted in the console, by a
+    colleague, by raw gcloud, or by a `move` renaming the source it left behind —
+    and until now the only way out was hand-editing the host list. A stale entry
+    is not untidiness: `create` refuses a name an entry holds, ports are handed
+    out from the same list, and `go linux` refuses as ambiguous once several of
+    the machines it matches do not exist.
+
+    ONLY what Google positively says is absent. A box on a project that could not
+    be read is left exactly where it is and said so — a check that refutes is not
+    a check that confirms, and an entry deleted because the network was down is
+    the one mistake this file cannot recover from.
+
     This one writes: your host list — the file `--config` names, and
     ~/.config/comfy-qa-tools/hosts.toml when it is left off — is read and then
-    appended to. `--dry-run` shows what would be added and writes nothing.
+    appended to, and under `--prune` rewritten. `--dry-run` shows what would be
+    added and removed, and writes nothing.
     """
     from .gcloud import Gcloud, GcloudError
     from .discover import (
@@ -389,9 +503,6 @@ def discover_cmd(
         _refused(exc)
 
     found = [parse_instance(instance, project) for instance in instances]
-    if not found:
-        say.result(f"no cloud boxes on {project}")
-        return
 
     try:
         existing = load(path)
@@ -407,11 +518,22 @@ def discover_cmd(
                      fix="fix the file, then run this again", code=2, blank_line=False)
         existing = []
 
+    # Read before the early returns below, because "the project has no boxes at
+    # all" is not a reason to stay quiet under --prune — it is the strongest
+    # possible statement that every entry naming that project is a ghost.
+    ghosts, unreadable = _ghosts(gc, existing) if prune else ([], [])
+
+    if not found and not ghosts:
+        say.result(f"no cloud boxes on {project}")
+        _say_unreadable(unreadable)
+        return
+
     additions = new_hosts(found, existing)
     clashes = label_clashes(found, existing)
-    if not additions and not clashes:
+    if not additions and not clashes and not ghosts:
         say.result(f"{say.count(len(found), 'cloud box', 'cloud boxes')}, "
                    f"all already in {path}")
+        _say_unreadable(unreadable)
         return
 
     for box, port in additions:
@@ -420,24 +542,39 @@ def discover_cmd(
     for box, label in clashes:
         say.result(clash_note(box, label))
 
+    if ghosts:
+        # Named one per line with the project that was asked, because "3 entries
+        # removed" is not something anybody can check, and this is the one file
+        # on the machine with no way back. `delete` writes the same sentence
+        # about a single entry from the other direction.
+        say.result("\nnot on the project any more — the box is gone, the entry is not:")
+        for host, owner in ghosts:
+            say.result(f"  {host.name}  ({host.gce_instance} in {host.gce_zone}, "
+                       f"{owner})")
+    _say_unreadable(unreadable)
+
     if dry_run:
         say.result("\n--dry-run: nothing written")
         return
-    if not additions:
+    if not additions and not ghosts:
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        # Not `path.open("a")`. An append lands in the same hand-maintained file
-        # a rewrite does, so it takes the same route: validated with the real
-        # loader before it is written, a verified copy kept, and refused rather
-        # than left unloadable. See `hostfile.add`.
-        add(path, [to_toml(box, port) for box, port in additions], initial=STARTER)
-    except HostFileError as exc:
-        # Documented where it is raised, in `hostfile`, and it already says that
-        # nothing was written.
-        say.fail(exc, code=2, blank_line=False)
-    say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
+    if additions:
+        try:
+            # Not `path.open("a")`. An append lands in the same hand-maintained
+            # file a rewrite does, so it takes the same route: validated with the
+            # real loader before it is written, a verified copy kept, and refused
+            # rather than left unloadable. See `hostfile.add`.
+            add(path, [to_toml(box, port) for box, port in additions], initial=STARTER)
+        except HostFileError as exc:
+            # Documented where it is raised, in `hostfile`, and it already says
+            # that nothing was written.
+            say.fail(exc, code=2, blank_line=False)
+        say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
+
+    if ghosts:
+        _forget(path, [host for host, _owner in ghosts], yes=yes)
 
 
 @app.command("create")
