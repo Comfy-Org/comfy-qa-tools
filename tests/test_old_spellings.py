@@ -141,19 +141,33 @@ def test_the_tool_does_not_type_the_old_spelling_at_itself(monkeypatch, tmp_path
     assert "host" not in handed[0]
 
 
-def test_no_new_hidden_group_arrives_without_a_note():
+def test_no_new_hidden_spelling_arrives_without_a_note():
     """A third hidden noun added quietly is a third window nobody closes.
 
     Not a list of names — the point of the exercise is that hand-maintained lists
-    go stale — but a count with the two exemptions argued in this file. A new
-    hidden sub-app has to come here and say which kind it is.
+    go stale — but the whole hidden surface, with the exemptions argued in this
+    file. Anything new that hides itself has to come here and say which kind it
+    is.
+
+    GROUPS AND COMMANDS BOTH, and the second half was the gap. This read
+    `registered_groups` alone while `test_env_is_hidden_and_deliberately_silent`,
+    sixty lines up, was already reading `registered_commands` to do its job — so
+    a quiet `@app.command("thing", hidden=True)` passed and a quiet
+    `add_typer(..., hidden=True)` did not, for no reason anyone chose. `env` is
+    the only hidden command today and it is argued for by name; the next one is
+    what this is for. The question that finds this class of gap is what does the
+    guard next to this one read that this one does not.
     """
-    hidden = sorted(group.name for group in app.registered_groups if group.hidden)
-    assert hidden == ["auth", "host"], (
-        f"the hidden sub-apps are now {hidden}. If it is a second spelling of "
+    hidden = sorted(
+        [group.name for group in app.registered_groups if group.hidden]
+        + [command.name or command.callback.__name__
+           for command in app.registered_commands if command.hidden]
+    )
+    assert hidden == ["auth", "env", "host"], (
+        f"the hidden spellings are now {hidden}. If it is a second spelling of "
         f"something reachable at the root, give it the same note `host` and `auth` "
-        f"carry. If it is a command parked until its own release, say so here the "
-        f"way `env` is."
+        f"carry. If it is a command parked until its own release with no shorter "
+        f"form to name, say so here the way `env` is."
     )
 
 

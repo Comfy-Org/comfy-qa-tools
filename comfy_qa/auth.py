@@ -246,8 +246,14 @@ def auth_default(ctx: typer.Context) -> None:
     long one is told here. `host` says the same thing in `host.py` for the same
     reason.
     """
-    say.warn("`auth` is on its way out and still works. The verb stands on its "
-             f"own now: comfy-qat {ctx.invoked_subcommand}")
+    # Guarded the way `host`'s is, though bare `auth` cannot reach here today:
+    # without `invoke_without_command`, click exits 2 on the missing command
+    # first. The guard is what keeps that true if anyone ever adds one — the
+    # note would otherwise read "comfy-qat None", and a nonsense sentence is
+    # worse than no note at all.
+    if ctx.invoked_subcommand is not None:
+        say.warn("`auth` is on its way out and still works. The verb stands on "
+                 f"its own now: comfy-qat {ctx.invoked_subcommand}")
 
 
 @quota_app.callback(invoke_without_command=True)
