@@ -2086,6 +2086,16 @@ def default(
     `--config` is accepted here as well as on the subcommands: every other
     command takes it, so `host --config x` failing as a usage error is a
     surprise, and a surprise on the read-only default is a bad one.
+
+    And this is where the `host` noun says it is going. `cli.py` registers this
+    whole sub-app `hidden=True` and calls that a deprecation window rather than a
+    second permanent spelling — but a window nobody is told about never closes,
+    and hiding it from `--help` is what removed the last way anyone had of
+    finding out. Whoever still types `host go` is the only person who can be
+    told, and this is the one line every `host <verb>` passes through.
     """
+    if ctx.invoked_subcommand is not None:
+        say.warn("`host` is on its way out and still works. The verb stands on "
+                 f"its own now: comfy-qat {ctx.invoked_subcommand}")
     if ctx.invoked_subcommand is None:
         ctx.invoke(list_cmd, config=config)

@@ -1207,6 +1207,29 @@ fields that were all present, because the required-field check ran first and the
 typo was invisible to it — so the message described a file quite unlike the one in
 front of you. Unknown fields are now checked first and the suggestion is offered.
 
+## The old spellings, `host` and `auth`
+
+**`` warning: `host` is on its way out and still works. The verb stands on its own now: comfy-qat go ``**
+
+**`` warning: `auth` is on its way out and still works. The verb stands on its own now: comfy-qat status ``**
+
+Not a failure. `host go comfy-win` and `comfy-qat go comfy-win` are the same
+command reached two ways, and so are `auth status` and `comfy-qat status`. The
+noun in front was pure typing — nothing else in this tool is called `go`, `down`,
+`list` or `stamp` — and on a second operating system it is typing you do twice as
+often.
+
+Both nouns are hidden rather than deleted, so every script and run sheet written
+before the change keeps working. Hidden also took them out of `--help`, which was
+the only place the short form was written down. This note is what replaces it, and
+it names the exact command to type instead — the one you just ran, without the
+noun.
+
+`comfy-qat env` is hidden too and deliberately says nothing. It is not a second
+spelling of anything, so there is no shorter form to point at: it is a whole
+command parked until its own release, and telling anyone it was on its way out
+would be false.
+
 ## When the machine you want cannot start
 
 A GPU stockout is routine, is nothing to do with your account, and is the moment a
