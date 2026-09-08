@@ -410,6 +410,102 @@ def test_every_exception_this_package_RAISES_is_named_here():
     )
 
 
+# The same guard for SAY_FAILURES, which is the other hand-typed spelling list
+# feeding the same collector and is the one that had none.
+#
+# `say.py` is the module that grows reporters, and the tuple is complete only at
+# this instant: of its stderr writers, three are listed and three are correctly
+# out, so nothing is wrong and nothing holds it there. Measured on a clean
+# extract — a function byte-identical in shape to `warn`, with one undocumented
+# error printed through it:
+#
+#     say.warn("...")     in the tuple       1 failed, caught by name
+#     say.refuse("...")   not in the tuple   680 passed, identical to baseline
+#
+# No case is generated, so no count moves, so there is nothing to notice. The
+# sibling above says it exactly: "every message it carries is invisible to this
+# walk and nothing looks wrong anywhere." The person who adds `say.refuse` is
+# the same person who would have to remember to extend the tuple.
+#
+# So the unfamiliar fails and has to be argued for here, rather than defaulting
+# to fine.
+NOT_A_FAILURE = {
+    # stdout, by the docstring's stream rule: the answer, not the story.
+    "result": "the answer the command was run for",
+    "check": "one row of a readiness report, pass or fail",
+    # stderr, but progress rather than failure. A step that goes wrong reports
+    # it through `error` or `fail` like everything else.
+    "step": "a phase of a long operation starting",
+    "detail": "a fact under the step it belongs to",
+    # A KNOWN GAP, not a category. `write_fix` prints the `to fix:` half of a
+    # message whose first half was already collected at the raise site, and
+    # "to fix" is in NOT_AN_ENTRY for that reason. Collecting it here would
+    # demand a second entry for the same failure.
+    "write_fix": "prints the fix half of a message collected at its raise site",
+    # Neither writes: one composes a string, the others are pure helpers.
+    "fix": "composes a fix, prints nothing",
+    "watching": "asks whether anyone is looking",
+    "count": "renders a number and its noun",
+    "elapsed": "renders a duration",
+    "slow": "constructs a Slow",
+}
+
+
+def _writes_to_stderr(function: ast.FunctionDef, writers: set[str]) -> bool:
+    """Does this function put something in front of a person, on stderr?
+
+    Directly, via `typer.echo(..., err=True)`, or by handing off to one that
+    does — `fail` is `error` plus an exit code and carries no literal of its own.
+    """
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if _called_name(node) == "echo" and any(
+                kw.arg == "err" and _is_true(kw.value) for kw in node.keywords):
+            return True
+        if isinstance(node.func, ast.Name) and node.func.id in writers:
+            return True
+    return False
+
+
+def test_every_failure_reporter_in_say_is_named_here():
+    """SAY_FAILURES is closed the way ERROR_TYPES is, and for the same reason.
+
+    A new reporter in `say.py` is not a rare event — the module exists to be the
+    one place output is added — and until this test, adding one and printing an
+    undocumented error through it was byte-identical to a clean run.
+    """
+    tree = ast.parse((PACKAGE / "say.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in tree.body
+                 if isinstance(node, ast.FunctionDef)
+                 and not node.name.startswith("_")}
+
+    # Two passes, so a reporter that only delegates is found: `fail` writes
+    # nothing itself, it calls `error`.
+    writers: set[str] = set()
+    for _ in range(len(functions)):
+        grown = {name for name, node in functions.items()
+                 if _writes_to_stderr(node, writers)}
+        if grown == writers:
+            break
+        writers = grown
+
+    unlisted = sorted(writers - set(SAY_FAILURES) - set(NOT_A_FAILURE))
+    assert not unlisted, (
+        f"say.{', say.'.join(unlisted)} writes to stderr and is in neither "
+        f"SAY_FAILURES nor NOT_A_FAILURE. If it reports a failure, add it to "
+        f"SAY_FAILURES — otherwise every message printed through it is invisible "
+        f"to this walk, no case is generated, and the suite stays green while an "
+        f"undocumented error reaches people. If it is progress rather than a "
+        f"failure, say so in NOT_A_FAILURE with the reason."
+    )
+
+    stale = sorted(name for name in NOT_A_FAILURE if name not in functions)
+    assert not stale, (
+        f"{', '.join(stale)} is excused in NOT_A_FAILURE and is not in say.py."
+    )
+
+
 def _troubleshooting_text() -> str:
     return re.sub(r"\s+", " ", (DOCS / "troubleshooting.md").read_text(encoding="utf-8"))
 
