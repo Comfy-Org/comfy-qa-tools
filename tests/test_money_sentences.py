@@ -51,6 +51,15 @@ gce_instance = "comfy-win"
 gce_zone     = "us-central1-a"
 gce_project  = "proj"
 port         = 8190
+
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "comfy-linux"
+gce_zone     = "us-central1-c"
+gce_project  = "proj"
+port         = 8192
 """
 
 WIN = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
@@ -323,3 +332,49 @@ def test_a_terminal_that_could_not_be_opened_at_all_says_nothing_was_started(
     assert ("could not open a new Terminal window: Too many open files. "
             "Nothing was started.") == str(caught.value), str(caught.value)
     assert "go comfy-win" in caught.value.fix, "print what to paste instead"
+
+
+# --- the last four the census found, at 321 literals -------------------------
+#
+# A whole-package census of every money/state literal left five survivors after
+# tonight's fixes. Four under-report. These pin them; the fifth is over-reporting
+# and is argued below.
+
+
+def test_a_ctrl_c_while_reading_logs_says_the_box_is_still_on(cli, monkeypatch):
+    """`logs` follows by default, so Ctrl-C is the ORDINARY way to leave it —
+    not an error path. Stopping the reading stops nothing on the machine, and
+    the moment a user is most likely to believe otherwise is the moment their
+    terminal goes quiet again."""
+    from comfy_qa import lifecycle as lifecycle_module
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(lifecycle_module, "read_logs", interrupted)
+    result = cli("logs", "comfy-win", cloud=Cloud(status="RUNNING"))
+
+    out = result.output
+    assert "still running" in out, out
+    assert "and so is the machine" in out, out
+    assert "stop paying" in out, "it must offer the way out of the bill"
+
+
+def test_ssh_that_cannot_read_the_state_claims_nothing_about_it(cli):
+    """Refusing because the answer is unknown is right. Saying the box is off
+    would be the under-reporting direction on a command that is about to be
+    told there is nothing to connect to."""
+    class Readable(Cloud):
+        """`ssh` checks readiness before it reads the state; the base fake
+        refuses any call it was not told to expect, which is the right default
+        and not what this test is about."""
+
+        def require(self, *a, **k):
+            return None
+
+    result = cli("ssh", "comfy-linux", cloud=Readable(status=""))
+
+    out = result.output
+    assert "could not tell whether" in out, out
+    assert "is not running" not in out, "an unread state is not a stopped box"
+    assert "list --live" in out, "it must say how to find out"
