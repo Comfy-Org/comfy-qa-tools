@@ -62,15 +62,76 @@ def test_the_version_is_a_real_number_not_the_unknown_fallback():
     assert comfy_qa.__version__ != "unknown"
 
 
+def _head_of_this_checkout() -> str | None:
+    """`ROOT`'s own HEAD, read by the test rather than by the code under test.
+
+    This is a separate subprocess on purpose, and the reason is the whole design
+    of the skip below. Asking `git_sha()` whether a repository is present would
+    make the test skip in exactly the case `git_sha()` has broken — a green run
+    over the one defect this test exists to catch, which is worse than the noisy
+    failure it replaces. The environment is probed here; `git_sha()` is only ever
+    the thing being tested.
+
+    `--show-toplevel` rather than a bare `rev-parse HEAD`, because git walks UP
+    from `-C`: a copy of this tree unpacked inside somebody else's checkout would
+    answer with THAT repository's commit, while `git_sha()` — which looks for
+    `ROOT/.git` and nothing above it — correctly returns None. Requiring the
+    toplevel to be `ROOT` itself keeps the two asking the same question.
+    """
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(ROOT), *args],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None            # No git on PATH, or it hung.
+        return (done.stdout.strip() or None) if done.returncode == 0 else None
+
+    toplevel = git("rev-parse", "--show-toplevel")
+    if toplevel is None or Path(toplevel).resolve() != ROOT:
+        return None
+    return git("rev-parse", "--short", "HEAD")
+
+
 def test_a_checkout_reports_its_commit():
-    """The half a tester actually needs: which commit produced this result."""
+    """The half a tester actually needs: which commit produced this result.
+
+    THIS SKIPS WHERE THERE IS NO REPOSITORY, AND THE SKIP IS THE POINT. The
+    assertion is "a checkout carries its commit", but nothing established that
+    this IS a checkout — so anywhere the code ships without its repo the test
+    failed for a reason that has nothing to do with the tool: a release tarball,
+    an sdist, a Docker build context, an installed copy, and above all a
+    `git archive` export.
+
+    That last one is why this was worth fixing rather than tolerating. While the
+    working tree is shared between several agents it is not a valid control, so
+    every careful verification is run from a `git archive` extract — and an
+    export has no `.git`. The most disciplined method available therefore
+    produced one guaranteed red line, on every run, which everybody learned to
+    recognise and skip past by name. A failure that is always there and always
+    discounted trains people to discount the next one, and it stops being
+    evidence of anything.
+
+    WHAT IS DELIBERATELY NOT WEAKENED. In a real checkout every assertion is the
+    one that was here before: `git_sha()` must return something, it must be the
+    commit, and `version_string()` must carry it. `--version` silently losing its
+    SHA is a genuine defect — an evidence line that cannot name the build that
+    produced it is an anecdote, which is what this file's own header says — and
+    this is the only test holding it. Narrowing WHEN it runs, not WHAT it demands.
+    """
+    expected = _head_of_this_checkout()
+    if expected is None:
+        pytest.skip(
+            "no commit can be read for the package root: either it is not a git "
+            "checkout of its own, or git is not on PATH. Both are ordinary — a "
+            "`git archive` export, a release tarball, an sdist and an installed "
+            "copy have no repository — and in both `--version` correctly carries "
+            "no SHA, which `test_an_installed_copy_reports_no_commit` asserts."
+        )
+
     sha = git_sha()
     assert sha, "this checkout is a git repo, so --version must carry its commit"
-
-    expected = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-        capture_output=True, text=True, check=True,
-    ).stdout.strip()
     assert sha == expected
     assert version_string() == f"{BINARY} {comfy_qa.__version__} ({sha})"
 
