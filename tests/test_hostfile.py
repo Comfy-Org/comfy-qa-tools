@@ -10,6 +10,7 @@ So these tests are about the failure, not the feature.
 
 from __future__ import annotations
 
+import inspect
 import itertools
 import re
 import tomllib
@@ -767,6 +768,23 @@ def _lived_in(preamble, own_comment, blank_between, example, crlf,
     return text.replace("\n", "\r\n") if crlf else text
 
 
+# --- which axis is which, looked up rather than counted on fingers ----------
+#
+# A `shape` is a tuple of booleans in `_lived_in`'s PARAMETER ORDER, and the
+# filters over `SHAPES` index into it by position. `shape[5]` is not
+# self-describing and, worse, it is not stable: this axis list has already grown
+# from seven to nine, and an axis inserted anywhere but the end re-points every
+# index after it. A filter written against the old numbering keeps running,
+# against a different axis, and passes.
+#
+# So the positions are looked up BY NAME. Rename or drop an axis and `.index()`
+# raises at import time — a collection error, which is impossible to miss —
+# instead of the filter quietly coming to mean something else.
+AXES = tuple(inspect.signature(_lived_in).parameters)
+EXAMPLE_IN_GAP = AXES.index("example_in_gap")
+BLANK_BETWEEN = AXES.index("blank_between")
+
+
 @pytest.mark.parametrize("shape", SHAPES)
 @pytest.mark.parametrize("victim", VICTIMS)
 def test_removing_any_host_from_any_shaped_file_keeps_the_others(shape, victim):
@@ -914,7 +932,60 @@ def test_renaming_any_host_in_any_shaped_file_keeps_the_others(shape, victim):
         assert "\r" not in out, why
 
 
-GAP_SHAPES = [shape for shape in SHAPES if shape[5] and shape[2]]
+# The shapes that actually put a worked example in a gap: the example has to be
+# there (`example_in_gap`) AND there has to be a gap for it (`blank_between`).
+GAP_SHAPES = [shape for shape in SHAPES
+              if shape[EXAMPLE_IN_GAP] and shape[BLANK_BETWEEN]]
+
+
+def test_the_gap_shape_filter_still_selects_the_shapes_it_is_named_for():
+    """The floor under GAP_SHAPES, which is COMPUTED and then parametrised over.
+
+    A parametrize over an empty list is ZERO TESTS AND GREEN. If this filter ever
+    stops matching — an axis renamed, reordered, or added without widening the
+    product — the test below does not go red, it DISAPPEARS, and D93 comes back
+    with nothing watching for it. Nothing else in this file would notice: the
+    other two parametrizes run over `SHAPES` and would still report their 1,536.
+
+    So the selection is pinned by size in both directions, and then checked
+    against the file it actually generates — because a size that happens to come
+    out right while pointing at the wrong axis is the failure this is for.
+    """
+    assert len(SHAPES) == 2 ** len(AXES), (
+        f"`SHAPES` enumerates {len(SHAPES)} combinations but `_lived_in` takes "
+        f"{len(AXES)} axes ({', '.join(AXES)}). The `repeat=` above is a literal: "
+        f"an axis added to `_lived_in` without widening it is never exercised — "
+        f"it silently takes its default on every one of the {len(SHAPES)} cases — "
+        f"and the matrix reports exactly the green it always did."
+    )
+    assert EXAMPLE_IN_GAP != BLANK_BETWEEN, "two axes collapsed onto one position"
+    assert GAP_SHAPES, (
+        "GAP_SHAPES is EMPTY. `test_a_worked_example_in_the_gap_survives_a_"
+        "removal` is parametrised over it, so it now collects ZERO cases: the "
+        "file passes without checking D93 even once. That is not a smaller "
+        "failure than a red test, it is a larger one."
+    )
+    assert len(GAP_SHAPES) == len(SHAPES) // 4, (
+        f"GAP_SHAPES selects {len(GAP_SHAPES)} of {len(SHAPES)} shapes. Two "
+        f"independent booleans out of {len(AXES)} select exactly a quarter, "
+        f"{len(SHAPES) // 4}. Any other number means the filter is no longer "
+        f"reading the two axes it names — including the case where it has "
+        f"become effectively `if True` and is quietly the whole matrix again."
+    )
+
+    # And it means this in the FILE, not merely in the tuple. If either index
+    # re-pointed, these shapes would still number a quarter of the matrix while
+    # generating files with no example in any gap — which is a filter that has
+    # stopped selecting anything real, passing every size check above.
+    for shape in GAP_SHAPES:
+        text = _lived_in(*shape)
+        assert "# [hosts.spare]" in text, f"no worked example at all\nshape={shape}"
+        assert (text.index("[hosts.alpha]")
+                < text.index("# [hosts.spare]")
+                < text.index("[hosts.beta]")), (
+            f"the worked example is not in the gap between two hosts, so this "
+            f"shape cannot exercise D93 at all\nshape={shape}\n{text}"
+        )
 
 
 @pytest.mark.parametrize("shape", GAP_SHAPES)

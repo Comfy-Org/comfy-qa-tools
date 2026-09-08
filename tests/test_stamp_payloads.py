@@ -12,9 +12,11 @@ says, the stamp either reports it accurately or does not mention it.**
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import urllib.error
+from pathlib import Path
 
 import pytest
 
@@ -266,6 +268,99 @@ def test_a_device_list_that_is_not_a_list_reports_no_devices():
 # --------------------------------------------------------------------------
 
 ALL_PAYLOADS = [(n, getattr(payloads, n)) for n in dir(payloads) if n.isupper()]
+
+
+# --------------------------------------------------------------------------
+# The floor under that list
+# --------------------------------------------------------------------------
+#
+# The line above is COMPUTED from the module, and the four tests below are
+# parametrised over it. A computed parametrize shrinks in silence: delete a
+# payload from payloads.py, or rename one to lowercase, and these tests simply
+# run over fewer cases and stay green. The suite tests less and says nothing.
+# At the limit, a parametrize over an EMPTY list is zero tests and green.
+#
+# That is not hypothetical here. It has already happened once in this repo, one
+# directory over: a list computed from the source lost a member to a rename, and
+# the only thing that noticed was a hand-written floor that named the members.
+#
+# So two checks, pointed in opposite directions, because either alone has a hole
+# the other covers:
+#
+#   NAMED    typed out by hand. Catches a payload being DELETED. Blind to one
+#            that was never written down here.
+#   DEFINED  read back out of payloads.py with `ast`, independently of `dir()`.
+#            Catches a payload LEAVING the parametrised set whether or not
+#            anyone thought to name it above — a lowercase rename is still a
+#            module-level dict in the file, so it stays in DEFINED, drops out of
+#            ALL_PAYLOADS, and the two disagree BY NAME.
+
+COLLECTED = {name for name, _ in ALL_PAYLOADS}
+
+# Every payload that existed when this floor was written. New payloads are
+# welcome and do not need adding here — the point is that none of these may
+# quietly go. `test_every_payload_in_the_file_is_parametrised_over` is what
+# covers the ones added later.
+NAMED = {
+    "ALL_NULL", "ANCIENT", "CLOUD", "CLOUD_EARLIER", "CPU_ONLY",
+    "CUDA_NO_ALLOCATOR", "CUDA_WITH_ALLOCATOR", "DEVICES_IS_DICT",
+    "DEVICES_IS_STRING", "DEVICE_IS_STRING", "EMPTY", "MPS_LOCAL", "MULTI_GPU",
+    "MULTI_GPU_MIXED", "NO_TORCH", "PYTHON_VERSION_BLANK",
+    "PYTHON_VERSION_NUMBER", "ROCM_AS_CUDA", "SYSTEM_IS_LIST",
+    "SYSTEM_IS_STRING", "TESTCLOUD", "TOP_LEVEL_CLOUD", "VRAM_BOOL",
+    "VRAM_HUMANISED", "VRAM_NEGATIVE", "VRAM_NUMERIC_STRING",
+    "VRAM_SUB_GIGABYTE",
+}
+
+
+def _dicts_defined_in(module) -> set[str]:
+    """Names bound to a dict literal at the TOP LEVEL of `module`'s source.
+
+    Deliberately reads the file rather than the imported module: `dir()` is the
+    thing being checked, so checking it against itself would prove nothing.
+    """
+    tree = ast.parse(Path(module.__file__).read_text())
+    return {target.id
+            for node in tree.body if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.Dict)}
+
+
+def test_no_payload_is_ever_quietly_dropped_from_the_parametrised_set():
+    """The hand-typed floor. Names the members, so a deletion cannot hide."""
+    assert COLLECTED, (
+        "ALL_PAYLOADS is EMPTY. Every test parametrised over it now collects "
+        "zero cases and the file passes without checking a single payload. "
+        "That is the failure this floor exists for, not a smaller one."
+    )
+    missing = NAMED - COLLECTED
+    assert not missing, (
+        f"{len(missing)} payload(s) left ALL_PAYLOADS: {sorted(missing)}. Each "
+        f"one is a recorded /system_stats body that no longer reaches the four "
+        f"tests below, so whatever it was capturing is now uncovered. If a "
+        f"payload was deliberately retired, delete its name from NAMED in the "
+        f"same commit and say why."
+    )
+
+
+def test_every_payload_in_the_file_is_parametrised_over():
+    """The derived half: `payloads.py` and ALL_PAYLOADS must agree exactly.
+
+    This is the direction the hand-typed list cannot see. `dir(payloads)` filters
+    on `n.isupper()`, so a payload renamed to lowercase — or defined by any
+    route that does not produce an upper-case module-level name — vanishes from
+    the parametrize while still sitting in the file looking covered.
+    """
+    defined = _dicts_defined_in(payloads)
+    assert defined, "no module-level dicts were found in payloads.py at all"
+    assert defined == COLLECTED, (
+        f"payloads.py and ALL_PAYLOADS disagree.\n"
+        f"  in the file but NOT parametrised over: {sorted(defined - COLLECTED)}\n"
+        f"  parametrised over but NOT in the file: {sorted(COLLECTED - defined)}\n"
+        f"A payload in the first group is dead weight that reads as coverage: it "
+        f"is written down, it looks tested, and no test ever sees it. The usual "
+        f"cause is a rename that lost the upper case."
+    )
 
 
 @pytest.mark.parametrize("name,payload", ALL_PAYLOADS)
