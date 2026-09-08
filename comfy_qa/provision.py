@@ -34,6 +34,72 @@ from .tunnel import COMFYUI_PORT
 WINDOWS_ROOT = r"C:\ComfyUI"
 LINUX_ROOT = "/opt/comfyui"
 
+# Where an interpreter can be on a box, in the order it is looked for. An install
+# can be a venv, the Windows portable bundle, or a system interpreter, and
+# assuming one of them is how a working box reported "python.exe is not
+# recognized".
+#
+# ONE list, asked by every command that has to find the interpreter. It used to
+# be three: the full four Windows layouts here, a two-layout chain written out
+# again inside `verify_command`, and the same short chain a third time in
+# `repair_command`. Proven on a sandbox whose only interpreter was
+# `.venv/bin/python` — a layout `launch_command` explicitly supports — carrying
+# a torch that reported `2.5.1+cu121`:
+#
+#     verify says:      NO_TORCH
+#     launch would use: <root>/.venv/bin/python
+#
+# So the tool said "installed but cannot start" about a box it could start, sent
+# the tester to reinstall something that already worked, and the machine billed
+# throughout. That is the expensive direction.
+#
+# `hostfile` had this exact shape and it cost six defects before its three
+# copies of one regex were made module-level constants; this is the same fix.
+# The order is a search order, so it is part of the truth: the venv the tool
+# builds itself comes first, and a system interpreter is the last resort.
+WINDOWS_PYTHONS = (
+    r"venv\Scripts\python.exe",
+    r"python_embeded\python.exe",
+    r".venv\Scripts\python.exe",
+    r"ComfyUI_windows_portable\python_embeded\python.exe",
+)
+LINUX_PYTHONS = ("venv/bin/python", ".venv/bin/python")
+
+
+def windows_python_search(fallback: str) -> str:
+    """PowerShell that leaves the box's ComfyUI interpreter in `$py`.
+
+    `fallback` is the PowerShell expression used when none of the layouts is
+    there, and it is the one thing the callers genuinely disagree about — not
+    the list. A launch wants `(Get-Command python).Source` so it can tell an
+    absent interpreter from a present one and exit `NO_PYTHON`; a check wants
+    the bare name `'python'` so it still reaches a verdict instead of dying
+    before it prints one. That difference is deliberate and is kept.
+    """
+    candidates = ", ".join(f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS)
+    return (
+        f"$candidates = @({candidates}); "
+        "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
+        f"if (-not $py) {{ $py = {fallback} }}; "
+    )
+
+
+def linux_python_search() -> str:
+    """sh that leaves the box's ComfyUI interpreter in `$py`, empty if none.
+
+    `command -v python3` is last for the same reason it is last in
+    `install_command`: it is whatever the image happens to ship, which on a
+    newer one is a series ComfyUI's custom nodes have no wheels for. It is
+    resolved to a path rather than left as a bare name so `[ -x ]` can answer
+    for it like any other candidate.
+    """
+    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
+    return (
+        f'py=""; for p in {candidates} $(command -v python3); do '
+        '  if [ -x "$p" ]; then py="$p"; break; fi; done; '
+    )
+
+
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
 
@@ -260,11 +326,8 @@ def verify_command(host: Host) -> str:
             f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
             f"{{ Write-Output '{NO_COMFYUI}'; exit 0 }}; "
             f"Set-Location '{WINDOWS_ROOT}'; "
-            "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
-            "{ '.\\venv\\Scripts\\python.exe' } "
-            "elseif (Test-Path '.\\python_embeded\\python.exe') "
-            "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
-            "$v = (& $py -m pip show torch 2>$null | Select-String '^Version:'); "
+            + windows_python_search("'python'")
+            + "$v = (& $py -m pip show torch 2>$null | Select-String '^Version:'); "
             f"if (-not $v) {{ Write-Output '{NO_TORCH}'; exit 0 }}; "
             f"if ($v -match '\\+cu') {{ Write-Output '{READY}' }} "
             f"else {{ Write-Output '{TORCH_NO_CUDA}' }}\""
@@ -272,8 +335,9 @@ def verify_command(host: Host) -> str:
     return (
         f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo {NO_COMFYUI}; exit 0; fi; "
         f"cd {LINUX_ROOT}; "
-        "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi; "
-        f"$PY -c \"import torch, sys; "
+        + linux_python_search()
+        + '[ -n "$py" ] || py=python3; '
+        + f"\"$py\" -c \"import torch, sys; "
         f"sys.stdout.write('{READY}' if torch.cuda.is_available() else '{TORCH_NO_CUDA}')\" "
         f"2>/dev/null || echo {NO_TORCH}"
     )
@@ -371,12 +435,7 @@ def repair_command(host: Host, *, force_torch: bool = False,
     force = "--force-reinstall --no-deps " if force_torch else ""
     index = index or TORCH_INDEX
     if is_windows(host):
-        python = (
-            "$py = if (Test-Path '.\\venv\\Scripts\\python.exe') "
-            "{ '.\\venv\\Scripts\\python.exe' } "
-            "elseif (Test-Path '.\\python_embeded\\python.exe') "
-            "{ '.\\python_embeded\\python.exe' } else { 'python' }; "
-        )
+        python = windows_python_search("'python'")
         return (
             "powershell -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
@@ -388,10 +447,14 @@ def repair_command(host: Host, *, force_torch: bool = False,
             "& $py -m pip install -r requirements.txt\""
         )
     return (
-        f"cd {LINUX_ROOT} && "
-        "if [ -x ./venv/bin/python ]; then PY=./venv/bin/python; else PY=python3; fi && "
-        f"$PY -m pip install {force}torch torchvision torchaudio && "
-        "$PY -m pip install -r requirements.txt"
+        # `|| exit 1`, because this was `cd ... &&` and a repair that cannot
+        # reach the checkout must not go on to pip-install into whatever
+        # directory the shell landed in.
+        f"cd {LINUX_ROOT} || exit 1; "
+        + linux_python_search()
+        + '[ -n "$py" ] || py=python3; '
+        + f'"$py" -m pip install {force}torch torchvision torchaudio && '
+        + '"$py" -m pip install -r requirements.txt'
     )
 
 
@@ -490,17 +553,6 @@ def install_command(host: Host, index: str | None = None) -> str:
     )
 
 
-# An install can be a venv, the Windows portable bundle, or a system interpreter.
-# Assuming one of them is how a working box reported "python.exe is not recognized".
-WINDOWS_PYTHONS = (
-    r"venv\Scripts\python.exe",
-    r"python_embeded\python.exe",
-    r".venv\Scripts\python.exe",
-    r"ComfyUI_windows_portable\python_embeded\python.exe",
-)
-LINUX_PYTHONS = ("venv/bin/python", ".venv/bin/python")
-
-
 def launch_command(host: Host) -> str:
     """Start ComfyUI in the foreground so its log streams back over SSH.
 
@@ -519,27 +571,21 @@ def launch_command(host: Host) -> str:
     """
     listen = "127.0.0.1"
     if is_windows(host):
-        candidates = "; ".join(
-            f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS
-        )
         return (
             "powershell -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
-            f"$candidates = @({candidates.replace('; ', ', ')}); "
-            "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
-            "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
-            f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
-            "Write-Output ('using ' + $py); "
-            f"& $py main.py --listen {listen} --port {COMFYUI_PORT}\""
+            + windows_python_search(
+                "(Get-Command python -ErrorAction SilentlyContinue).Source")
+            + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
+            + "Write-Output ('using ' + $py); "
+            + f"& $py main.py --listen {listen} --port {COMFYUI_PORT}\""
         )
-    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
     return (
         f"cd {LINUX_ROOT}; "
-        f"for p in {candidates} $(command -v python3); do "
-        "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
-        f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
-        "echo \"using $py\"; "
-        f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
+        + linux_python_search()
+        + f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
+        + "echo \"using $py\"; "
+        + f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
     )
 
 
@@ -573,34 +619,30 @@ def launch_detached_command(host: Host) -> str:
     """
     listen = "127.0.0.1"
     if is_windows(host):
-        candidates = ", ".join(f"'{WINDOWS_ROOT}\\{name}'" for name in WINDOWS_PYTHONS)
         return (
             "powershell -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
-            f"$candidates = @({candidates}); "
-            "$py = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1; "
-            "if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue).Source }; "
-            f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
-            "Write-Output ('using ' + $py); "
-            "$q = [char]34; "
-            "$inner = '& ' + $q + $py + $q + "
-            f"' main.py --listen {listen} --port {COMFYUI_PORT} *> ' + $q + "
-            f"'{WINDOWS_LOG}' + $q; "
-            "Start-Process -FilePath 'powershell' "
-            "-ArgumentList '-NonInteractive', '-Command', $inner "
-            f"-WorkingDirectory '{WINDOWS_ROOT}' -WindowStyle Hidden; "
-            f"Write-Output '{STARTED}'\""
+            + windows_python_search(
+                "(Get-Command python -ErrorAction SilentlyContinue).Source")
+            + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
+            + "Write-Output ('using ' + $py); "
+            + "$q = [char]34; "
+            + "$inner = '& ' + $q + $py + $q + "
+            + f"' main.py --listen {listen} --port {COMFYUI_PORT} *> ' + $q + "
+            + f"'{WINDOWS_LOG}' + $q; "
+            + "Start-Process -FilePath 'powershell' "
+            + "-ArgumentList '-NonInteractive', '-Command', $inner "
+            + f"-WorkingDirectory '{WINDOWS_ROOT}' -WindowStyle Hidden; "
+            + f"Write-Output '{STARTED}'\""
         )
-    candidates = " ".join(f"{LINUX_ROOT}/{name}" for name in LINUX_PYTHONS)
     return (
         f"cd {LINUX_ROOT}; "
-        f"for p in {candidates} $(command -v python3); do "
-        "  if [ -x \"$p\" ]; then py=\"$p\"; break; fi; done; "
-        f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
-        "echo \"using $py\"; "
-        f"nohup \"$py\" main.py --listen {listen} --port {COMFYUI_PORT} "
-        f"> {LINUX_LOG} 2>&1 < /dev/null & "
-        f"echo {STARTED}"
+        + linux_python_search()
+        + f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
+        + "echo \"using $py\"; "
+        + f"nohup \"$py\" main.py --listen {listen} --port {COMFYUI_PORT} "
+        + f"> {LINUX_LOG} 2>&1 < /dev/null & "
+        + f"echo {STARTED}"
     )
 
 

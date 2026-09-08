@@ -15,9 +15,11 @@ from comfy_qa import provision
 from comfy_qa.config import Host
 from comfy_qa.provision import (
     APT_LOCK_WAIT,
+    LINUX_PYTHONS,
     LINUX_ROOT,
     PYTHON_SERIES,
     PYTHON_SERIES_SUPPORTED,
+    WINDOWS_PYTHONS,
     WINDOWS_ROOT,
     check_command,
     install_command,
@@ -143,11 +145,28 @@ def test_windows_commands_never_prompt(build):
     something wrong; this one reports nothing at all, on a machine that goes on
     billing while the terminal sits there. So it is asserted on every builder
     that emits PowerShell, not on the three somebody happened to list.
+
+    Counted, not searched for. `"-NonInteractive" in command` was a substring
+    check, and `launch_detached_command` is the only builder that emits two
+    PowerShells — the outer one that runs over SSH and the inner `Start-Process`
+    it launches. A substring check cannot tell two from one, so dropping the flag
+    from the outer invocation, the one that actually runs over SSH, left the
+    suite green. Both carry it today; this is the guard being able to see it if
+    one stops.
+
+    Which is the shape this file keeps producing. `7aa7af0` widened these rules
+    from three builders to all thirteen and closed the gap *between* builders,
+    and this one was still open *inside* one of them. `verify_command` searched
+    a subset of the interpreters `launch_command` can start, held to the same
+    docstring. Three instances of a check that reads as if it covers the thing
+    and covers a subset of it.
     """
     command = build(WIN)
     if "powershell" not in command:
         pytest.skip("this builder emits no PowerShell on Windows")
-    assert "-NonInteractive" in command
+    assert command.count("-NonInteractive") >= command.count("powershell"), (
+        "a PowerShell invocation here does not carry -NonInteractive; if it is "
+        "the one that runs over SSH, a prompt hangs it forever")
 
 
 @pytest.mark.parametrize("build", EVERY_BUILDER)
@@ -485,3 +504,113 @@ def test_a_newer_driver_than_we_know_about_gets_the_newest_we_have():
     from comfy_qa.provision import torch_index_for
 
     assert torch_index_for("CUDA Version: 14.2").endswith("cu130")
+
+
+# --- the interpreter search: one list, asked the same way by everyone ---------
+#
+# `verify_command` used to carry its own two-layout chain and `repair_command` a
+# third copy of it, while `launch_command` searched four. On a sandbox whose
+# only interpreter was `.venv/bin/python` — a layout the launch explicitly
+# supports — with a torch reporting `2.5.1+cu121`:
+#
+#     verify says:      NO_TORCH
+#     launch would use: <root>/.venv/bin/python
+#
+# The tool condemned a box it could start, and sent the tester to reinstall a
+# working install while the machine went on billing. `hostfile` had the same
+# three-copies shape and it cost six defects before the regexes became
+# module-level constants.
+
+
+def _rooted(host) -> list:
+    """The interpreter layouts as the box would see them, in search order.
+
+    Rooted, not bare: `venv\\Scripts\\python.exe` is a substring of
+    `.venv\\Scripts\\python.exe`, and `python_embeded\\python.exe` of the
+    portable bundle's copy, so a bare search finds layouts that are not there
+    and would have called the truncated chain complete.
+    """
+    layouts = WINDOWS_PYTHONS if is_windows(host) else LINUX_PYTHONS
+    separator = "\\" if is_windows(host) else "/"
+    return [f"{root_for(host)}{separator}{name}" for name in layouts]
+
+
+def _searchers(host) -> dict:
+    """Every builder that chooses between interpreters, and where it names each.
+
+    DERIVED, not listed — the same reason the block at the top of this file
+    derives its builders. Naming one interpreter is a location: `check_command`
+    probes the venv it expects and `install_command` builds it. Naming two or
+    more is a *search*, and a search has to be the whole list. So the consumer
+    set is read off the commands themselves: a fourth one is covered the day it
+    is written, and one that is renamed cannot fall out.
+    """
+    found = {}
+    for parameter in EVERY_BUILDER:
+        command = parameter.values[0](host)
+        at = [command.find(path) for path in _rooted(host)]
+        if sum(1 for position in at if position >= 0) >= 2:
+            found[parameter.id] = at
+    return found
+
+
+@pytest.mark.parametrize("host", ALL, ids=["windows", "linux"])
+def test_every_interpreter_search_asks_the_whole_list_in_order(host):
+    """One list, and a search order is part of what the list means.
+
+    Membership *and* order: the venv this tool builds itself has to win over a
+    stray one, so a chain that holds the right four layouts in the wrong order
+    is still wrong. A fifth layout added to `WINDOWS_PYTHONS` alone fails here
+    for every consumer that did not get it.
+    """
+    layouts = _rooted(host)
+    searchers = _searchers(host)
+    assert searchers, "no builder searches for an interpreter at all"
+    for name, at in sorted(searchers.items()):
+        missing = [path for path, position in zip(layouts, at) if position < 0]
+        assert not missing, (
+            f"{name} searches for an interpreter but never looks in {missing} — "
+            "that is the box it condemns and could have started")
+        assert at == sorted(at), (
+            f"{name} searches the layouts in a different order from the list")
+
+
+@pytest.mark.parametrize("host", ALL, ids=["windows", "linux"])
+def test_no_builder_rolls_its_own_interpreter_chain(host):
+    """The list and the search that reads it are the same source of truth.
+
+    Behaviour and source have to agree: a builder that searches must be the one
+    that calls the shared search, and a builder that calls it must search. The
+    correspondence is what stops the next copy — writing the chain out by hand
+    fails the first half, and slicing the constant fails the second.
+    """
+    helper = "windows_python_search" if is_windows(host) else "linux_python_search"
+    uses_helper = {
+        parameter.id for parameter in EVERY_BUILDER
+        if helper in inspect.getsource(getattr(provision, parameter.id))
+    }
+    assert uses_helper == set(_searchers(host)), (
+        "these disagree about who searches for an interpreter: "
+        f"calls {helper}={sorted(uses_helper)}, "
+        f"actually searches={sorted(_searchers(host))}")
+
+
+@pytest.mark.parametrize("host", ALL, ids=["windows", "linux"])
+def test_the_layout_the_installer_builds_is_the_one_searched_first(host):
+    """Search order is a fact about the box, not an arrangement of a tuple.
+
+    The tests above hold every consumer to the same order, which is what stops
+    them diverging — but they pass just as happily on a list turned upside down,
+    because a consistent wrong order is still consistent. This is the anchor:
+    `install_command` builds one venv, and a search that reached a stray `.venv`
+    or the portable bundle before it would run ComfyUI out of an environment
+    nothing here installed into.
+    """
+    layouts = WINDOWS_PYTHONS if is_windows(host) else LINUX_PYTHONS
+    built = install_command(host)
+    assert layouts[0] in built, (
+        f"the installer builds none of {layouts[0]!r}, so nothing says which "
+        "layout the search should prefer")
+    assert not any(other in built for other in layouts[1:]), (
+        "the installer builds more than one layout; which one wins is no longer "
+        "decided by this list")
