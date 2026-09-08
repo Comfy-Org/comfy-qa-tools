@@ -482,3 +482,39 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config):
         f"{'' if ran == 1 else 's'} that did run. Do not report a number from "
         f"this session; rerun it.")
     terminalreporter.write_sep("=", red=not asked_for, bold=True)
+
+
+# --- the suite renders the same everywhere ------------------------------------
+
+@pytest.fixture(autouse=True, scope="session")
+def _render_like_a_pipe():
+    """Rich decides colour from the environment, not only from a tty.
+
+    `CI=true` — which GitHub Actions sets on every runner — makes Rich force
+    colour ON regardless of whether the stream is a terminal. The real binary is
+    unaffected: `comfy-qat --help > file` carries no escapes on a runner or a
+    laptop, checked both ways. But `CliRunner` captures through a pipe that Rich
+    then colours anyway, so five tests that assert on help TEXT saw escape codes
+    and wrapped columns instead.
+
+    They were right to assert what they assert. `test_no_colour` says it plainly:
+    "a redirect is not a terminal, so Rich writes none" — true of the tool, and
+    not true of this harness under CI. So the harness is pinned to the plain-pipe
+    case the tests describe, rather than the assertions being widened to tolerate
+    an environment the tool never actually produces.
+
+    COLUMNS is pinned for the same reason: at 40 columns Rich wraps an option
+    name and `--new-window in help` becomes false for a rendering reason rather
+    than a real one. A test that means to vary width sets its own, as
+    `test_version` does.
+
+    NO_COLOR is deliberately NOT set. Only the three variables CI actually
+    changes are removed, and Rich's own tty detection is left alone — because
+    `test_no_colour` has a sibling asserting that Typer DOES still colour a
+    terminal, and forcing colour off globally would make that one pass for the
+    wrong reason. Both halves of that pair have to keep meaning what they say.
+    """
+    for var in ("CI", "GITHUB_ACTIONS", "FORCE_COLOR"):
+        os.environ.pop(var, None)
+    os.environ.setdefault("COLUMNS", "120")
+    yield
