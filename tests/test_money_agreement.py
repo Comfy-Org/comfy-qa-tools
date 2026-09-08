@@ -548,3 +548,162 @@ def test_the_offer_reader_tells_advice_from_a_full_stop():
     assert not _offers_a_way_to_stop("comfy-win was billing. Stopped.")
     assert not _offers_a_way_to_stop("  comfy-qat list --live")
     assert not _offers_a_way_to_stop("  - nothing else is running, so nothing to stop")
+
+
+# --- 5. omission: a failure must say what its own step may have created -------
+
+# Observed on real hardware, not mutated into existence. `move comfy-linux --to
+# us-central1-b` on a 200 GB disk exceeded the tool's 300s gcloud timeout inside
+# the snapshot step, and printed:
+#
+#     the move stopped at: snapshot the boot disk comfy-linux ...
+#         (gcloud timed out after 300s: compute disks snapshot ...)
+#         comfy-linux is untouched in us-central1-c
+#     to fix: run the same command again ...
+#
+# Every word true, and Google was holding `comfy-linux-move  200 GB  UPLOADING`
+# at that moment. **The client timed out; the operation did not stop.** The
+# message reports on the instance and is silent about the object the step it just
+# named had already brought into existence. The next `move` run does say so,
+# prominently, with the delete command — and that is exactly the argument that
+# would keep this message wrong forever.
+#
+# **This is not a contradiction, so nothing above can see it.** Rules (a) to (d)
+# compare claims a paragraph makes; this paragraph makes no false claim. It omits
+# one. So the fifth rule is about what a message must contain rather than what it
+# must not.
+#
+# **The tool has already written the reasoning down, once.** `_inflight` — the
+# Ctrl-C path — counts the step in progress as done, and says why: *"the request
+# has reached Google by then, and Ctrl-C reaches only the local gcloud, so
+# assuming it did NOT happen is the assumption that costs money."* `_stopped` —
+# the step-failed path — is handed the same `done` list without the step in
+# progress. Two paths, the same doubt about the same resource, and only one of
+# them counts it. A timeout arrives as a `GcloudError`, so it takes the path that
+# does not.
+#
+# Nothing here lists which steps create something. The action kinds come from
+# `Plan.actions`, and what each one leaves comes from `_state_after`, so a step
+# added later is held to this the day it exists.
+
+
+def _a_plan():
+    from comfy_qa.relocate import Found, Plan
+
+    return Plan(
+        host=Host(name="comfy-linux", kind="gce", os="Ubuntu", gpu="L4",
+                  gce_instance="comfy-linux", gce_zone="us-central1-c",
+                  gce_project="proj", port=8190),
+        to_zone="us-central1-b",
+        source_disk="comfy-linux",
+        new_instance="comfy-linux-b",
+        new_disk="comfy-linux-b",
+        snapshot="comfy-linux-move",
+        machine_type="g2-standard-8",
+    ), Found()
+
+
+def _creating_steps():
+    """Every step of a move that leaves something behind, asked of the code.
+
+    A step "creates" when `_state_after` lists something once that step is
+    counted as done and nothing else is. That is the tool's own definition of
+    what a step leaves, so `SNAPSHOT`, the disk and the instance qualify without
+    being named here, and a fourth one would qualify on the day it is written.
+    """
+    from comfy_qa.relocate import DELETING, _state_after
+
+    plan, found = _a_plan()
+    steps = []
+    for action in plan.actions(found):
+        if action.kind in DELETING:
+            continue
+        left, _ = _state_after(plan, found, [action.kind])
+        if left:
+            steps.append((action, left))
+    return steps
+
+
+def test_the_creating_steps_are_found_in_the_code_and_not_listed_here():
+    """Non-vacuity: if `Plan.actions` or `_state_after` stops answering, the
+    check below covers nothing and this says so rather than passing."""
+    steps = _creating_steps()
+    assert len(steps) >= 3, (
+        f"only {len(steps)} creating steps found; a move creates a snapshot, a "
+        f"disk and an instance, so the derivation has broken"
+    )
+
+
+def _what_the_failure_said(action, exc):
+    from comfy_qa.relocate import _stopped
+
+    plan, found = _a_plan()
+    reported = _stopped(plan, found, [], action, exc)
+    return "\n".join((str(reported), *reported.left, *reported.cleanup))
+
+
+@pytest.mark.parametrize("kind", [a.kind for a, _ in _creating_steps()])
+def test_a_step_that_ran_out_of_clock_reports_what_it_may_have_created(kind):
+    """The two paths out of a step in progress must name the same resources.
+
+    An interrupt inside a step and a timeout inside a step face the same doubt:
+    the request reached Google, and neither Ctrl-C nor a client-side clock tells
+    you what Google did with it. `_inflight` resolves that doubt towards "it may
+    exist", and says why. This asserts `_stopped` resolves it the same way,
+    because a 200 GB snapshot that is UPLOADING does not care which of the two
+    happened.
+
+    The kind is `TIMEOUT` because that is the shape the real failure took, and
+    because gcloud's own vocabulary calls it the one that "reached Google, or did
+    not, but ran out of clock".
+    """
+    from comfy_qa.gcloud import TIMEOUT
+    from comfy_qa.relocate import _inflight
+
+    plan, found = _a_plan()
+    action, expected = next((a, e) for a, e in _creating_steps() if a.kind == kind)
+    timed_out = GcloudError(
+        f"gcloud timed out after 300s: compute disks snapshot {plan.source_disk}",
+        kind=TIMEOUT)
+
+    may_exist, _ = _inflight(plan, found, [], action)
+    said = _what_the_failure_said(action, timed_out)
+
+    for item in expected:
+        assert item in may_exist, (
+            f"the interrupt path stopped naming {item!r}; this test is measuring "
+            f"against it, so fix that first"
+        )
+        assert item in said, (
+            f"a move that times out inside `{action.kind}` says nothing about "
+            f"{item!r}, which that very step may already have created on Google's "
+            f"side. The interrupt path names it. What the failure said was:\n{said}"
+        )
+
+
+@pytest.mark.parametrize("kind", [a.kind for a, _ in _creating_steps()])
+def test_a_step_that_was_refused_does_not_invent_what_it_did_not_create(kind):
+    """The other half, and the reason the rule above is keyed on the kind.
+
+    A refusal is an answer. gcloud saying "quota exceeded" means Google looked and
+    made nothing, and naming a snapshot that does not exist is how a tool stops
+    being believed about money — `put_away` has the same sentence written into it
+    from the day it over-reported four boxes. So this pins the direction the fix
+    must NOT drift in: only an unresolved outcome may be counted as maybe-there.
+    """
+    from comfy_qa.gcloud import QUOTA
+    from comfy_qa.relocate import _state_after
+
+    plan, found = _a_plan()
+    action, invented = next((a, e) for a, e in _creating_steps() if a.kind == kind)
+    refused = GcloudError("quota exceeded", raw="ERROR: quota exceeded", kind=QUOTA)
+
+    already, _ = _state_after(plan, found, [])
+    said = _what_the_failure_said(action, refused)
+    for item in invented:
+        if item in already:
+            continue  # something an earlier step really did make
+        assert item not in said, (
+            f"a move REFUSED inside `{action.kind}` claims {item!r} exists. Google "
+            f"answered, and the answer was no. What it said was:\n{said}"
+        )

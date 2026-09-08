@@ -46,7 +46,7 @@ from typing import Callable
 from . import inflight
 from . import say as output
 from .config import ConfigError, Host
-from .gcloud import QUOTA, Gcloud, GcloudError
+from .gcloud import QUOTA, TIMEOUT, Gcloud, GcloudError
 
 # The steps a move is made of. They are identifiers rather than free text so the
 # printed plan and the executed run come off one list: a preview assembled
@@ -66,6 +66,17 @@ LEAVE = "leave"
 # `_inflight`'s — is stated in general terms and would be inverted again by the
 # second one.
 DELETING = (DELETE_SNAPSHOT,)
+
+# The failure kinds that settle nothing about whether the step happened. gcloud's
+# own vocabulary already draws this line: DENIED and QUOTA reached Google and got
+# an answer, NETWORK never reached it, and TIMEOUT is the one whose comment says
+# "reached Google, or did not, but ran out of clock". Only that one leaves a
+# resource whose existence nobody knows.
+#
+# One member today, named rather than compared inline for the reason DELETING is:
+# the rule below is stated in general terms, and the second member would
+# otherwise have to find every site by hand.
+UNRESOLVED = (TIMEOUT,)
 
 # gcloud's own default when `--type` is omitted. Naming it here is the reason the
 # default is never reached: the source disk's type is always passed through.
@@ -1500,6 +1511,29 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
             left=left,
             cleanup=cleanup,
         )
+
+    if exc.kind in UNRESOLVED and action.kind not in DELETING:
+        # The step that failed counted as done — the reading `_inflight` already
+        # takes of an interrupt, for the reason it gives: the request has reached
+        # Google, and a client-side failure says nothing about what Google did
+        # with it. This path did not take it, so the two disagreed about exactly
+        # one resource: the one the failing step was in the middle of, and the
+        # only one whose fate is in doubt.
+        #
+        # A real move proved it. A 200 GB snapshot exceeded the 300s gcloud
+        # timeout; the failure named the instance as untouched and said nothing
+        # about `comfy-linux-move`, which Google was holding in UPLOADING at that
+        # moment. The next run reports it prominently — and someone who reads a
+        # failure and walks away never makes that run.
+        #
+        # Only the unresolved kinds. A refusal is an answer: gcloud saying "quota
+        # exceeded" means Google looked and made nothing, and reporting a snapshot
+        # that does not exist is how a tool stops being believed about money. The
+        # capacity branch above is the same judgement, made earlier and by name.
+        # A delete is excluded for `_inflight`'s reason — counting one as done
+        # drops the resource out of the report, which is the outcome that leaves
+        # something billing unsaid.
+        left, cleanup = _state_after(plan, found, [*done, action.kind])
 
     return MoveError(
         f"the move stopped at: {action.line} ({exc})",
