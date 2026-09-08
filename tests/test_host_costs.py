@@ -1316,3 +1316,209 @@ def test_an_interrupt_while_starting_says_the_box_may_be_billing(
 # `create`'s interrupt is tested in test_create_cli.py, which already has a fake
 # that can reach `build` — zone planning needs accelerator-types and
 # machine-types answers this file's Cloud deliberately refuses.
+
+
+# --- 8. a stop that FAILS must say the box is still billing --------------------
+#
+# The fourth thing a live run's worth of reading found, and the most expensive.
+# `put_away`'s `except GcloudError` raised
+#
+#     LifecycleError(f"could not stop {host.name}: {exc}", fix=exc.fix)
+#
+# which was the ONLY mutating-call failure path in lifecycle.py that did not
+# reach `_with_the_bill` — in the one command whose entire purpose is stopping
+# the bill. `exc.fix` is gcloud's own advice and is `None` for the timeout that
+# makes this matter, so the whole message was "could not stop comfy-win: ...".
+# The box is still on, and the person who typed `down` believes it is not.
+#
+# `bring_up` has handled the mirror case since it was written, with a comment
+# saying why: a request that reached Google and whose ANSWER was lost is not a
+# request that did not happen, so it RE-READS the state and names the bill. A
+# stop is the same call with the stakes reversed.
+#
+# `down --all` has aggregated into "may still be billing" for as long as it has
+# existed. `down <name>` — the form someone types at the end of a session — had
+# no equivalent, which is two forms of one command disagreeing about money.
+
+
+class StopFails(Cloud):
+    """A stop that refuses, and a state read that can answer differently after it.
+
+    `Cloud` returns one fixed status forever, which cannot express the only
+    question this section asks: what does the project say AFTER the stop went
+    wrong. `after` is that second answer — a state, or an exception to raise.
+    """
+
+    def __init__(self, *, after, **kwargs):
+        super().__init__(**kwargs)
+        self._after = after
+        self._read = 0
+
+    def instance_status(self, instance, zone, project):
+        self.calls.append("instance_status")
+        self._read += 1
+        if self._read == 1:
+            return self._status
+        if isinstance(self._after, Exception):
+            raise self._after
+        return self._after
+
+
+def test_a_failed_stop_says_the_box_is_still_running_and_billing(cli):
+    """The headline case: gcloud refused, and the project says the box is up.
+
+    Nothing is hedged here, because nothing needs to be — the state was read and
+    it came back RUNNING. The old message said neither that it was running nor
+    that it was costing anything.
+    """
+    from comfy_qa.gcloud import GcloudError
+
+    cloud = StopFails(stop=GcloudError("timed out"), after="RUNNING")
+    result = cli("down", "comfy-win", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    assert "billing" in result.output, result.output
+    # The raw gcloud, complete and pasteable. `comfy-qat down comfy-win` is the
+    # command that has just failed on this box, so it may not be the only one
+    # offered — and a stop command with the zone missing is worth nothing.
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in result.output), result.output
+
+
+def test_a_failed_stop_that_cannot_be_re_read_does_not_claim_anything(cli):
+    """Both calls failed, so the one honest sentence is that nobody can say.
+
+    Not "it is running" — that asserts what was not read. Not "could not stop",
+    full stop, which is what it used to say and reads as though the box is off.
+    """
+    from comfy_qa.gcloud import GcloudError
+
+    cloud = StopFails(stop=GcloudError("timed out"),
+                      after=GcloudError("still timing out"))
+    result = cli("down", "comfy-win", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    assert "may still be running and billing" in result.output, result.output
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in result.output), result.output
+
+
+def test_a_stop_whose_reply_was_lost_is_not_reported_as_a_failure(cli):
+    """The re-read proves TERMINATED, so the bill HAS stopped and saying
+    otherwise would feed `down --all`'s money summary the opposite of what the
+    project just said. Proven, not assumed: TERMINATED is Google's own word and
+    the read succeeded."""
+    from comfy_qa.gcloud import GcloudError
+
+    cloud = StopFails(stop=GcloudError("connection reset"), after="TERMINATED")
+    result = cli("down", "comfy-win", cloud=cloud)
+
+    assert result.exit_code == 0, result.output
+    assert "was billing" in result.output, result.output
+
+
+# --- 9. every mutating call's FAILURE handler names the bill -------------------
+#
+# The gap that let section 8 sit green for as long as it did, and it is a gap in
+# this file rather than in the tool. `test_every_command_that_leaves_a_box_running
+# _names_the_bill` checks the ORDINARY path by design, and delegates failures to
+# `_with_the_bill` — lifecycle.py's docstring states the rule: "Every failure
+# after the machine has been started says how to stop paying for it."
+#
+# NOTHING CHECKED THAT `_with_the_bill` WAS ACTUALLY REACHED. So a handler could
+# skip it, and one did, for the most expensive call in the tool.
+#
+# Scoped to the failure handler that DIRECTLY wraps a mutating gcloud call, not
+# to every raise in the module. That is the line where the resource either
+# exists or is still running because of what just failed, and it is derivable
+# rather than a list somebody keeps.
+
+
+def _mutating_gcloud_methods() -> set[str]:
+    """`Gcloud` methods that create, start, stop or destroy something, derived
+    from the argv they send rather than from their names.
+
+    Names lie in both directions here and both were measured: `snapshot_disk`
+    mutates and has no mutating verb in its name, while `windows_password`
+    contains `reset` and only reads. So the verb is read out of the gcloud
+    command actually being sent, which is the only place it is a fact.
+    """
+    import inspect
+
+    from comfy_qa import gcloud as gcloud_module
+
+    verbs = {"create", "delete", "start", "stop", "resize", "snapshot",
+             "add", "attach-disk", "detach-disk", "move"}
+    source = inspect.getsource(gcloud_module)
+    cls = next(node for node in ast.walk(ast.parse(source))
+               if isinstance(node, ast.ClassDef) and node.name == "Gcloud")
+
+    found = set()
+    for function in cls.body:
+        if not isinstance(function, ast.FunctionDef):
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.List):
+                continue
+            words = [element.value for element in node.elts
+                     if isinstance(element, ast.Constant)
+                     and isinstance(element.value, str)]
+            if words[:1] == ["compute"] and any(w in verbs for w in words[:4]):
+                found.add(function.name)
+    return found
+
+
+def test_the_mutating_method_derivation_still_finds_them():
+    """The derivation above is load-bearing: if it returns nothing, the guard
+    below passes by checking nothing at all. That is how a green suite comes to
+    mean less than it looks like it means, and it is the failure mode every
+    derived check in this file is written against."""
+    found = _mutating_gcloud_methods()
+
+    assert {"start_instance", "stop_instance", "create_instance_from_image"} <= found, (
+        f"the mutating-method derivation has stopped working: {sorted(found)}"
+    )
+
+
+def test_every_mutating_call_failure_handler_names_the_bill():
+    """A gcloud call that starts, stops or creates something, and whose
+    `except GcloudError` says nothing about the bill.
+
+    The one this was written for: `put_away` wrapping `gc.stop_instance`. It
+    raised "could not stop <name>" with gcloud's own `fix`, which is `None` on a
+    timeout — leaving a GPU box running and the message silent about it, in the
+    command people run specifically to stop paying.
+    """
+    import inspect
+
+    from comfy_qa import lifecycle as lifecycle_module
+
+    source = inspect.getsource(lifecycle_module)
+    tree = ast.parse(source)
+    mutating = _mutating_gcloud_methods()
+
+    naked = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        called = {_called_name(call) for call in ast.walk(node)
+                  if isinstance(call, ast.Call)} & mutating
+        if not called:
+            continue
+        for handler in node.handlers:
+            names = ast.unparse(handler.type) if handler.type else ""
+            if "GcloudError" not in names:
+                continue
+            body = "\n".join(ast.get_source_segment(source, stmt) or ""
+                             for stmt in handler.body)
+            if not any(token in body for token in BILL_TOKENS):
+                naked.append(f"line {handler.lineno} (around "
+                             f"{', '.join(sorted(called))})")
+
+    assert not naked, (
+        f"a failure handler for a mutating gcloud call says nothing about the "
+        f"bill: {'; '.join(naked)}. The call either started something that is "
+        f"now running or failed to stop something that still is, and the "
+        f"message is the only thing standing between that and an overnight "
+        f"bill. Route the fix through `_with_the_bill`."
+    )

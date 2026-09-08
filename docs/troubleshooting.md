@@ -1007,9 +1007,10 @@ Exit 1. Anything listed here is still costing money; the console is the
 last resort.
 
 **`could not stop comfy-win: ...`**
-gcloud refused to stop the machine, so **it is still running and still billing.**
-Try again, and if it keeps failing stop it in the Google Cloud console — an
-instance nobody stopped is the most expensive failure this tool has.
+gcloud refused to stop the machine. What the tool says next depends on what the
+project says the machine is actually doing — see "A stop whose answer was lost"
+below for the three cases and the exact wording of each. An instance nobody
+stopped is the most expensive failure this tool has.
 
 **`Google has no L4 capacity in us-central1-a right now, so comfy-win cannot start.
 This is not a fault on your side, and retrying in the same zone will not help.`**
@@ -1662,6 +1663,48 @@ billing that you believe never started.
 The start failed and the machine is stopped, or its state could not be read at all.
 If the error was a timeout, the request may still have landed: `comfy-qat list
 --live` asks Google what is actually running before you retry.
+
+## A stop whose answer was lost
+
+The mirror of the section above, and the more expensive of the two. A start whose
+answer is lost may leave a box running when you think it never started; a **stop**
+whose answer is lost leaves one running when you have just been told it stopped —
+and `down` is the command people run precisely to stop paying, then close the
+laptop.
+
+So when gcloud refuses the stop, the tool asks Google what the machine is actually
+doing before it says anything. Three answers, three messages.
+
+**`<name> is stopped — the request landed and only the reply came back broken (<error>)`**
+
+The stop worked; only the confirmation was lost. The machine is TERMINATED, read
+back from the project after the failure, so the bill has stopped. This is not
+reported as a failure and the run exits 0 — saying otherwise would tell
+`down --all`'s summary the opposite of what Google just said.
+
+**`could not stop <name> (<error>), and the project says it is still <state> — it is billing.`**
+
+The stop failed and the machine is genuinely still up. Nothing is hedged here
+because nothing needs to be: the state was read and it came back. Exit 1, and the
+fix line hands over gcloud's own stop with the zone and project filled in:
+
+```
+gcloud compute instances stop <name> --zone=<zone> --project=<project>
+```
+
+That raw command leads rather than `comfy-qat down <name>`, because `comfy-qat
+down` is the command that has just failed on this box.
+
+**`could not stop <name>: <error>. Reading its state afterwards failed too, so it may still be running and billing.`**
+
+Both calls failed, so nobody can say which way it went. The honest sentence is
+that it may still be running — not "it is running", which asserts what was not
+read, and not a bare "could not stop", which reads as though the box is off.
+`comfy-qat list --live` asks Google what is actually running.
+
+Until this existed, all three cases printed `could not stop <name>: <error>` and
+gcloud's own advice, which is empty for the timeout that makes this matter. The
+box was left running and the message said nothing about money.
 
 ## A new box and its GPU driver
 

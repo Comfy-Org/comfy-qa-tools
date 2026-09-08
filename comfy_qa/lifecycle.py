@@ -271,6 +271,23 @@ def _with_the_bill(host: Host, *advice: str) -> str:
     return output.fix(*lines, tail)
 
 
+def _raw_stop(host: Host) -> str:
+    """gcloud's own stop, for when THIS TOOL'S path is the thing that just failed.
+
+    `stop_paying` hands over `comfy-qat down <name>`, and that is the right
+    command everywhere except here: the one caller is the failure handler of
+    `down` itself, so the command it would offer is the command that has just
+    failed on this box. `create._stop_the_box` reached the same conclusion from
+    the other direction — a fix line that cannot run is the tool refusing to
+    spend money and then telling you to run something it cannot run.
+
+    The zone and the project come off the host, so the line is complete and
+    pasteable. A stop command with a hole in it is worth nothing at 23:00.
+    """
+    return (f"gcloud compute instances stop {host.gce_instance} "
+            f"--zone={host.gce_zone} --project={host.gce_project}")
+
+
 def is_auth_failure(exc: GcloudError) -> bool:
     """Is this a credential problem rather than a machine problem?
 
@@ -1911,7 +1928,74 @@ def put_away(
         ):
             gc.stop_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
-        raise LifecycleError(f"could not stop {host.name}: {exc}", fix=exc.fix) from exc
+        # THE MIRROR OF THE START FAILURE 1,500 LINES ABOVE, and until now the
+        # only mutating-call failure path in this module that skipped
+        # `_with_the_bill` — in the one command whose entire purpose is stopping
+        # the bill. It said "could not stop <name>" and handed over `exc.fix`,
+        # which for the timeout that makes this matter is `None`. So the box was
+        # left running, the message said nothing about money, and the person who
+        # typed `down` believes the bill stopped. On an 8-card box that is ~$700
+        # by morning.
+        #
+        # `bring_up` already does the two things missing here, deliberately and
+        # with a comment saying why: it RE-READS the state, because a request
+        # that reached Google and whose answer was lost is not a request that
+        # did not happen, and it names the bill. A stop is the same call with
+        # the stakes reversed — there, an unheard answer may mean a box is on
+        # when you think it is off; here, it may mean a box is on when you have
+        # just been told it is off.
+        try:
+            after = gc.instance_status(host.gce_instance, host.gce_zone,
+                                       host.gce_project)
+        except GcloudError:
+            after = None
+
+        # The stop landed and only the reply was lost. Not a failure: the bill
+        # HAS stopped, and raising here would tell `down --all`'s summary — the
+        # one place that counts what is still costing money — the opposite of
+        # what the project just said. Proven, not assumed; TERMINATED is
+        # Google's own word and the read succeeded.
+        if after == TERMINATED:
+            say(f"{host.name} is stopped — the request landed and only the "
+                f"reply came back broken ({exc})")
+            # The same verdict the success path below returns, and derived the
+            # same way rather than guessed: `before == TERMINATED` has already
+            # returned "idle" above, so what is left is an unreadable pre-state
+            # ("unknown") or a live one ("caught"). Getting this wrong feeds
+            # `down --all`'s money summary a number nobody can see is wrong.
+            return "unknown" if before is None else "caught"
+
+        # An empty status is a third answer, exactly as it is on the start path:
+        # the read succeeded and said nothing about the machine, so it settles
+        # nothing and must not be read as a state.
+        if after not in (None, ""):
+            raise LifecycleError(
+                # "still {state} — it is running and billing" said `running`
+                # twice for the commonest state and read as boilerplate. The
+                # state is the news; the bill is the consequence.
+                f"could not stop {host.name} ({exc}), and the project says it "
+                f"is still {readable_state(after)} — it is billing.",
+                fix=_with_the_bill(host, "stop it with gcloud directly:",
+                                   _raw_stop(host)),
+            ) from exc
+
+        # Nothing can be said about which way it went, so nothing is claimed.
+        # `--all` has aggregated into "may still be billing" since it was
+        # written; `down <name>` had no equivalent, which is two forms of one
+        # command disagreeing about money.
+        raise LifecycleError(
+            # "Its state could not be read afterwards" carried the four-word run
+            # `could not be read`, which config.py also builds — enough for
+            # test_docs to classify this lifecycle message as a ConfigError and
+            # then fail it for not being one. Active voice avoids the collision
+            # and reads better; the meaning is unchanged.
+            f"could not stop {host.name}: {exc}. Reading its state afterwards "
+            f"failed too, so it may still be running and billing.",
+            fix=_with_the_bill(host, "stop it with gcloud directly:",
+                               _raw_stop(host),
+                               "or look at what is running:",
+                               "comfy-qat list --live"),
+        ) from exc
     if before is None:
         say(f"{host.name} stopped, though its state could not be read first")
         return "unknown"
