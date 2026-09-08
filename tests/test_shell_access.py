@@ -88,6 +88,15 @@ def state(monkeypatch):
         gcloud_module.Gcloud, "instance_status",
         lambda self, instance, zone, project: answer.value,
     )
+    # And say the binary is there. `available()` falls through to
+    # `shutil.which("gcloud")`, so without this every test here asserts on
+    # whatever the machine happens to have installed — they passed on a laptop
+    # and on the ubuntu runner, which ships the SDK, and failed on macos-latest,
+    # which does not. The module already intends this: `available` returns
+    # "<injected>" for an injected runner precisely so tests "exercise the real
+    # check order without needing gcloud installed".
+    monkeypatch.setattr(gcloud_module.Gcloud, "available",
+                        lambda self: "/usr/bin/gcloud")
     return answer
 
 
