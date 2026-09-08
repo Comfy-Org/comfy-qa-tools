@@ -300,8 +300,10 @@ has no GPUs left" below for what it actually does.
 That block is copied from a real run. It read `comfy-qat host switch` and
 `comfy-qat host move` when it was taken, because the tool's own messages had not
 caught up with the verbs moving to the top level; they have since, and the block
-is updated to match. A few messages elsewhere still say `comfy-qat auth ...` —
-`A8` in [test-criteria.md](test-criteria.md) is the check that counts them.
+is updated to match. No message the tool prints still says `comfy-qat host ...`
+or `comfy-qat auth ...` either — `A8` in [test-criteria.md](test-criteria.md) is
+the check that holds it that way, and a hit there now is a regression rather
+than a leftover.
 
 ## When you are done
 
