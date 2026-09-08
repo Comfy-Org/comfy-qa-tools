@@ -154,30 +154,189 @@ TAKES_CONFIG = {
     if any(arg.arg == "config" for arg in node.args.args + node.args.kwonlyargs)
 }
 
-# A command "writes the host list" if its body puts bytes on disk: `write_text`
-# for a starter file, `hostfile.apply` for a rewrite, `hostfile.add` for an
-# append. Read out of the source, so the sixteenth command to start writing is
-# caught the day it does rather than by whoever remembers to extend a list.
+# Which commands write the host list — derived by following CALLS to the file,
+# not by recognising spellings in a command body.
 #
-# `add` is here because leaving it out was not a gap this list reported — it was
-# a command SILENTLY LEAVING it. `discover` appended with a bare `path.open("a")`
-# and got in on `write_text`, the starter-file write beside it; routing the
-# append through `hostfile.add` took that call away, and `discover` dropped out
-# of the derived set without any command having stopped writing. The sibling
-# below is the only reason anybody noticed, and it is worth reading twice: a
-# collector that recognises the spellings in use today reports a shrinking list
-# as good news. Every new way to write the file has to be named here.
+# THE WALK THIS REPLACES READ THE COMMAND'S OWN BODY FOR `write_text` OR A BARE
+# `apply(...)`, AND IT HAD ALREADY GONE BLIND. Twice, both times in silence:
 #
-# Bare-name calls only, and that is what keeps `add` from being too common a
-# word to match on: `inflight.add`, `set.add` and every other `x.add(...)` is an
-# Attribute, not a Name, so only the one imported from `hostfile` is seen.
-WRITES_THE_LIST = sorted(
-    name for name, node in COMMANDS.items()
-    if any(isinstance(call, ast.Call)
-           and ((isinstance(call.func, ast.Attribute) and call.func.attr == "write_text")
-                or (isinstance(call.func, ast.Name) and call.func.id in ("apply", "add")))
-           for call in ast.walk(node))
-)
+#   - `discover` appended with `path.open("a")` and got into the list on the
+#     `write_text` beside it, the starter-file write. Routing the append through
+#     `hostfile.add` took that call away, and `discover` LEFT the derived set
+#     without any command having stopped writing. Nothing about a list that gets
+#     SHORTER says anything is wrong: a collector matching the spellings in use
+#     today reports its own blindness as good news.
+#
+#     THE FLOOR CAUGHT IT — it named `discover`, and the suite went red on this
+#     file. Which is the lesson, and it is not "we got away with one": the
+#     hand-written half is the half that worked, and the DERIVED half is the one
+#     that quietly stopped covering a command. That is the wrong way round for a
+#     file whose whole argument is that hand-maintained lists rot.
+#
+#   - `setup` is the same event with nothing underneath it. It writes the host
+#     list TWICE — `ensure_host_list` writes STARTER, `add_discovered_hosts`
+#     calls `hostfile.add` — and both are one hop out of `setup_cmd`, which is
+#     the only thing the old walk read. So `setup` was in neither the derived set
+#     NOR the floor, and no collector and no sibling would have said a word. That
+#     is not a hazard this file was at risk of; it is one it was already in.
+#
+# So: a function writes the host list if it puts bytes on disk inside
+# `hostfile.py`, or writes `STARTER`. A command writes it if it REACHES one.
+# That is what `_functions` and `_calls` were built for and what the readers
+# below already do; the writers were the half that never got it. A helper
+# renamed, added or folded in is then transparent, because nothing here is
+# matching on the helper's name.
+#
+# NAMES ARE RESOLVED PER MODULE, through that module's own imports. Resolving a
+# bare name against the whole package is not a shortcut here, it is a flood:
+# `hostfile._in` and `tunnel._in` share a name, `taken.add(...)` shares one with
+# `hostfile.add`, `text.replace(...)` shares one with `os.replace`. Measured,
+# bare-name resolution pulled 13 of the 22 commands in through `tunnel` and
+# `lifecycle`. That is not over-collection in a safe direction; it is the list
+# agreeing with whatever it finds, which is the failure this walk exists to stop.
+#
+# Where the two directions really are unequal, be wrong the safe way: a command
+# named here that turns out not to write costs one sentence in a docstring, and
+# one that writes and is not named retires a guard with nothing going red.
+
+
+def _bytes_on_disk(node: ast.AST) -> bool:
+    """A real write to a file — not `str.replace`, not `set.add`.
+
+    `os.replace` is qualified deliberately. Matching the bare attribute `replace`
+    put `hostfile._in` — `text.replace("\r\n", "\n")` — into the seed, and `_in`
+    is also a `tunnel.py` function, which is how one wrong character opened the
+    whole tunnel graph.
+    """
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Attribute):
+            continue
+        func = call.func
+        if func.attr in ("write_text", "write_bytes"):
+            return True
+        if func.attr == "replace" and isinstance(func.value, ast.Name) and func.value.id == "os":
+            return True
+        if func.attr == "open" and call.args:
+            mode = call.args[0]
+            if isinstance(mode, ast.Constant) and isinstance(mode.value, str) \
+                    and any(letter in mode.value for letter in "aw"):
+                return True
+    return False
+
+
+def _writes_starter(node: ast.AST) -> bool:
+    """Writes the starter host list, wherever it lives.
+
+    This is the other way a command puts a host list on disk, and it is not in
+    `hostfile.py` — `setup.ensure_host_list` does it, and that is one of the two
+    writes that made `setup` invisible.
+    """
+    return any(isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+               and call.func.attr in ("write_text", "write_bytes") and call.args
+               and isinstance(call.args[0], ast.Name) and call.args[0].id == "STARTER"
+               for call in ast.walk(node))
+
+
+def _outgoing(node: ast.AST) -> set[tuple[str | None, str]]:
+    """Calls that could be one of ours, as `(module alias, name)`.
+
+    Bare names, and `<module alias>.<name>` for a module of this package —
+    `setup_mod.run_setup(...)` is how `cli.setup_cmd` reaches the writes, so a
+    walk that reads bare names only cannot see `setup` write anything.
+
+    Everything else is dropped, and that is the point: `taken.add(...)` and
+    `text.replace(...)` are attribute calls on ordinary objects, and counting
+    them is what turned this walk into a flood.
+    """
+    out: set[tuple[str | None, str]] = set()
+    for call in ast.walk(node):
+        if not isinstance(call, ast.Call):
+            continue
+        func = call.func
+        if isinstance(func, ast.Name):
+            out.add((None, func.id))
+        elif isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            out.add((func.value.id, func.attr))
+    return out
+
+
+def writers_among(sources: dict[str, str]) -> list[str]:
+    """Every command in `sources` that reaches a write of the host list.
+
+    Takes its sources rather than reading the package, so the walk itself can be
+    put in front of a shape that does not exist yet — which is the only way to
+    show it survives one.
+    """
+    defs: dict[tuple[str, str], ast.FunctionDef] = {}
+    imports: dict[str, dict[str, str]] = {}
+    aliases: dict[str, dict[str, str]] = {}
+    entry: dict[str, tuple[str, ast.FunctionDef]] = {}
+    seed: set[tuple[str, str]] = set()
+
+    for module, text in sorted(sources.items()):
+        tree = ast.parse(text, filename=module)
+        names, modules = {}, {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                if node.module:                      # from .config import load
+                    for alias in node.names:
+                        names[alias.asname or alias.name] = f"{node.module.split('.')[-1]}.py"
+                else:                                # from . import setup as setup_mod
+                    for alias in node.names:
+                        modules[alias.asname or alias.name] = f"{alias.name}.py"
+            if isinstance(node, ast.FunctionDef):
+                defs[(module, node.name)] = node
+                if (module == "hostfile.py" and _bytes_on_disk(node)) or _writes_starter(node):
+                    seed.add((module, node.name))
+        imports[module], aliases[module] = names, modules
+        for command, node in _entry_points(tree, module)[0].items():
+            entry[command] = (module, node)
+
+    def resolve(module, call):
+        alias, name = call
+        if alias is not None:
+            home = aliases[module].get(alias)
+            return (home, name) if home and (home, name) in defs else None
+        if (module, name) in defs:
+            return (module, name)
+        home = imports[module].get(name)
+        return (home, name) if home and (home, name) in defs else None
+
+    # The closure does not run THROUGH another command. `go` and `switch` can
+    # both offer a move, so both reach `move_cmd` and its `apply` — but the
+    # command that rewrites the file there is `move`, which is in this set and
+    # says so in its own `--help`. Following that edge would make two commands
+    # writers on the strength of handing you to one.
+    commands = {(module, node.name) for module, node in entry.values()}
+    writers = set(seed)
+    changed = True
+    while changed:
+        changed = False
+        for site, node in defs.items():
+            if site in writers:
+                continue
+            reached = {resolve(site[0], call) for call in _outgoing(node)}
+            if any(hit in writers and hit not in commands for hit in reached):
+                writers.add(site)
+                changed = True
+
+    return sorted(
+        command for command, (module, node) in entry.items()
+        if (module, node.name) in writers
+        or any(resolve(module, call) in writers for call in _outgoing(node))
+    )
+
+
+def _package_sources() -> dict[str, str]:
+    return {path.name: path.read_text(encoding="utf-8") for path in sorted(PACKAGE.glob("*.py"))}
+
+
+WRITES_THE_LIST = writers_among(_package_sources())
+
+# Every command that writes the host list, named. Compared BOTH ways below, so
+# one leaving fails whether or not anybody thought to name it — which is exactly
+# what `discover` did, and what `setup` had already done before anyone looked.
+WRITES_THE_HOST_LIST = {"init", "discover", "create", "move", "delete", "setup"}
 
 
 # Reading a host list looks like exactly two things in this package: naming
@@ -444,12 +603,158 @@ def test_only_the_root_advertises_it():
 
 
 def test_the_commands_that_write_are_actually_being_found():
-    """A parametrized test over an empty list is not a passing test, it is no test
-    at all — and it would take the read/update distinction with it."""
-    assert set(WRITES_THE_LIST) >= {"init", "discover", "create", "move", "delete"}, (
-        f"the writers were derived as {WRITES_THE_LIST}. Those five write the host "
-        f"list — `init` a new one, the other four an edit to an existing one — so "
-        f"a collector that misses any of them has stopped guarding."
+    """The derived set and the written-down set, compared BOTH ways.
+
+    A parametrized test over an empty list is not a passing test, it is no test
+    at all — and it would take the read/update distinction with it. That is why
+    a floor was here. `>=` was the wrong comparison for it, in the one direction
+    that matters: it fails when a named command leaves, and says nothing when a
+    command that writes was never named. `setup` sat in that gap, writing the
+    host list twice, for as long as this test has existed.
+
+    Equality closes it. A command joining the derived set now has to be written
+    down here, which is a sentence of thought at the moment somebody teaches a
+    new command to touch the file — not a discovery six months later.
+    """
+    assert set(WRITES_THE_LIST) == WRITES_THE_HOST_LIST, (
+        f"the writers were derived as {WRITES_THE_LIST}, and the list of commands "
+        f"that write the host list says {sorted(WRITES_THE_HOST_LIST)}. "
+        f"Derived and not named: {sorted(set(WRITES_THE_LIST) - WRITES_THE_HOST_LIST) or 'none'}. "
+        f"Named and not derived: {sorted(WRITES_THE_HOST_LIST - set(WRITES_THE_LIST)) or 'none'}. "
+        f"A command that has started writing the host list has to be named here; "
+        f"one that has stopped being derived has stopped being guarded, and that "
+        f"is what this catches."
+    )
+
+
+# --- and that the walk itself cannot go blind again -------------------------
+#
+# The two tests above read the real package, so they can only report what is
+# true of it today. Neither can show that the WALK survives a shape the package
+# does not have yet — and "a shape the package does not have yet" is precisely
+# what took `discover` out of the derived set. So these two put it in front of
+# both shapes directly, in sources written here.
+
+HOSTFILE = """\
+import os
+from pathlib import Path
+
+def _in(text, ending):
+    return text.replace("\\r\\n", "\\n")
+
+def _write_durably(path, data):
+    with open(path, "wb") as handle:
+        handle.write(data)
+
+def apply(path, text, *, expect):
+    _write_durably(path, text.encode())
+    os.replace(path, path)
+
+def add(path, blocks, *, initial):
+    apply(path, initial, expect=set())
+"""
+
+
+def test_the_writer_walk_survives_a_helper_it_has_never_seen():
+    """The refactor that would have taken `move` and `delete` out next.
+
+    `discover` left the derived set because its write moved behind a name the
+    collector did not know. The same move is available to every other writer,
+    and the obvious next one is folding read-transform-apply into a helper per
+    site — which is exactly what `hostfile.add` already is. A walk that matches
+    helper names would lose both commands to it and report a shorter list.
+
+    Nothing here is named `apply`, `add` or `write_text`, and both commands are
+    still derived, because what is followed is the call to the file.
+    """
+    sources = {
+        "hostfile.py": HOSTFILE + """
+def rewrite(path, **kw):
+    apply(path, "", expect=set())
+
+def drop_host(path, name, *, expect):
+    apply(path, "", expect=expect)
+""",
+        "host.py": """\
+from .hostfile import rewrite
+
+@app.command("move")
+def move_cmd(config=None):
+    rewrite(config, renamed="x")
+""",
+        "remove.py": """\
+from .hostfile import drop_host
+
+@app.command("delete")
+def delete_cmd(config=None):
+    drop_host(config, "x", expect=set())
+""",
+    }
+    assert writers_among(sources) == ["delete", "move"], (
+        "a command's write moved behind a helper this walk had never seen, and "
+        "the walk stopped reporting it as a writer — which is the exact way "
+        "`discover` left the derived set, arriving at the next two commands."
+    )
+
+
+def test_the_writer_walk_is_not_fooled_by_a_name_it_shares():
+    """The other way this walk fails, and the one that looks like more coverage.
+
+    Resolving a called name against the whole package, or counting `x.add(...)`
+    as a call to `hostfile.add`, does not lose commands — it gains them.
+    `hostfile._in` and `tunnel._in` share a name; `set.add` shares one with
+    `hostfile.add`; `text.replace` shares one with `os.replace`. Measured against
+    the real package, that pulled 13 of 22 commands in through `tunnel` and
+    `lifecycle`, and a list that says almost every command writes the host list
+    is not a stricter guard, it is one that has stopped discriminating — and the
+    floor above, being an equality, is then wrong in a way somebody will fix by
+    widening the floor.
+
+    `list` reads the host list and writes nothing. It must not be derived here.
+    """
+    # `host.py` imports `add` from `hostfile` for real — `discover` uses it — so
+    # the name IS in scope here, and only "this is an attribute call on some
+    # object" keeps `taken.add(...)` from resolving to it.
+    shares_a_method_name = {
+        "hostfile.py": HOSTFILE,
+        "host.py": """\
+from .hostfile import add
+
+@app.command("list")
+def list_cmd(config=None):
+    taken = set()
+    taken.add(config)
+    return sorted(taken)
+""",
+    }
+    assert writers_among(shares_a_method_name) == [], (
+        "`list` writes nothing. It was derived as a writer because `taken.add(...)`"
+        " was read as a call to `hostfile.add`, which is the name `host.py` really"
+        " does import."
+    )
+
+    # `_in` is defined in BOTH `hostfile.py` and `tunnel.py`, and `hostfile._in`
+    # is `text.replace(...)` — a `replace` that is not `os.replace`. Reading it
+    # as a write, or resolving `_in` against the package rather than against the
+    # importing module, is the pair that pulled 13 of 22 commands in.
+    shares_a_function_name = {
+        "hostfile.py": HOSTFILE,
+        "tunnel.py": """\
+def _in(value, ending):
+    return value
+""",
+        "host.py": """\
+from .tunnel import _in
+
+@app.command("logs")
+def logs_cmd(config=None):
+    return _in("a", "b")
+""",
+    }
+    assert writers_among(shares_a_function_name) == [], (
+        "`logs` writes nothing. It was derived as a writer through `_in`, a name "
+        "`hostfile` and `tunnel` both define — and `hostfile._in` is a `str.replace`"
+        " that only looks like `os.replace`."
     )
 
 
