@@ -316,12 +316,52 @@ def test_interrupted_is_not_an_exception():
     )
 
     # `typer.Exit`, not `click.exceptions.Exit`, and this assertion is the whole
-    # reason to say so: typer 0.27.1 VENDORS click, so the two are different
-    # classes and Typer's handler matches only its own. Subclassing the click on
-    # PATH compiles, imports, reads correctly, and propagates straight out of
-    # `app()` — which is the failure `Interrupted` exists to prevent. Found by
-    # driving the real entry point; no amount of reading would have shown it.
-    from click.exceptions import Exit as ClickExit
+    # reason to say so: typer VENDORS click, so the two are different classes
+    # and Typer's handler matches only its own. Subclassing the click on PATH
+    # compiles, imports, reads correctly, and propagates straight out of `app()`
+    # — which is the failure `Interrupted` exists to prevent. Found by driving
+    # the real entry point; no amount of reading would have shown it.
+    #
+    # WHY `click` IS A DECLARED TEST DEPENDENCY, in `pyproject.toml`'s `test`
+    # extra, for these two lines and nothing else. The package does not import
+    # click and must not start; the SUITE needs it, because the question here is
+    # "are these two classes the same object", and it cannot be asked without
+    # the outer click to compare against.
+    #
+    # This line was red in CI and green for everybody here, for months. Typer
+    # vendors click, so `pip install -e . pytest` in a clean environment gets NO
+    # top-level click — while every machine on this project has one, pulled in
+    # by comfy-cli. Verified in a throwaway 3.12 venv, which is the only way it
+    # is visible at all.
+    #
+    # The tempting fix — compare against `typer._click.exceptions.Exit` and drop
+    # the dependency — is not weaker, it is IMPOSSIBLE, and measuring it turned
+    # up something worth knowing. typer 0.27.1 (installed here) has `typer.Exit`
+    # as `typer._click.exceptions.Exit`. typer 0.27.2 (what an unpinned
+    # `typer>=0.12.5` installs today) has moved it: `typer.Exit` is
+    # `typer.exceptions.Exit`, a plain RuntimeError subclass, and
+    # `typer._click.exceptions` HAS NO `Exit` AT ALL. So the attribute that fix
+    # would compare against does not exist on the version CI resolves, and any
+    # other typer-derived spelling reduces to `typer.Exit is typer.Exit`, which
+    # cannot detect anything. A canary that cannot detect un-vendoring is worse
+    # than a declared dependency, so the dependency is declared.
+    #
+    # (`comfy_qa/inflight.py`'s docstring still states the 0.27.1 identity as
+    # current. It is stale on 0.27.2. The MECHANISM is unaffected — typer/core
+    # still catches its own `Exit` and still raises `Exit(130)`, and this file's
+    # end-to-end interrupt tests pass on both — but the sentence naming the
+    # class is now wrong on the newer one.)
+    try:
+        from click.exceptions import Exit as ClickExit
+    except ModuleNotFoundError as missing:
+        # Deliberately NOT `importorskip`. A skip here is a canary that stops
+        # singing in the one environment — clean CI, unpinned typer — where
+        # un-vendoring would first show up.
+        raise AssertionError(
+            "click is missing, so the one assertion that would notice typer "
+            "un-vendoring click cannot run. It is a declared test dependency: "
+            "install with `pip install -e \".[test]\"`, not `pip install -e .`."
+        ) from missing
 
     assert typer.Exit is not ClickExit, (
         "typer has stopped vendoring click — re-read this class, because the "

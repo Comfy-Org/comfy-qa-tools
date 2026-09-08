@@ -9,6 +9,24 @@ readme = "README.md"
 requires-python = ">=3.11"  # tomllib
 dependencies = ["typer>=0.12.5"]
 
+# NOT a runtime dependency, and the `package` CI job exists to keep it that way:
+# it installs the wheel with `pip install .` and drives `comfy-qat` with no
+# extras, so if `click` ever became genuinely necessary at runtime that job goes
+# red rather than this list quietly absorbing it.
+#
+# The suite needs it and the package does not. `tests/test_interrupt.py` pins
+# `typer.Exit is not click.exceptions.Exit` — the trap being that subclassing
+# the click on PATH produces an exception Typer's handler does not match — and
+# `tests/test_config_inheritance.py` imports it too. Neither can ask the
+# question without the outer click to compare against.
+#
+# It went unnoticed because typer VENDORS click, so a clean install has no
+# top-level `click` at all, while every developer machine here has one pulled in
+# by comfy-cli. The suite passed locally and CI failed, which is the one failure
+# shape nobody can reproduce without building a throwaway venv.
+[project.optional-dependencies]
+test = ["pytest", "click>=8.1"]
+
 [project.scripts]
 comfy-qat = "comfy_qa.cli:main"
 

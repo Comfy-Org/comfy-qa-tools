@@ -380,6 +380,16 @@ def run_main(monkeypatch, capsys):
 # Every stats key that means "a collected test reached an outcome". NOT
 # `deselected` — those are already subtracted from the collected total before it
 # reaches here — and not `warnings` or `''`, which are not outcomes.
+#
+# THIS LIST IS HAND-TYPED AND DELIBERATELY NOT GUARDED, which is the opposite of
+# the house rule two files over, so here is the reason. `REQUIRED` in
+# test_suite_integrity.py is guarded because going stale makes it MISS things
+# silently. This one degrades the other way, and it was checked rather than
+# assumed: drop `xfailed` and every healthy run with an xfail in it starts
+# shouting SESSION TRUNCATED. It over-reports. A missing outcome kind can only
+# ever inflate `missing`, never hide it, so the failure is a loud false alarm on
+# a green suite — annoying, immediate, and impossible to ship past. Guarding it
+# would buy nothing that the next run does not already tell you.
 OUTCOMES = ("passed", "failed", "error", "skipped", "xfailed", "xpassed")
 
 TRUNCATION = pytest.StashKey[int]()
