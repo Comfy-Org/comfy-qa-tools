@@ -301,6 +301,79 @@ def without(text: str, name: str) -> str:
             + text[end:].lstrip(ending)).rstrip(ending) + ending
 
 
+def added(text: str, blocks: list[str]) -> str:
+    """`text` with each block on the end, in the line ending the file already uses.
+
+    The sibling of `rename_and_add` and `without`, and it exists for the same
+    reason they do: `discover.to_toml` hard-codes `\n` and opens with a blank
+    line, because it builds a block without knowing what file it is destined for.
+    A lone LF appended to a CRLF file still parses, so nothing complains, and git
+    then reports the whole file as changed. The ending is decided here, once.
+    """
+    if not blocks:
+        return text
+    ending = _line_ending(text)
+    # `rstrip` then one ending: the block's own leading newline supplies the
+    # blank line that separates it from the block above, so a file that already
+    # ends in two newlines would otherwise gain a third.
+    return text.rstrip(ending) + ending + "".join(_in(ending, block) for block in blocks)
+
+
+def declared(text: str) -> set[str]:
+    """Every host name this text declares. An empty set if it will not parse.
+
+    `apply`'s `expect` for an append is "what is already in the file, plus what
+    is being added", and the first half has to be read from the FILE rather than
+    from a loaded host list. `load` refuses files this still reads — two entries
+    for one instance, two names differing only in case — so passing the loaded
+    names would report a file that was ALREADY unloadable as a rewrite that lost
+    a machine. Different problem, different remedy, and the wrong one is the one
+    that reads as "this tool just ate your host list".
+
+    Text that will not parse is not this function's refusal to make. `apply`
+    parses what it is about to write, an unparseable file cannot produce a
+    parseable append, and the message there carries the position of the error.
+    """
+    try:
+        parsed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return set()
+    return set((parsed.get("hosts") or {}).keys())
+
+
+def add(path: Path, blocks: list[str], *, initial: str) -> None:
+    """Append blocks to the host list, through the checks a rewrite gets.
+
+    Three commands used to append with a bare `path.open("a")`: `discover`,
+    `create` and `setup`. Appending cannot lose a line, which is why that
+    survived — but it is not why `apply` exists. `apply` exists because a write
+    can leave behind a file that PARSES and the loader still REFUSES, after
+    which no comfy-qat command works at all until somebody hand-edits it, and an
+    append reaches that state as easily as a rewrite does: `discover` writing a
+    block headed with Google's `comfy-win` into a file that already calls a
+    machine `Comfy-Win` produced exactly that, reported "added 1 host", and left
+    nothing to restore.
+
+    The argument settled for `init --force` is the one that applies here: the
+    file is hand-maintained and has no other copy, which is a property of the
+    file and not of whether the write is an overwrite or an append.
+
+    `initial` is what to append to when there is no file yet — the starter list —
+    so the first write of a host list is one atomic replace rather than a
+    `write_text` followed by an append.
+    """
+    # `read_bytes().decode` rather than `read_text`, which opens in universal
+    # newline mode and hands back a CRLF file with every `\r` already stripped.
+    # Everything below decides the line ending from this string and writes the
+    # whole file back, so reading it that way would silently convert a CRLF host
+    # list to LF on the first `discover` — a whole-file diff nothing reports.
+    text = path.read_bytes().decode("utf-8") if path.exists() else initial
+    fresh: set[str] = set()
+    for block in blocks:
+        fresh |= declared(block)
+    apply(path, added(text, blocks), expect=declared(text) | fresh)
+
+
 def apply(path: Path, text: str, *, expect: set[str]) -> None:
     """Check the new text, back the old one up, and swap it in atomically.
 

@@ -12,6 +12,8 @@ import pytest
 from comfy_qa.config import Host
 from comfy_qa.discover import (
     accelerator,
+    clash_note,
+    label_clashes,
     new_hosts,
     next_ports,
     operating_system,
@@ -154,3 +156,176 @@ def test_a_generated_block_survives_the_config_loader():
     text = '[hosts.local]\nkind = "local"\nport = 8188\n' + to_toml(box, 8190)
     hosts = parse_config(tomllib.loads(text))
     assert {h.name for h in hosts} == {"local", "comfy-win"}
+
+
+def test_a_label_that_differs_only_in_case_is_not_something_to_add():
+    """The block would be headed with GOOGLE's name, and the loader refuses both.
+
+    You renamed your entry for a box by hand — which `new_hosts` invites, and the
+    test above pins — and pointed it at the instance you renamed. Google's
+    `comfy-win` is then genuinely unrecorded by instance, so this used to return
+    it, and `to_toml` heads the block `[hosts.comfy-win]` beside your
+    `[hosts.Comfy-Win]`. That parses and `config.parse` refuses it.
+    """
+    box = parse(COMFY_WIN, "p")
+    mine = Host(name="Comfy-Win", kind="gce", port=8190, gce_instance="comfy-win-old")
+    assert new_hosts([box], [LOCAL, mine]) == []
+
+
+def test_a_box_left_out_over_a_label_is_reported_not_dropped():
+    """Silently adding nothing looks exactly like finding nothing to do."""
+    box = parse(COMFY_WIN, "p")
+    mine = Host(name="Comfy-Win", kind="gce", port=8190, gce_instance="comfy-win-old")
+    assert label_clashes([box], [LOCAL, mine]) == [(box, "Comfy-Win")]
+    note = clash_note(box, "Comfy-Win")
+    assert "comfy-win" in note and "Comfy-Win" in note
+
+
+def test_an_ordinary_new_box_is_still_added():
+    """The guard above must not swallow the case this command exists for."""
+    box = parse(COMFY_WIN, "p")
+    assert new_hosts([box], [LOCAL]) == [(box, 8190)]
+    assert label_clashes([box], [LOCAL]) == []
+
+
+# --- `discover`, through the real CLI ---------------------------------------
+#
+# The unit tests above pin what `new_hosts` returns. These pin the thing that
+# actually went wrong, which is a PROPERTY OF THE FILE AFTERWARDS: `discover`
+# appended with a bare `path.open("a")`, so a block it should not have written
+# reached the disk with no validation and no backup, and every comfy-qat command
+# was dead until somebody hand-edited the file. `added 1 host`, exit 0.
+
+
+class _Cloud:
+    """One project, one list of instances. Anything else is a call not expected."""
+
+    def __init__(self, instances, project="p"):
+        self._instances = list(instances)
+        self._project = project
+
+    def current_project(self):
+        return self._project
+
+    def list_instances(self, project):
+        assert project == self._project
+        return list(self._instances)
+
+
+def _discover(monkeypatch, tmp_path, text, instances):
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.cli import app
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: _Cloud(instances))
+    result = CliRunner().invoke(app, ["discover", "--config", str(path)])
+    return result, path
+
+
+def _loads(path):
+    from comfy_qa.config import ConfigError, load
+
+    try:
+        return load(path)
+    except ConfigError as exc:
+        raise AssertionError(f"the host list no longer loads: {exc}") from exc
+
+
+MINE = """\
+# my machines
+[hosts.local]
+kind = "local"
+port = 8188
+
+[hosts.Comfy-Win]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win-old"
+gce_zone     = "us-central1-a"
+gce_project  = "p"
+port         = 8190
+"""
+
+
+def test_discover_leaves_a_host_list_every_command_can_still_read(monkeypatch, tmp_path):
+    """The whole defect in one assertion: run it, then load the file.
+
+    Renaming an entry is invited by `new_hosts`'s own docstring, so this file is
+    ordinary. Before the fix the run exited 0 saying `added 1 host` and left a
+    file `config.load` refuses — after which no comfy-qat command works at all.
+    """
+    result, path = _discover(monkeypatch, tmp_path, MINE, [COMFY_WIN])
+
+    assert result.exit_code == 0, result.output
+    hosts = _loads(path)
+    assert {host.name for host in hosts} == {"local", "Comfy-Win"}
+    assert "was not added" in result.output
+    assert "added 1 host" not in result.output
+
+
+def test_a_refused_write_leaves_the_file_exactly_as_it_was(monkeypatch, tmp_path):
+    """`hostfile.apply` refuses rather than writing something unloadable.
+
+    The label guard is what stops this reaching the write at all, so it is forced
+    here from the other side: a block naming an instance a second entry already
+    claims. `config.parse` refuses that, `apply` refuses to write it, and the
+    promise being pinned is that the ORIGINAL is still byte-identical afterwards.
+    """
+    from comfy_qa import hostfile
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(MINE, encoding="utf-8")
+    before = path.read_bytes()
+
+    twin = to_toml(parse(dict(COMFY_WIN, name="another-name"), "p"), 8191)
+    twin = twin.replace('gce_instance = "another-name"',
+                        'gce_instance = "comfy-win-old"')
+    with pytest.raises(hostfile.HostFileError) as refusal:
+        hostfile.add(path, [twin], initial="")
+
+    assert "Nothing was written" in str(refusal.value)
+    assert path.read_bytes() == before, "the refused write changed the file anyway"
+
+
+def test_discover_keeps_a_verified_copy_of_what_it_replaced(monkeypatch, tmp_path):
+    """An append is a write to a hand-maintained file with no other copy.
+
+    `init --force` settled this three commits before the append sites were
+    looked at: the argument is a property of the FILE, and it does not care
+    whether the write is an overwrite or an append. There was no `.bak`.
+    """
+    starter = '[hosts.local]\nkind = "local"\nport = 8188\n'
+    result, path = _discover(monkeypatch, tmp_path, starter, [COMFY_WIN])
+
+    assert result.exit_code == 0, result.output
+    assert {host.name for host in _loads(path)} == {"local", "comfy-win"}
+    backup = path.with_name("hosts.toml.bak")
+    assert backup.exists(), "the append kept no copy of the file it changed"
+    assert backup.read_text(encoding="utf-8") == starter
+
+
+def test_an_append_to_a_crlf_host_list_is_still_crlf(tmp_path):
+    """`read_text` opens in universal newline mode and strips the `\r` first.
+
+    `hostfile.add` decides the line ending from the string it read and writes the
+    WHOLE file back, so reading a CRLF host list that way converts it to LF on
+    the first `discover`. Nothing refuses it and nothing reports it — LF parses
+    perfectly well — and git then shows every line of a hand-maintained file as
+    changed. The rest of `hostfile` goes to some length over exactly this; an
+    append that reads the file wrongly undoes all of it in one line.
+    """
+    from comfy_qa import hostfile
+
+    path = tmp_path / "hosts.toml"
+    path.write_bytes(MINE.replace("\n", "\r\n").encode("utf-8"))
+    box = parse(dict(COMFY_WIN, name="comfy-linux"), "p")
+
+    hostfile.add(path, [to_toml(box, 8191)], initial="")
+
+    data = path.read_bytes()
+    assert b"[hosts.comfy-linux]" in data
+    assert data.count(b"\r\n") == data.count(b"\n"), "a lone LF reached a CRLF file"

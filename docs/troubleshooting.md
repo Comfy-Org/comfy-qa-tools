@@ -214,6 +214,16 @@ mistake would become a file nothing can load, on the one command that promises t
 change nothing. The message carries the parse error; fix that in the file, then run
 `comfy-qat discover`.
 
+**`your host list could not be updated (...), so nothing was added to it`**
+Your `hosts.toml` reads fine, and the file that appending the discovered boxes
+would have produced does not — so it was not written, and the file on disk is
+untouched. Discovery writes each block under the name Google has for the instance,
+and the loader refuses a list where two names differ only in case or where two
+entries name one machine, so an entry of your own can collide with a name
+discovery is about to add. The message carries the loader's own refusal, which
+names both sides of the collision; rename or repoint your entry, then run
+`comfy-qat discover`.
+
 ## Creating a box
 
 `host create` makes the machine, choosing the zone for you. Nothing here is

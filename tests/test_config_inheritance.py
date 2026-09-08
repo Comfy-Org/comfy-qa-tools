@@ -155,14 +155,27 @@ TAKES_CONFIG = {
 }
 
 # A command "writes the host list" if its body puts bytes on disk: `write_text`
-# for a starter file, `hostfile.apply` for an edit to an existing one. Read out of
-# the source, so the sixteenth command to start writing is caught the day it does
-# rather than by whoever remembers to extend a list.
+# for a starter file, `hostfile.apply` for a rewrite, `hostfile.add` for an
+# append. Read out of the source, so the sixteenth command to start writing is
+# caught the day it does rather than by whoever remembers to extend a list.
+#
+# `add` is here because leaving it out was not a gap this list reported — it was
+# a command SILENTLY LEAVING it. `discover` appended with a bare `path.open("a")`
+# and got in on `write_text`, the starter-file write beside it; routing the
+# append through `hostfile.add` took that call away, and `discover` dropped out
+# of the derived set without any command having stopped writing. The sibling
+# below is the only reason anybody noticed, and it is worth reading twice: a
+# collector that recognises the spellings in use today reports a shrinking list
+# as good news. Every new way to write the file has to be named here.
+#
+# Bare-name calls only, and that is what keeps `add` from being too common a
+# word to match on: `inflight.add`, `set.add` and every other `x.add(...)` is an
+# Attribute, not a Name, so only the one imported from `hostfile` is seen.
 WRITES_THE_LIST = sorted(
     name for name, node in COMMANDS.items()
     if any(isinstance(call, ast.Call)
            and ((isinstance(call.func, ast.Attribute) and call.func.attr == "write_text")
-                or (isinstance(call.func, ast.Name) and call.func.id == "apply"))
+                or (isinstance(call.func, ast.Name) and call.func.id in ("apply", "add")))
            for call in ast.walk(node))
 )
 

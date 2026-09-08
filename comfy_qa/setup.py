@@ -344,7 +344,11 @@ def add_discovered_hosts(
     ends up quietly wrong.
     """
     from .config import ConfigError, load
-    from .discover import new_hosts, parse as parse_instance, to_toml
+    from .discover import (
+        clash_note, label_clashes, new_hosts, parse as parse_instance, to_toml,
+    )
+    from .host import STARTER
+    from .hostfile import HostFileError, add
 
     try:
         instances = gc.list_instances(project)
@@ -371,13 +375,25 @@ def add_discovered_hosts(
         existing = []
 
     additions = new_hosts(found, existing)
+    clashes = label_clashes(found, existing)
+    for box, label in clashes:
+        p.say(clash_note(box, label))
     if not additions:
-        p.say(f"{len(found)} cloud box(es), all already in your host list")
+        if not clashes:
+            p.say(f"{len(found)} cloud box(es), all already in your host list")
         return 0
 
-    with path.open("a", encoding="utf-8") as handle:
-        for box, port in additions:
-            handle.write(to_toml(box, port))
+    try:
+        # Not `path.open("a")`. `setup` calls the same `new_hosts` `discover`
+        # does and writes the same blocks, so it carried the same brick on a
+        # first run — and this is the command someone runs before they have a
+        # host list worth losing, which is exactly when they cannot tell a tool
+        # that refused from a tool that broke. `hostfile.add` validates with the
+        # real loader and keeps a verified copy before it writes.
+        add(path, [to_toml(box, port) for box, port in additions], initial=STARTER)
+    except HostFileError as exc:
+        p.say(f"your host list could not be updated ({exc}), so nothing was added to it")
+        return 0
 
     for box, port in additions:
         state = "running" if box.running else "stopped"

@@ -291,7 +291,10 @@ def discover_cmd(
     appended to. `--dry-run` shows what would be added and writes nothing.
     """
     from .gcloud import Gcloud, GcloudError
-    from .discover import new_hosts, parse as parse_instance, to_toml
+    from .discover import (
+        clash_note, label_clashes, new_hosts, parse as parse_instance, to_toml,
+    )
+    from .hostfile import HostFileError, add
 
     path = config or DEFAULT_CONFIG_PATH
     gc = Gcloud()
@@ -311,11 +314,21 @@ def discover_cmd(
 
     try:
         existing = load(path)
-    except ConfigError:
+    except ConfigError as exc:
+        if path.exists():
+            # Treating an unreadable host list as an empty one is how this
+            # command makes a bad file worse: the entry lands, the file still
+            # does not load, and the one command whose job is telling you what
+            # exists reports success. `setup` has refused this since it hit it;
+            # the wording is deliberately the same, because it is the same
+            # refusal about the same file.
+            say.fail(f"could not read your host list ({exc}), so nothing was added to it",
+                     fix="fix the file, then run this again", code=2, blank_line=False)
         existing = []
 
     additions = new_hosts(found, existing)
-    if not additions:
+    clashes = label_clashes(found, existing)
+    if not additions and not clashes:
         say.result(f"{say.count(len(found), 'cloud box', 'cloud boxes')}, "
                    f"all already in {path}")
         return
@@ -323,17 +336,26 @@ def discover_cmd(
     for box, port in additions:
         state = "running" if box.running else "stopped"
         say.result(f"{box.name}  {box.os}  {box.gpu or 'no GPU'}  {state}  port {port}")
+    for box, label in clashes:
+        say.result(clash_note(box, label))
 
     if dry_run:
         say.result("\n--dry-run: nothing written")
         return
+    if not additions:
+        return
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        path.write_text(STARTER, encoding="utf-8")
-    with path.open("a", encoding="utf-8") as handle:
-        for box, port in additions:
-            handle.write(to_toml(box, port))
+    try:
+        # Not `path.open("a")`. An append lands in the same hand-maintained file
+        # a rewrite does, so it takes the same route: validated with the real
+        # loader before it is written, a verified copy kept, and refused rather
+        # than left unloadable. See `hostfile.add`.
+        add(path, [to_toml(box, port) for box, port in additions], initial=STARTER)
+    except HostFileError as exc:
+        # Documented where it is raised, in `hostfile`, and it already says that
+        # nothing was written.
+        say.fail(exc, code=2, blank_line=False)
     say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
 
 
@@ -510,6 +532,27 @@ def create_cmd(
     except ConfigError:
         port = next_ports(hosts, 1)[0]
 
+    # Still a bare append, and deliberately, having been through `hostfile.add`
+    # and taken back out.
+    #
+    # There is no defect here to fix. `create.taken_names` folds host labels,
+    # gce_instances and the project's own instance names to lower case before
+    # `choose_name` compares — and `_clean` lowercases `--name` too — so the case
+    # clash `discover` walks into cannot be reached from this command. What
+    # `apply` would add is the verified copy, on the one write in this tool that
+    # happens after money is already being spent, which is a real thing to want.
+    #
+    # It costs more than it gives, and the measurement is the argument. `apply`
+    # finishes with `os.replace`, which succeeds on a READ-ONLY hosts.toml
+    # whenever the directory is writable; `open("a")` raises PermissionError. So
+    # routing this through it makes
+    # `test_a_box_that_exists_with_no_host_list_entry_is_told_how_to_be_stopped`
+    # pass by having nothing left to test — the write that test pins as FAILING
+    # now succeeds, and with it goes the only cover over the message printed
+    # after the box is real and billing. A refactor that makes a test pass is not
+    # automatically an improvement. Rewriting that test to keep a consistency
+    # change is the wrong way round, and quietly widening what this tool will
+    # overwrite is not something to do in passing.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
