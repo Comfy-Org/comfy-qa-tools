@@ -79,6 +79,7 @@ REQUIRED = {
     "test_hostfile",
     "test_lifecycle",
     "test_lifecycle_e2e",
+    "test_money_agreement",
     "test_money_sentences",
     "test_move",
     "test_no_colour",
