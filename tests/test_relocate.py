@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from comfy_qa import inflight
+from comfy_qa import relocate
 from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.relocate import (
@@ -23,6 +24,7 @@ from comfy_qa.relocate import (
     _inflight,
     blocked,
     boot_disk,
+    delete_instance_command,
     machine_type,
     metadata_pairs,
     plan_move,
@@ -493,3 +495,78 @@ def test_a_box_with_no_card_at_all_is_not_gated_on_a_gpu_ceiling():
 
     assert blocked(moving(), survey_with(gc)) is None
     assert gc.quota_reads == 0
+
+
+# --- the flag that stops a 300 GB disk outliving the box it belonged to --------
+#
+# `tests/test_delete.py` pins this for the `delete` command. What it does not
+# cover is the SECOND copy of the same line, the one `move` hands over for the
+# box it left behind — and that copy was dropped by hand, the whole suite ran,
+# and it stayed green.
+#
+# It is the more expensive of the two to lose. `delete` is a command somebody
+# typed on purpose; this line is printed at the end of a move, when the
+# interesting thing has just happened somewhere else, and pasted later. A boot
+# disk here is created `auto-delete=no`, so an instance delete without the flag
+# leaves 200-300 GB attached to nothing — which looks like nothing at all in the
+# console, and is exactly the leftover this module's own docstring says people
+# get caught by.
+
+# A literal, so that this fails when the set SHRINKS. Deriving it from the module
+# would make a rename or a removal look like a shorter run of the same check,
+# reported as success — which is how a guard stops covering a command without
+# ever saying so.
+HANDED_OVER_COMMANDS = {
+    "delete_disk_command",
+    "delete_instance_command",
+    "delete_snapshot_command",
+    "stop_instance_command",
+}
+
+
+def test_the_box_a_move_leaves_behind_takes_its_disk_with_it():
+    """The line itself, which is what gets pasted.
+
+    `move` prints it twice — under a finished move, next to the retired box, and
+    inside the undo block of an interrupted one — and both come from this one
+    function, so this is the whole of the cover.
+    """
+    command = delete_instance_command(moving())
+
+    assert "--delete-disks=all" in command, (
+        f"the box a move retires is created with auto-delete=no on its boot "
+        f"disk, so this leaves 200-300 GB billing with nothing attached and "
+        f"nothing on screen saying so: {command}"
+    )
+
+
+def test_the_set_of_lines_a_move_hands_over_has_not_changed_under_this_check():
+    found = {name for name in dir(relocate) if name.endswith("_command")}
+
+    assert found == HANDED_OVER_COMMANDS, (
+        f"the hand-over commands in relocate.py changed: "
+        f"{sorted(found ^ HANDED_OVER_COMMANDS)}. Add a new one to the list here "
+        f"and let the rule below judge it, or record a deliberate removal by "
+        f"deleting its line — a check that quietly covers less is the failure "
+        f"this list exists to make loud."
+    )
+
+
+def test_nothing_a_move_hands_over_deletes_an_instance_without_its_disk():
+    """The rule over the whole set, not only the one function that carries it."""
+    plan = moving()
+    deletes = []
+
+    for name in sorted(HANDED_OVER_COMMANDS):
+        command = getattr(relocate, name)(plan)
+        if "compute instances delete" not in command:
+            continue
+        deletes.append(name)
+        assert "--delete-disks=all" in command, (
+            f"{name} deletes an instance and leaves its disk billing: {command}"
+        )
+
+    assert deletes, (
+        "nothing in relocate.py hands over an instance delete any more, so this "
+        "rule is judging an empty list and would pass on anything"
+    )

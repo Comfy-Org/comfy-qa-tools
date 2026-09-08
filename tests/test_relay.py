@@ -35,7 +35,10 @@ does not.
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+from contextlib import contextmanager
 
 import pytest
 
@@ -574,3 +577,129 @@ def test_a_break_still_flushes_what_was_being_held():
 
     assert out == ["warning:"], "the header was held, then lost with the break"
     assert err and gcloud_module.CUT_SHORT in err[0]
+
+
+# --- the one command that must NOT come through any of this -------------------
+#
+# Everything above exists because output nobody handles reaches a paste. The
+# exception is the command that has to ask a person something. `gcloud auth
+# login` opens a browser and prompts, and `_prove`'s reauth rescue exists for
+# precisely the reason that piping hides a challenge: "gcloud will only ask when
+# it owns stderr, which `run` does not give it". A prompt is not a log line, and
+# `_pump` reads by line.
+#
+# So `run_interactive` hands the child this process's own stdio and reads nothing
+# back. Route it through `relay_output` instead, or pass `capture_output=True`,
+# and the prompt is never shown and the login sits there — the "hide the prompt
+# and hang" failure the docstring names, which takes out every cloud path at
+# once, because nothing else here can sign anybody in afterwards.
+#
+# Both spellings have been written by hand and neither made the suite red. What
+# is checked below is not how the call is spelled — a check on the spelling is a
+# check on the wrong thing, and the next way to pipe it will be spelled a third
+# way. It is what the child ends up holding: the child reports the identity of
+# its own descriptors 0, 1 and 2, and each must be the very file this process has
+# open there. Any pipe, anybody's, is a different file.
+
+_REPORTS_ITS_OWN_STDIO = '''
+import json
+import os
+
+
+def identity(fd):
+    """(device, inode) of whatever is on this descriptor. A pipe has its own."""
+    handle = os.fstat(fd)
+    return [handle.st_dev, handle.st_ino]
+
+
+with open(REPORT, "w") as out:
+    json.dump({"stdin": identity(0), "stdout": identity(1), "stderr": identity(2)}, out)
+'''
+
+
+def stdio_reporter(tmp_path):
+    """A real executable standing where gcloud stands, which answers one question.
+
+    It writes its answer to a file rather than to a stream, because the streams
+    are the thing under test and a piped one would swallow the evidence.
+    """
+    report = tmp_path / "child-stdio.json"
+    script = tmp_path / "gcloud"
+    script.write_text(
+        f"#!{sys.executable}\nREPORT = {str(report)!r}\n{_REPORTS_ITS_OWN_STDIO}"
+    )
+    script.chmod(0o755)
+    return script, report
+
+
+@contextmanager
+def a_stdin_only_this_test_knows(tmp_path):
+    """Put a file nobody else could name on descriptor 0, for the run.
+
+    Without this the stdin case cannot fail. Under pytest fd 0 is ALREADY
+    /dev/null, so a child handed `stdin=subprocess.DEVNULL` reports the very same
+    device and inode and the check passes on a mutation that took the terminal
+    away — measured, not assumed. Descriptors 1 and 2 need no such help: pytest's
+    capture files are real files and are nobody's default.
+    """
+    stand_in = tmp_path / "on-stdin"
+    stand_in.write_text("")
+    saved = os.dup(0)
+    with open(stand_in, "rb") as handle:
+        os.dup2(handle.fileno(), 0)
+    try:
+        yield
+    finally:
+        os.dup2(saved, 0)
+        os.close(saved)
+
+
+def held_here(fd: int) -> list[int]:
+    handle = os.fstat(fd)
+    return [handle.st_dev, handle.st_ino]
+
+
+def interactively(tmp_path, monkeypatch):
+    """Run one `run_interactive` against that executable and read back the answer."""
+    script, report = stdio_reporter(tmp_path)
+    monkeypatch.setattr(Gcloud, "available", lambda self: str(script))
+
+    with a_stdin_only_this_test_knows(tmp_path):
+        code = Gcloud().run_interactive(["auth", "login"])
+        mine = {name: held_here(fd)
+                for name, fd in (("stdin", 0), ("stdout", 1), ("stderr", 2))}
+
+    assert report.exists(), "the executable under test never ran"
+    return code, json.loads(report.read_text()), mine
+
+
+@pytest.mark.parametrize("name", ["stdin", "stdout", "stderr"])
+def test_an_interactive_gcloud_is_given_this_terminal_and_not_a_pipe(
+    name, tmp_path, monkeypatch,
+):
+    """One descriptor per case, so the failure names the one that was taken away.
+
+    Under pytest these three are not a terminal, which changes nothing:
+    inherited means the child holds the same file, piped means it does not, and
+    whose file it is does not enter into it.
+    """
+    _, child, mine = interactively(tmp_path, monkeypatch)
+
+    assert child[name] == mine[name], (
+        f"gcloud was handed a {name} that is not this process's own, so it was "
+        f"piped. `gcloud auth login` prompts and `_prove` reauths on the same "
+        f"call; a piped prompt is never shown, the command hangs on an answer "
+        f"nobody was asked for, and every path here that reaches the cloud goes "
+        f"with it."
+    )
+
+
+def test_the_interactive_call_reads_nothing_back_but_the_exit_code(tmp_path, monkeypatch):
+    """The exit code is the whole answer.
+
+    A caller wanting output would need it captured, and capturing it is the
+    defect. `setup` branches on `!= 0` and `_rescue` re-raises the original
+    failure on one; neither looks at a word the child said.
+    """
+    code, _, _ = interactively(tmp_path, monkeypatch)
+    assert code == 0
