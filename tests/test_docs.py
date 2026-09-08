@@ -167,7 +167,15 @@ def _message_argument(call: ast.Call, *, in_except: bool) -> ast.AST | None:
     """The user-facing message this call prints, if it prints one at all."""
     name = _called_name(call)
 
-    if name == "echo":
+    # `secho` as well as `echo`, and the difference between them is why. A guard
+    # that only covers the spellings already in use is one the next commit gets
+    # past for free — and this one fails SILENTLY: an error written with
+    # `typer.secho(..., err=True)` was never collected, so no case was generated,
+    # so the count did not move. Measured in an extract: the echo spelling failed
+    # by name, the secho spelling was byte-identical to a clean run. A vanishing
+    # case at least changes a number; an absence does not. `secho` has no call
+    # site in the package today, which is the cheapest moment to close it.
+    if name in ("echo", "secho"):
         if any(kw.arg == "err" and _is_true(kw.value) for kw in call.keywords):
             return call.args[0] if call.args else None
         return None
@@ -697,6 +705,256 @@ def test_no_exempted_entry_has_left_the_page():
                     if not any(key in entry for entry in ENTRIES))
     assert not absent, (
         f"{', '.join(absent)} is exempted but is not in troubleshooting.md."
+    )
+
+
+# --- the config errors the page quotes, checked against how they are BUILT --
+#
+# The two guards above are both substring guards, and between them they cannot
+# see a quoted message change. Measured, on the `no [hosts.<name>] tables found`
+# entry: lengthening the message and then shortening it back was invisible to
+# both. The forward guard is parametrised over the package's messages, so
+# removing one REMOVES ITS CASE — 679 passed became 678 passed, nothing red, a
+# test vanishing rather than failing. The backward guard passed because the old
+# short message is a substring of the new long heading. Two guards over one
+# string, neither able to report it moving.
+#
+# So config.py's messages get a third check of a different shape. It is the one
+# module where it is affordable and where it matters most: every ConfigError is
+# built by interpolation, so what a user actually sees is never written down
+# anywhere, and troubleshooting.md quotes twenty-five of them with the values
+# filled in. "Does the page still quote what the tool says" is not a question a
+# substring can answer.
+#
+# What this does instead: rebuild each `ConfigError(...)` as a regex — literal
+# text verbatim, each `{...}` as "something" — and require the quotation to match
+# it END TO END. A reword now fails, because the literal either survives in full
+# or it does not. Substring luck is gone.
+#
+# Its edges, named:
+#
+#   - It reads config.py only. Every other module's messages are still held by
+#     the substring guards alone. This is the module whose messages are quoted
+#     most, and doing it everywhere would need a way to name the entry each
+#     message belongs to; that does not exist yet.
+#   - It cannot know an interpolation is REACHABLE. `port 80 is outside
+#     1024-65535` is checked to be built that way, not that 80 gets there.
+#   - Trailing glue is forgiven, the same way _normalise forgives it, because a
+#     page that quotes a sentence should not have to carry its full stop.
+
+CONFIG = PACKAGE / "config.py"
+
+# The punctuation a quotation may drop from the end of a sentence it quotes.
+GLUE = " .,;:—-"
+
+
+def _collapse(text: str) -> str:
+    """`_normalise` without the glue-stripping.
+
+    A quotation is compared to the message END TO END, so its own punctuation has
+    to survive: `is not valid TOML: ...` quotes the colon, and _normalise would
+    take the colon off along with the `...` and leave a string the construction
+    cannot match.
+    """
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _message_parts(node: ast.AST) -> list[tuple[bool, str]]:
+    """A message expression as `(is_literal, text)` pieces, in order."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [(True, node.value)]
+    if isinstance(node, ast.JoinedStr):
+        return [(True, part.value)
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                else (False, "")
+                for part in node.values]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _message_parts(node.left) + _message_parts(node.right)
+    return [(False, "")]
+
+
+def _literal_pattern(text: str) -> str:
+    """Literal text, verbatim, but tolerant of the page having re-wrapped it.
+
+    troubleshooting.md wraps at eighty columns, so a message's single space can
+    be a newline on the page. Nothing else about the text is allowed to differ.
+    """
+    words = text.split()
+    if not words:
+        return r"\s*"
+    pattern = r"\s+".join(re.escape(word) for word in words)
+    if text[:1].isspace():
+        pattern = r"\s*" + pattern
+    if text[-1:].isspace():
+        pattern = pattern + r"\s*"
+    return pattern
+
+
+def _construction(parts: list[tuple[bool, str]]) -> str:
+    """The regex for one built message: literals verbatim, `{...}` as anything.
+
+    The page writes an interpolation it does not want to invent a value for as
+    `...`, so that spelling is accepted too, and a trailing interpolation may be
+    left off the end entirely — `is not valid TOML: ...` quotes the sentence
+    without the parser's own words after it.
+    """
+    parts = [part for part in parts if not (part[0] and part[1] == "")]
+    out: list[str] = []
+    for index, (literal, text) in enumerate(parts):
+        last = index == len(parts) - 1
+        if literal:
+            out.append(_literal_pattern(text.rstrip(GLUE) if last else text))
+            if last:
+                out.append(f"[{re.escape(GLUE)}\\s]*")
+        else:
+            out.append(r"(?:.+?|\.\.\.)" + ("?" if last else ""))
+    return "".join(out)
+
+
+def _message_lines(parts: list[tuple[bool, str]]) -> list[list[tuple[bool, str]]]:
+    """One part-list per line of a multi-line message.
+
+    `unknown host {wanted!r}` is three lines on purpose and the page quotes them
+    as three code spans, so each line has to be checkable on its own.
+    """
+    lines: list[list[tuple[bool, str]]] = []
+    current: list[tuple[bool, str]] = []
+    for literal, text in parts:
+        if not literal:
+            current.append((literal, text))
+            continue
+        chunks = text.split("\n")
+        current.append((True, chunks[0]))
+        for chunk in chunks[1:]:
+            lines.append(current)
+            current = [(True, chunk)]
+    lines.append(current)
+    return lines
+
+
+@dataclass(frozen=True)
+class Construction:
+    """One way config.py can build a message a user sees."""
+
+    where: str
+    pattern: str
+
+
+def _config_constructions() -> list[Construction]:
+    constructions: list[Construction] = []
+    for node in ast.walk(ast.parse(CONFIG.read_text(encoding="utf-8"))):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "ConfigError"
+                and node.args):
+            continue
+        parts = _message_parts(node.args[0])
+        where = f"config.py:{node.lineno}"
+        constructions.append(Construction(where, _construction(parts)))
+        lines = _message_lines(parts)
+        if len(lines) > 1:
+            for number, line in enumerate(lines, start=1):
+                constructions.append(
+                    Construction(f"{where} line {number}", _construction(line)))
+    return constructions
+
+
+def _config_runs() -> set[str]:
+    """The identifying literal runs of config.py's messages, and only those.
+
+    Used to decide which of the page's quotations are config's. Matching against
+    the whole module would drag in every path and URL it also builds.
+    """
+    runs: set[str] = set()
+    for node in ast.walk(ast.parse(CONFIG.read_text(encoding="utf-8"))):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "ConfigError"
+                and node.args):
+            runs |= {run for run in
+                     (_normalise(text) for text in _literal_runs(node.args[0]))
+                     if len(run) >= ENTRY_RUN}
+    return runs
+
+
+# A heading, plus the code spans joined to it by ` / ` — one entry documenting
+# one message, whether that message is one line or three. Nothing may cross a
+# blank line, or a heading holding inline backticks swallows the entries under
+# it: `**`comfy-qa` runs but `comfy-qat` does not**` runs to the next `**, which
+# is four entries later.
+SPAN = r"`(?:[^\n]|\n(?!\n))+?`"
+HEADING_GROUP = re.compile(
+    rf"^\*\*({SPAN})\*\*((?:\s*/\s*\*\*{SPAN}\*\*)*)", re.M)
+ONE_SPAN = re.compile(r"\*\*`((?:[^\n]|\n(?!\n))+?)`\*\*")
+
+
+def _quoted_config_errors() -> list[tuple[int, str]]:
+    """Every code span in troubleshooting.md that quotes a ConfigError.
+
+    Selected per heading GROUP rather than per span, so the two shorter lines of
+    a three-line message come along with the line long enough to identify it.
+    `declared: local, comfy-win` carries no run of its own and would otherwise
+    have to be excused; grouped, it is checked like the rest.
+    """
+    raw = (DOCS / "troubleshooting.md").read_text(encoding="utf-8")
+    runs = _config_runs()
+    found: list[tuple[int, str]] = []
+    for match in HEADING_GROUP.finditer(raw):
+        spans = [_collapse(match.group(1).strip("`"))]
+        spans += [_collapse(span) for span in ONE_SPAN.findall(match.group(2))]
+        if any(run in span for span in spans for run in runs):
+            line = raw.count("\n", 0, match.start()) + 1
+            found += [(line, span) for span in spans]
+    return found
+
+
+CONFIG_CONSTRUCTIONS = _config_constructions()
+QUOTED_CONFIG_ERRORS = _quoted_config_errors()
+
+
+# How many quoted config errors there are, written down, because a parametrised
+# guard CANNOT REPORT A CASE IT NO LONGER GENERATES. Both other guards on this
+# page were measured failing that way, and so was this one: rewording a message
+# takes its run out of config.py, the entry stops being recognised as config's,
+# and its case disappears rather than going red. The number is what notices.
+#
+# It is hand-maintained on purpose, for the reason REQUIRED is in
+# test_suite_integrity.py: it moves only when someone deliberately documents a
+# config error or stops, the fix is one line, and it catches the one failure that
+# reading a rising test count never will.
+QUOTED_CONFIG_ERRORS_EXPECTED = 26
+
+
+def test_the_config_error_quotations_were_actually_found():
+    """A parse that found nothing would make the check below vacuously green."""
+    assert len(CONFIG_CONSTRUCTIONS) > 20, (
+        f"only {len(CONFIG_CONSTRUCTIONS)} ConfigError constructions — the walk "
+        f"over config.py is broken")
+    assert len(QUOTED_CONFIG_ERRORS) == QUOTED_CONFIG_ERRORS_EXPECTED, (
+        f"troubleshooting.md quotes {len(QUOTED_CONFIG_ERRORS)} config errors, "
+        f"not {QUOTED_CONFIG_ERRORS_EXPECTED}. Going UP is fine — a new error was "
+        f"documented, raise the number. Going DOWN is the thing to look at: an "
+        f"entry stops being recognised as config's when the message it quotes is "
+        f"reworded far enough, and its case then vanishes from the check below "
+        f"instead of failing. Confirm the entry was deleted on purpose before "
+        f"lowering this."
+    )
+
+
+@pytest.mark.parametrize("line,quotation", QUOTED_CONFIG_ERRORS,
+                         ids=lambda value: str(value)[:40])
+def test_every_quoted_config_error_is_still_built_that_way(line, quotation):
+    matches = [c.where for c in CONFIG_CONSTRUCTIONS
+               if re.fullmatch(c.pattern, quotation, flags=re.S)]
+    assert matches, (
+        f"troubleshooting.md line {line} quotes a config error that config.py "
+        f"can no longer build end to end:\n\n  {quotation}\n\n"
+        f"Every literal word of a message has to survive into the page, because "
+        f"the page's promise is that a pasted error finds its own entry. Nothing "
+        f"in config.py matches this one all the way through — it was reworded, "
+        f"or the interpolations moved. Re-quote it from the message as it is "
+        f"built now. The substring guards above will not tell you this; both "
+        f"were measured passing through a message being changed and changed back."
     )
 
 
