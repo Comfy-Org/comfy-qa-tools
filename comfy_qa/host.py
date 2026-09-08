@@ -56,12 +56,18 @@ app = typer.Typer(
 # `comfy-qat list --config X` is what scripts, run sheets and this suite all type,
 # and `go --new-window` re-execs itself with `--config` in exactly that position —
 # so dropping it would break the tool inside a spawned Terminal window, on the
-# command that starts a GPU box, where nobody would see the error. Hidden rather
-# than removed: the deprecation window `cli.py` uses for the `host` and `auth`
-# spellings. `--os`/`--gpu` on the eleven selectors was the other one, and it has
-# since run its course — hidden, warning about itself, then deleted — which is
-# the shape this is in the middle of and not an argument that hiding is the end
-# of it.
+# command that starts a GPU box, where nobody would see the error.
+#
+# HIDDEN AND STAYING, WHICH IS NOT WHAT HIDDEN USUALLY MEANT HERE. Both of this
+# tool's deprecation windows borrowed the same technique and both have since run
+# their course: `--os`/`--gpu` on the eleven selectors, and the `host` and `auth`
+# spellings `cli.py` used to register. Each was hidden, then warned about itself
+# for a release, then deleted — hiding was the middle of a retirement, never the
+# end of one. This is the other kind, and the difference is the whole reason to
+# say so: there is no shorter spelling of `list --config X` to point anyone at,
+# nothing warns about it, and nothing is going to delete it. It is one option
+# accepted in two positions, documented once at the root, which is `env`'s
+# argument rather than the retired nouns'.
 CONFIG_INHERITED = "comfy_qa.config_path"
 
 
@@ -1121,12 +1127,14 @@ def go_cmd(
         # Before anything is started: a hand-off that fails must not leave a box
         # running behind a window that never opened.
         #
-        # `go`, not `host go`. cli.py says in as many words that the `host` group
-        # is a deprecation window and not a second permanent spelling, and this
-        # line was the last caller inside the tool still using it — so deleting
-        # that group would have broken `--new-window` and nothing else, inside a
-        # spawned Terminal window, on the command that starts a GPU box, which is
-        # the least visible place in this tool for anything to break.
+        # `go`, not `host go`. This line was the last caller inside the tool
+        # still typing the deprecated spelling, and it was fixed while the `host`
+        # group was still mounted — which is the only reason deleting that group
+        # broke nothing. THE GROUP IS NOW GONE, so the conditional has become a
+        # fact: `host go` no longer parses, and this argv reaching a spawned
+        # Terminal window with the old noun on it would exit 2 and start nothing,
+        # on the command that starts a GPU box, in the least visible place in this
+        # tool for anything to break.
         #
         # And `--follow` only when it was asked for. It used to be appended here
         # unconditionally, on the theory that a window needs something to hold it

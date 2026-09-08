@@ -21,9 +21,14 @@ The second one exists because the option is still *accepted* after a command
 name. `comfy-qat list --config X` is what this suite types everywhere, what run
 sheets say, and what `go --new-window` re-execs itself with — so removing it
 would have broken the tool inside a spawned Terminal window, on the command that
-starts a GPU box, where nobody would see the error. Accepted but not advertised
-is the deprecation window `cli.py` already runs for the `host` and `auth`
-spellings and `host.py` for `--os`/`--gpu` on the eleven selectors.
+starts a GPU box, where nobody would see the error.
+
+Accepted but not advertised is the shape both of this tool's deprecation windows
+used — `--os`/`--gpu` on the eleven selectors, and the `host`/`auth` spellings —
+and both of those have since closed: hidden, then warning about themselves, then
+deleted. This one is not going the same way. There is no shorter spelling of
+`list --config X` to point anyone at, nothing warns about it, and it is the last
+hidden option in the tool. Hiding is the technique, not the intent.
 
 What this file pins, and why each one:
 

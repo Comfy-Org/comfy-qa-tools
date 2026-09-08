@@ -357,9 +357,9 @@ def test_that_check_would_have_caught_the_one_it_can():
     revisited."
 
     It became true. Three `fix=` lines were still printing the retired
-    `comfy-qat auth …` spelling — `auth` is a hidden deprecation window, not a
-    second permanent name — and when they were corrected, this assertion failed
-    with its own message. The check is now strictly stronger: nothing in the
+    `comfy-qat auth …` spelling — `auth` was a hidden deprecation window rather
+    than a second permanent name, and it has since been removed outright — and
+    when they were corrected, this assertion failed with its own message. The check is now strictly stronger: nothing in the
     package prints `auth` as a subcommand, so any doc quoting it IS stale, and
     the sibling check above caught two such lines the moment the source changed.
 

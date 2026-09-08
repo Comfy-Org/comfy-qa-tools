@@ -500,21 +500,27 @@ def _handed_over(world, monkeypatch, *args: str) -> str:
 
 
 def test_new_window_re_execs_the_live_spelling_not_the_deprecated_group(world, monkeypatch):
-    """`host` is a deprecation window, not a second permanent spelling.
+    """`host` was a deprecation window, and it has closed.
 
-    cli.py registers `host` hidden and says in as many words that 26 command
-    paths is not a simplification of 13. This argv was the one caller inside the
-    tool still spelling a command the deprecated way — so the day that group is
-    deleted, the breakage lands in a spawned Terminal window, on the command that
-    starts a GPU box, where nobody is looking.
+    cli.py registered `host` hidden and called it a window rather than a second
+    permanent spelling. This argv was the one caller inside the tool still
+    spelling a command the deprecated way, and it was fixed first — which is why
+    the day that group was deleted nothing broke here.
+
+    That day has come, so this test has changed character rather than expired. It
+    used to guard against a breakage that would land later, in a spawned Terminal
+    window, on the command that starts a GPU box, where nobody is looking. The
+    breakage is now immediate: `host go` does not parse at all, so the old argv
+    would exit 2 and start nothing, in that same window nobody is looking at.
     """
     script = _handed_over(world, monkeypatch, "go", BOX)
 
     assert f"go {BOX}" in script, "it still hands over the `go` it was asked for"
     assert "host go" not in script, (
-        "--new-window re-execs `host go`, the hidden deprecated spelling. When "
-        "the deprecation window closes, this breaks inside a Terminal window "
-        "that may already be shut. Hand over the live spelling: `go <name>`."
+        "--new-window re-execs `host go`, a spelling this tool removed. That "
+        "does not parse: the spawned window exits 2 and starts nothing, and it "
+        "may already be shut by the time anyone looks. Hand over the live "
+        "spelling: `go <name>`."
     )
 
 

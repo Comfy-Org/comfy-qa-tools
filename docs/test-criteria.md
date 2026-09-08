@@ -215,8 +215,10 @@ grep -rc "comfy-qat down " comfy_qa/ | grep -v ":0$"; echo "exit $? (0 = the gre
 - [ ] **A7** — every test passes.
 - [ ] **A8** — **no message the tool prints offers the old spelling.** The grep
       prints nothing and **exits 1**. It is a grep and not a judgement call
-      because the old forms are a deprecation window: a tool that still teaches
-      the spelling it is retiring never finishes retiring it.
+      because the old forms were a deprecation window: a tool that still teaches
+      the spelling it is retiring never finishes retiring it. That retirement is
+      finished — the spellings are gone as of 1.1.0 — so the grep has stopped
+      measuring a window and started guarding a removal.
       **This passes as of `442f867`.** The three sites the pack used to name —
       `auth.py` twice (`comfy-qat auth quota request ...`) and `gcloud.py` once
       (`comfy-qat auth status ...`) — are gone, and the pack said "this fails
