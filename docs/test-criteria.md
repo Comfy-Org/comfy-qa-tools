@@ -1700,9 +1700,18 @@ echo "=== J7c and nothing started or stopped"; gcloud compute instances list --p
 
 - [ ] **J1** — one line per machine with OS, card, URL and STATE. Without `--live`
       STATE reports **only what this machine knows** — whether a tunnel is open —
-      and says so under the table. A cloud box with no tunnel reads `not
-      tunnelled`, not a bare `-`: a running box and a stopped one must not look
-      identical. `--live` adds what Google says, one call per box.
+      and says so under the table, **including on a host list with no cloud boxes
+      in it**, which is the reader who sees nothing but dashes. A cloud box with
+      no tunnel reads `not tunnelled`, not a bare `-`: a running box and a stopped
+      one must not look identical. The local install reads `-`, which is correct:
+      it has no tunnel to have.
+- [ ] **J1b** — `--live` goes and asks, and asks **both**: Google what each cloud
+      box is doing, one call per project, and this machine whether ComfyUI is
+      answering. With ComfyUI up, `local` reads `serving`; stop it and re-run and
+      it reads `not serving`. The two runs must not print the same cell — that is
+      the whole criterion, and it was `-` in both for the first release. On a
+      host list holding only `local` this must make **no** cloud call and still
+      answer.
 - [ ] **J2/J3/J4** — each resolves to exactly one machine and **prints what it
       resolved to** before doing anything: `windows -> comfy-win (Windows Server
       2022, L4)`. A silent resolution is a fail even if it picks correctly.

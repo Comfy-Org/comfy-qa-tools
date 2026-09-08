@@ -123,6 +123,34 @@ def _config_option() -> Path:
     return DEFAULT_CONFIG_PATH
 
 
+# A tenth of `stamp.TIMEOUT`. The question here is "is ComfyUI answering on
+# loopback", where a healthy answer arrives in single-digit milliseconds and the
+# only slow case is a wedged server that accepted the connection and will never
+# reply. `list` is a read command — bare `comfy-qat` runs it — so the ceiling it
+# can carry is one second, not ten. Nothing is retried: a timeout raises out of
+# `fetch` rather than falling through to the `/api` path, so this is the total.
+SERVING_TIMEOUT = 1.0
+
+
+def _answering(host: Host) -> bool:
+    """Whether ComfyUI is up on a local install, asked over loopback.
+
+    A bare TCP connect would be cheaper and would be a different question —
+    something is listening is not ComfyUI is up, and this tool refuses that
+    conflation everywhere else it appears (`wrong_machine_fix` exists for it).
+    So it is the same `fetch` that `stamp` uses, on a short leash: a wrong
+    service, a redirect elsewhere, an HTML shell, nothing listening and a wedged
+    port all arrive here as False, which is what the column can say.
+    """
+    import http.client
+
+    try:
+        fetch(host.url, host=host.name, timeout=SERVING_TIMEOUT)
+    except (ProbeError, OSError, http.client.HTTPException):
+        return False
+    return True
+
+
 def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
     """What each machine is doing right now.
 
@@ -130,6 +158,17 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
     the honest answer to "which box am I on?" — and reading a pid file costs
     nothing, so it is always shown. Whether the instance is *running* is a gcloud
     call per box, which is not free, so it waits to be asked for with --live.
+
+    A LOCAL INSTALL HAS NO TUNNEL, SO ITS DEFAULT `-` IS CORRECT AND STAYS. That
+    is a decision somebody already made and pinned, and the reason holds: without
+    --live this column reports what was read for free, and for `local` that is
+    nothing. What did not hold is the SAME cell under --live. That flag means
+    "stop guessing and go ask", it asks Google about every cloud box, and it left
+    `-` standing on the one host this machine can answer for with certainty — a
+    loopback GET away, no credentials, no quota, no network. Observed with
+    ComfyUI serving 200 on 127.0.0.1:8188 and `list --live` printing `-` about
+    it, on a host list with no cloud boxes in it at all, so not one call was
+    saved by the silence.
     """
     from .tunnel import status as tunnel_status
 
@@ -175,6 +214,14 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
                 # "does not apply" at once — so a running cloud box looked
                 # identical to one that is off. Say only what was actually read.
                 parts.append("not tunnelled")
+        elif live:
+            # "serving", not "running": on a cloud box `running` is Google's word
+            # for the VM being powered on, which says nothing about ComfyUI. Here
+            # the VM is this laptop and is not in question, and the thing that was
+            # actually asked is whether ComfyUI answers. Two words for two facts,
+            # because a shared one would make `local  running` mean something it
+            # was never checked for.
+            parts.append("serving" if _answering(host) else "not serving")
         states[host.name] = ", ".join(parts) or "-"
     return states
 
@@ -183,7 +230,9 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
 def list_cmd(
     config: ConfigOption = None,
     live: Annotated[bool, typer.Option(
-        "--live", help="Ask Google whether each cloud box is running. One call per box.")] = False,
+        "--live", help="Go and ask, rather than reporting what is already known: "
+                       "Google whether each cloud box is running, and this "
+                       "machine whether ComfyUI is answering on a local one.")] = False,
 ) -> None:
     """Show every declared machine: what it is, where it answers, and what is up."""
     try:
@@ -200,11 +249,22 @@ def list_cmd(
         say.result("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
 
     # Without --live the STATE column knows about tunnels and nothing else, so a
-    # cloud box that is running looks the same as one that is off. Say which
-    # question was not asked rather than letting the column imply an answer.
-    if any(host.is_remote for host in hosts) and not live:
-        say.result("\nSTATE is what this machine knows: whether a tunnel is open. "
-                   "Add --live to ask Google what is actually running.")
+    # cloud box that is running looks the same as one that is off, and a local
+    # install shows a bare `-`. Say which question was not asked rather than
+    # letting the column imply an answer.
+    #
+    # The condition used to be `any(host.is_remote ...)`, which meant a host list
+    # with no cloud boxes printed no footnote at all — so the one reader who sees
+    # NOTHING but dashes in that column was the one told nothing about it.
+    if hosts and not live:
+        asks = []
+        if any(host.is_remote for host in hosts):
+            asks.append("Google what each cloud box is doing")
+        if any(not host.is_remote for host in hosts):
+            asks.append("this machine whether ComfyUI is answering")
+        say.result("\nSTATE is what this machine knows without asking anything: "
+                   "whether a tunnel is open. Add --live to ask "
+                   f"{' and '.join(asks)}.")
 
 
 @app.command("init")

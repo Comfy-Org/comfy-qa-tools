@@ -255,19 +255,31 @@ comfy-linux  gce    Ubuntu 22.04         A100  http://127.0.0.1:8191  tunnelled
 
 STATE is read from the tunnel files on this machine, so it costs nothing and is
 always shown. A tunnel is what makes a cloud box answer on `127.0.0.1`, so
-`tunnelled` is the honest answer to "which box am I looking at".
+`tunnelled` is the honest answer to "which box am I looking at". Your local
+install has no tunnel to have, which is why it reads `-` here: nothing was
+asked about it, and nothing is claimed.
 
-Whether the instances are *running* is a question only Google can answer, and it
-is one call per box, so it is asked for rather than paid for every time:
+`--live` is the flag that goes and asks. Whether an instance is *running* is a
+question only Google can answer, one call per project; whether ComfyUI is
+answering on your own machine is a loopback request that costs nothing and needs
+no credentials. Both happen here:
 
 ```sh
 comfy-qat list --live
 ```
 
 ```
+local        local  -                    -     http://127.0.0.1:8188  serving
 comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  running, tunnelled
 comfy-linux  gce    Ubuntu 22.04         A100  http://127.0.0.1:8191  stopped
 ```
+
+`serving` and `running` are different words for different facts. `running` is
+Google's word for the VM being powered on, which says nothing about whether
+ComfyUI came up on it. `serving` means ComfyUI answered. A local install shows
+`not serving` when nothing replies within a second — including when something
+else has the port, or when ComfyUI has wedged and accepts the connection without
+answering.
 
 ## When the box you want is unavailable
 

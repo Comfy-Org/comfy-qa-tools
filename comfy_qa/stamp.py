@@ -345,7 +345,8 @@ def _where(url: str) -> str:
     return parsed.netloc or url
 
 
-def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
+def fetch(url: str, *, host: str, opener=urllib.request.urlopen,
+          timeout: float = TIMEOUT) -> Stamp:
     """Ask a running ComfyUI what it is.
 
     Tries the bare path first, then the `/api` alias, because a Comfy Cloud
@@ -355,6 +356,14 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
     Everything the far end sends is checked before it is believed: it must not
     have redirected somewhere else, it must be small enough to be that endpoint,
     and it must speak `/system_stats`'s vocabulary rather than merely JSON.
+
+    `timeout` exists for the one caller that is not stamping. `TIMEOUT` is ten
+    seconds because a stamp is the point of the command that asked for it and
+    waiting is better than failing; `list` asks the same question in passing,
+    about a column, and a wedged ComfyUI — accepting the connection and never
+    answering — would hold up a read command for ten seconds per host. Shortening
+    it there is a different trade, not a different probe, so it is a parameter
+    rather than a second function that would drift from this one.
     """
     base = url.rstrip("/")
     http_error: urllib.error.HTTPError | None = None
@@ -371,7 +380,7 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen) -> Stamp:
             ) from exc
 
         try:
-            response = opener(request, timeout=TIMEOUT)
+            response = opener(request, timeout=timeout)
         except urllib.error.HTTPError as exc:
             # Something is definitely there — it just refused this path.
             http_error = exc

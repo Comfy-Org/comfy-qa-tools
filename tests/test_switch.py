@@ -21,11 +21,15 @@ import pytest
 from typer.testing import CliRunner
 
 from comfy_qa import gcloud as gcloud_module
+from comfy_qa import host as host_module
 from comfy_qa import lifecycle
 from comfy_qa import tunnel as tunnel_module
 from comfy_qa.cli import app
 from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
+# Captured at import, before any fixture replaces the attribute, so one test can
+# put the real probe back and watch what it asks for.
+from comfy_qa.host import _answering as _real_answering
 from comfy_qa.lifecycle import alternatives, running_elsewhere
 from comfy_qa.stamp import Stamp
 from comfy_qa.tunnel import TunnelState
@@ -64,6 +68,13 @@ gce_instance = "comfy-win-2"
 gce_zone     = "us-central1-b"
 gce_project  = "proj"
 port         = 8192
+"""
+
+# Nothing but the local install — the shape `init` writes and a first run has.
+LOCAL_ONLY = """\
+[hosts.local]
+kind = "local"
+port = 8188
 """
 
 # One cloud box and nothing else to fall back to.
@@ -221,6 +232,13 @@ def cli(tmp_path, monkeypatch):
             closed.append(name) or name in open_tunnels))
         monkeypatch.setattr(lifecycle, "probe",
                             lambda host: STAMP if host.name in serving else None)
+        # `list --live` asks a LOCAL install over loopback, which conftest's
+        # network tripwire permits — so without this seam these tests would ask
+        # the developer's own ComfyUI on 127.0.0.1:8188 and answer differently
+        # depending on whether it happened to be running. Loopback is allowed,
+        # not harmless.
+        monkeypatch.setattr(host_module, "_answering",
+                            lambda host: host.name in serving)
 
         result = CliRunner().invoke(app, [*args, "--config", str(path)])
         result.calls = gc.calls        # type: ignore[attr-defined]
@@ -418,6 +436,100 @@ def test_a_cloud_box_with_no_tunnel_says_so_rather_than_a_bare_dash(cli):
     assert "not tunnelled" in rows["comfy-win"]
     assert rows["local"].split()[-1] == "-", "a local install has no tunnel to have"
     assert "--live to ask Google" in result.output, "name the question not asked"
+
+
+# --- and the same cell once somebody DID ask ---------------------------------
+#
+# The three tests below are one finding. `-` above is right and stays: without
+# --live nothing was read about the local install, and saying nothing is the
+# honest report. Under --live it was still `-`, on the one host that answers
+# over loopback with no credentials, no quota and no network — so the flag whose
+# whole meaning is "stop guessing and go and ask" asked, and then said nothing.
+# Reproduced against the real binary with ComfyUI serving 200 on
+# 127.0.0.1:8188 and a host list holding nothing but `local`, so not one cloud
+# call was saved by the silence.
+
+
+def test_live_says_whether_comfyui_is_answering_on_a_local_install(cli):
+    """The two runs must not print the same cell. That is the whole property.
+
+    Asserted as a difference rather than as two literals because the words are
+    allowed to change and the distinction is not: a tester who cannot tell a
+    serving install from a dead one has the bare `-` back under another name.
+    """
+    up = rows_of(cli("list", "--live", serving=("local",)).output)["local"]
+    down = rows_of(cli("list", "--live").output)["local"]
+
+    assert up != down, (
+        f"`list --live` printed {up.split()[-1]!r} for a local install whether "
+        f"ComfyUI was answering or not"
+    )
+    assert up.endswith("serving") and not up.endswith("not serving")
+    assert down.endswith("not serving")
+
+
+def test_asking_a_local_install_is_not_a_cloud_call(cli):
+    """A loopback GET, not a round trip to Google, and not a reason to need auth.
+
+    `--live` on a host list with no cloud boxes in it used to make no calls and
+    say nothing; it must now say something and still make no calls, or the local
+    answer has been bought with a credential prompt on a read command.
+    """
+    result = cli("list", "--live", declared=LOCAL_ONLY, serving=("local",))
+
+    assert result.calls == [], "asking about a local install reached the cloud"
+    assert rows_of(result.output)["local"].endswith("serving")
+
+
+def test_the_local_probe_is_on_a_shorter_leash_than_a_stamp(monkeypatch):
+    """A wedged ComfyUI accepts the connection and never answers.
+
+    `stamp` waits ten seconds for that, because waiting is the point of the
+    command that asked. `list` asks in passing, about a column, and bare
+    `comfy-qat` runs it — ten seconds per host is a different command. Measured
+    against a socket that accepts and never replies: 1.1s wall clock, one
+    timeout, no `/api` retry, because a timeout raises out of `fetch` rather
+    than falling through to the second path.
+
+    Driven directly rather than through the `cli` fixture, which replaces
+    `_answering` wholesale on every invocation — the seam that keeps the rest of
+    this file off the developer's own ComfyUI is the same seam that would hide
+    what the real one asks for.
+    """
+    from comfy_qa import stamp as stamp_module
+
+    seen = {}
+
+    def record(url, *, host, timeout=stamp_module.TIMEOUT):
+        seen["timeout"] = timeout
+        raise stamp_module.ProbeError("nothing answered", fix="start ComfyUI")
+
+    monkeypatch.setattr(host_module, "fetch", record)
+
+    assert _real_answering(LOCAL) is False, "a refused probe is not 'serving'"
+    assert seen["timeout"] == host_module.SERVING_TIMEOUT
+    assert seen["timeout"] < stamp_module.TIMEOUT, (
+        "the column probe waits as long as a stamp does, so a wedged local "
+        "ComfyUI holds up a read command"
+    )
+
+
+def test_the_footnote_reaches_a_host_list_with_no_cloud_boxes(cli):
+    """The reader seeing NOTHING but dashes was the one told nothing about them.
+
+    The footnote was printed only `if any(host.is_remote ...)`, so a host list
+    holding just the local install — the shape `init` writes, and the shape a
+    first run has — got a STATE column with no explanation anywhere on the page.
+    """
+    result = cli("list", declared=LOCAL_ONLY)
+
+    assert "--live" in result.output, "the column was left unexplained"
+    assert "whether ComfyUI is answering" in result.output
+    assert "Google" not in result.output, (
+        "there are no cloud boxes here, so naming Google sends the reader to a "
+        "question that does not apply to anything in the table"
+    )
+
 
 
 def test_listing_asks_google_nothing_by_default(cli):
