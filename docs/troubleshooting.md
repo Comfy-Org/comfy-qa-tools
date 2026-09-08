@@ -28,7 +28,7 @@ everything else a first run needs.
 
 **`~/.config/comfy-qa-tools/hosts.toml already exists`** / **`to fix: --force
 overwrites it`**
-`host init` will not write over a host list you have edited. If you really do want
+`comfy-qat init` will not write over a host list you have edited. If you really do want
 the starter file back, `comfy-qat init --force` — and copy your cloud hosts
 out first, because they are not merged back in.
 
@@ -108,7 +108,7 @@ answers on its own port; it does not say every host is its own machine, and this
 is what does. Left alone it is the worst failure this tool has, because nothing
 looks wrong: both entries load, both tunnel, both stamp, and a matrix records
 "reproduced on comfy-win, not on comfy-win-b" about the same box. Usually it is a
-copied entry someone forgot to repoint after `host move`.
+copied entry someone forgot to repoint after `comfy-qat move`.
 
 **`hosts 'comfy-win' and 'Comfy-Win' differ only in case. Which machine you
 reached would depend on a shift key, so they cannot both be declared. Rename one
@@ -122,10 +122,10 @@ how you typed it.
 Stopping a machine is decided from 'kind', so a cloud box declared local is never
 stopped and keeps billing. Set kind = "gce" if it is a cloud box, or delete those
 fields if it is not.`**
-This one costs money. `host down` decides what to stop from `kind` alone: for a
+This one costs money. `comfy-qat down` decides what to stop from `kind` alone: for a
 local host it reports "local ComfyUI left running" and returns without stopping
 anything. A cloud box mistyped as `local` — or edited down to one after a move —
-therefore reads as a successful `host down` while the GPU bills all night. The
+therefore reads as a successful `comfy-qat down` while the GPU bills all night. The
 contradiction is refused when the host list is read, so `down` can never be
 handed one.
 
@@ -170,7 +170,7 @@ will have to re-add your cloud hosts.
 **`could not write a host list to /somewhere/hosts.toml: [Errno 13] Permission
 denied`** / **`to fix: give --config a path you can write to — the file itself,
 not the folder it goes in`**
-`host init` could not create the file. Either the folder is not writable, or
+`comfy-qat init` could not create the file. Either the folder is not writable, or
 `--config` was pointed at a directory. It names the path it tried.
 
 ## Setup
@@ -238,7 +238,7 @@ names both sides of the collision; rename or repoint your entry, then run
 
 ## Creating a box
 
-`host create` makes the machine, choosing the zone for you. Nothing here is
+`comfy-qat create` makes the machine, choosing the zone for you. Nothing here is
 created until the plan and the quota have been printed and agreed to, and
 `--dry-run` stops before any of it.
 
@@ -551,7 +551,7 @@ the box running.
 
 **The driver is not in either base image**, and a GPU box without it looks
 completely healthy: it boots, it answers, it installs ComfyUI, and it runs on the
-CPU. `host go` detects that now — but only after you have paid to find out.
+CPU. `comfy-qat go` detects that now — but only after you have paid to find out.
 
 **Linux boxes install it themselves.** The create attaches Google's own
 `startup_script.sh` from
@@ -559,12 +559,12 @@ CPU. `host go` detects that now — but only after you have paid to find out.
 which is what
 [Install GPU drivers](https://cloud.google.com/compute/docs/gpus/install-drivers-gpu)
 points at for automating the install. It reboots the box once or twice and
-carries on across the reboots; `host go` waits that out. Google notes it does not
+carries on across the reboots; `comfy-qat go` waits that out. Google notes it does not
 work on instances with Secure Boot enabled — nothing here turns Secure Boot on.
 
 **Windows boxes do not**, and this tool does not pretend otherwise. Google
 documents exactly one way to install the driver on Windows Server, and it is a
-person at an Administrator PowerShell prompt. `host create` prints those two
+person at an Administrator PowerShell prompt. `comfy-qat create` prints those two
 commands when it finishes:
 
 ```powershell
@@ -588,16 +588,16 @@ started by this tool, so start ComfyUI yourself:
 ~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port 8188 --listen 127.0.0.1
 ```
 
-**`ComfyUI is not running locally`** from `host go`
+**`ComfyUI is not running locally`** from `comfy-qat go`
 The same thing, from the command that would otherwise install ComfyUI for you —
 which it will not do to your own machine. It prints the line above; run it.
 
 **`ComfyUI is not answering and --no-install was given`**
-`host go` found no ComfyUI on the box and you told it not to install one. Drop
+`comfy-qat go` found no ComfyUI on the box and you told it not to install one. Drop
 `--no-install`, or get onto the machine and install by hand.
 
 **`could not run a command on comfy-win: ...`**
-`host go` reaches the box over SSH through IAP to check for ComfyUI. If that fails,
+`comfy-qat go` reaches the box over SSH through IAP to check for ComfyUI. If that fails,
 the instance is missing the `enable-windows-ssh` metadata (Windows) or your account
 lacks the IAP tunnel role. The error prints the manual way in.
 
@@ -780,7 +780,7 @@ prints the command:
 gcloud compute instances add-access-config <name> --zone <zone> --project <project>
 ```
 
-A box created by `host move` copies the source instance's networking, so this
+A box created by `comfy-qat move` copies the source instance's networking, so this
 only arises on a box built some other way — or one moved before `move` started
 copying that networking.
 
@@ -788,7 +788,7 @@ copying that networking.
 Not an error: the box was asked whether ComfyUI could start *before* launching it,
 the answer was no, and the CUDA build is being installed. This check exists
 because the alternative is finding out at launch, on a machine that has already
-booted, tunnelled and started billing. It runs on every `host go`, costs one SSH
+booted, tunnelled and started billing. It runs on every `comfy-qat go`, costs one SSH
 round trip, and does nothing when the answer is fine.
 
 **`torch could not be installed on comfy-win-b (exit 1), so ComfyUI cannot use its GPU`**
@@ -810,7 +810,7 @@ Torch is installed and cannot see the card. On **Windows** this is almost always
 where it came from: PyPI's Windows torch wheel is CPU-only, and the CUDA build
 lives on PyTorch's own index. `pip install -r requirements.txt` says plain
 `torch`, so it fetches the CPU one and ComfyUI dies on a box rented for its GPU.
-Both `host go`'s install and its repair pull torch from
+Both `comfy-qat go`'s install and its repair pull torch from
 `https://download.pytorch.org/whl/cu128` first for exactly this reason. If you
 installed by hand, reinstall it the same way — and note `--force-reinstall`,
 which is not optional: pip matches on version, not on which index a wheel came
@@ -853,10 +853,10 @@ will refuse with the message above and print the command to stop it by hand.
 
 ## ComfyUI running on the box, and its log
 
-`host go` launches ComfyUI **on the machine** and hands the prompt back, so two
+`comfy-qat go` launches ComfyUI **on the machine** and hands the prompt back, so two
 boxes can be up at once — Windows in one browser tab, Linux in another. Its
 output goes to a file on the box: `C:\ComfyUI\comfyui.log` on Windows,
-`/opt/comfyui/comfyui.log` on Linux. `host logs <name>` reads it.
+`/opt/comfyui/comfyui.log` on Linux. `comfy-qat logs <name>` reads it.
 
 Detaching moved where the log goes and nothing else. `go` still does not return
 until ComfyUI has answered on the tunnel, because "started" is not "serving" and
@@ -871,7 +871,7 @@ point, and the difference from `--follow`. If you meant to stop it, stop the box
 **`ComfyUI is running on comfy-win and this terminal is free.`**
 Not an error, and the last thing `go` says before the URL. The box is up, the
 tunnel is open, ComfyUI answered, and nothing is holding this shell. It is still
-billing until `host down`.
+billing until `comfy-qat down`.
 
 **`ComfyUI is no longer running on comfy-win — it stopped before it ever answered`**
 The box was asked, while waiting, whether ComfyUI was still there, and it was
@@ -899,7 +899,7 @@ The repair itself then failed. gcloud's reason is quoted; if it timed out
 reaching pypi, the box has no route out — see `add-access-config` above.
 
 **`comfy-win is not running, so it has no ComfyUI and no log to follow. Whatever it was writing stopped when the machine did.`**
-from `host logs`. The instance is stopped, so there is nothing to read and
+from `comfy-qat logs`. The instance is stopped, so there is nothing to read and
 nothing to wait for — and a command that hung here would be silently waiting on a
 box you may still be paying for. `comfy-qat go comfy-win` starts the box and
 ComfyUI on it.
@@ -910,7 +910,7 @@ different fact from "the box is off", and it has a different fix: `comfy-qat hos
 go comfy-win`. The second sentence is the one that matters — the machine is on.
 
 **`stopped reading. ComfyUI is still running on comfy-win, and so is the machine.`**
-Not an error — what Ctrl-C out of `host logs` says. It ends the reading and
+Not an error — what Ctrl-C out of `comfy-qat logs` says. It ends the reading and
 nothing else. `go --follow` is the other one: there Ctrl-C reaches ComfyUI and
 stops it, and the box carries on billing either way.
 
@@ -943,7 +943,7 @@ box that has stopped accepting commands. The fix line prints the way onto the
 machine, and the way to stop paying for it.
 
 **`local is this machine, and this tool did not start its ComfyUI, so there is no log of its own to follow.`**
-`host logs local` has nothing to show. Your local ComfyUI was started by you, in
+`comfy-qat logs local` has nothing to show. Your local ComfyUI was started by you, in
 a terminal, and its log is in that terminal — nothing here detached it or
 captured it. The fix line prints the command that starts one.
 
@@ -964,7 +964,7 @@ run it in a window of your own.
 **ComfyUI says `To see the GUI go to: http://127.0.0.1:8188` and nothing loads**
 That address is correct **on the box** and wrong on yours: 8188 on your machine is
 your own local ComfyUI, not the cloud one. Use the URL this tool printed —
-`http://127.0.0.1:<the host's port>`, 8191 in `host list`. It is now repeated just
+`http://127.0.0.1:<the host's port>`, 8191 in `comfy-qat list`. It is now repeated just
 before the log starts, because ComfyUI's line is the last one you read.
 
 **No firewall rule is involved, and this tool does not create one.** That is worth
@@ -988,7 +988,7 @@ bills for the round trip.
 
 **`nothing is listening on the machine yet, so there is nothing to tunnel to — starting ComfyUI first`**
 **`nothing is listening on port 8188 of the machine yet, so there is nothing to tunnel to`** / **`<name> is running and billing, but ComfyUI is not started on it yet`**
-Not a broken tunnel — an ordering fact, and the one that made `host go` unable to
+Not a broken tunnel — an ordering fact, and the one that made `comfy-qat go` unable to
 work at all on a box that was not already serving.
 
 The forward tests the connection before it will serve, and refuses when the far
@@ -997,13 +997,13 @@ port has no listener. So the tunnel cannot exist *before* ComfyUI is started, an
 was about to do was the very thing that would have fixed it. Now the launch happens first and the tunnel is opened as soon as
 ComfyUI is listening, from the same watcher that waits for it to answer.
 
-You should not see this from `host go`. From `host open` it means exactly what it
-says: start ComfyUI on the machine first, or use `host go`, which does both.
+You should not see this from `comfy-qat go`. From `comfy-qat open` it means exactly what it
+says: start ComfyUI on the machine first, or use `comfy-qat go`, which does both.
 
 **`NO_PYTHON`** in the ComfyUI startup log
 ComfyUI is installed but no interpreter was found beside it — no `venv`, no
 portable `python_embeded`, and no system `python`. Get onto the box and create one,
-or reinstall with `host go` on a box that has none.
+or reinstall with `comfy-qat go` on a box that has none.
 
 **`comfy-win did not reach RUNNING within 300s`**
 The instance was asked to start and did not. Check it in the Google Cloud console;
@@ -1016,16 +1016,16 @@ what you actually have.
 
 **`comfy-win says kind = 'local' but names a cloud instance (comfy-win, us-central1-a, a-project). Refusing to report it as stopped: if that machine is running, it is billing.`**
 A host entry claims to be a local install while carrying the fields that identify
-a Google Cloud box. `host down` would have closed the tunnel, said "local ComfyUI
+a Google Cloud box. `comfy-qat down` would have closed the tunnel, said "local ComfyUI
 left running — this tool did not start it", and left a GPU instance running.
-A cloud box is `kind = "gce"`; fix the entry and run `host down` again.
+A cloud box is `kind = "gce"`; fix the entry and run `comfy-qat down` again.
 
 **`--all stops every machine, so it takes no name`**
-`host down --all` is "stop everything"; naming one as well is a contradiction.
+`comfy-qat down --all` is "stop everything"; naming one as well is a contradiction.
 Drop the name, or drop `--all`.
 
 **`say which machine, or --all for every one of them`**
-`host down` with nothing to act on. The question at the end of a session is
+`comfy-qat down` with nothing to act on. The question at the end of a session is
 usually "am I still paying for anything", and `--all` is the answer to that one.
 
 **`2 of 3 did not stop and may still be billing`**
@@ -1046,7 +1046,7 @@ A stockout. The zone has none of that card free, which is routine for GPUs and h
 nothing to do with your account, quota or billing.
 
 Google usually names a zone that *does* have capacity, and the fix line repeats it —
-"Google says us-central1-b has capacity right now" — with the `host move` command
+"Google says us-central1-b has capacity right now" — with the `comfy-qat move` command
 to go there. Otherwise, wait: capacity varies by hour.
 
 ## Tunnels
@@ -1054,7 +1054,7 @@ to go there. Otherwise, wait: capacity varies by hour.
 A tunnel outlives the command that opened it, so what it is gets recorded rather
 than assumed — the instance, the zone, the project and the port, beside the
 process id. Everything below is that record refusing to be taken on trust. All of
-it reaches you through `host open`, and through `host up` and `host go`, which
+it reaches you through `comfy-qat open`, and through `comfy-qat up` and `comfy-qat go`, which
 open a tunnel on the way.
 
 **`comfy-win is local — there is nothing to tunnel. It is at
@@ -1096,12 +1096,12 @@ created. Check the permissions on `~/.config/comfy-qa-tools`.
 **`the tunnel to comfy-win started (pid 4021) but could not be recorded: ...
 Stop it by hand — nothing here can find it again.`**
 The rarest one, and the only one that leaves something behind. The tunnel is
-running but nothing on disk says so, so `host down` cannot find it. Kill the pid
+running but nothing on disk says so, so `comfy-qat down` cannot find it. Kill the pid
 in the message, fix whatever made the directory unwritable, and open it again.
 
 ## Moving a box to a zone with capacity
 
-`host move` snapshots the boot disk, rebuilds the box elsewhere and leaves the
+`comfy-qat move` snapshots the boot disk, rebuilds the box elsewhere and leaves the
 original stopped. Nothing is deleted, at any point, by anything here.
 
 **`comfy-win is local — there is nowhere to move it to`**
@@ -1228,28 +1228,28 @@ fields that were all present, because the required-field check ran first and the
 typo was invisible to it — so the message described a file quite unlike the one in
 front of you. Unknown fields are now checked first and the suggestion is offered.
 
-## The old spellings, `host` and `auth`
+## The old spellings, `host` and `auth`, are gone
 
-**`` warning: `host` is on its way out and still works. The verb stands on its own now: comfy-qat go ``**
+**`No such command 'host'.`**
 
-**`` warning: `auth` is on its way out and still works. The verb stands on its own now: comfy-qat status ``**
+**`No such command 'auth'.`**
 
-Not a failure. `host go comfy-win` and `comfy-qat go comfy-win` are the same
-command reached two ways, and so are `auth status` and `comfy-qat status`. The
-noun in front was pure typing — nothing else in this tool is called `go`, `down`,
-`list` or `stamp` — and on a second operating system it is typing you do twice as
-often.
+Click's own refusal, and the exit code is 2. Every verb on this page was once
+reachable with one of those two nouns in front of it as well. They were removed at
+1.1.0. **Take the noun off and the rest of the line is right** — the verb was
+always the command, and the noun was reaching that same command a second way.
 
-Both nouns are hidden rather than deleted, so every script and run sheet written
-before the change keeps working. Hidden also took them out of `--help`, which was
-the only place the short form was written down. This note is what replaces it, and
-it names the exact command to type instead — the one you just ran, without the
-noun.
+Nothing else changed with them. Nothing in this tool is called `go`, `down`,
+`list` or `stamp` other than the commands of those names, so the noun was pure
+typing, and on a second operating system it is typing you do twice as often. For
+one release the two were hidden from `--help` and warned on stderr each time
+anyone used one, naming the verb to type instead; that warning is what made it a
+window, and the window has closed.
 
-`comfy-qat env` is hidden too and deliberately says nothing. It is not a second
-spelling of anything, so there is no shorter form to point at: it is a whole
-command parked until its own release, and telling anyone it was on its way out
-would be false.
+`comfy-qat env` is hidden too and deliberately says nothing, and it is staying.
+It is not a second spelling of anything, so there is no shorter form to point at:
+it is a whole command parked until its own release, and telling anyone it was on
+its way out would be false.
 
 ## When the machine you want cannot start
 
@@ -1275,7 +1275,7 @@ or to move the box.
 
 **`if it has to be comfy-win:`**
 When only that machine will do — the install on it, the models on it — this is
-followed by the `host move` command for a zone Google says has capacity. Read
+followed by the `comfy-qat move` command for a zone Google says has capacity. Read
 [the move entries](#moving-a-box-to-a-zone-with-capacity) first: the suggested zone
 can be stale by the time you use it, and a move that fails late leaves a disk and a
 snapshot behind that you will pay for.
@@ -1296,7 +1296,7 @@ delete command. Running the move again is the supported recovery — it finds wh
 exists and carries on from there — so delete only if you have decided against it.
 
 **`an earlier run left this behind, and it is billing:`** followed by a disk or a snapshot
-An earlier `host move` did not finish, and what it created is still there and still
+An earlier `comfy-qat move` did not finish, and what it created is still there and still
 billing. This is a report, not an error — the move carries on and reuses what it
 can, which is what makes a failed move cheap to retry. Each line is followed by the
 exact `gcloud ... delete` command that removes it.
@@ -1968,7 +1968,7 @@ declaration that is merely less specific than the answer — `A100` against an
 card with the wrong amount of VRAM; that is a real thing to notice and not a
 reason to withhold an evidence line. The usual causes are a tunnel left open
 to a different machine, a port that your local ComfyUI is holding, or a host
-entry that was never repointed after a `host move`. `comfy-qat list` shows
+entry that was never repointed after a `comfy-qat move`. `comfy-qat list` shows
 what is tunnelled; `comfy-qat down comfy-win` then `comfy-qat open
 comfy-win` rebuilds the tunnel.
 

@@ -233,29 +233,6 @@ def login_cmd() -> None:
     say.result("run these, then `comfy-qat status`:\n")
     say.result("  gcloud auth login")
     say.result("  gcloud config set project <your-project-id>")
-
-
-@app.callback()
-def auth_default(ctx: typer.Context) -> None:
-    """The `auth` noun is a deprecation window, and this is what closes it.
-
-    `cli.py` hoists these commands to the root and re-registers this sub-app
-    `hidden=True`, so `auth status` and `status` are the same command reached two
-    ways. Hidden took it out of `--help`, which is also the only place anyone
-    could have read that the short form exists — so the person still typing the
-    long one is told here. `host` says the same thing in `host.py` for the same
-    reason.
-    """
-    # Guarded the way `host`'s is, though bare `auth` cannot reach here today:
-    # without `invoke_without_command`, click exits 2 on the missing command
-    # first. The guard is what keeps that true if anyone ever adds one — the
-    # note would otherwise read "comfy-qat None", and a nonsense sentence is
-    # worse than no note at all.
-    if ctx.invoked_subcommand is not None:
-        say.warn("`auth` is on its way out and still works. The verb stands on "
-                 f"its own now: comfy-qat {ctx.invoked_subcommand}")
-
-
 @quota_app.callback(invoke_without_command=True)
 def quota_default(ctx: typer.Context) -> None:
     """Showing what you can run is the safe default."""

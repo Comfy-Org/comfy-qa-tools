@@ -27,9 +27,8 @@ for the reason in its own row.
 
 | command | what it does |
 |---|---|
-| `comfy-qat --version` | the build you are running — `comfy-qat 1.0.0 (841abaa)` from a checkout, no sha from an installed wheel. Paste it with any result |
+| `comfy-qat --version` | the build you are running — `comfy-qat 1.1.0 (841abaa)` from a checkout, no sha from an installed wheel. Paste it with any result |
 | `comfy-qat setup` | first run, all of it: sign-in, project, billing, GPU quota, host list. `--project`, `--region`, `--non-interactive` |
-| `comfy-qat guide` | the first-run instructions, printed in the terminal |
 
 ## Is my account ready?
 
@@ -107,31 +106,36 @@ would reserve both for a machine that no longer exists.
 Every error this tool can print has an entry in
 [troubleshooting.md](troubleshooting.md) — paste the message in and find it.
 
-## The two spellings that no longer advertise themselves
+## The two spellings that have gone
 
-`comfy-qat host ...` and `comfy-qat auth ...` are how these verbs used to be
-typed, and they still work:
+Every verb above was once reachable with a noun in front of it — a `host` or an
+`auth`. Those were removed at **1.1.0**. Type one now and you get click's own
+refusal, exit 2:
 
-| old | now |
+```
+No such command 'host'.
+```
+
+Take the noun off and the rest of the line is right:
+
+| what you used to type | what to type |
 |---|---|
 | `comfy-qat host go linux` | `comfy-qat go linux` |
 | `comfy-qat host list`, `up`, `open`, `down`, `logs`, `switch`, `move`, `stamp`, `init`, `discover`, `create` | drop the `host` |
 | `comfy-qat auth status`, `auth login` | `comfy-qat status`, `comfy-qat login` |
 | `comfy-qat auth quota list`, `auth quota request` | `comfy-qat quota list`, `comfy-qat quota request` |
 
-`host` was a noun in front of every verb, and nothing else in this tool collides
-with `go`, `down`, `list` or `stamp` — so it was pure typing, and on a second
-operating system it is typing you do twice as often. The old forms are hidden from
-`--help` so that page shows one way to do each thing rather than two, and they are
-kept working so that a script, a run sheet or muscle memory written down before
-today does not break. Treat them as **a deprecation window, not a second permanent
-spelling**: 26 command paths is not a simplification of 13.
+Nothing was lost with them. They were the same `Command` objects registered a
+second time, so **42 invocable paths collapsed to 22** with 22 distinct
+implementations behind them and nothing left over. `host` was a noun in front of
+every verb, nothing else in this tool collides with `go`, `down`, `list` or
+`stamp`, and on a second operating system it was typing you did twice as often.
 
-One thing to know: a few of the tool's own messages still print the old spelling.
-At the time of writing there are three, all in the sign-in and quota paths, all
-saying `comfy-qat auth ...`. Both spellings work; the short form is the one to
-learn, and `A8` in [test-criteria.md](test-criteria.md) is the check that counts
-them.
+They were hidden from `--help` for a release first, warning on stderr every time
+anyone used one and naming the verb to type instead. That is what made them a
+window rather than a second permanent spelling. What closed it was a version and
+not a date: it opened at 1.0.0, `CHANGELOG.md` promised the next minor, and this
+is that minor.
 
 ## `env`, which belongs to a different tool
 

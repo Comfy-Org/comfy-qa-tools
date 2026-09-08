@@ -315,7 +315,9 @@ caught up with the verbs moving to the top level; they have since, and the block
 is updated to match. No message the tool prints still says `comfy-qat host ...`
 or `comfy-qat auth ...` either — `A8` in [test-criteria.md](test-criteria.md) is
 the check that holds it that way, and a hit there now is a regression rather
-than a leftover.
+than a leftover. Since 1.1.0 it is a regression with teeth: those spellings were
+removed, so a message printing one would be telling somebody to type a command
+that exits 2.
 
 ## When you are done
 

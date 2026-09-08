@@ -30,11 +30,11 @@ NOT_BUILT: set[str] = set()
 def _surface(typer_app: typer.Typer, prefix: str = "") -> list[str]:
     """Every command path this tool advertises, e.g. 'quota request'.
 
-    Hidden ones are skipped, and there are two kinds. `host go` and `auth status`
-    are the old spellings, kept working so nothing written down before the verbs
-    moved to the top level breaks — documenting both would be documenting the
-    same command twice. And `env` belongs to a different tool: it still runs,
-    and putting it in the README would advertise it again.
+    Hidden ones are skipped. There is one left: `env` belongs to a different
+    tool — it still runs, and putting it in the README would advertise it again.
+    The other kind has gone. `host go` and `auth status` were hidden second
+    spellings of commands already at the top level, and they were removed at this
+    release, so no hidden path duplicates a documented one any more.
     """
     found = []
     for command in typer_app.registered_commands:
@@ -60,16 +60,19 @@ def _everything(typer_app: typer.Typer, prefix: str = "") -> list[str]:
 
 COMMANDS = _surface(app)
 # The two checks need different sets. The README has to document everything the
-# tool advertises, and may mention anything that exists — a hidden command is
-# still real, and saying `host go` still works is a fact worth writing down.
+# tool advertises, and may mention anything that exists — `env` is hidden and
+# still real, so a sentence about it is not an invented command. The two sets are
+# nearly the same now that `host` and `auth` are gone; they are still two,
+# because `env` is still one command apart and the difference is the point.
 EXISTS = _everything(app)
 
 
 def test_the_surface_is_not_empty():
     """A bug in _surface would make every other test here pass vacuously."""
-    # The advertised surface, after the verbs moved to the top level. `env` and
-    # the `host`/`auth` spellings are hidden and deliberately absent.
-    assert {"setup", "guide", "list", "go", "quota request"} <= set(COMMANDS)
+    # The advertised surface, after the verbs moved to the top level. `env` is
+    # hidden and deliberately absent; the `host`/`auth` spellings are gone
+    # outright.
+    assert {"setup", "list", "go", "quota request"} <= set(COMMANDS)
 
 
 @pytest.mark.parametrize("command", COMMANDS)

@@ -27,7 +27,7 @@ never collide on `PATH`.
 
 | area | state |
 |---|---|
-| `setup`, `guide` | shipped — one-command first run |
+| `setup` | shipped — one-command first run |
 | `status`, `login` | shipped |
 | `quota list`, `quota request` | shipped |
 | `init`, `list`, `discover` | shipped — offline, no cloud call |
@@ -43,10 +43,11 @@ never collide on `PATH`.
 | `stamp` | shipped — the evidence line |
 | `env` | carried over from v0, unchanged, awaiting its own release |
 
-**The verbs are at the top level.** It is `comfy-qat go linux`, not `comfy-qat
-host go linux`. `host ...` and `auth ...` still work and no longer advertise
-themselves — a `host create` or an `auth status` in an old run sheet keeps
-running. They are a deprecation window, not a second permanent spelling.
+**The verbs are at the top level.** It is `comfy-qat go linux`. The `host ...`
+and `auth ...` spellings were a deprecation window rather than a second permanent
+way to type everything, and the window closed at 1.1.0: they are removed, and
+typing one now exits 2 with `No such command`. An old run sheet that says
+`host create` or `auth status` wants the noun taken off.
 
 **What has actually been run against a real Google Cloud project**, by someone
 who did not write the tool, on 2026-08-27: phases A–D, G, H and I of
@@ -140,7 +141,6 @@ It works without prompts too: `--project`, `--region`, `--non-interactive`.
 ```sh
 comfy-qat list            # see your machines
 comfy-qat status          # re-check readiness at any time
-comfy-qat guide           # the short version, in the terminal
 ```
 
 ## Everyday use
@@ -229,9 +229,8 @@ printed; one that fits two is refused with both named.
 
 | command | what it does |
 |---|---|
-| `comfy-qat --version` | what you are running — `comfy-qat 1.0.0 (0d27bd4)` from a checkout. Paste it with any result |
+| `comfy-qat --version` | what you are running — `comfy-qat 1.1.0 (0d27bd4)` from a checkout. Paste it with any result |
 | `comfy-qat setup` | first run: sign-in, project, billing, quota, host list |
-| `comfy-qat guide` | the first-run instructions, in the terminal |
 | `comfy-qat status` | signed in? which project? billing? GPU quota? — `--json` too |
 | `comfy-qat login` | prints the sign-in commands; gcloud does the signing in |
 | `comfy-qat quota list` | one line per card: ready, pending, or never asked for. `--by-region`, `--region`, `--json` |
@@ -257,12 +256,15 @@ printed; one that fits two is refused with both named.
 Every command takes `--config` to point at a host list somewhere other than the
 default.
 
-Two things still run and are no longer advertised. `comfy-qat host ...` and
-`comfy-qat auth ...` are the old spellings, kept so nothing written down before
-the verbs moved to the top level breaks — a deprecation window, not a second
-permanent way to type everything. And `env`, v0's build and feature-flag check
-for deployed environments, which belongs to a different tool and would only
-confuse a first reader of `--help`.
+One thing still runs and is not advertised: `env`, v0's build and feature-flag
+check for deployed environments, which belongs to a different tool and would only
+confuse a first reader of `--help`. It is hidden, not going away — there is no
+shorter spelling of it to point anyone at.
+
+The other two hidden spellings have gone. Every verb above used to be reachable
+with a noun in front of it as well, and that noun was a deprecation window rather
+than a second permanent way to type everything. The window closed at 1.1.0: those
+paths now exit 2 with `No such command`. Drop the noun — the verb is the command.
 
 ### The stamp
 

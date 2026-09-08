@@ -834,6 +834,14 @@ def test_a_root_config_reaches_the_bare_listing(tmp_path):
 
     The root callback lists when there is no subcommand, and it now has a host
     list of its own to pass down rather than the `None` it used to hard-code.
+
+    This is the whole of that finding now. It was found by running the end-to-end
+    criteria rather than by reasoning about them — `comfy-qat --config x` was a
+    usage error while `host list --config x` worked — and it used to be held in
+    two places, here and against the `host` sub-app's own callback in
+    `test_config.py`. That callback went with the `host` noun. The bare listing
+    people actually reach for is this one, and the default command is the worst
+    place to have an option that only looks like it is there.
     """
     hosts = _hosts(tmp_path)
     result = CliRunner().invoke(comfy_qa.cli.app, ["--config", str(hosts)])
@@ -926,8 +934,7 @@ def test_setup_writes_the_host_list_config_named_and_not_the_default(
     )
 
 
-@pytest.mark.parametrize("form", [["go"], ["host", "go"]])
-def test_a_root_config_reaches_the_window_go_re_execs_into(tmp_path, monkeypatch, form):
+def test_a_root_config_reaches_the_window_go_re_execs_into(tmp_path, monkeypatch):
     """`go --new-window` re-execs the tool in a Terminal window, and has to carry
     the host list into it.
 
@@ -940,6 +947,11 @@ def test_a_root_config_reaches_the_window_go_re_execs_into(tmp_path, monkeypatch
 
     The rest of that argv belongs to `--new-window` and is pinned in
     `test_detached_e2e.py`; this asserts only the part that is `--config`'s.
+
+    It ran over two spellings until the `host` noun was removed — `go` and
+    `host go` were one command reached two ways, which is why this test was left
+    on the old spelling when the rest of the suite migrated off it. There is one
+    spelling now, so there is one case.
     """
     hosts = _hosts(tmp_path)
     monkeypatch.setattr("sys.platform", "darwin")
@@ -956,7 +968,7 @@ def test_a_root_config_reaches_the_window_go_re_execs_into(tmp_path, monkeypatch
 
     result = CliRunner().invoke(
         comfy_qa.cli.app,
-        ["--config", str(hosts), *form, "comfy-win", "--new-window"],
+        ["--config", str(hosts), "go", "comfy-win", "--new-window"],
     )
     assert result.exit_code == 0, result.output
     script = seen["args"][-1]

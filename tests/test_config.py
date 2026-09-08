@@ -112,27 +112,6 @@ def test_find_names_the_alternatives():
     assert find(hosts, "local").name == "local"
     with pytest.raises(ConfigError, match="declared:  local"):
         find(hosts, "nope")
-
-
-def test_bare_host_accepts_config_like_every_other_command(tmp_path):
-    """`comfy-qat --config x` was a usage error while `host list --config x` worked.
-
-    Found by running the end-to-end criteria rather than reasoning about them:
-    the default command is the one people reach for first, so it is the worst
-    place to have an option that only looks like it is there.
-    """
-    from typer.testing import CliRunner
-
-    from comfy_qa.host import app
-
-    path = tmp_path / "hosts.toml"
-    path.write_text('[hosts.only]\nkind = "local"\nport = 8188\n', encoding="utf-8")
-
-    result = CliRunner().invoke(app, ["--config", str(path)])
-    assert result.exit_code == 0, result.output
-    assert "only" in result.output
-
-
 @pytest.mark.parametrize("empty", [
     {},
     {"hosts": {}},

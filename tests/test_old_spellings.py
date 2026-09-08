@@ -1,32 +1,34 @@
-"""The hidden `host` and `auth` nouns say they are on their way out.
+"""The `host` and `auth` nouns are gone, and this is what keeps them gone.
 
-`cli.py` registers both sub-apps `hidden=True` and calls that, in as many words,
-"a deprecation window, not a second permanent spelling". Nothing closed it.
-Hiding a spelling from `--help` removes the last place anyone could read that the
-short form exists, so the only person who can still be told is the person still
-typing the long one — and until now `comfy-qat host list` printed exactly what
-`comfy-qat list` printed, byte for byte, forever.
+They were a deprecation window and the window closed. `cli.py` registered both
+sub-apps `hidden=True` and called that, in as many words, "a deprecation window,
+not a second permanent spelling" — then nothing closed it, because a window with
+no closing date is a second permanent spelling. What closed it was a version: it
+opened at the release that named it, `CHANGELOG.md` promised the next minor, and
+that minor is this one. 42 command paths became 22.
 
-That is the same argument, and the same fix, as the `--os`/`--gpu` retirement in
-`test_selector_flags.py`: hidden keeps every script working, a note on stderr is
-what makes the window a window. It is also the precedent, because that window has
-now CLOSED — the flags were hidden, they warned about themselves for a release,
-and then they were deleted. Hiding was the middle of it, not the end. This one is
-still in its middle. Both are pinned rather than left to a comment, because a
-comment describing an intention is what was already there.
+The file is kept rather than deleted, and its name still reads `old_spellings`,
+because the guards that survive the removal are the ones about the removal: that
+nothing hides a second spelling again, that `env`'s exemption is still a decision
+somebody made rather than a leftover, and that the tool does not type a retired
+spelling at itself. What went with the aliases is everything that asserted they
+were still REACHABLE — those tests existed to hold the window open.
 
-`env` is deliberately NOT held to this, and the exemption is the point rather
-than an oversight. `host` and `auth` are second spellings — `host go` and `go`
-are one command reached two ways — so a note can name the shorter form. `env` is
-hidden for an unrelated reason: it is a whole command carried forward until its
+`env` is deliberately NOT a second spelling, and the exemption is the point rather
+than an oversight. `host` and `auth` were second spellings — `host go` and `go`
+were one command reached two ways — so a note could name the shorter form. `env`
+is hidden for an unrelated reason: it is a whole command carried forward until its
 own release, with no other spelling to point at. Telling anyone it was on its way
-out would be false, and a deprecation note that names no replacement is noise
-that teaches people to ignore the ones that do.
+out would be false, and a deprecation note that names no replacement is noise that
+teaches people to ignore the ones that do. So `env` stays hidden and stays silent,
+and is the only hidden thing here.
 
-The last case here is the tool's own mouth. `go --new-window` re-execs itself
-through `osascript`, and it used to spell that `host go`. Add a note to the noun
-without fixing that line and the new window opens on a deprecation warning about
-text the tool wrote, not the user — which is how a warning stops being read.
+The last case is the tool's own mouth. `go --new-window` re-execs itself through
+`osascript`, and it used to spell that `host go`. That line was fixed while the
+window was open, so the new window would not print a deprecation warning about
+text the tool wrote rather than the user. It matters more now, not less: the
+spelling it used to type no longer parses at all, so the same bug today would
+hand the new window a command that exits 2.
 """
 
 from __future__ import annotations
@@ -36,62 +38,54 @@ from typer.testing import CliRunner
 
 from comfy_qa.cli import app
 
-# The message, by the part of it that identifies it. Not the whole sentence: the
-# verb is interpolated, and pinning the wording twice is how the two go out of
-# step.
+# What the deprecation note used to say. Nothing should say it any more: the
+# note existed to tell someone their spelling was going away, and it has gone.
 NOTE = "is on its way out and still works"
 
 
-def _hidden(name: str) -> bool:
-    """Is this sub-app registered hidden on the root?"""
-    for group in app.registered_groups:
-        if group.name == name:
-            return bool(group.hidden)
-    raise AssertionError(f"no `{name}` sub-app is registered on the root at all")
-
-
 @pytest.mark.parametrize("noun", ["host", "auth"])
-def test_the_old_noun_is_still_hidden_and_still_reachable(noun):
-    """The window's two halves. Either one alone is a different decision."""
-    assert _hidden(noun), (
-        f"`{noun}` is no longer hidden, so the tool now advertises two spellings "
-        f"of every command behind it"
+def test_the_old_noun_is_gone_from_the_command_tree(noun):
+    """Not hidden — gone. Hidden was the middle of the retirement, not the end."""
+    names = ({group.name for group in app.registered_groups}
+             | {command.name for command in app.registered_commands})
+    assert noun not in names, (
+        f"`{noun}` is registered on the root again. It was a second spelling of "
+        f"every verb behind it, the window it was given closed at this release, "
+        f"and re-adding it re-opens a window nobody closes."
     )
-    assert CliRunner().invoke(app, [noun, "--help"]).exit_code == 0, (
-        f"`{noun}` no longer runs. Hidden is not removed — every script written "
-        f"before it was hidden still spells it this way."
-    )
 
 
-def test_reaching_a_command_through_host_says_so(monkeypatch, tmp_path):
-    """And it names the command to type instead, not just that one exists."""
-    result = CliRunner().invoke(app, ["host", "list", "--config", str(tmp_path / "none.toml")])
-    assert NOTE in result.output
-    assert "comfy-qat list" in result.output
+@pytest.mark.parametrize("argv", [["host", "up"], ["auth", "status"],
+                                  ["host", "go"], ["auth", "quota", "list"]])
+def test_the_old_spelling_is_refused_rather_than_half_working(argv):
+    """It exits 2 with click's own "No such command", and prints no traceback.
+
+    The whole user experience of closing this window is this message, so it is
+    worth pinning rather than assuming: a removal that left a partly-registered
+    group behind would fail somewhere further in, with a stack trace, which is
+    how a user concludes the tool is broken rather than that they typed an old
+    name.
+    """
+    result = CliRunner().invoke(app, argv)
+    assert result.exit_code == 2, result.output
+    assert f"No such command '{argv[0]}'" in result.output, result.output
+    assert "Traceback" not in result.output
 
 
-def test_reaching_a_command_through_auth_says_so():
-    result = CliRunner().invoke(app, ["auth", "status", "--help"])
-    # `--help` on the subcommand exits before the group callback runs, so this
-    # asserts the pair that matters rather than the note: the old path works.
-    assert result.exit_code == 0
+def test_nothing_still_prints_the_deprecation_note():
+    """The note went with the thing it was about.
 
+    A warning naming a replacement for a spelling that no longer parses is worse
+    than silence: it describes a window to somebody who is already past it.
+    """
+    from pathlib import Path
 
-def test_the_short_spelling_says_nothing(tmp_path):
-    """A note on the form that is already right is noise, and noise is ignored."""
-    result = CliRunner().invoke(app, ["list", "--config", str(tmp_path / "none.toml")])
-    assert NOTE not in result.output
-
-
-def test_the_note_does_not_reach_stdout(tmp_path):
-    """stderr, like every other note this tool prints. `--json` output is read by
-    scripts, and a script pinned to the old spelling is exactly who gets this."""
-    runner = CliRunner()
-    long_ = runner.invoke(app, ["host", "list", "--config", str(tmp_path / "none.toml")])
-    short = runner.invoke(app, ["list", "--config", str(tmp_path / "none.toml")])
-    assert long_.stdout == short.stdout, (
-        "the old spelling now differs from the new one on STDOUT, which is what "
-        "a script reads. The note belongs on stderr."
+    package = Path(__file__).resolve().parent.parent / "comfy_qa"
+    guilty = [path.name for path in sorted(package.glob("*.py"))
+              if NOTE in path.read_text(encoding="utf-8")]
+    assert not guilty, (
+        f"{', '.join(guilty)} still carries the deprecation note for a spelling "
+        f"that has been removed."
     )
 
 
@@ -123,8 +117,11 @@ class _Box:
 def test_the_tool_does_not_type_the_old_spelling_at_itself(monkeypatch, tmp_path):
     """`go --new-window` re-execs `comfy-qat`, and must use the modern form.
 
-    Otherwise the new window opens on a deprecation warning about a command the
-    user did not write, which trains everyone to ignore the one that matters.
+    While the window was open this stopped the new window opening on a
+    deprecation warning about a command the user did not write. Now that the
+    window has closed it stops something worse: `comfy-qat host go` no longer
+    parses, so the spawned window would exit 2 and start nothing, in a window
+    nobody is watching, on the command that starts a GPU box.
     """
     from comfy_qa import host
 
@@ -138,14 +135,14 @@ def test_the_tool_does_not_type_the_old_spelling_at_itself(monkeypatch, tmp_path
     assert result.exit_code == 0, result.output
     assert handed, "nothing was handed over to the new window"
     assert handed[0][0] == "go", (
-        f"the new window is told to run {handed[0][:2]}, which is the deprecated "
-        f"spelling this tool now warns about. Say `go`."
+        f"the new window is told to run {handed[0][:2]}, which is the removed "
+        f"spelling. Say `go`."
     )
     assert "host" not in handed[0]
 
 
 def test_no_new_hidden_spelling_arrives_without_a_note():
-    """A third hidden noun added quietly is a third window nobody closes.
+    """A hidden noun added quietly is a window nobody closes.
 
     Not a list of names — the point of the exercise is that hand-maintained lists
     go stale — but the whole hidden surface, with the exemptions argued in this
@@ -157,25 +154,18 @@ def test_no_new_hidden_spelling_arrives_without_a_note():
     sixty lines up, was already reading `registered_commands` to do its job — so
     a quiet `@app.command("thing", hidden=True)` passed and a quiet
     `add_typer(..., hidden=True)` did not, for no reason anyone chose. `env` is
-    the only hidden command today and it is argued for by name; the next one is
-    what this is for. The question that finds this class of gap is what does the
-    guard next to this one read that this one does not.
+    now the ONLY hidden thing in the tool, which is what the removal of `host`
+    and `auth` bought; the next one is what this is for.
     """
     hidden = sorted(
         [group.name for group in app.registered_groups if group.hidden]
         + [command.name or command.callback.__name__
            for command in app.registered_commands if command.hidden]
     )
-    assert hidden == ["auth", "env", "host"], (
+    assert hidden == ["env"], (
         f"the hidden spellings are now {hidden}. If it is a second spelling of "
-        f"something reachable at the root, give it the same note `host` and `auth` "
-        f"carry. If it is a command parked until its own release with no shorter "
-        f"form to name, say so here the way `env` is."
+        f"something reachable at the root, it is a deprecation window: give it a "
+        f"note on stderr naming the replacement, and a release at which it goes. "
+        f"If it is a command parked until its own release with no shorter form to "
+        f"name, say so here the way `env` is."
     )
-
-
-def test_the_note_is_not_printed_twice(tmp_path):
-    """One note per invocation. `auth quota list` passes through two callbacks."""
-    result = CliRunner().invoke(app, ["host", "list", "--config", str(tmp_path / "none.toml")])
-    assert result.output.count(NOTE) == 1
-

@@ -85,10 +85,10 @@ not know about. It only adds what is missing and never touches what you have
 edited. [hosts.md](hosts.md) explains every field.
 
 If you are reading notes written before the verbs moved to the top level, you will
-see `comfy-qat host list`, `comfy-qat auth status` and the like. Those still work,
-so nothing you have written down breaks — but they are a deprecation window rather
-than a second way to type everything, and the short form is the one to learn.
-[commands.md](commands.md) lists both.
+see `comfy-qat host list`, `comfy-qat auth status` and the like. Those spellings
+were removed at 1.1.0 and now exit 2 with `No such command` — take the noun off
+and the rest of the line is right. [commands.md](commands.md) has the whole
+mapping.
 
 ## 4. Make a box
 

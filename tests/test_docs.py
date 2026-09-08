@@ -580,7 +580,7 @@ def _troubleshooting_text() -> str:
 # same shape as ERROR_TYPES: the unfamiliar is a decision somebody makes, not a
 # default of "fine".
 MESSAGE_FLOOR = {
-    "auth.py": 12,
+    "auth.py": 11,
     "commands.py": 6,
     "config.py": 37,
     "create.py": 51,
@@ -592,7 +592,7 @@ MESSAGE_FLOOR = {
     # back reworded, the "which machine?" refusal with its `--os` tail cut off.
     # Lowered here, in the commit that removed them, which is the only way this
     # floor is allowed to move down.
-    "host.py": 49,
+    "host.py": 48,
     "hostfile.py": 13,
     "lifecycle.py": 65,
     "relocate.py": 12,
@@ -1013,6 +1013,11 @@ NOT_OUR_MESSAGE = {
         "torch's own words, quoted from a ComfyUI log",
     "Required 'compute.instances.start' permission":
         "gcloud's own refusal, quoted so it can be recognised",
+    "No such command 'host'":
+        "click's own refusal. It is what someone typing a retired spelling now "
+        "gets, so the page carries it — but the words are click's",
+    "No such command 'auth'":
+        "the same, for the other retired noun",
     "No such option":
         "the argument parser refusing a flag this tool removed, not one it prints",
 }
@@ -1610,8 +1615,15 @@ def test_docs_do_not_reference_the_old_command_name():
             assert not invocations, f"{page.name}: stale command name in {line!r}"
 
 
-def test_guide_leads_with_the_single_setup_command():
-    """Setup is one command. If guide ever lists steps again, this fails."""
+def test_the_first_run_text_leads_with_the_single_setup_command():
+    """Setup is one command. If the first-run text ever lists steps again, this fails.
+
+    `FIRST_RUN` used to be printed by a `guide` command, which was removed with
+    the aliases: a first-run text you have to know a command name to reach is not
+    serving first runs. It is now printed by the root callback, at the one moment
+    the question is actually being asked — no host list, nothing to list, and
+    `setup` is the answer. Same words, no command to discover.
+    """
     from comfy_qa.cli import FIRST_RUN
 
     assert "comfy-qat setup" in FIRST_RUN
@@ -1639,8 +1651,13 @@ def test_the_module_entry_point_exposes_the_current_surface():
 
     names = {command.name for command in cli.app.registered_commands}
     groups = {group.name for group in cli.app.registered_groups}
-    assert {"setup", "guide", "env"} <= names
-    assert {"host", "auth"} <= groups
+    assert {"setup", "env"} <= names
+    # `quota` is the only group left. `host` and `auth` were the hidden second
+    # spellings of every verb above them and were removed at this release;
+    # asserting their ABSENCE here as well as in `test_old_spellings.py` is
+    # deliberate, because this is the walk that would notice v0's surface coming
+    # back, and v0's surface is exactly the shape they had.
+    assert groups == {"quota"}, groups
 
 
 def test_the_package_register_is_the_current_surface_not_v0():

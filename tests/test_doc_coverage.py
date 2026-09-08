@@ -25,7 +25,7 @@ Two different bars, because the pages do different jobs:
     phase G's block contained no such command, so the box was ticked on faith.
 
 `docs/machines.md` is deliberately NOT held to this. It is narrative — "how do I
-get onto the box" — and demanding all 22 command paths appear in it would be a bar
+get onto the box" — and demanding all 21 command paths appear in it would be a bar
 that teaches people to paste command rows into prose to make a test pass. It gets
 prose about the four commands it was missing, and no test.
 """
@@ -50,10 +50,11 @@ PACK = DOCS / "test-criteria.md"
 def _surface(typer_app: typer.Typer, prefix: str = "") -> list[str]:
     """Every command path this tool advertises, e.g. 'quota request'.
 
-    Hidden ones are skipped: `host go` and `auth status` are the old spellings,
-    kept working so nothing written down before the verbs moved breaks, and `env`
-    belongs to a different tool. Documenting either would document the same
-    command twice.
+    Hidden ones are skipped. `env` is the only one now — it belongs to a
+    different tool, and documenting it here would advertise it. The `host go` and
+    `auth status` spellings used to be skipped for the other reason, that they
+    were the same commands twice; they were removed at this release, so the walk
+    sees each command exactly once by construction rather than by exclusion.
     """
     found = []
     for command in typer_app.registered_commands:

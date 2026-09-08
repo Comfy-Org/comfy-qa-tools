@@ -3,7 +3,7 @@ name = "comfy-qa-tools"
 # The single source of truth for the version. `comfy-qat --version` reads it back
 # out of the installed metadata (or out of this file, in a checkout) — never
 # restate it in Python.
-version = "1.0.0"
+version = "1.1.0"
 description = "QA tooling for testing Comfy — know what you are testing, and record it"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib

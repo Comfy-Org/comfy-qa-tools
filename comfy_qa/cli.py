@@ -43,18 +43,21 @@ for _command in remove.app.registered_commands:
 for _group in auth.app.registered_groups:
     app.add_typer(_group.typer_instance, name=_group.name)
 
-# The old spellings still work and no longer advertise themselves. Anything
-# written down before today — a script, a run sheet, muscle memory — keeps
-# working; `--help` shows one way to do each thing rather than two.
+# The `host` and `auth` nouns are gone. They stood here registered `hidden=True`,
+# which this file called "a deprecation window, not a second permanent spelling",
+# and for a release every invocation through them said on stderr which verb to
+# type instead. 42 command paths are now 22, and "42 leaves behind 23 distinct
+# implementations" is what a second spelling looks like once you count it — those
+# numbers were walked out of the live Click tree rather than counted by hand,
+# which is how the pair that stood here before them (26 and 13) came to be wrong
+# in both halves while reading as though somebody had checked.
 #
-# These are a deprecation window, not a second permanent spelling: 42 command
-# paths is not a simplification of 23. Those two numbers are walked out of the
-# live Click tree — 42 leaves behind 23 distinct implementations, 19 of the
-# leaves being these hidden duplicates — rather than counted by hand, which is
-# how the pair that stood here before (26 and 13) came to be wrong in both
-# halves while reading as though somebody had checked.
-app.add_typer(host.app, name="host", hidden=True)
-app.add_typer(auth.app, name="auth", hidden=True)
+# WHAT CLOSED THE WINDOW WAS A VERSION, NOT A DATE. It opened at the release that
+# named it, CHANGELOG.md said there that it would close at the next minor, and
+# this is that minor. A date drifts with a branch that has been a hundred commits
+# from its remote for weeks; a version cannot, because pyproject.toml is the one
+# place it is written and `--version` reads it back. The number is deliberately
+# not repeated here — one place, and this is not it.
 
 
 def _version_callback(asked: bool) -> None:
@@ -89,7 +92,8 @@ def root(
             load(config)
         except ConfigError:
             typer.echo(ctx.get_help())
-            typer.echo("\nNo machines yet. Start with:  comfy-qat setup")
+            typer.echo("\nNo machines yet.\n")
+            say.result(FIRST_RUN)
             raise typer.Exit(code=0)
         ctx.invoke(host.list_cmd, config=config, live=False)
 
@@ -211,12 +215,6 @@ def _choose(question: str, options: list[str]) -> str:
         if 1 <= picked <= len(options):
             return options[picked - 1]
         typer.echo(f"pick a number between 1 and {len(options)}")
-
-
-@app.command("guide")
-def guide_cmd() -> None:
-    """How to set this up, without leaving the terminal."""
-    say.result(FIRST_RUN)
 
 
 def register(parent: typer.Typer, name: str = "qa") -> None:

@@ -170,10 +170,10 @@ echo "=== A1 clean import"; qat --help 2>&1 | head -20
 echo "=== A2 no stale binary"; which comfy-qa-cli; which "comfy-qa"; echo "exit $? (1 = clean)"
 echo "=== A3 the surface"; qat --help 2>&1 | sed -n '/Commands/,$p'
 echo "=== A4 quota surface"; qat quota --help 2>&1 | sed -n '/Commands/,$p'
-echo "=== A5a the old spellings still work"; qat host --help 2>&1 | sed -n '/Commands/,$p'
-echo "=== A5b and so does the other one"; qat auth --help 2>&1 | sed -n '/Commands/,$p'
-echo "=== A5c and env, which is hidden too"; qat env --help >/dev/null 2>&1; echo "exit $? (0 = reachable)"
-echo "=== A6 guide"; qat guide
+echo "=== A5a the old spellings are gone"; qat host up; echo "exit $? (2 = gone)"
+echo "=== A5b and so is the other one"; qat auth status; echo "exit $? (2 = gone)"
+echo "=== A5c and env, which is hidden, is NOT gone"; qat env --help >/dev/null 2>&1; echo "exit $? (0 = reachable)"
+echo "=== A6 the first-run text, where the question is actually asked"; qat --config $HOME/no-such-dir/hosts.toml 2>&1 | tail -14
 cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
 echo "=== A8 no message offers the old spelling"
 grep -rn "comfy-qat host \|comfy-qat auth " comfy_qa/; echo "exit $? (1 = clean)"
@@ -187,23 +187,31 @@ grep -rc "comfy-qat down " comfy_qa/ | grep -v ":0$"; echo "exit $? (0 = the gre
       correct: a wheel is not a checkout.
 - [ ] **A1** — help prints; no traceback, no import error.
 - [ ] **A2** — neither older binary is on `PATH` from this project. Both `which` calls come back empty.
-- [ ] **A3** — the top level lists exactly these 21, in this order: list, init,
+- [ ] **A3** — the top level lists exactly these 20, in this order: list, init,
       discover, create, up, open, disconnect, down, go, ssh, rdp, logs, switch,
-      move, stamp, status, login, delete, setup, guide, quota.
-      **`host`, `auth` and `env` must not appear.** One way to do each thing, not
-      two — that is what moving the verbs up was for. Count them: a command the
-      binary has and this line does not is not a pass, it is this criterion going
-      stale again, and the last time it did a correct build was marked FAILED.
+      move, stamp, status, login, delete, setup, quota.
+      **`host`, `auth` and `env` must not appear** — the first two because they no
+      longer exist, `env` because it is hidden. One way to do each thing, not two.
+      Count them: a command the binary has and this line does not is not a pass, it
+      is this criterion going stale again, and the last time it did a correct build
+      was marked FAILED. `guide` left this list at 1.1.0 along with the command.
 - [ ] **A4** — `quota` lists exactly: list, request.
-- [ ] **A5a/A5b** — `host` and `auth` still run and still list their subcommands,
-      so nothing written down before the move breaks. They are a deprecation
-      window: reachable, not advertised.
+- [ ] **A5a/A5b** — `host` and `auth` are **gone**, and each exits **2** with
+      click's own `No such command 'host'.` / `No such command 'auth'.` and no
+      traceback. They were a deprecation window — hidden from `--help`, warning on
+      stderr, naming the verb to type instead — and the window closed at 1.1.0.
+      A traceback here, or an exit code that is not 2, is a partly-removed group
+      and a fail: that one line is the whole user experience of this change.
 - [ ] **A5c** — `env` exits 0. It belongs to a different tool and is hidden rather
       than removed, because it is the only way to check which build a deployed
-      environment is serving. Hidden must not mean gone.
-- [ ] **A6** — the guide names `comfy-qat setup` first, then `comfy-qat list` and
-      `comfy-qat status` — the short spellings. If it still says `host list` or
-      `auth status`, that is a fail.
+      environment is serving. **Hidden must not mean gone** — which is the
+      distinction A5a/A5b now stands on the other side of.
+- [ ] **A6** — with no host list, bare `comfy-qat` prints help and then the
+      first-run text: `comfy-qat setup` first, then `comfy-qat list` and
+      `comfy-qat status`, exiting **0**. This used to be a `guide` command,
+      removed at 1.1.0 — a first-run text you have to know a command name to reach
+      is not serving first runs. If it names `host list` or `auth status` that is
+      a fail; those do not run any more.
 - [ ] **A7** — every test passes.
 - [ ] **A8** — **no message the tool prints offers the old spelling.** The grep
       prints nothing and **exits 1**. It is a grep and not a judgement call
@@ -213,8 +221,10 @@ grep -rc "comfy-qat down " comfy_qa/ | grep -v ":0$"; echo "exit $? (0 = the gre
       `auth.py` twice (`comfy-qat auth quota request ...`) and `gcloud.py` once
       (`comfy-qat auth status ...`) — are gone, and the pack said "this fails
       today" for long enough that a tester following it recorded a fail against a
-      build that passed. Any hit here now is a **regression**: write it up with
-      the file and line numbers the grep prints, and say which commit you ran.
+      build that passed. Any hit here now is a **regression**, and a worse one than
+      it was: since 1.1.0 those spellings do not merely lag the docs, they do not
+      run. Write it up with the file and line numbers the grep prints, and say
+      which commit you ran.
 - [ ] **A8b** — **the grep can still find something.** This is the criterion, not
       A8. `grep … || echo "clean"` — which this block used to be — prints
       `clean` when the pattern is absent, when `comfy_qa/` is not there, and when
@@ -243,7 +253,7 @@ cp $T/hosts.toml $T/hosts.before
 echo "=== B2 init refuses to clobber"; qat init --config $T/hosts.toml; echo "exit $?"
 echo "=== B2b and the file is byte-for-byte what it was"; diff $T/hosts.before $T/hosts.toml && echo "unchanged"
 echo "=== B3 list"; qat list --config $T/hosts.toml
-echo "=== B4 bare host == list (the old spelling, still there)"; qat host --config $T/hosts.toml
+echo "=== B4 bare comfy-qat == list, and it takes --config"; qat --config $T/hosts.toml
 gce() { printf '[hosts.%s]\nkind = "gce"\nos = "Ubuntu 22.04"\ngpu = "L4"\ngce_instance = "%s"\ngce_zone = "us-central1-a"\ngce_project = "%s"\nport = %s\n\n' "$1" "$1" "$P" "$2"; }
 { echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; gce bad 8188; } > $T/b5.toml
 echo "=== B5 cloud host on 8188 is refused"; qat list --config $T/b5.toml; echo "exit $?"
@@ -272,7 +282,10 @@ echo "=== B10 missing file"; qat list --config $T/nope.toml; echo "exit $?"
       evidence for. It is free, offline, and it is the difference between
       believing `init` and checking it.
 - [ ] **B3** — a table with NAME KIND OS GPU URL.
-- [ ] **B4** — bare `host` prints the same table as B3, and accepts `--config`.
+- [ ] **B4** — bare `comfy-qat` prints the same table as B3, and accepts
+      `--config`. It used to be bare `host` that was checked here; the noun went
+      at 1.1.0 and the behaviour did not — reading is still the safe default for
+      a tool typed with no arguments.
 - [ ] **B5** — names host `bad` and port 8188 and the local ComfyUI. Exit 2.
 - [ ] **B6** — names `one` and `two` and the shared port 8190. Exit 2.
       **Not the 8188 message** — that would mean it stopped at an earlier rule.
@@ -1875,7 +1888,7 @@ words:
 
 | | |
 |---|---|
-| **A3, A6, A8** | A3 listed 17 commands where the binary has 21; A6 quoted guide text that no longer exists — both failed a correct build. **A8 did the same in reverse**: it told the tester "this fails today" about three sites that had been fixed. It passes as of `442f867`, and A8b is the new check that the grep can see anything at all |
+| **A3, A5a, A5b, A6, A8, B4** | A3 listed 17 commands where the binary has 21; A6 quoted guide text that no longer exists — both failed a correct build. **A8 did the same in reverse**: it told the tester "this fails today" about three sites that had been fixed. It passes as of `442f867`, and A8b is the new check that the grep can see anything at all. **Rewritten again at 1.1.0**, when `host`, `auth` and `guide` were removed: A5a/A5b now check that those spellings are GONE rather than reachable, A6 checks the first-run text where the root callback prints it, B4 checks the bare `comfy-qat` listing that the bare `host` one became, and A3 is 20 commands rather than 21 |
 | **B2, B2b, B0b** | "Nothing overwritten" had no step that could notice; B0b stops the page teaching invented project ids |
 | **C8, C9** | C8 says when it is unreachable; C9 covers `quota request`, which the pack never ran |
 | **G1, G2, G4, G5, G6a–G6d** | G4 checked one instance and phase R makes two; G5 passed on a `down` that did nothing; G6 required behaviour no block ran |

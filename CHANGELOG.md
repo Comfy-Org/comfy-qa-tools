@@ -3,6 +3,45 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.1.0 — the deprecation window closes
+
+One release of notice, and the second spellings are gone. Nothing here adds a
+capability; it removes ways of typing the ones that were already there.
+
+### Removed
+
+- **`comfy-qat host <verb>` and `comfy-qat auth <verb>`.** Every verb has stood on
+  its own at the top level since 1.0.0, and these were the same `Command` objects
+  registered a second time under a hidden noun — **42 invocable paths for 22
+  distinct implementations**, walked out of the live Click tree rather than
+  counted by hand. They were hidden from `--help` and warned on stderr each time
+  anyone used one, naming the verb to type instead. That is what made them a
+  window rather than a second permanent spelling, and 1.0.0 said the window would
+  close at the next minor. This is it. **42 command paths become 22.** Typing one
+  now gets click's `No such command 'host'.` and exit 2 — take the noun off, and
+  the rest of the line is right. [`docs/commands.md`](docs/commands.md) has the
+  whole mapping.
+
+- **`comfy-qat guide`.** One line, printing the first-run text. A first-run text
+  you have to know a command name to reach is not serving first runs, so the text
+  moved to where the question is actually asked: **bare `comfy-qat` with no host
+  list now prints it**, under the help, in place of the single "start with
+  `setup`" line it used to print there. Same words, one fewer command, and
+  reachable by somebody who knows nothing yet.
+  [`docs/getting-started.md`](docs/getting-started.md) still has the long version.
+
+### Changed
+
+- Bare `comfy-qat` with no host list prints `--help` and then the full first-run
+  text. It used to print `--help` and one line.
+
+- The acceptance pack moved with the surface, in the same commit, because a run
+  sheet that types a command the build no longer has is how a criterion comes to
+  be ticked on faith. `A5a`/`A5b` check the old spellings are **gone**; `A6`
+  checks the first-run text where the root callback prints it; `B4` checks the
+  bare `comfy-qat` listing that the bare `host` one became; `A3` lists 20
+  commands rather than 21.
+
 ## 1.0.0 — release 1: `host` and `auth`
 
 Code complete, and numbered accordingly: the command surface below is the one
@@ -10,6 +49,14 @@ this tool is committing to, so `0.1.0` was describing a different project. Still
 awaiting an end-to-end pass on a real project by someone who did not write it
 ([`docs/test-criteria.md`](docs/test-criteria.md)) — which is the reason the
 build now has a version worth quoting.
+
+**The `host` and `auth` nouns are a deprecation window, not a second permanent
+spelling.** Every verb below is also reachable at the top level without its noun,
+and that shorter spelling is the one to learn. The nouns are hidden from `--help`
+and kept working so that nothing written down before the move breaks. **They close
+at the next minor release** — a version and not a date, because `pyproject.toml`
+is the one place the version is written and `--version` reads it back. *(They did:
+see 1.1.0.)*
 
 ### Machines
 
