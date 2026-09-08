@@ -473,7 +473,7 @@ zone order — 1 to try, and it is the one you named with --zone: nothing was ra
 ```
 
 **`note: the nearest region offers no nvidia-l4, so this looked further afield`** /
-**`note: the 4 nearest regions offer no g2-standard-8, so this looked further afield`**
+**`note: the 8 nearest regions offer no g2-standard-8, so this looked further afield`**
 Not a failure. Only the nearest few regions get their zones looked up, because
 asking `machine-types list` about a hundred and thirty zones is slow for an answer
 whose first entries are the only ones ever used. When those few turn up nothing
@@ -549,11 +549,33 @@ the ranked list is six zones long, and each stockout can add one more to the
 front of the queue. Without the cap a chain of suggestions is a fall-through with
 no end, on a command that is already slow. Run it again to try the rest.
 
-**`every zone tried is out of L4 capacity: europe-west4-a, europe-west4-b, europe-west1-b. Nothing was created and nothing is billing.`**
-The card is short everywhere you are allowed to use it. Nothing was made, so
-there is nothing to clean up and nothing to stop. Wait and run the same command
-again — stockouts usually clear in minutes to hours — or use a card you also have
-quota for.
+**`every zone tried is out of L4 capacity: europe-west2-a, europe-west1-a, europe-west4-a, europe-west3-b, europe-west6-a, europe-north1-a. That is 6 of the 14 regions this project can use the card in, the nearest ones — not everywhere. Nothing was created and nothing is billing. Not tried, and possibly free: us-central1, us-east1, us-east4 and 5 more.`**
+Six attempts is the whole budget — each one is a real create that takes most of a
+minute to be refused — so a create looks at the nearest few regions and no
+further. This is that message saying so. It is **not** "there is no L4 anywhere":
+the regions it names at the end were never contacted, and one of them may have
+had room the whole time. This wording exists because the version without the
+middle two sentences was true and read as the opposite: six European zones
+stocked out, the refusal sounded final, and `create --region us-central1`
+succeeded on its second zone a minute later.
+
+Take the fix line's `--region` and name one of the untried regions, or wait —
+stockouts usually clear in minutes to hours. `comfy-qat quota list --by-region`
+lists everywhere the grant reaches.
+
+**`every zone tried is out of L4 capacity: us-central1-a, us-central1-b. That is every region this project can use the card in, so there is nowhere left to try right now. Nothing was created and nothing is billing.`**
+The other half of the message above, and the difference is the whole point of
+both. This one really does mean everywhere: every region where this project holds
+the card's quota *and* Google offers the card was tried, so there is no `--region`
+left to name. Nothing was made, so there is nothing to clean up and nothing to
+stop. Wait, or use a card you also have quota for — `comfy-qat quota list`.
+
+**`every zone tried is out of L4 capacity: us-central1-f. Nothing was created and nothing is billing.`**
+The same refusal with no sentence about scope, which is what you get after
+`--zone`. That flag means "this zone or nothing", nothing was ranked and no
+region was measured, so this message deliberately says nothing about how much of
+the world was considered — it was one zone, by request. Drop `--zone` and let the
+tool pick, or wait for the stockout to clear.
 
 **`stopped after 6 zones, all out of L4 capacity: europe-west4-a, europe-west4-b, europe-west1-b, europe-west1-c, us-central1-a, us-central1-b. Nothing was created and nothing is billing — this is a cap, not the whole world, so there may be room somewhere untried.`**
 Different from the message above, and the difference matters. That one means
@@ -900,6 +922,7 @@ state genuinely could not be read. The only thing still wrong is the record, and
 project when its own read fails, and takes the entry out. It still refuses a box
 it merely could not reach, because not knowing whether something is running is
 not permission to drop the record of it.
+
 
 ## ComfyUI running on the box, and its log
 

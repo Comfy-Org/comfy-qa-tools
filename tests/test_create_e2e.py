@@ -481,33 +481,61 @@ def test_the_number_of_attempts_is_capped_however_many_zones_google_suggests(cli
     assert "stopping after 6 zones" in result.stderr
 
 
+# The near set is `zones.NEAREST_REGIONS` wide and this module measures five
+# regions, so nothing about narrowing can be exercised against the module's own
+# quota — five regions all fit inside it. These are five more, and the probe
+# above answers 500 ms for a region it does not know, so they rank behind every
+# measured one and the last two of them fall outside the near set. That is the
+# only place a widening test can put a card.
+#
+# Sorted names, because regions that tie at 500 ms are broken by name: the near
+# set takes `africa-south1`, `asia-south2` and `australia-southeast2`, and
+# leaves `me-west1` and `southamerica-west1` outside it.
+FAR = ["africa-south1", "asia-south2", "australia-southeast2",
+       "me-west1", "southamerica-west1"]
+OUTSIDE_THE_NEAR_SET = "southamerica-west1"
+WIDE = [quota("NVIDIA-L4-GPUS-per-project-region", 1, REGIONS + FAR), CEILING]
+
+
 def test_only_the_nearest_regions_have_their_zones_looked_up(cli):
     """Asking `machine-types list` about a hundred and thirty zones is slow for
     an answer whose first few entries are the only ones ever used."""
-    result = cli("--os", "linux", "--gpu", "l4", "--dry-run")
+    everywhere = [f"{region}-a" for region in REGIONS + FAR]
+    result = cli("--os", "linux", "--gpu", "l4", "--dry-run",
+                 gc=FakeGcloud(
+                     quotas=WIDE,
+                     accelerators=[offers(zone, "nvidia-l4") for zone in everywhere],
+                     machines=[has_machine(zone, "g2-standard-8")
+                               for zone in everywhere]))
     asked = set(result.gc.machine_type_zones[0])
     assert {zones_module.region_of(zone) for zone in asked} == {
-        "europe-west4", "europe-west1", "us-east1", "us-central1"}
-    assert "asia-northeast1-a" not in asked
+        *REGIONS, "africa-south1", "asia-south2", "australia-southeast2"}
+    assert f"{OUTSIDE_THE_NEAR_SET}-a" not in asked
+    assert "me-west1-a" not in asked
 
 
 def test_the_search_widens_when_the_nearest_regions_offer_nothing(cli):
+    card = f"{OUTSIDE_THE_NEAR_SET}-a"
     result = cli("--os", "linux", "--gpu", "l4", "--dry-run",
                  gc=FakeGcloud(
-                     accelerators=[offers("asia-northeast1-a", "nvidia-l4")],
-                     machines=[has_machine("asia-northeast1-a", "g2-standard-8")]))
+                     quotas=WIDE,
+                     accelerators=[offers(card, "nvidia-l4")],
+                     machines=[has_machine(card, "g2-standard-8")]))
     assert result.exit_code == 0
-    assert "asia-northeast1-a" in order_of(result)
+    assert card in order_of(result)
     assert "looked further afield" in result.stdout
 
 
 def test_the_widening_note_blames_the_half_that_was_actually_missing(cli):
     """The nearest regions here offer g2-standard-8 and no L4, and the note used
     to say they offered no g2-standard-8 — of the machine type they do offer."""
+    card = f"{OUTSIDE_THE_NEAR_SET}-a"
     result = cli("--os", "linux", "--gpu", "l4", "--dry-run",
                  gc=FakeGcloud(
-                     accelerators=[offers("asia-northeast1-a", "nvidia-l4")],
-                     machines=[has_machine(zone, "g2-standard-8") for zone in ZONES]))
+                     quotas=WIDE,
+                     accelerators=[offers(card, "nvidia-l4")],
+                     machines=[has_machine(zone, "g2-standard-8")
+                               for zone in [*ZONES, card]]))
     assert "offer no nvidia-l4, so this looked further afield" in result.stdout
     assert "offer no g2-standard-8" not in result.stdout
 
@@ -553,14 +581,22 @@ def test_nowhere_that_fits_is_a_refusal_not_a_failed_attempt(cli):
 
 
 def test_the_first_zone_stocks_out_and_the_second_one_takes_it(cli):
+    """And the second one is in a different REGION, which is the point.
+
+    It used to be `europe-west4-b`, the next zone of the region that had just
+    said no. A GPU stockout is very often the whole region, so that attempt
+    mostly bought another minute of the same answer — and six of them in a row
+    is how a create spent its entire budget on one neighbourhood and reported
+    that everywhere was full.
+    """
     result = cli("--os", "linux", "--gpu", "l4", "--yes",
                  gc=FakeGcloud(refuse={
                      "europe-west4-a": STOCKOUT.format(zone="europe-west4-a")}))
     assert result.exit_code == 0
     assert "trying europe-west4-a…" in result.stderr, "progress goes to stderr"
     assert "europe-west4-a has no L4 free right now" in result.stderr
-    assert result.gc.created[-1][1] == "europe-west4-b"
-    assert 'gce_zone     = "europe-west4-b"' in result.hosts
+    assert result.gc.created[-1][1] == "europe-west1-a"
+    assert 'gce_zone     = "europe-west1-a"' in result.hosts
 
 
 def test_every_zone_exhausted_exits_one_says_nothing_is_billing_and_writes_nothing(cli):

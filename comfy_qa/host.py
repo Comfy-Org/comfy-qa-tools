@@ -703,7 +703,14 @@ def create_cmd(
         if problem is not None:
             _refused(problem)
         ordering = order_zones(gc, project, blueprint, check,
-                               zone=zone, region=region, config=path)
+                               zone=zone, region=region, config=path,
+                               # Where the boxes you already have are. A
+                               # preference, not a filter: `order_zones` applies
+                               # `--zone`, `--region` and the grant before it
+                               # looks at this. Read from the host list that was
+                               # loaded above rather than fetched again.
+                               fleet=[host.gce_zone for host in hosts
+                                      if host.gce_zone])
     except _reportable() as exc:
         _refused(exc)
     except GcloudError as exc:

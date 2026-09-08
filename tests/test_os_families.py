@@ -58,6 +58,10 @@ EXPECTED_READERS = {
     ("config", "_matches_os"): "SELECTOR, not a family. Deliberately not merged.",
     ("config", "describe"): "renderer — one-line description of a host",
     ("create", "steps"): "renderer — what `create` says it is about to build",
+    # Renderer, and it has to be: the fix line for a stockout hands back a whole
+    # `comfy-qat create --os ... --gpu ... --region ...` to paste, and `--os` is
+    # a required option — a fix line without it is a command that refuses.
+    ("create", "build"): "renderer — the create command a stockout tells you to retry",
     ("create", "host_entry"): "writer — records the image's own os in the host list",
     ("discover", "to_toml"): "writer — the [hosts.x] block, os from the licence",
     ("setup", "add_discovered_hosts"): "renderer — what was just added",

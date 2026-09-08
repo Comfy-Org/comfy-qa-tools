@@ -15,9 +15,13 @@ alongside one is refused. A T4, P4, P100, V100 or K80 is N1 plus
 common way a create by hand fails, so the card is the only thing anyone types.
 
 *The zone is chosen, not typed.* `zones.choose` ranks them — quota first,
-availability second, measured latency third — and this tries them in that order,
-falling through when Google says a zone has none free. `--zone` is still there
-for someone deliberately testing one zone.
+availability second, measured latency and where your other boxes already are
+third — and this tries them in that order, one region at a time, falling through
+when Google says a zone has none free. `--zone` is still there for someone
+deliberately testing one zone, and `--region` for somewhere this would not have
+looked: six attempts cannot reach forty-three regions, and the refusal at the end
+of this file says which ones it did reach rather than implying it reached them
+all.
 
 The fall-through stays inside the ordering it was given, which it did not always.
 Google names a zone in its stockout refusal, that answer is fresher than anything
@@ -856,19 +860,70 @@ def build(
             f"stopped after {limit} zones, all out of {blueprint.card.name} capacity: "
             f"{', '.join(tried)}. Nothing was created and nothing is billing — this is "
             f"a cap, not the whole world, so there may be room somewhere untried.",
-            fix=("wait and run the same command again, or name a zone yourself: "
+            # `--region` first, because it is the flag that matches what this
+            # message says. The advice used to offer `--zone` alone, which asks
+            # someone who has just been told a whole neighbourhood is short to
+            # name one machine room in it.
+            fix=("wait and run the same command again, ask for a region this did not "
+                 "reach: comfy-qat create --region <region>, or name a zone yourself: "
                  "comfy-qat create --zone <zone>"),
             kind=EXHAUSTED,
         )
 
+    # How much of the world this actually looked at. Every word of the old
+    # message was true and the sentence it made was not: "every zone tried is out
+    # of L4 capacity: <six European zones>" is read as "there is no L4 anywhere
+    # you can have one", and the run that produced this change was followed
+    # immediately by `create --region us-central1` succeeding on its second zone.
+    # Capacity existed, in the region this project's whole fleet already lives
+    # in, and nothing in the refusal suggested looking there — the fix line did
+    # not even mention `--region`.
+    searched = list(dict.fromkeys(region_of(zone) for zone in tried))
+    untried = [region for region in ordering.offering if region not in set(searched)]
+
+    if untried:
+        raise LifecycleError(
+            f"every zone tried is out of {blueprint.card.name} capacity: "
+            f"{', '.join(tried)}. That is {len(searched)} of the "
+            f"{len(ordering.offering)} regions this project can use the card in, the "
+            f"nearest ones — not everywhere. Nothing was created and nothing is "
+            f"billing. Not tried, and possibly free: {_a_few(untried)}.",
+            fix=(f"try somewhere this did not reach: comfy-qat create "
+                 f"--os {blueprint.image.os} --gpu {blueprint.card.key} --region "
+                 f"{untried[0]}; or wait and run the same command again — a stockout "
+                 f"is usually minutes to hours"),
+            kind=EXHAUSTED,
+        )
+
+    if ordering.offering:
+        raise LifecycleError(
+            f"every zone tried is out of {blueprint.card.name} capacity: "
+            f"{', '.join(tried)}. That is every region this project can use the card "
+            f"in, so there is nowhere left to try right now. Nothing was created and "
+            f"nothing is billing.",
+            fix=("wait and run the same command again — a stockout is usually minutes "
+                 "to hours — or ask for a different card: comfy-qat quota list"),
+            kind=EXHAUSTED,
+        )
+
+    # Nothing ranked anything, so this frame cannot say how wide the search was
+    # and must not guess. `--zone` is the case: one zone, by request, and a
+    # sentence about how many regions were considered would be an invention.
     raise LifecycleError(
         f"every zone tried is out of {blueprint.card.name} capacity: "
         f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
         f"is billing.",
         fix=("wait and run the same command again — a stockout is usually minutes to "
-             "hours — or ask for a different card: comfy-qat quota list"),
+             "hours — or drop --zone and let this pick: comfy-qat create"),
         kind=EXHAUSTED,
     )
+
+
+def _a_few(names: list[str], most: int = 3) -> str:
+    """Three names and a count. Forty is not a sentence — see `_grant_reaches`."""
+    listed = ", ".join(names[:most])
+    others = len(names) - most
+    return f"{listed} and {others} more" if others > 0 else listed
 
 
 def host_entry(blueprint: Blueprint, zone: str, project: str):
@@ -964,6 +1019,7 @@ def _grant_reaches(check: QuotaCheck, most: int = 3) -> str:
 def order_zones(
     gc: Gcloud, project: str, blueprint: Blueprint, check: QuotaCheck, *,
     zone: str | None = None, region: str | None = None, config=None, probe=None,
+    fleet: list[str] | None = None,
 ) -> Ordering:
     """The zones to try, honouring an override. Read-only; nothing is created.
 
@@ -979,6 +1035,12 @@ def order_zones(
     `--region` narrows without naming a zone, which is the ordinary way to say
     "somewhere in Europe" — the zone inside it is still chosen and still falls
     through.
+
+    `fleet` is the zones the host list already has boxes in. It is a preference
+    and never a filter: it cannot reach past `--zone`, past `--region`, or past
+    the regions the grant covers, because all three are applied before it is
+    consulted. What it does is stop a laptop's round trip being the only thing
+    that speaks for where a box should go.
     """
     from .zones import choose, zones_offering, zones_with_machine_type
 
@@ -1116,7 +1178,7 @@ def order_zones(
         gc, project,
         accelerator=blueprint.card.accelerator,
         machine_type=blueprint.machine_type,
-        regions=regions, config=config, probe=probe,
+        regions=regions, config=config, probe=probe, fleet=fleet,
     )
 
 

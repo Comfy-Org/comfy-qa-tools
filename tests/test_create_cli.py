@@ -250,10 +250,13 @@ def test_a_stockout_moves_on_and_says_which_zone_it_is_trying(cli):
     result = cli("--os", "linux", "--gpu", "l4", "--yes",
                  gc=FakeGcloud(refuse={"europe-west4-a": STOCKOUT}))
     assert result.exit_code == 0
-    assert result.gc.created[1] == "europe-west4-b"
+    # The next REGION, not the next zone of the one that just said no: a GPU
+    # stockout is usually the whole region, so the second attempt is only worth
+    # a minute if it asks somewhere else.
+    assert result.gc.created[1] == "us-central1-a"
     assert "trying europe-west4-a…" in result.stderr, "progress goes to stderr"
     assert "no L4 free right now" in result.stderr
-    assert 'gce_zone     = "europe-west4-b"' in result.hosts
+    assert 'gce_zone     = "us-central1-a"' in result.hosts
 
 
 def test_running_out_of_capacity_everywhere_exits_one_and_writes_nothing(cli):

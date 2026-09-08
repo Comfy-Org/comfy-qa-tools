@@ -19,14 +19,23 @@ get wrong:
    whether there could ever be one, which is the half that can be checked in
    advance.
 
-3. **Ranked by latency measured from this machine.** No API reports it. "Iowa is
-   far from London" is true and says nothing about which of three Iowa zones is
-   fastest today, and the machine this runs on may be behind a VPN that makes
-   geography a lie. So it is measured: one TCP connect per candidate region,
-   cached beside the host list.
+3. **Ranked by latency measured from this machine, and by where the fleet
+   already is.** No API reports the first. "Iowa is far from London" is true and
+   says nothing about which of three Iowa zones is fastest today, and the machine
+   this runs on may be behind a VPN that makes geography a lie. So it is
+   measured: one TCP connect per candidate region, cached beside the host list.
 
-4. **Tried in order, falling through on a stockout.** Google publishes no "is
-   there room" endpoint, so capacity is try-and-see. That part lives in
+   A round trip from the laptop is not the only thing that speaks for a region,
+   though, and on its own it is the wrong prior — see `_fleet_first`. A region
+   that already runs one of your boxes is lifted to second, behind the nearest
+   one, so an ordinary create is no slower and a create that has to fall through
+   goes where the rest of the fleet lives rather than one town over.
+
+4. **Tried in order, one region at a time, falling through on a stockout.**
+   Google publishes no "is there room" endpoint, so capacity is try-and-see, and
+   the budget is six real creates of about a minute each. A GPU stockout is very
+   often the whole region, so `_spread` asks every region once before it asks any
+   region twice — six attempts, six independent answers. That part lives in
    `create.py`, because it is the part that spends money.
 
 ## Why `compute.<region>.rep.googleapis.com` and not the obvious names
@@ -118,7 +127,16 @@ PROBE_WORKERS = 64
 # `machine-types list` about a hundred and thirty zones is slow for an answer
 # that only ever uses the first few. Widened automatically if the nearest few
 # offer nothing.
-NEAREST_REGIONS = 4
+#
+# It has to be LARGER than `MAX_ATTEMPTS`, and it was smaller. `_spread` gives
+# each attempt a different region, so a near set of four could only ever fill
+# four of the six attempts with distinct regions and the last two went back for
+# second zones. Four also meant that from London the whole search was Europe,
+# permanently: a create that stocked out reported six European zones and never
+# contacted a region on another continent, which is the defect this number is
+# half of. Eight, so the six attempts have somewhere to come from even when two
+# of the near regions turn out not to offer the machine type.
+NEAREST_REGIONS = 8
 
 # How many zones a create will actually try before giving up. Each attempt is a
 # real instance create that takes the better part of a minute when it fails, so
@@ -139,6 +157,24 @@ class Ordering:
     latency: dict[str, float] = field(default_factory=dict)
     notes: tuple[str, ...] = ()
     fall_through: bool = True
+
+    # Every region this project may use where Google offers the card at all,
+    # ranked — which is not the same as the regions `zones` came out of, and the
+    # difference is the whole reason this field exists.
+    #
+    # `build` needs to know whether "every zone tried is out of capacity" means
+    # everywhere, or means the handful this looked at. It can count the regions
+    # it tried, and `regions` tells it where quota reaches, but quota reaches
+    # forty-three regions and Google offers an L4 in a fraction of them — so
+    # "6 of 43" would be a second true sentence with a false reading. This is the
+    # honest denominator: places that hold quota AND offer the card, which is
+    # known from the one project-wide `accelerator-types list` that has already
+    # been made.
+    #
+    # Empty when nothing ranked anything — `--zone` is one zone by request, and
+    # a caller that says nothing about the wider world must not have `build`
+    # invent a wider world on its behalf.
+    offering: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
         return bool(self.zones)
@@ -343,7 +379,7 @@ def zones_with_machine_type(entries: list[dict], machine_type: str) -> list[str]
 
 
 def _nearest(count: int) -> str:
-    """`the nearest region offers` / `the 4 nearest regions offer`.
+    """`the nearest region offers` / `the 8 nearest regions offer`.
 
     A note is prose and gets read as prose. "the 1 nearest regions offer no
     nvidia-l4" is a sentence somebody has to stop and re-read.
@@ -353,31 +389,84 @@ def _nearest(count: int) -> str:
     return f"the {count} nearest regions offer"
 
 
-def _rank(zones: list[str], scores: dict[str, float]) -> list[str]:
-    """Nearest region first; inside a region, Google's own zone order.
+def _fleet_first(ranked: list[str], home: set[str]) -> list[str]:
+    """The ranked regions, with the ones already running a box lifted to second.
 
-    Zone letters are not a preference — `us-central1-a` is not better than
-    `-b` — but the order has to be stable, or a dry run and the real run that
-    follows it would try different zones.
+    Latency is measured from the laptop, and the laptop is not where the box
+    lives. When every other machine in the host list is in `us-central1`, that
+    region has a claim no round trip from London can express: the new box will
+    talk to its neighbours over Google's own network, its models are already
+    there, and — the part that costs money to learn — it has demonstrably had
+    capacity for this project recently.
+
+    Lifted to SECOND rather than to first, which is the whole judgement here.
+    The nearest region keeps the first attempt, so on an ordinary day — capacity
+    exists, the first create succeeds — nothing about this is slower and nothing
+    changed. It is only when the nearest region has none that the order matters,
+    and that is exactly when "where the rest of the fleet already runs" is worth
+    more than eighty milliseconds.
     """
-    order = {zone: index for index, zone in enumerate(zones)}
-    return sorted(
-        zones,
-        key=lambda zone: (scores.get(region_of(zone), UNREACHABLE), order[zone]),
-    )
+    if not home or len(ranked) < 2:
+        return list(ranked)
+    lifted = [region for region in ranked[1:] if region in home]
+    if not lifted:
+        return list(ranked)
+    return [ranked[0], *lifted, *[region for region in ranked[1:] if region not in home]]
+
+
+def _spread(zones: list[str], regions: list[str]) -> list[str]:
+    """One zone per region, in region order, before any region's second zone.
+
+    The order used to be "every zone of the nearest region, then every zone of
+    the next", which spends a fixed budget of six real creates on as few as two
+    regions. A GPU stockout is very often the whole region — the six attempts
+    that produced this change were `europe-west2-a`, `-b`, then all three of
+    `europe-west4` — so three of those attempts bought no information at all and
+    cost a minute each.
+
+    Round-robin instead, so consecutive attempts land in different places and
+    six attempts are six independent questions. The trade is real and is
+    accepted: when a stockout is zonal rather than regional, the second zone of
+    the nearest region is now tried after a further region rather than before
+    it, which can put the box a little further away than it strictly had to be.
+    A slower box beats no box.
+
+    Stable, like the sort it replaces: a dry run and the real run that follows
+    it have to try the same zones in the same order.
+    """
+    grouped: dict[str, list[str]] = {}
+    for zone in zones:
+        grouped.setdefault(region_of(zone), []).append(zone)
+    # Regions the caller did not rank go last rather than being dropped. Nothing
+    # produces that today; dropping a zone silently is the wrong way to find out
+    # that something started to.
+    order = [region for region in regions if region in grouped]
+    order += [region for region in grouped if region not in set(order)]
+    spread: list[str] = []
+    while any(grouped[region] for region in order):
+        for region in order:
+            if grouped[region]:
+                spread.append(grouped[region].pop(0))
+    return spread
 
 
 def choose(
     gc, project: str, *, accelerator: str, machine_type: str,
     regions: list[str], config: Path | None = None, probe=None,
     nearest: int = NEAREST_REGIONS, limit: int = MAX_ATTEMPTS,
-    path: Path | None = None,
+    path: Path | None = None, fleet: list[str] | None = None,
 ) -> Ordering:
     """The zones to try, best first. Read-only: nothing here creates anything.
 
     `regions` is the set the project holds quota in — the caller reads that from
     `quota.regions_with_quota`, because deciding it needs the whole quota
     payload the caller has already fetched for its own gate.
+
+    `fleet` is where the boxes that already exist are — zones or regions, from
+    the host list. It does not narrow anything and it cannot add a region the
+    project has no quota in; it only lifts a region that is already allowed.
+    See `_fleet_first` for why a laptop's round trip is the wrong prior on its
+    own.
     """
     if not regions:
         return Ordering(zones=(), regions=())
@@ -394,6 +483,14 @@ def choose(
                    f"{accelerator}",),
         )
 
+    # Where the card can actually be had, ranked. The denominator `build` uses
+    # to say how much of the world it really looked at — see `Ordering.offering`.
+    reaches = {region_of(zone) for zone in in_quota}
+    offering = tuple(region for region in ranked_regions if region in reaches)
+
+    home = {region_of(place) for place in (fleet or []) if place}
+    settled = _fleet_first(ranked_regions, home & set(ranked_regions))
+
     # Look at the nearest few regions first, and widen only if they turn up
     # nothing. Asking `machine-types list` about a hundred and thirty zones is
     # slow for an answer whose first five entries are the only ones ever used.
@@ -403,9 +500,9 @@ def choose(
     # made the identical `machine-types list` call twice before giving up.
     notes: list[str] = []
     reason = ""
-    widths = list(dict.fromkeys((min(nearest, len(ranked_regions)), len(ranked_regions))))
+    widths = list(dict.fromkeys((min(nearest, len(settled)), len(settled))))
     for width in widths:
-        near = set(ranked_regions[:width])
+        near = set(settled[:width])
         candidates = [zone for zone in in_quota if region_of(zone) in near]
         if not candidates:
             # Not the same reason as finding candidates and none of them having
@@ -416,16 +513,18 @@ def choose(
             reason = reason or f"{_nearest(nearest)} no {accelerator}"
             continue
         usable = zones_with_machine_type(
-            gc.machine_types(project, _rank(candidates, scores)[:limit * 3], machine_type),
+            gc.machine_types(project, _spread(candidates, settled)[:limit * 3], machine_type),
             machine_type,
         )
         both = [zone for zone in candidates if zone in set(usable)]
         if both:
+            picked = _spread(both, settled)[:limit]
             if width > widths[0]:
                 notes.append(f"{reason}, so this looked further afield")
+            notes.extend(_scope(picked, settled, home, offering))
             return Ordering(
-                zones=tuple(_rank(both, scores)[:limit]),
-                regions=tuple(ranked_regions), latency=scores, notes=tuple(notes),
+                zones=tuple(picked), regions=tuple(ranked_regions), latency=scores,
+                notes=tuple(notes), offering=offering,
             )
         reason = reason or f"{_nearest(nearest)} no {machine_type}"
 
@@ -434,3 +533,27 @@ def choose(
         notes=(f"{accelerator} is offered in {len(in_quota)} zone(s) this project has "
                f"quota in, and none of them offers {machine_type}",),
     )
+
+
+def _scope(picked: list[str], settled: list[str], home: set[str],
+           offering: tuple[str, ...]) -> list[str]:
+    """What the order does not say about itself, said out loud.
+
+    Two things, and both were invisible before a create had already spent six
+    minutes failing. The order looks authoritative — it is a numbered list with
+    milliseconds beside each line — and nothing on it admitted that it was drawn
+    from a handful of the regions this project may use, nor that the second
+    entry was there because a box already lives there rather than because it is
+    near. A `--dry-run` is where someone would want to find that out.
+    """
+    said = []
+    chosen = list(dict.fromkeys(region_of(zone) for zone in picked))
+    lifted = [region for region in chosen if region in home and region != settled[0]]
+    if lifted:
+        said.append(f"{', '.join(lifted)} already runs a box, so it is tried early "
+                    f"rather than in distance order")
+    if len(chosen) < len(offering):
+        said.append(f"{len(chosen)} of the {len(offering)} regions with quota and a "
+                    f"card were looked at, nearest first — name another with "
+                    f"--region, or see them all with: comfy-qat quota list --by-region")
+    return said

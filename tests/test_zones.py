@@ -365,3 +365,112 @@ def test_an_unreachable_region_says_so_rather_than_printing_9999ms():
     order = Ordering(zones=("nowhere-1-a",), regions=("nowhere-1",),
                      latency={"nowhere-1": UNREACHABLE})
     assert "did not answer" in order.lines()[0]
+
+
+# --- spending six attempts on six questions --------------------------------
+
+# Ten regions, so the attempt budget cannot reach them all. `RECORDED` is five
+# and every one of them fits inside the near set, which is the shape that hides
+# a narrowed search rather than the shape that shows it.
+MANY = {f"europe-north{index}": 100.0 + index for index in range(10)}
+
+
+def test_the_attempts_are_spread_across_regions_rather_than_spent_on_one(tmp_path):
+    """Six creates in one region is one question asked six times.
+
+    A GPU stockout is very often the whole region, and the run that produced this
+    change spent three of its six attempts on europe-west4-a, -b and -c. Each of
+    those costs the better part of a minute and tells you what the one before it
+    already did. So every region is asked once before any region is asked twice.
+    """
+    every = [f"{region}-{letter}" for region in RECORDED for letter in "abc"]
+    gc = FakeGcloud(accelerators=[accel(zone) for zone in every],
+                    machines=[machine(zone) for zone in every])
+    order = zone_choice(gc=gc, regions=list(RECORDED), path=tmp_path / "cache.json")
+    assert order.zones[:5] == ("europe-west4-a", "europe-west1-a", "us-east1-a",
+                               "us-central1-a", "asia-northeast1-a")
+    assert order.zones[5] == "europe-west4-b", "the second pass, nearest first"
+
+
+def test_the_near_set_has_room_for_every_attempt():
+    """It was 4 against a budget of 6, and that is now a contradiction.
+
+    `_spread` gives each attempt a different region, so a near set smaller than
+    the budget cannot fill it: the last attempts have nowhere to go but back to a
+    region that has already said no. Four also meant that from London every zone
+    a create ever tried was in Europe.
+    """
+    assert zones.NEAREST_REGIONS >= zones.MAX_ATTEMPTS
+
+
+def test_a_region_that_already_runs_a_box_is_tried_before_nearer_ones(tmp_path):
+    """Latency is measured from the laptop, and the laptop is not the fleet.
+
+    Every existing box is in us-central1; the new one is 100 ms further from this
+    desk and next door to its neighbours, its models and a region that has
+    demonstrably had capacity for this project.
+    """
+    every = [f"{region}-a" for region in RECORDED]
+    gc = FakeGcloud(accelerators=[accel(zone) for zone in every],
+                    machines=[machine(zone) for zone in every])
+    order = zone_choice(gc=gc, regions=list(RECORDED), fleet=["us-central1-a"],
+                        path=tmp_path / "cache.json")
+    assert order.zones[0] == "europe-west4-a", "the nearest region keeps the first try"
+    assert order.zones[1] == "us-central1-a", "and the fleet gets the second"
+    assert any("already runs a box" in note for note in order.notes)
+
+
+def test_a_fleet_in_a_region_the_project_has_no_quota_in_changes_nothing(tmp_path):
+    """A preference cannot become permission. Quota is still step one."""
+    every = [f"{region}-a" for region in RECORDED]
+    gc = FakeGcloud(accelerators=[accel(zone) for zone in every],
+                    machines=[machine(zone) for zone in every])
+    order = zone_choice(gc=gc, regions=["europe-west4", "us-central1"],
+                        fleet=["me-west1-a"], path=tmp_path / "cache.json")
+    assert order.zones == ("europe-west4-a", "us-central1-a")
+    assert order.notes == ()
+
+
+def test_the_order_says_how_little_of_the_world_it_looked_at(tmp_path):
+    """The numbered list looks exhaustive and is not.
+
+    Nothing on it admitted that six zones out of ten regions is a sample, so a
+    stockout in all six read as "there is none anywhere". `--dry-run` is where
+    somebody would want to be told, and it is named here because it is the flag
+    that does something about it.
+    """
+    every = [f"{region}-a" for region in MANY]
+    gc = FakeGcloud(accelerators=[accel(zone) for zone in every],
+                    machines=[machine(zone) for zone in every])
+    order = choose(gc, PROJECT, accelerator="nvidia-l4",
+                   machine_type="g2-standard-8", regions=list(MANY),
+                   probe=flat(MANY), path=tmp_path / "cache.json")
+    assert len(order.zones) == 6
+    note = " ".join(order.notes)
+    assert "6 of the 10 regions" in note
+    assert "--region" in note
+
+
+def test_an_order_that_reaches_everywhere_it_may_says_nothing_about_scope(tmp_path):
+    """The note is a caveat. A caveat that is always printed is furniture."""
+    every = [f"{region}-a" for region in ("europe-west4", "us-central1")]
+    gc = FakeGcloud(accelerators=[accel(zone) for zone in every],
+                    machines=[machine(zone) for zone in every])
+    order = zone_choice(gc=gc, regions=["europe-west4", "us-central1"],
+                        path=tmp_path / "cache.json")
+    assert order.notes == ()
+
+
+def test_the_regions_that_offer_the_card_are_recorded_for_the_refusal(tmp_path):
+    """`build` needs the honest denominator, and it is not `regions`.
+
+    Quota reaches forty-three regions and Google offers an L4 in a fraction of
+    them, so "6 of 43" would be a second true sentence with a false reading.
+    """
+    gc = FakeGcloud(
+        accelerators=[accel("europe-west4-a"), accel("us-central1-a")],
+        machines=[machine("europe-west4-a"), machine("us-central1-a")],
+    )
+    order = zone_choice(gc=gc, regions=list(RECORDED), path=tmp_path / "cache.json")
+    assert order.offering == ("europe-west4", "us-central1")
+    assert len(order.regions) == 5, "where quota reaches is a different question"

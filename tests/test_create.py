@@ -44,7 +44,7 @@ from comfy_qa.create import (
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.lifecycle import LifecycleError
 from comfy_qa.quota import global_allowance, regions_with_quota
-from comfy_qa.zones import Ordering
+from comfy_qa.zones import Ordering, region_of
 
 PROJECT = "stately-timing-504610-p1"
 
@@ -949,3 +949,106 @@ def test_a_real_region_with_no_grant_is_not_accused_of_being_a_typo():
     # ever a guess, and it is wrong in exactly this case.
     for wrong in ("does not exist", "no such", "not a region", "typo"):
         assert wrong not in message.lower(), message
+
+
+# --- what "every zone tried" is allowed to mean -----------------------------
+
+
+def looked_at(*zones_, offering=()):
+    """An `Ordering` that remembers how much of the world it drew from.
+
+    `order` above leaves `offering` empty on purpose — that is the `--zone` case,
+    where nothing was ranked — so a test about scope has to say so itself.
+    """
+    return Ordering(zones=tuple(zones_),
+                    regions=tuple(dict.fromkeys(region_of(zone) for zone in zones_)),
+                    offering=tuple(offering))
+
+
+def test_running_out_of_the_zones_it_looked_at_is_not_running_out_everywhere():
+    """The most expensive kind of true sentence.
+
+    Six European zones stocked out and the refusal said "every zone tried is out
+    of L4 capacity". Every word was true. `create --region us-central1` succeeded
+    on its second zone immediately afterwards, in the region this project's whole
+    fleet already lives in — so the conclusion a person draws from that sentence,
+    that there is no L4 to be had, was false.
+    """
+    tried = ("europe-west2-a", "europe-west4-a")
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in tried})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at(*tried, offering=["europe-west2", "europe-west4",
+                                          "us-central1", "us-east1"]),
+              PROJECT, lambda line: None)
+    said = str(raised.value)
+    assert "2 of the 4 regions this project can use the card in" in said
+    assert "not everywhere" in said
+    assert raised.value.kind == EXHAUSTED
+
+
+def test_the_refusal_names_the_regions_it_never_reached():
+    """"Somewhere else" is advice nobody can act on. A region name is."""
+    cloud = Cloud(refuse={"europe-west2-a": STOCKOUT})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at("europe-west2-a",
+                        offering=["europe-west2", "us-central1", "us-east1"]),
+              PROJECT, lambda line: None)
+    assert "us-central1, us-east1" in str(raised.value)
+
+
+def test_the_fix_names_the_flag_that_would_have_worked():
+    """`--region` was the flag that found capacity, and it was not mentioned.
+
+    The advice was "wait, or ask for a different card" — which sends someone to a
+    card they may not have quota for, while the card they do have is sitting free
+    two regions away.
+    """
+    cloud = Cloud(refuse={"europe-west2-a": STOCKOUT})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at("europe-west2-a", offering=["europe-west2", "us-central1"]),
+              PROJECT, lambda line: None)
+    assert "--region us-central1" in raised.value.fix
+
+
+def test_a_stockout_everywhere_the_card_may_be_had_says_exactly_that():
+    """The other half of the same honesty. When it IS everywhere, say so."""
+    tried = ("us-central1-a", "us-east1-a")
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in tried})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              looked_at(*tried, offering=["us-central1", "us-east1"]),
+              PROJECT, lambda line: None)
+    said = str(raised.value)
+    assert "every region this project can use the card in" in said
+    assert "not everywhere" not in said
+
+
+def test_one_named_zone_claims_nothing_about_how_wide_the_search_was():
+    """`--zone` ranked nothing, so this frame cannot count regions and must not.
+
+    A sentence about how much of the world was considered would be an invention
+    here, and the invented version reads exactly like the measured one.
+    """
+    cloud = Cloud(refuse={"us-central1-f": STOCKOUT})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4, order("us-central1-f"), PROJECT, lambda line: None)
+    said = str(raised.value)
+    assert "every zone tried is out of L4 capacity: us-central1-f" in said
+    assert "regions this project" not in said
+
+
+def test_the_cap_offers_the_flag_that_widens_the_search_as_well_as_the_one_that_narrows_it():
+    """Being told a neighbourhood is short and offered `--zone` asks you to name
+    one machine room in it."""
+    cloud = Cloud(refuse={zone: STOCKOUT for zone in
+                          ("us-central1-a", "us-central1-b", "us-central1-c")})
+    with pytest.raises(LifecycleError) as raised:
+        build(cloud, LINUX_L4,
+              order("us-central1-a", "us-central1-b", "us-central1-c"),
+              PROJECT, lambda line: None, limit=2)
+    assert "stopped after 2 zones" in str(raised.value)
+    assert "--region" in raised.value.fix
+    assert "--zone" in raised.value.fix

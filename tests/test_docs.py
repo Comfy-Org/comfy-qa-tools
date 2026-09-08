@@ -583,7 +583,14 @@ MESSAGE_FLOOR = {
     "auth.py": 11,
     "commands.py": 6,
     "config.py": 37,
-    "create.py": 51,
+    # 51 until "every zone tried is out of capacity" was split into three. One
+    # refusal became three because the sentence it printed was true and read as
+    # something else: it now says how many of the regions it may use it actually
+    # looked at, says the opposite when it looked at all of them, and says
+    # nothing about scope at all after `--zone`, where nothing was ranked. Each
+    # carries two identifying runs, so the count is 51 + 4. Raised here, in the
+    # commit that added them.
+    "create.py": 55,
     "gcloud.py": 8,
     # 54 until `--os`/`--gpu` and `down --keep-running` were removed. Six
     # messages went with them — two selector refusals, the note that announced
@@ -616,6 +623,14 @@ MESSAGE_FLOOR = {
 # written before today now produces. Both lowered deliberately, in the same
 # commit as the deletions.
 # 229 and 266 until `rdp`'s timeout entry arrived with them.
+#
+# The capacity refusal became three entries in this commit — the page reads 234
+# and 275 — and these two numbers are deliberately NOT raised to meet it. They are
+# shared with every other change landing on this page tonight, one of which is
+# removing an entry as this is written, and a floor raised to today's count turns
+# somebody else's honest deletion into a failure in a file they never opened. That
+# is what `FLOOR_SLACK` is for. The per-module floor above is the one this commit
+# owns, and it is raised there.
 ENTRY_FLOOR = 230
 WORDING_FLOOR = 267
 
