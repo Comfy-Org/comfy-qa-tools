@@ -585,7 +585,14 @@ MESSAGE_FLOOR = {
     "config.py": 37,
     "create.py": 51,
     "gcloud.py": 8,
-    "host.py": 54,
+    # 54 until `--os`/`--gpu` and `down --keep-running` were removed. Six
+    # messages went with them — two selector refusals, the note that announced
+    # their retirement, the note that announced `--keep-running`'s, and the
+    # `--all` refusal for an argument that can no longer be given — and one came
+    # back reworded, the "which machine?" refusal with its `--os` tail cut off.
+    # Lowered here, in the commit that removed them, which is the only way this
+    # floor is allowed to move down.
+    "host.py": 49,
     "hostfile.py": 13,
     "lifecycle.py": 65,
     "relocate.py": 12,
@@ -598,8 +605,14 @@ MESSAGE_FLOOR = {
 # The page's own two collections, floored the same way and for the same reason:
 # `ENTRIES` parametrises a test per entry, and an entry deleted from the page
 # takes its case with it.
-ENTRY_FLOOR = 233
-WORDING_FLOOR = 272
+# 233 and 272 until the removals above. Five entries left the page — the two
+# selector refusals, the retirement note, `--keep-running`'s note, and the
+# closing summary that only `down --all --keep-running` could print — and one
+# arrived, for the parser's "No such option: --os", which is what a run sheet
+# written before today now produces. Both lowered deliberately, in the same
+# commit as the deletions.
+ENTRY_FLOOR = 229
+WORDING_FLOOR = 266
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -1000,6 +1013,8 @@ NOT_OUR_MESSAGE = {
         "torch's own words, quoted from a ComfyUI log",
     "Required 'compute.instances.start' permission":
         "gcloud's own refusal, quoted so it can be recognised",
+    "No such option":
+        "the argument parser refusing a flag this tool removed, not one it prints",
 }
 
 # These ARE our messages. They are excused because the MATCHER cannot see them —

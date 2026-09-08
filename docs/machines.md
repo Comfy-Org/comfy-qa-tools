@@ -359,10 +359,11 @@ Closing the ssh process by hand does the same thing to the tunnel and leaves its
 records behind, after which `list` reports a tunnel that is not there. That is why
 this is a command.
 
-This was `down --keep-running`, which still works and warns that it moved. The
-flag was the negation of its own command, one word away from the command whose
-whole purpose is to stop paying, and `down --all --keep-running` read as "stop
-everything except don't" — the most expensive outcome reachable from the
+This was `down --keep-running`. That flag was hidden, it warned that it had
+moved every time it was used, and it has now been removed: `down` no longer takes
+it. The flag was the negation of its own command, one word away from the command
+whose whole purpose is to stop paying, and `down --all --keep-running` read as
+"stop everything except don't" — the most expensive outcome reachable from the
 cheapest-sounding command in the tool.
 
 ### Finished with the box for good

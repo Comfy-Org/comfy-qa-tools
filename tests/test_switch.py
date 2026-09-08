@@ -641,16 +641,18 @@ def test_not_knowing_never_reorders_a_switch():
 
 
 def test_a_machine_can_be_named_by_description_alone(cli):
-    """`switch --os windows` is what its own help panel offers.
+    """`switch windows` — an OS where every other example gives a name.
 
-    Every other command that takes a machine has `--os` and `--gpu` *instead of*
-    the positional, and `_selector` is written for exactly that: name or
-    description, never both. `switch` alone declared the argument without a
-    default, so Typer made it required and the advertised form died at parsing
-    with "Missing argument 'name'" — a message that does not mention the flags
-    the same help page had just recommended.
+    `switch` alone declared its argument without a default, so Typer made it
+    required and the form its own help panel advertised died at parsing with
+    "Missing argument 'name'". The argument is optional now and `_selector`
+    refuses an omitted machine with a sentence that names the shapes it takes;
+    that refusal has to come from `_selector`, not from the parser.
+
+    This was written when the advertised form was `switch --os windows`. The
+    flag is gone and the promise is not: a description is still a machine.
     """
-    result = cli("switch", "--os", "windows", "--dry-run",
+    result = cli("switch", "windows", "--dry-run",
                  statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"})
 
     assert result.exit_code == 0, result.output

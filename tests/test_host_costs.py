@@ -447,32 +447,16 @@ def test_down_all_refuses_a_name_as_well(cli):
 
 # --- 4. a summary about money may not contradict itself -----------------------
 #
-# `down --all --keep-running` deliberately leaves every machine on, and then the
+# `down --all --keep-running` deliberately left every machine on, and then the
 # closing line said "all N stopped." Each host had already printed "still
 # billing" immediately above it. The one command whose purpose is answering "am I
 # still paying" answered it wrongly, in the direction that costs.
-
-
-def test_keeping_them_running_is_not_reported_as_stopping_them(cli):
-    class Kept(Cloud):
-        def instance_status(self, name, zone, project):
-            self.calls.append("instance_status")
-            return "RUNNING"
-
-    result = cli("down", "--all", "--keep-running", cloud=Kept())
-
-    assert "stopped." not in result.output, (
-        "--keep-running stops nothing, so no closing line may say it did"
-    )
-    # "still billing" comes from lifecycle's PER-HOST line, not from this
-    # command's summary — so a test named for `down --all --keep-running` was
-    # holding nothing that command writes, and its own summary was free to be
-    # wrong while this stayed green. Assert the summary too, by name.
-    assert "still billing" in result.output
-    assert "left running and billing: comfy-win" in result.output, (
-        "the command's own summary is unasserted; it names WHICH boxes are billing"
-    )
-    assert result.exit_code == 0
+#
+# That flag is gone and its half of this section went with it — the test named
+# for it, and the summary arm it drove. What is left is the ordinary case, which
+# was written as the GUARD on that test and is now the only one: `--all` still
+# has to distinguish boxes it stopped from boxes that were already off, and that
+# is the distinction the old closing line could not make.
 
 
 def test_stopping_them_still_says_so(cli):
@@ -748,7 +732,11 @@ def test_no_declared_hosts_and_a_quiet_project_says_both(tmp_path, monkeypatch):
 
 
 def test_disconnect_leaves_the_machine_running_and_says_so(cli):
-    """The capability `--keep-running` existed for, under a name that says it."""
+    """The capability `--keep-running` existed for, under a name that says it.
+
+    It is now the only way to reach it: the flag was removed, and this is where
+    the branch it used to share with `down` is covered.
+    """
     class Live(Cloud):
         def instance_status(self, instance, zone, project):
             self.calls.append("instance_status")
@@ -804,20 +792,6 @@ def test_disconnect_says_how_to_stop_paying_when_the_state_is_unreadable(cli):
     assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
 
 
-def test_the_old_flag_still_works_and_says_where_it_went(cli):
-    """A rename, not a removal — nothing written down before today may break."""
-    class Live(Cloud):
-        def instance_status(self, instance, zone, project):
-            return "RUNNING"
-
-    result = cli("down", "comfy-win", "--keep-running", cloud=Live())
-
-    assert result.exit_code == 0
-    assert "comfy-qat disconnect" in result.output
-    assert "still works" in result.output
-    assert "stop_instance" not in result.cloud.calls
-
-
 def test_a_project_that_could_not_be_checked_is_not_an_all_clear(cli):
     """The fix's own shape turned against it. The survey fails silently so a
     project that will not list cannot break a successful `down` — but if it then
@@ -871,8 +845,8 @@ def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
 # "every failure after the machine has been started says how to stop paying for
 # it", and `_with_the_bill` enforces it. Nothing stated or enforced the SUCCESS
 # side, so six commands hand-wrote it and two forgot: `up` ended on "open <url>"
-# with a box running and billing, and single-host `down --keep-running` said
-# "still billing" and then offered `logs`.
+# with a box running and billing, and the single-host form that left a box up
+# said "still billing" and then offered `logs`. That form is `disconnect` now.
 #
 # A sweep of all eleven commands put the violation set at exactly those two,
 # which is what makes this a calibrated rule rather than an invented one.
@@ -885,8 +859,13 @@ def test_the_same_holds_with_no_declared_cloud_hosts(tmp_path, monkeypatch):
 # So the list is derived rather than typed. Anything in host.py that reaches
 # `bring_up` — the one call that starts a machine — is a command that can leave
 # one running, and has to name the bill.
-# `down_cmd` is here because of `--keep-running`, which deliberately leaves a box
-# on. The derivation below found it; it was not typed.
+# `down_cmd` is DECLARED rather than derived, and it used not to be: the
+# derivation reached it through `put_away(..., keep_running=keep_running)`, and
+# `--keep-running` was removed. It stays on the list because the rule still
+# applies to it — its `billing` verdict says a box is left running — and dropping
+# it would silently stop checking the one command whose entire subject is the
+# bill. Keeping a command here is always safe; the list is what the rule applies
+# to, not what is suspected.
 BILLABLE_ENDINGS = ("up_cmd", "go_cmd", "switch_cmd", "create_cmd",
                     "disconnect_cmd", "down_cmd", "move_cmd")
 
@@ -1200,8 +1179,8 @@ def test_every_command_that_leaves_a_box_running_names_the_bill():
     proves tomorrow.
 
     A command clears by naming the bill itself, or by deferring to ONE call whose
-    own body names it — `go` and `switch` end in `_serve`, `down --keep-running`
-    in `put_away`. The alibi is the callee's real ending, so gutting that ending
+    own body names it — `go` and `switch` end in `_serve`, `disconnect` in
+    `put_away`. The alibi is the callee's real ending, so gutting that ending
     turns this red, which is the whole point and was not true before: with
     `_serve(` accepted as its own alibi, `_serve`'s ending could be replaced with
     `say.result("")` and both tests still passed.

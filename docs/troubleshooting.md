@@ -1024,12 +1024,6 @@ A cloud box is `kind = "gce"`; fix the entry and run `host down` again.
 `host down --all` is "stop everything"; naming one as well is a contradiction.
 Drop the name, or drop `--all`.
 
-**`--all stops every machine, so it takes no --os or --gpu`**
-The same contradiction in the other spelling. `down` now takes `--os` and `--gpu`
-like every other command that acts on a machine, and `--all --os windows` is
-someone narrowing what they meant — which is `comfy-qat down --os windows`,
-without `--all`.
-
 **`say which machine, or --all for every one of them`**
 `host down` with nothing to act on. The question at the end of a session is
 usually "am I still paying for anything", and `--all` is the answer to that one.
@@ -1154,30 +1148,22 @@ whether you go and start a server or go and find out what is holding the port.
 
 ## Naming the machine you want
 
-**`say the machine once: '<name>' as an argument, or --os/--gpu, not both.`**
-
-Both spellings do the same job, and giving both leaves the tool guessing which
-you meant when they disagree. `comfy-qat go comfy-win` or `comfy-qat go --os
-windows`, not both.
-
-**`which machine? A name, an operating system, a card, or both as os/card — or --os and --gpu.`**
+**`which machine? A name, an operating system, a card, or both as os/card.`**
 
 No machine was named. There is deliberately no default and no "the last one you
 used": a local ComfyUI and a tunnel to a cloud box both answer on `127.0.0.1` and
 look identical in a browser, so the machine is always said out loud. `comfy-qat
 list` shows what is declared.
 
-**`warning: --os/--gpu are on their way out. They still work; say it as the argument instead: windows/l4`**
+**`No such option: --os`**
 
-Not a failure, and nothing you typed has stopped working. `--os` and `--gpu` were
-a second spelling of the argument every one of these commands already takes:
-`comfy-qat go --os windows --gpu l4` and `comfy-qat go windows/l4` go through the
-same resolution and reach the same machine. They no longer appear in `--help`, and
-this note is the only place you will now be told the shorter form — so it is
-printed rather than left silent.
-
-They are hidden rather than deleted, so every script and run sheet written before
-today keeps working while there is one way in the help.
+`--gpu` gives the same, and this is the argument parser refusing rather than the
+tool refusing to act — nothing was contacted and nothing ran. `--os` and `--gpu`
+used to be a second spelling of the argument every one of these commands already
+takes: `comfy-qat go --os windows --gpu l4` and `comfy-qat go windows/l4` went
+through the same resolution and reached the same machine. They were hidden for a
+release and said so on stderr every time one was used. Write the description as
+the argument: `comfy-qat go windows/l4`.
 
 `create` and `quota request` keep theirs, and they are not the same case as each
 other. `comfy-qat create --os windows --gpu l4` describes a box to build — there is
@@ -1185,9 +1171,10 @@ nothing yet to select. `comfy-qat quota request --gpu l4,a100` names a
 comma-separated list of cards to ask Google for, which no selector accepts.
 
 Every command that takes a machine accepts its name, an operating system, a card,
-or both as `os/card` — `host switch windows`, `host go l4`, `host up windows/l4`.
-These are the refusals, and each one is a refusal rather than a guess on purpose:
-a tool that picks for you is a tool that reads results from the wrong box.
+or both as `os/card` — `comfy-qat switch windows`, `comfy-qat go l4`, `comfy-qat
+up windows/l4`. These are the refusals, and each one is a refusal rather than a
+guess on purpose: a tool that picks for you is a tool that reads results from the
+wrong box.
 
 **`nothing declared matches 'windows/l4'. Declared: local (local install); comfy-linux (Ubuntu 22.04, A100). Create the box in the Google Cloud console, then `comfy-qat discover` to add it to your host list.`**
 You described a machine you do not have. The message lists what you do have, with
@@ -1473,7 +1460,7 @@ is not something anyone has just looked at.
 
 **`no host is called '<name>'. delete takes an exact name, never a description — a description can resolve to a machine you did not picture, and this cannot be undone`**
 
-Every other command takes a description: `go --os windows`, `stamp l4`, `logs
+Every other command takes a description: `go windows`, `stamp l4`, `logs
 linux`. `delete` does not, and the reason is that a description resolving to a box
 you had not pictured is survivable for `go` and is not survivable here. `comfy-qat
 list` shows the names.
@@ -1697,8 +1684,8 @@ log that does not exist.
 
 `comfy-qat list --live` asks again. It is usually transient.
 
-The same answer reaches `down --keep-running`, which says "could not tell whether
-<name> is running" rather than claiming it is still billing.
+The same answer reaches `disconnect`, which says "could not tell whether <name>
+is running" rather than claiming it is still billing.
 
 ## A start whose answer was lost
 
@@ -1823,33 +1810,6 @@ down <name>` stops it.
 
 ## Stopping machines
 
-**`` `--keep-running` is now `comfy-qat disconnect <name>`. The flag still works. ``**
-
-A rename, not a removal. `down --keep-running` closes the tunnel and leaves the
-machine on, which is a real thing to want — a long generation or a model download
-is running on the box, ComfyUI is detached and will keep going, and you want the
-local port back.
-
-But the flag was the negation of its own command, one word from the command whose
-documented purpose is to stop paying, and `down --all --keep-running` read as "stop
-everything except don't" — the most expensive outcome reachable from the
-cheapest-sounding command. It was also the only branch of `down` that nobody
-exercised, which is why it was wrong about money twice in one day, in opposite
-directions.
-
-`comfy-qat disconnect <name>` does the same thing under a name that says it. The
-flag is kept so nothing written down before today breaks.
-
-**`<name> machine(s) could not be checked — run `comfy-qat list --live`.`** / **`<name> machine(s) left running and billing: <names>.`** / **`nothing was running, so nothing is billing.`**
-
-How `down --all --keep-running` ends. The flag closes the tunnels and deliberately
-leaves the machines on, so the closing line has to say what is actually running —
-it is the only reason to read the command's output at all.
-
-The first form is the one to act on: it means the tool asked Google and did not get
-an answer, usually an expired login (`gcloud auth login`). It is not "nothing is
-running". `comfy-qat list --live` asks again.
-
 **`<name> came back from stopping with an outcome this tool does not recognise
 (<verdict>), so it is counted as unchecked`**
 
@@ -1871,8 +1831,8 @@ the brackets.
 
 **`could not tell whether <name> is running: <error>. Check with `comfy-qat list --live``**
 
-`down --keep-running` closes the tunnel and deliberately leaves the machine on,
-so it has to say whether that machine is actually billing. Asking Google failed —
+`disconnect` closes the tunnel and deliberately leaves the machine on, so it has
+to say whether that machine is actually billing. Asking Google failed —
 usually an expired login (`gcloud auth login`). The machine's state is unchanged
 by this: it is whatever it was before the command ran. `comfy-qat list --live`
 asks again.

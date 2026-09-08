@@ -297,20 +297,22 @@ def test_the_verdicts_are_read_from_the_tool_and_not_from_here():
 # Each is a real run of the real branch, named by the state the cloud is in.
 ALL_RUNS = {
     "everything running, stopped": (["down", "--all"], "RUNNING"),
-    "everything running, kept up": (["down", "--all", "--keep-running"], "RUNNING"),
     "nothing running, stopped": (["down", "--all"], "TERMINATED"),
-    "nothing running, kept up": (["down", "--all", "--keep-running"], "TERMINATED"),
     "nothing readable, stopped": (["down", "--all"], GcloudError("no answer")),
-    "nothing readable, kept up": (["down", "--all", "--keep-running"],
-                                  GcloudError("no answer")),
 }
+
+# There were six. The other three were `--all --keep-running`, the branch that
+# closed every tunnel and deliberately left every machine billing, and they are
+# gone with the flag. That branch is where this file's rule was hardest to keep
+# — a summary about money written under a flag whose whole job was to leave the
+# money running — so it is worth saying out loud that the three cases left are
+# the three that still exist, and not a narrowing of what is checked.
 
 
 @pytest.mark.parametrize("case", sorted(ALL_RUNS))
 def test_the_down_all_summary_agrees_with_its_own_advice(cli, case):
     """`--all` writes the same claim about several machines, so it has the same
-    rule to keep. Its billing paragraph offers "run without --keep-running"
-    rather than a command, which is a way to stop paying and is read as one."""
+    rule to keep."""
     args, status = ALL_RUNS[case]
     result = cli(*args, cloud=Cloud(status=status))
 
@@ -473,8 +475,19 @@ def test_both_kinds_of_claim_are_actually_read(cli, monkeypatch):
         seen |= check_agreement(cli("down", "comfy-win").stdout, "corpus")
 
     assert BILLING_NOW in seen, "no run said anything IS billing; the rule read nothing"
-    assert NOT_BILLING_NOW in seen, "no run said nothing IS billing; the rule read nothing"
     assert WAS_BILLING in seen, "no run reported a finished bill; the rule read nothing"
+    # NOT_BILLING_NOW is deliberately not required here any more, and this is a
+    # LOSS being recorded rather than a bar being relaxed to fit. The only
+    # present-tense "nothing is billing" this tool ever printed was the closing
+    # line of `down --all --keep-running`, and the flag has been removed. What is
+    # left says it in the past — "nothing was running, so nothing was billing" —
+    # which is a different claim and is read as one.
+    #
+    # It is not a hole in the READER: `test_the_reader_tells_the_six_inversions_
+    # from_what_is_written` still drives NOT_BILLING_NOW through `disagreements`
+    # on written sentences, so the rule that fires on it is still exercised. What
+    # is gone is the corpus evidence, and if a command starts saying it again
+    # this line should come back.
 
 
 def test_the_source_readers_find_the_claims_that_are_there():
@@ -486,7 +499,10 @@ def test_the_source_readers_find_the_claims_that_are_there():
 
     read = {claim for _, text, _ in paragraphs + _fix_carrying_calls()
             for claim in _stance(text)}
-    assert read >= {BILLING_NOW, NOT_BILLING_NOW, WAS_BILLING, RUNNING_NOW, STOPPED_NOW}, (
+    # Four, not five. `NOT_BILLING_NOW` left the package with `down
+    # --keep-running`; see the note in the test above. Lowered deliberately, in
+    # the commit that removed the sentence, rather than found later as drift.
+    assert read >= {BILLING_NOW, WAS_BILLING, RUNNING_NOW, STOPPED_NOW}, (
         f"the source readers found only {sorted(read)}; every kind of claim the "
         f"rules turn on must be one they can see"
     )
@@ -522,7 +538,12 @@ def test_the_offer_reader_tells_advice_from_a_full_stop():
     """"Stopped." is a report, not an offer, and "nothing to stop" is its
     opposite while containing every word of one."""
     assert _offers_a_way_to_stop(f"  {stop_paying(WIN)}   # stop the box, stop paying")
-    assert _offers_a_way_to_stop("Run without --keep-running to stop them.")
+    # Prose rather than a command, which the reader has to recognise as an offer
+    # just the same. The tool's own example of this was `down --all
+    # --keep-running`'s "Run without --keep-running to stop them.", which went
+    # with the flag; the sentence is kept here because the READER is what is
+    # under test, and it must still recognise advice that names no command.
+    assert _offers_a_way_to_stop("Stop them when the work is finished.")
     assert _offers_a_way_to_stop(f"  {_raw_stop(WIN)}")
     assert not _offers_a_way_to_stop("comfy-win was billing. Stopped.")
     assert not _offers_a_way_to_stop("  comfy-qat list --live")

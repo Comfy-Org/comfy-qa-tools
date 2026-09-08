@@ -1,36 +1,39 @@
-"""`--os` and `--gpu` appear in `--help` on two commands, and on no others.
+"""`--os` and `--gpu` are declared on two commands, and on no others.
 
 Eleven commands — up, open, disconnect, down, go, ssh, rdp, logs, switch, move,
 stamp — carried `--os` and `--gpu` that bought nothing. Every one of them already
-takes the same value as a positional argument, both routes meet in
-`host._selector`, and `_selector` refuses to be given both. Twenty-two options
+takes the same value as a positional argument, both routes met in
+`host._selector`, and `_selector` refused to be given both. Twenty-two options
 that were a second spelling.
 
-They are not removed. They are hidden — the deprecation window `cli.py` uses for
-the `host` and `auth` sub-apps — so every script and every habit keeps working
-while `--help` shows one way to say which machine you mean. `_selector` prints
-a note to stderr naming the shorter form, because a deprecation nobody is told
-about never ends.
+They were hidden for a release and warned about themselves on stderr every time
+one was used, which is what made the window a window rather than a quiet
+demotion. This is the other end of it: the twenty-two declarations are gone, and
+`comfy-qat up --os windows` is now refused by the parser with "No such option"
+rather than accepted in silence. The capability is untouched — `comfy-qat up
+windows` and `comfy-qat up windows/l4` go through the same `config.resolve` the
+flags did.
 
 Two commands keep theirs, for two DIFFERENT reasons, and that is the real
-argument for taking the other eleven away: one flag name meant three unrelated
-things, and nothing in `--help` said which one you were reading.
+argument for having taken the other eleven away: one flag name meant three
+unrelated things, and nothing in `--help` said which one you were reading.
 
   - `create --os windows --gpu l4` — required, and describes a box to BUILD.
     Nothing exists yet to select.
-  - the eleven above — optional, and SELECT an existing machine.
+  - the eleven above — optional, and SELECTED an existing machine. Gone.
   - `quota request --gpu l4,a100` — a comma-separated LIST of cards to ask
     Google for. No selector accepts that value; neither does `create`.
 
-WHY THIS IS DERIVED AND NOT TYPED OUT. A hand-written list of the eleven would
-be right today and silent the moment somebody adds a twelfth command with the
-same pair of options copied off its neighbour — which is exactly how there came
-to be eleven. So the declarations are read out of the AST of every module in
-`comfy_qa/`, the CLI paths they are reachable under are read off the real Typer
-app (a command hoisted to the root AND left under the hidden `host` spelling is
-checked at both), and the verdict comes from the help text the command actually
-renders. A new `--os` is in scope the moment it is written, and there is nothing
-for anyone to remember.
+WHY THIS IS DERIVED AND NOT TYPED OUT. A hand-written list of the two would be
+right today and silent the moment somebody adds a command with the same pair of
+options copied off its neighbour — which is exactly how there came to be eleven,
+and the removal is worth nothing if the next one walks back in. So the
+declarations are read out of the AST of every module in `comfy_qa/`, the CLI
+paths they are reachable under are read off the real Typer app (a command
+hoisted to the root AND left under the hidden `host` spelling is checked at
+both), and the verdict comes from the help text the command actually renders. A
+new `--os` is in scope the moment it is written, and there is nothing for anyone
+to remember.
 """
 
 from __future__ import annotations
@@ -83,6 +86,13 @@ def selector_flags(tree: ast.AST, module: str) -> list[tuple[str, str, str, int,
     literal `hidden=True`: anything it cannot read — a name, an expression — is
     reported as exposed, because a guard that cannot see something must not pass
     it.
+
+    `hidden` is kept now that nothing in the package is hidden, and that is
+    deliberate rather than left over. Hiding is how the eleven were retired, so
+    it is the shape a reintroduction would most plausibly take — a twelfth
+    command with the pair copied off a neighbour and `hidden=True` copied with
+    them, reading as "already deprecated" and never advertised to anyone. This
+    file has to be able to see that and say no to it.
     """
     found = []
     for node in ast.walk(tree):
@@ -146,9 +156,11 @@ def test_the_declarations_are_actually_being_found():
     """A collector that matches nothing would make every test below pass.
 
     That is the failure mode of a derived list, and it is worse than the typed
-    one it replaces: a typed list at least goes stale loudly.
+    one it replaces: a typed list at least goes stale loudly. It matters more
+    now than it did while there were twenty-five sites to find, because three is
+    close enough to zero that a broken walk and a correct one look alike.
     """
-    assert len(SITES) >= 23, f"only {len(SITES)} --os/--gpu declarations found"
+    assert len(SITES) >= 3, f"only {len(SITES)} --os/--gpu declarations found"
     assert {"host.py", "auth.py"} <= {module for module, *_ in SITES}
     assert KEEP <= {function for _, function, *_ in SITES}, (
         "the two commands that legitimately take these flags were not found, so "
@@ -159,7 +171,7 @@ def test_the_declarations_are_actually_being_found():
 def test_a_freshly_exposed_flag_reads_as_exposed():
     """The guard on the guard: the source that was wrong must still read wrong.
 
-    Without this, hiding the flags and breaking the collector look identical —
+    Without this, removing the flags and breaking the collector look identical —
     every case skips, nothing fails, and the next `--os` gets in unnoticed.
     """
     source = (
@@ -174,6 +186,20 @@ def test_a_freshly_exposed_flag_reads_as_exposed():
         ("sample.py", "demo_cmd", "--os", 3, False),
         ("sample.py", "demo_cmd", "--gpu", 4, True),
     ]
+
+
+@pytest.mark.parametrize("module,function,flag,line,hidden", SITES,
+                         ids=[f"{module}:{line}:{flag}" for module, _, flag, line, _ in SITES])
+def test_only_create_and_quota_request_declare_these_at_all(module, function, flag, line, hidden):
+    """The removal, held at the source. Hidden would satisfy the help check
+    below while leaving the spelling alive, which is what it did for a release."""
+    assert function in KEEP, (
+        f"{module}:{line} declares {flag} on {function}. Only `create` and `quota "
+        f"request` may: everywhere else the positional argument already says it — "
+        f"`comfy-qat {function.removesuffix('_cmd')} windows/l4` — and the second "
+        f"spelling of one idea was retired, not hidden. Delete the option and pass "
+        f"the value as the argument."
+    )
 
 
 @pytest.mark.parametrize("module,function,flag,line,hidden", SITES,
@@ -194,69 +220,63 @@ def test_only_create_and_quota_request_offer_these_in_help(module, function, fla
             )
         else:
             assert not offered, (
-                f"`comfy-qat {' '.join(path)} --help` offers {flag} ({module}:{line}). "
-                f"Only `create` and `quota request` may: everywhere else the positional "
-                f"argument already says it — `comfy-qat {path[-1]} windows/l4` — and a "
-                f"second spelling of one idea is what this retired. Pass hidden=True on "
-                f"the option; it keeps working, it stops advertising itself."
+                f"`comfy-qat {' '.join(path)} --help` offers {flag} ({module}:{line})."
             )
 
 
 @pytest.mark.parametrize("module,function,flag,line,hidden", SITES,
                          ids=[f"{module}:{line}:{flag}" for module, _, flag, line, _ in SITES])
-def test_the_source_agrees_with_the_help(module, function, flag, line, hidden):
-    """Help is the promise; `hidden=` is how it is kept. Say so at the site."""
-    assert hidden is (function not in KEEP), (
-        f"{module}:{line}: {flag} on {function} is "
-        f"{'hidden' if hidden else 'exposed'}, and the rule says it should not be"
+def test_what_is_left_is_advertised_rather_than_hidden(module, function, flag, line, hidden):
+    """Help is the promise; nothing that survives may be hidden.
+
+    Both survivors are REQUIRED or load-bearing arguments to their command. A
+    hidden one would be a required flag nobody can read about, which is the one
+    shape worse than the second spelling this file retired.
+    """
+    assert not hidden, (
+        f"{module}:{line}: {flag} on {function} is hidden. The two that stay are "
+        f"how you say what to build and what to ask Google for; hiding either "
+        f"leaves a command that cannot be run from its own help."
     )
 
 
-def test_the_retired_flags_still_select_a_machine():
-    """The window is the point: nothing written down before today may break."""
-    assert host._selector(None, "windows", "l4") == "windows/l4"
-    assert host._selector(None, "windows", None) == "windows"
-    assert host._selector("comfy-win", None, None) == "comfy-win"
+def test_the_positional_still_selects_a_machine():
+    """The capability the flags were a second spelling of, under the one name."""
+    assert host._selector("windows/l4") == "windows/l4"
+    assert host._selector("windows") == "windows"
+    assert host._selector("comfy-win") == "comfy-win"
 
 
-def test_a_hidden_option_is_still_accepted_by_the_parser():
-    """Hidden is not removed. `up --os windows` must reach the host list.
+@pytest.mark.parametrize("flag,value", [("--os", "windows"), ("--gpu", "l4")])
+def test_the_retired_flag_is_now_refused_by_the_parser(flag, value):
+    """Removed, not ignored. The failure this guards is the quiet one.
 
-    Pointed at a config that does not exist, so this gets as far as reading the
-    host list and no further — the refusal is 2, and the thing it must not be is
-    click's "No such option".
+    Typer drops an unknown option on the floor only if someone reconfigures it
+    to; by default click refuses. Pin the refusal anyway, because "silently
+    ignored" is how `up --os windows` would come to run against whatever the
+    positional defaulted to — and there is no positional default here, so it
+    would become "which machine?" about a command that named one.
     """
-    result = CliRunner().invoke(app, ["up", "--os", "windows", "--config", "/nowhere/hosts.toml"])
-    assert "No such option" not in result.output
+    result = CliRunner().invoke(
+        app, ["up", flag, value, "--config", "/nowhere/hosts.toml"])
+
+    assert "No such option" in result.output, (
+        f"`up {flag} {value}` did not report an unknown option: {result.output!r}"
+    )
     assert result.exit_code == 2
 
 
-def test_saying_it_twice_is_still_an_error():
-    """`go windows --os linux` is a mistake, not a precedence puzzle."""
-    with pytest.raises(Exception) as caught:
-        host._selector("windows", "linux", None)
-    assert "not both" in str(caught.value)
+def test_saying_nothing_at_all_is_still_a_refusal():
+    """The one refusal `_selector` still carries, and the words it uses.
 
-
-def test_using_a_retired_flag_says_which_form_replaces_it(capsys):
-    """On stderr, and it names the exact string to type instead.
-
-    The flags leave `--help` on the day this ships, so the only person who can
-    still be told the shorter form is the person still typing the longer one.
+    `os/card` stays in it: the SHAPE survived the flags — `comfy-qat go
+    windows/l4` is still how you describe a machine — and this is the only place
+    anybody is told so.
     """
-    host._selector(None, "windows", "l4")
-    err = capsys.readouterr().err
-    assert "--os/--gpu" in err
-    assert "windows/l4" in err
-
-
-def test_the_note_stays_off_stdout(capsys):
-    """`--json` and `--dry-run` output is the other reason these flags existed."""
-    host._selector(None, "windows", "l4")
-    assert capsys.readouterr().out == ""
-
-
-def test_naming_a_machine_says_nothing(capsys):
-    """No note for the form that is already correct."""
-    host._selector("comfy-win", None, None)
-    assert capsys.readouterr().err == ""
+    with pytest.raises(Exception) as caught:
+        host._selector(None)
+    assert "which machine?" in str(caught.value)
+    assert "os/card" in str(caught.value)
+    assert "--os" not in str(caught.value), (
+        "the refusal names a flag that no longer exists"
+    )

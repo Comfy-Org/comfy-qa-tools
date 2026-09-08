@@ -134,15 +134,6 @@ def test_no_machine_at_all_is_refused(command, hosts):
 
 
 @pytest.mark.parametrize("command", ["ssh", "rdp"])
-def test_a_name_and_a_description_together_are_refused(command, hosts):
-    """`ssh comfy-linux --os windows` is a mistake, not a precedence question."""
-    result = run(command, "comfy-linux", "--os", "windows", "--config", hosts)
-
-    assert result.exit_code == 2
-    assert "say the machine once" in result.output
-
-
-@pytest.mark.parametrize("command", ["ssh", "rdp"])
 def test_an_unknown_name_is_refused(command, hosts):
     result = run(command, "nosuchbox", "--config", hosts)
 
@@ -164,8 +155,8 @@ def test_ssh_execs_the_iap_command_for_that_box(hosts, execvp, state):
 
 
 def test_ssh_finds_the_box_by_description(hosts, execvp, state):
-    """`--os` and `--gpu` reach the same machine as its name does."""
-    run("ssh", "--gpu", "l4", "--config", hosts)
+    """A card reaches the same machine as the box's name does."""
+    run("ssh", "l4", "--config", hosts)
 
     assert execvp[0][4] == "linux-instance"
 
@@ -250,7 +241,7 @@ def test_rdp_hands_over_the_credentials_before_it_forwards(hosts, execvp,
             "username": "ali", "password": "hunter2"},
     )
 
-    result = run("rdp", "--os", "windows", "--config", hosts)
+    result = run("rdp", "windows", "--config", hosts)
 
     assert "user     ali" in result.output
     assert "password hunter2" in result.output

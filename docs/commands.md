@@ -10,24 +10,18 @@ is used, and the host it picked is printed before anything happens. One that fit
 two is refused with both named. Every command takes `--config` to read a host list
 somewhere other than `~/.config/comfy-qa-tools/hosts.toml`.
 
-**The same description can be given as flags instead**, on the eleven commands
-that operate a machine you already have — `up`, `open`, `go`, `ssh`, `rdp`,
-`logs`, `disconnect`, `down`, `switch`, `move` and `stamp`:
+**There used to be a second way to say the same thing** — `--os` and `--gpu` on
+the eleven commands that operate a machine you already have. `comfy-qat go --os
+linux --gpu l4` meant `comfy-qat go linux/l4` and nothing else: both spellings
+became the same string before either reached your host list. They were hidden for
+a release, they told you the shorter form every time you used one, and they have
+been removed. `comfy-qat go --os linux` now reports an unknown option; write the
+description as the argument.
 
-```sh
-comfy-qat go --os linux            # same as `comfy-qat go linux`
-comfy-qat stamp --gpu t4           # same as `comfy-qat stamp t4`
-comfy-qat go --os linux --gpu l4   # same as `comfy-qat go linux/l4`
-```
-
-Identical behaviour, including printing what it resolved to before it acts and
-refusing when two machines match. The flags are for scripts, where `--os "$OS"`
-is clearer than building a positional string. Say it once: a name *and*
-`--os`/`--gpu` together is refused rather than one of them silently winning.
-
-`create --gpu` and `quota request --gpu` are **not** this — those name a card to
-build or to ask Google for, where these pick among machines you already have. And
-`delete` takes neither: it wants an exact name, for the reason in its own row.
+`create --gpu` and `quota request --gpu` are **not** this and are unaffected —
+those name a card to build or to ask Google for, where these picked among
+machines you already have. And `delete` takes neither: it wants an exact name,
+for the reason in its own row.
 
 ## Before anything
 
@@ -65,19 +59,19 @@ type it. `init` is for the case where you want to write the file yourself.
 
 | command | what it does |
 |---|---|
-| `comfy-qat go <host>` | the one worth memorising: start the box, install ComfyUI if it has none, launch it **on the box**, forward a port, and hand your prompt back. `--follow` streams the log here instead and Ctrl-C then stops ComfyUI; `--new-window` runs the same command in a new macOS Terminal, `--follow` included only if you asked for it; `--no-browser`, `--no-install`, `--os`, `--gpu` |
-| `comfy-qat logs <host>` | read the ComfyUI log on the box. Follows by default, because "what is it doing now" is the question people have; `--tail N` prints that many lines and stops. Ctrl-C ends the reading and nothing else, `--os`, `--gpu` |
-| `comfy-qat stamp <host>` | ask a machine what it is, in one line you paste into a report. `--json`, `--os`, `--gpu` |
-| `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install`, `--os`, `--gpu` |
-| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name. `--os`, `--gpu` |
-| `comfy-qat disconnect <host>` | close the tunnel and **leave the machine running** — for a long generation you want to keep, or a laptop you are closing. It says the machine keeps billing, and how to stop it. This was `down --keep-running`, which still works and says so. `--os`, `--gpu` |
+| `comfy-qat go <host>` | the one worth memorising: start the box, install ComfyUI if it has none, launch it **on the box**, forward a port, and hand your prompt back. `--follow` streams the log here instead and Ctrl-C then stops ComfyUI; `--new-window` runs the same command in a new macOS Terminal, `--follow` included only if you asked for it; `--no-browser`, `--no-install` |
+| `comfy-qat logs <host>` | read the ComfyUI log on the box. Follows by default, because "what is it doing now" is the question people have; `--tail N` prints that many lines and stops. Ctrl-C ends the reading and nothing else |
+| `comfy-qat stamp <host>` | ask a machine what it is, in one line you paste into a report. `--json` |
+| `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install` |
+| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name |
+| `comfy-qat disconnect <host>` | close the tunnel and **leave the machine running** — for a long generation you want to keep, or a laptop you are closing. It says the machine keeps billing, and how to stop it. This was `down --keep-running`, which has been removed |
 
 ## Onto the box itself
 
 | command | what it does |
 |---|---|
-| `comfy-qat ssh <host>` | a shell on a Linux box. The long form is `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` and this tool already knows the last three. It replaces this terminal; `exit` brings you back. `--os`, `--gpu` |
-| `comfy-qat rdp <host>` | a Windows box: resets the password, prints user, password and `localhost:33389`, **then** forwards RDP. Google documents no way around the password reset, so this does the parts it can and leaves you the one thing only a person can do. Ctrl-C closes the forward. `--os`, `--gpu` |
+| `comfy-qat ssh <host>` | a shell on a Linux box. The long form is `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` and this tool already knows the last three. It replaces this terminal; `exit` brings you back |
+| `comfy-qat rdp <host>` | a Windows box: resets the password, prints user, password and `localhost:33389`, **then** forwards RDP. Google documents no way around the password reset, so this does the parts it can and leaves you the one thing only a person can do. Ctrl-C closes the forward |
 
 `ssh` at a Windows box points you at `rdp`, and `rdp` at a Linux box points you at
 `ssh`, rather than failing obscurely. Neither needs a `comfy-qat open` first —
@@ -87,8 +81,8 @@ they go through Google's IAP, not through this tool's forwarded port.
 
 | command | what it does |
 |---|---|
-| `comfy-qat up <host>` | start it, tunnel in, and wait until ComfyUI actually answers. No install, `--os`, `--gpu` |
-| `comfy-qat open <host>` | tunnel only, to a box already serving. `--dry-run` prints the `gcloud compute ssh ... -L` command instead of running it — the thing to paste into a bug report when the forward itself misbehaved, `--os`, `--gpu` |
+| `comfy-qat up <host>` | start it, tunnel in, and wait until ComfyUI actually answers. No install |
+| `comfy-qat open <host>` | tunnel only, to a box already serving. `--dry-run` prints the `gcloud compute ssh ... -L` command instead of running it — the thing to paste into a bug report when the forward itself misbehaved |
 
 `open` on a box where ComfyUI is not running says so rather than appearing to
 succeed: there is nothing to forward to. `go` is the command that starts it and
@@ -98,7 +92,7 @@ forwards in one step.
 
 | command | what it does |
 |---|---|
-| `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its ComfyUI install. Resumes a move that stopped part-way rather than restarting it, and reports what an earlier one left billing. `--to`, `--yes`, `--dry-run`, `--clean`, `--os`, `--gpu` |
+| `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its ComfyUI install. Resumes a move that stopped part-way rather than restarting it, and reports what an earlier one left billing. `--to`, `--yes`, `--dry-run`, `--clean` |
 | `comfy-qat delete <host>` | **permanently** remove a box, its boot disk and the ComfyUI on it, and take its entry out of your host list. Takes an exact name — never a description — refuses a box that is not stopped, and asks you to type the name back. `--yes` |
 
 `delete` is the only thing here that cannot be undone. A stopped box costs only

@@ -242,12 +242,12 @@ printed; one that fits two is refused with both named.
 | `comfy-qat discover` | find cloud boxes on your project and add the missing ones. `--dry-run` |
 | `comfy-qat up <host>` | start it and wait until ComfyUI actually answers |
 | `comfy-qat open <host>` | tunnel to a box that is already running. `--dry-run` prints the command |
-| `comfy-qat down <host>` | close the tunnel and stop the machine. `--all` stops every declared cloud box and takes no name; `--keep-running` closes only the tunnel |
+| `comfy-qat down <host>` | close the tunnel and stop the machine. `--all` stops every declared cloud box and takes no name |
 | `comfy-qat go <host>` | up + install if needed + launch ComfyUI on the box and hand the prompt back. `--follow` streams its log here instead, `--new-window` opens a macOS Terminal window, `--no-browser`, `--no-install` |
 | `comfy-qat logs <host>` | read the ComfyUI log on a box. Follows by default; `--tail N` prints that many lines and stops |
 | `comfy-qat ssh <host>` | open a shell on a Linux box through the tunnel. Replaces `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` |
 | `comfy-qat rdp <host>` | reset a Windows box's password, print it, and forward Remote Desktop to `localhost:33389` |
-| `comfy-qat disconnect <host>` | close the tunnel and leave the machine running — for when a long job is going on the box and you want the local port back. Was `down --keep-running`, which still works |
+| `comfy-qat disconnect <host>` | close the tunnel and leave the machine running — for when a long job is going on the box and you want the local port back. Was `down --keep-running`, which has been removed |
 | `comfy-qat delete <host>` | delete a box and its boot disk permanently. Refuses while it is running, and asks you to type the box's name — a `[y/N]` is answered by reflex, a name is not |
 | `comfy-qat switch <host>` | go to that machine and stop the other one. `--keep-others`, `--dry-run` |
 | `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its install. Resumes a move that stopped part-way, and reports what an earlier one left billing. `--to`, `--dry-run`, `--yes`, `--clean` |

@@ -333,9 +333,10 @@ and the assertion then clears a command whose body contains any of:
 `create_cmd` and `up_cmd` are genuinely independent. The other **three** —
 `down_cmd`, `go_cmd`, `switch_cmd` — were cleared only by tokens drawn from the
 inclusion vocabulary itself, so every money sentence in them could have been
-deleted and the test would have stayed green. One of the three is the
-`--keep-running` branch, which this suite has already been wrong about twice in
-opposite directions.
+deleted and the test would have stayed green. One of the three was the
+`--keep-running` branch, which this suite had already been wrong about twice in
+opposite directions. That flag has since been removed and the capability lives
+under `disconnect`; the finding is recorded as it was found.
 
 > **Three of the six passed on nothing else.** — the fix's own comment.
 

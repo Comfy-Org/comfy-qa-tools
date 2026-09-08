@@ -936,7 +936,8 @@ qat rdp $WINBOX   # === S3 — run on its own. Ctrl-C closes the forward.
 echo "=== S4 let go of the tunnel, keep the machine"; qat disconnect $BOX; echo "exit $?"
 echo "=== S5 the records are gone"; ls -l ~/.config/comfy-qa-tools/tunnels/
 echo "=== S6 the box is still up"; qat list; gcloud compute instances list
-echo "=== S7 the old flag"; qat down $BOX --keep-running; echo "exit $?"
+echo "=== S7 the flag that went"; qat down $BOX --keep-running; echo "exit $?"
+echo "=== S7b and the other two"; qat down --os windows; echo "exit $?"
 ```
 
 - [ ] **S0** — **`disconnect local` says the local ComfyUI is left running and
@@ -1007,11 +1008,23 @@ echo "=== S7 the old flag"; qat down $BOX --keep-running; echo "exit $?"
       command exists rather than "just Ctrl-C it".
 - [ ] **S6** — `list` shows the box as **not tunnelled**, and `gcloud` shows it
       **RUNNING**. A stopped box and a disconnected one must not read the same.
-- [ ] **S7** — `down --keep-running` still works and **warns that it is now
-      `comfy-qat disconnect <name>`**. It is a deprecation window: reachable, and
-      saying so. The flag was the negation of its own command — `down --all
+- [ ] **S7** — `down --keep-running` is **refused by the parser**: `No such
+      option: --keep-running`, exit 2, and **nothing is stopped and nothing is
+      contacted**. The flag was the negation of its own command — `down --all
       --keep-running` read as "stop everything except don't", the most expensive
-      outcome reachable from the cheapest-sounding command — which is why it moved.
+      outcome reachable from the cheapest-sounding command — so it was hidden,
+      it warned that it had become `comfy-qat disconnect <name>` every time it
+      was used, and it has now been removed. The criterion is the refusal, not
+      the message: a removed flag that is **silently ignored** would make `down
+      --keep-running` stop the box it used to leave running, which is the one
+      failure this ordering exists to prevent.
+- [ ] **S7b** — the same for `--os` and `--gpu` on the eleven commands that
+      select a machine: `No such option: --os`, exit 2, nothing contacted. Say
+      the description as the argument instead — `qat down windows` — and check
+      that it still resolves and still prints what it resolved to. `create --os
+      linux --gpu t4` and `quota request --gpu l4` are **not** affected and are
+      exercised in phases K and C; if either has stopped taking its flags, that
+      is a blocker, not this criterion passing.
 
 *Never run. Every check here is new.*
 

@@ -1941,9 +1941,10 @@ def put_away(
     over SSH and nothing that can be missed, which is why this is the honest
     place for that to happen rather than a tidy-up somewhere earlier.
 
-    `--keep-running` is the exception and says so. It leaves the machine on
-    deliberately, so it leaves ComfyUI on with it; the next `host go` finds that
-    ComfyUI and uses it rather than starting a second one.
+    `keep_running` is the exception and says so — the parameter `disconnect`
+    passes and no other caller does. It leaves the machine on deliberately, so it
+    leaves ComfyUI on with it; the next `go` finds that ComfyUI and uses it
+    rather than starting a second one.
     """
     if close_tunnel(host.name, tunnel_dir):
         say("tunnel closed")
@@ -2012,8 +2013,9 @@ def put_away(
     # `stop_instance` on a box that is already TERMINATED succeeds trivially, and
     # this printed "<name> stopped" either way — so the end of a session looked
     # identical whether five GPU boxes had been billing all night or none. That is
-    # the one question the command exists to answer, and `--keep-running`, the
-    # branch almost nobody uses, was the only one that answered it honestly.
+    # the one question the command exists to answer, and the `keep_running`
+    # branch, which almost nobody reached, was the only one that answered it
+    # honestly.
     try:
         before = gc.instance_status(host.gce_instance, host.gce_zone,
                                     host.gce_project)

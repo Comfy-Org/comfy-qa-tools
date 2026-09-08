@@ -22,7 +22,6 @@ import typer
 
 from .config import (
     COMFYUI_DEFAULT_PORT,
-    SEPARATOR,
     DEFAULT_CONFIG_PATH,
     ConfigError,
     Host,
@@ -639,68 +638,34 @@ def create_cmd(
         say.result(line)
 
 
-def _selector(name: str | None, os_: str | None, gpu: str | None) -> str:
-    """One selector, from a positional or from `--os` / `--gpu`.
+def _selector(name: str | None) -> str:
+    """The machine an argument names, or a refusal that says how to name one.
 
-    `go windows/l4` is shorter and is what anyone types by hand; the flags are
-    for a script, or for when a machine's name could be mistaken for a
-    description. One flag each rather than `--windows` and `--gpu-l4`: two
-    booleans can contradict each other, and a flag per card is a namespace that
-    grows every time Google ships one.
+    `go windows/l4` is what anyone types by hand, and until this release the same
+    thing was also sayable as `go --os windows --gpu l4`. The flags were never a
+    second capability: both routes met in this function and became the same
+    string before either reached a host list, which is what proved they were one
+    spelling rather than two. They were hidden, they warned about themselves for
+    a release, and they are gone.
 
-    Giving both is an error rather than a precedence rule. Someone who typed
-    `go windows --os linux` has made a mistake, and picking a winner would carry
-    that mistake out on a machine.
+    `create --os/--gpu` and `quota request --gpu` are not the same case and keep
+    theirs. `create --os windows --gpu l4` DESCRIBES A BOX TO BUILD — both are
+    required and there is nothing yet to select. `quota request --gpu l4,a100`
+    names A COMMA-SEPARATED LIST of cards to ask Google for, which no selector
+    has ever accepted. One flag name meant three unrelated things, and `--help`
+    said which one you were reading nowhere; what is left is one way to say
+    which machine you mean, on every command that takes one.
 
-    ---
-
-    **`--os` and `--gpu` are hidden on all eleven commands that reach this
-    function, and this is the deprecation window, not a second permanent
-    spelling.** They still work, they no longer appear in `--help`, and anyone
-    who uses one is told the shorter form below.
-
-    Hidden rather than kept because the flags were never a second spelling of
-    one idea — the name `--os`/`--gpu` carries three different meanings in this
-    tool, and a reader of `--help` had no way to tell which one they were
-    looking at:
-
-      - `create --os windows --gpu l4` DESCRIBES A BOX TO BUILD. Both are
-        required and neither selects anything; there is nothing to select yet.
-      - the eleven commands here PICK AN EXISTING MACHINE, optionally, out of
-        the host list — and every one of them already takes that same value as
-        a positional argument.
-      - `quota request --gpu l4,a100` names A COMMA-SEPARATED LIST of cards to
-        ask Google for. No selector accepts that value, and `create` does not
-        either.
-
-    So `create` and `quota request` keep theirs, for two different reasons, and
-    the eleven redundant pairs go. What is left is one way to say which machine
-    you mean, on every command that takes one.
-
-    The note goes to stderr, on purpose. A deprecation nobody is told about
-    never ends: the flags vanish from `--help` on the day this ships, so the
-    only person who can still discover the shorter form is the person still
-    typing the longer one — and `warn` is where this tool already puts exactly
-    this (`down --keep-running`). stderr keeps `--json` and `--dry-run` output
-    clean for the script that is the other reason these flags existed.
+    There is deliberately no default and no "the last one you used": a local
+    ComfyUI and a tunnel to a cloud box both answer on 127.0.0.1 and look
+    identical in a browser, so the machine is always said out loud.
     """
-    described = SEPARATOR.join(part for part in (os_, gpu) if part)
-    if name and described:
-        raise typer.BadParameter(
-            f"say the machine once: {name!r} as an argument, or --os/--gpu, not both."
-        )
-    if not name and not described:
+    if not name:
         raise typer.BadParameter(
             "which machine? A name, an operating system, a card, or both as "
-            "os/card — or --os and --gpu."
+            "os/card."
         )
-    if described:
-        # After both refusals, never instead of one: someone who typed a name
-        # AND a flag has a mistake to fix, not a spelling to update, and two
-        # messages about one command would bury the one that matters.
-        say.warn("--os/--gpu are on their way out. They still work; say it as "
-                 f"the argument instead: {described}")
-    return name or described
+    return name
 
 
 def _lookup(name: str, config: Optional[Path]) -> tuple[list[Host], Host]:
@@ -809,10 +774,6 @@ def _known_verdict(host: Host, found: str) -> str:
 def up_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Start a machine and wait until ComfyUI actually answers.
 
@@ -822,7 +783,7 @@ def up_cmd(
     from .gcloud import Gcloud
     from .lifecycle import bring_up
 
-    hosts, host = _lookup(_selector(name, os_, gpu), config)
+    hosts, host = _lookup(_selector(name), config)
     try:
         bring_up(Gcloud(), host, say.step)
     except _reportable() as exc:
@@ -844,10 +805,6 @@ def up_cmd(
 def open_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the tunnel command instead of running it.")] = False,
 ) -> None:
@@ -865,7 +822,7 @@ def open_cmd(
         status as tunnel_status,
     )
 
-    host = _host(_selector(name, os_, gpu), config)
+    host = _host(_selector(name), config)
     if not host.is_remote:
         # Word for word what `tunnel.py` raises for the same host, so there is
         # one sentence for this and not two spellings of it.
@@ -900,10 +857,6 @@ def open_cmd(
 def disconnect_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Close the tunnel and leave the machine running.
 
@@ -913,20 +866,20 @@ def disconnect_cmd(
     hand leaves the tunnel records behind, after which `list` reports a tunnel
     that is not there.
 
-    This was `down --keep-running`, which is still accepted and still works. The
-    flag was the negation of its own command, one word from the command whose
-    documented purpose is to stop paying, and `down --all --keep-running` read as
-    "stop everything except don't" — the most expensive outcome reachable from the
+    This was `down --keep-running`, which has been removed. The flag was the
+    negation of its own command, one word from the command whose documented
+    purpose is to stop paying, and `down --all --keep-running` read as "stop
+    everything except don't" — the most expensive outcome reachable from the
     cheapest-sounding command. It was also the only branch of `down` that nobody
-    exercised, which is why it was wrong about money twice in one day, in opposite
-    directions.
+    exercised, which is why it was wrong about money twice in one day, in
+    opposite directions.
 
     The machine keeps billing. That is the point of the command and it says so.
     """
     from .gcloud import Gcloud
     from .lifecycle import put_away
 
-    host = _host(_selector(name, os_, gpu), config)
+    host = _host(_selector(name), config)
     _act(put_away, Gcloud(), host, say.detail, keep_running=True)
     # The command whose whole purpose is leaving a box running is the one that
     # most needs to say how to stop it. It did not — and the test that states
@@ -941,18 +894,6 @@ def down_cmd(
         help="Which machine: a name, or what you want — windows, l4, windows/l4. "
              "Omit it with --all.")] = None,
     config: ConfigOption = None,
-    # `down` was the only machine-taking command without these — go, up, open,
-    # switch, logs, stamp, ssh, rdp and move all take them — so a session spent
-    # typing `go --os windows` ended at `down --os windows`, which was refused
-    # by the argument parser. Being refused is loud, but this is the one command
-    # where not running is what costs money.
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
-    keep_running: Annotated[bool, typer.Option(
-        "--keep-running",
-        help="Deprecated: this is `comfy-qat disconnect`.")] = False,
     everything: Annotated[bool, typer.Option(
         "--all", help="Stop every cloud machine you have declared.")] = False,
 ) -> None:
@@ -965,22 +906,10 @@ def down_cmd(
     from .gcloud import Gcloud
     from .lifecycle import put_away, stop_paying
 
-    # Both paths, not just --all: the single-host form is the one someone types
-    # out of habit.
-    if keep_running:
-        say.warn("`--keep-running` is now `comfy-qat disconnect <name>`. "
-                 "The flag still works.")
-
     if everything:
         if name:
             say.fail("--all stops every machine, so it takes no name", code=2,
                      blank_line=False)
-        # Kept apart from the name refusal above rather than folded into one
-        # sentence: the two mistakes read differently, and `--all --os windows`
-        # is a person narrowing what they meant, not naming a box.
-        if os_ or gpu:
-            say.fail("--all stops every machine, so it takes no --os or --gpu",
-                     code=2, blank_line=False)
         try:
             hosts = [h for h in load(config) if h.is_remote]
         except ConfigError as exc:
@@ -1029,7 +958,7 @@ def down_cmd(
         for host in hosts:
             say.step(host.name)
             try:
-                found = put_away(gc, host, say.detail, keep_running=keep_running)
+                found = put_away(gc, host, say.detail)
                 # `.get(found, []).append(host)` appended to a throwaway list, so
                 # any verdict this did not name dropped the machine out of every
                 # count and every closing sentence without a word.
@@ -1076,45 +1005,29 @@ def down_cmd(
                 say.fix(*[f"{other.name} — {exc.fix or 'stop it in the console'}"
                           for other, exc in failed]))
             raise typer.Exit(code=1)
-        if keep_running:
-            # The one command whose purpose is answering "am I still paying" has
-            # now been wrong in both directions here: it claimed everything had
-            # stopped, then claimed everything was billing. Count what was read.
-            # Three sentences and not one, because "it is off" and "I could not
-            # tell" are different answers and only one of them is free.
-            if unknown:
-                say.result(f"\n{say.count(len(unknown), 'machine')} could not be "
-                           "checked — run `comfy-qat list --live`.")
-            if billing:
-                say.result(f"\n{say.count(len(billing), 'machine')} left running "
-                           f"and billing: {', '.join(h.name for h in billing)}.")
-                say.result("Run without --keep-running to stop them.")
-            elif not unknown and strangers == []:
-                say.result("\nnothing was running, so nothing is billing.")
-        else:
-            # "all N stopped." was printed whether five GPU boxes had been
-            # billing all night or none, because stopping an already-stopped box
-            # succeeds trivially. The one question this command exists to answer
-            # was the one its output could not distinguish.
-            caught = [h for h in hosts if h in stopped]
-            if caught:
-                names = ", ".join(h.name for h in caught)
-                say.result(f"\nwas billing: {names}. Stopped. Nothing is now.")
-            elif not unknown and strangers == []:
-                say.result("\nnothing was running, so nothing was billing.")
-            # `unknown` was collected here and never reported, so a run where
-            # every read failed and every stop succeeded printed the all-clear —
-            # an unearned one, contradicting the per-host line three lines above
-            # it. The --keep-running branch had always said this and the default
-            # branch had not, which is the same asymmetry in its last corner.
-            if unknown:
-                names = ", ".join(h.name for h in unknown)
-                say.result(
-                    f"\n{say.count(len(unknown), 'machine')} could not be checked "
-                    f"before stopping, so it may have been billing: {names}. "
-                    "Everything else was not running."
-                )
-                say.result("  comfy-qat list --live")
+        # "all N stopped." was printed whether five GPU boxes had been billing
+        # all night or none, because stopping an already-stopped box succeeds
+        # trivially. The one question this command exists to answer was the one
+        # its output could not distinguish.
+        caught = [h for h in hosts if h in stopped]
+        if caught:
+            names = ", ".join(h.name for h in caught)
+            say.result(f"\nwas billing: {names}. Stopped. Nothing is now.")
+        elif not unknown and strangers == []:
+            say.result("\nnothing was running, so nothing was billing.")
+        # `unknown` was collected here and never reported, so a run where every
+        # read failed and every stop succeeded printed the all-clear — an
+        # unearned one, contradicting the per-host line three lines above it.
+        # The branch that left the machines running had always said this and the
+        # default branch had not; that asymmetry went with the branch.
+        if unknown:
+            names = ", ".join(h.name for h in unknown)
+            say.result(
+                f"\n{say.count(len(unknown), 'machine')} could not be checked "
+                f"before stopping, so it may have been billing: {names}. "
+                "Everything else was not running."
+            )
+            say.result("  comfy-qat list --live")
 
         if strangers is None:
             say.result("\nthe project could not be checked for machines you have "
@@ -1133,15 +1046,13 @@ def down_cmd(
         return
 
     # Not `_selector` alone: its "which machine?" does not know about `--all`,
-    # and `--all` is the answer half the people who get here wanted. Given a
-    # selector, `_selector` takes over — including its refusal of a name and
-    # --os together, which every sibling already gives.
-    if not name and not os_ and not gpu:
+    # and `--all` is the answer half the people who get here wanted.
+    if not name:
         say.fail("say which machine, or --all for every one of them", code=2,
                  blank_line=False)
 
-    host = _host(_selector(name, os_, gpu), config)
-    found = _act(put_away, Gcloud(), host, say.step, keep_running=keep_running)
+    host = _host(_selector(name), config)
+    found = _act(put_away, Gcloud(), host, say.step)
 
     # `down --all` ends with its money summary on stdout and the per-host story
     # on stderr. This form printed the story and stopped, so `comfy-qat down
@@ -1175,10 +1086,6 @@ def down_cmd(
 def go_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     no_browser: Annotated[bool, typer.Option(
         "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
     no_install: Annotated[bool, typer.Option(
@@ -1205,7 +1112,7 @@ def go_cmd(
     from .gcloud import Gcloud
     from .lifecycle import in_a_new_window
 
-    hosts, host = _lookup(_selector(name, os_, gpu), config)
+    hosts, host = _lookup(_selector(name), config)
     if new_window:
         # Before anything is started: a hand-off that fails must not leave a box
         # running behind a window that never opened.
@@ -1247,10 +1154,6 @@ def go_cmd(
 def ssh_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — linux, l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Open a shell on a box, through the tunnel.
 
@@ -1262,7 +1165,7 @@ def ssh_cmd(
 
     from .gcloud import Gcloud, GcloudError
 
-    host = _host(_selector(name, os_, gpu), config)
+    host = _host(_selector(name), config)
     if not host.is_remote:
         say.fail(f"{host.name} is this machine — open a terminal", code=2)
     if is_windows(host):
@@ -1317,10 +1220,6 @@ def ssh_cmd(
 def rdp_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Reset the Windows password and forward RDP, then hand over the details.
 
@@ -1330,7 +1229,7 @@ def rdp_cmd(
     """
     from .gcloud import Gcloud, GcloudError
 
-    host = _host(_selector(name, os_, gpu), config)
+    host = _host(_selector(name), config)
     if not host.is_remote or not is_windows(host):
         say.fail(f"{host.name} is not a Windows cloud box",
                  fix=f"comfy-qat ssh {host.name}", code=2)
@@ -1378,10 +1277,6 @@ def rdp_cmd(
 def logs_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     tail: Annotated[Optional[int], typer.Option(
         "--tail", help="Print this many lines and stop. Add --follow to keep reading.")] = None,
     follow: Annotated[Optional[bool], typer.Option(
@@ -1399,7 +1294,7 @@ def logs_cmd(
     from .gcloud import Gcloud
     from .lifecycle import read_logs, stop_paying
 
-    host = _host(_selector(name, os_, gpu), config)
+    host = _host(_selector(name), config)
     try:
         _act(read_logs, Gcloud(), host, say.step,
              tail=200 if tail is None else tail,
@@ -1644,10 +1539,6 @@ def switch_cmd(
     name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     keep_others: Annotated[bool, typer.Option(
         "--keep-others", help="Leave the other machines running. They keep billing.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
@@ -1670,7 +1561,7 @@ def switch_cmd(
     from .gcloud import Gcloud, GcloudError
     from .lifecycle import put_away, running_elsewhere
 
-    hosts, host = _lookup(_selector(name, os_, gpu), config)
+    hosts, host = _lookup(_selector(name), config)
     gc = Gcloud()
 
     try:
@@ -2008,10 +1899,6 @@ def move_cmd(
     to: Annotated[Optional[str], typer.Option(
         "--to", help="Zone to move it to. Default: whichever one Google says has capacity.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before making changes.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
     clean: Annotated[bool, typer.Option(
@@ -2038,7 +1925,7 @@ def move_cmd(
         remove_leftovers, run_move, split_leftovers, would_not_load,
     )
 
-    hosts, host = _lookup(_selector(name, os_, gpu), config)
+    hosts, host = _lookup(_selector(name), config)
     if not host.is_remote:
         say.fail(f"{host.name} is local — there is nowhere to move it to", code=2,
                  blank_line=False)
@@ -2325,10 +2212,6 @@ def _probe_fix(host: Host) -> str | None:
 def stamp_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
-    os_: Annotated[Optional[str], typer.Option(
-        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
-    gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     as_json: Annotated[bool, typer.Option(
         "--json", help="Machine-readable, for pasting into a report or a test.")] = False,
 ) -> None:
@@ -2338,7 +2221,7 @@ def stamp_cmd(
     a hand-written bug report usually does not either — which is how "cannot
     reproduce" happens between two machines that were never the same.
     """
-    host = _host(_selector(name, os_, gpu), config)
+    host = _host(_selector(name), config)
 
     try:
         stamp = fetch(host.url, host=host.name)

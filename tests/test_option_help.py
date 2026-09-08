@@ -50,8 +50,10 @@ oversight — nothing here reads `hidden=`. Hiding an option removes it from
 spelling working for everyone who already types it. A deprecation window is in
 fact when the help matters most, because the one thing the reader needs is what
 to use instead — which is why the hidden `--os` and `--gpu` kept theirs, and why
-`stop --keep-running` spends its whole help naming its replacement. An option too
-undocumented to describe should be deleted, not hidden.
+`down --keep-running` spent its whole help naming its replacement. Both of those
+windows have since closed and the options are gone; the rule is what is left,
+and it applies to the next one. An option too undocumented to describe should be
+deleted, not hidden.
 
 Presence and readability are separate questions, and widening the collector is
 what made the difference matter. `env`'s first argument builds its help from an

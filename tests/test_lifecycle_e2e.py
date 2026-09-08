@@ -441,12 +441,18 @@ def test_up_then_open_twice_then_down_twice(world):
     assert "tunnel closed" not in again.output
 
 
-def test_down_keep_running_closes_the_tunnel_and_says_it_still_costs(world):
+def test_disconnect_closes_the_tunnel_and_says_it_still_costs(world):
+    """The capability `down --keep-running` was removed in favour of, end to end.
+
+    This is the only run of it against a real tunnel process: the unit coverage
+    in test_host_costs.py replaces gcloud and never opens one, and the whole
+    point here is that the ssh process dies and the box does not.
+    """
     world.comfy.mode = "serving"
     world.cloud(statuses=["RUNNING"])
     run(world, "up", BOX)
 
-    result = run(world, "down", BOX, "--keep-running")
+    result = run(world, "disconnect", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0
@@ -492,7 +498,7 @@ def test_down_never_signals_a_process_that_is_not_our_tunnel(world):
     world.pid_file().write_text(str(other.pid))
     world.cloud(statuses=["RUNNING"])
 
-    result = run(world, "down", BOX, "--keep-running")
+    result = run(world, "down", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0

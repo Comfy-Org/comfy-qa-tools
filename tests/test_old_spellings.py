@@ -9,8 +9,11 @@ typing the long one — and until now `comfy-qat host list` printed exactly what
 
 That is the same argument, and the same fix, as the `--os`/`--gpu` retirement in
 `test_selector_flags.py`: hidden keeps every script working, a note on stderr is
-what makes the window a window. Both are pinned rather than left to a comment,
-because a comment describing an intention is what was already there.
+what makes the window a window. It is also the precedent, because that window has
+now CLOSED — the flags were hidden, they warned about themselves for a release,
+and then they were deleted. Hiding was the middle of it, not the end. This one is
+still in its middle. Both are pinned rather than left to a comment, because a
+comment describing an intention is what was already there.
 
 `env` is deliberately NOT held to this, and the exemption is the point rather
 than an oversight. `host` and `auth` are second spellings — `host go` and `go`
