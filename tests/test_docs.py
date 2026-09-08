@@ -957,6 +957,20 @@ class Construction:
     pattern: str
 
 
+# Unrelated strings a real message could never be. A pattern that fullmatches
+# every one of them is matching on nothing. They are deliberately unalike —
+# one word, the page's own elision, an angle-bracket placeholder, a sentence,
+# and a real message from a different entry — so that a pattern has to be
+# genuinely unconstrained to accept the lot.
+ARBITRARY_PROBES = (
+    "x",
+    "...",
+    "<name>",
+    "a totally unrelated sentence about ferrets",
+    "hosts 'a' and 'b' both use port 8190",
+)
+
+
 def _matches_anything(pattern: str) -> bool:
     r"""Would this pattern accept any string at all, including the empty one?
 
@@ -981,8 +995,31 @@ def _matches_anything(pattern: str) -> bool:
     that shape in twenty-four places as `say.fail(exc)`, and `hostfile.apply`
     re-raises a ConfigError's text. Testing the pattern rather than the source
     catches every future spelling of it without anyone predicting them.
+
+    TWO probes, not one, and the second is the one that was missing. Matching the
+    empty string and matching ARBITRARY TEXT are different flaws, and only the
+    first was tested here. `f"{prefix}{text}"` — two interpolations with nothing
+    between them — compiles to `(?:.+?|\.\.\.)(?:.+?|\.\.\.)?`, which matches
+    every quotation on the page and does NOT match `''`, so it sailed through.
+
+    That is not hypothetical: `say.py` builds `f"{WARNING}{text}"` and
+    `f"{FIX_LABEL}{lines[0]}"` exactly that way, because the prefix is a
+    module-level constant the walk cannot see the value of. Measured by pooling
+    this machinery across the whole package: the empty-string test alone reported
+    0 of 205 quotations unbuildable — a clean sweep, produced by five silencers
+    out of say.py. With arbitrary text probed too, the honest number is 28.
+    A guard that reports everything is fine, across a wide sweep, is the shape
+    a silenced instrument has: it was the second time in one evening that a
+    reassuring total came out of a pattern matching anything.
+
+    So "matches nothing in particular" is asked as a family. A pattern that
+    accepts a sentence about ferrets, an angle-bracket placeholder and a bare
+    `x` is not checking anything, whatever it does with the empty string.
     """
-    return re.fullmatch(pattern, "", flags=re.S) is not None
+    if re.fullmatch(pattern, "", flags=re.S) is not None:
+        return True
+    return all(re.fullmatch(pattern, probe, flags=re.S) is not None
+               for probe in ARBITRARY_PROBES)
 
 
 def _config_constructions() -> list[Construction]:
@@ -1086,7 +1123,7 @@ def test_no_config_error_construction_matches_everything():
     are what a reviewer would actually try, so a pattern that is universal in
     some narrower way than "matches empty" is caught too.
     """
-    for probe in ("", "a totally unrelated sentence about ferrets", "..."):
+    for probe in ("", *ARBITRARY_PROBES):
         universal = sorted(construction.where for construction in CONFIG_CONSTRUCTIONS
                            if re.fullmatch(construction.pattern, probe, flags=re.S))
         assert not universal, (
