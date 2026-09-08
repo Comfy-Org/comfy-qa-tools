@@ -474,6 +474,73 @@ def test_the_url_for_this_machine_is_said_alongside_the_one_comfyui_prints(tmp_p
     assert WIN.url in told
 
 
+# --- the machine you were sent to is the machine you asked for -------------
+#
+# Nothing in a browser tells two ComfyUIs apart: same title, same canvas, same
+# favicon, and `127.0.0.1:<port>` the only difference. `mismatch` already writes
+# the sentence that catches it and had exactly one caller — `host stamp` — so
+# `go` printed "ComfyUI answering: …" and opened a tab onto the contradiction
+# without a word. These two hold the fix at the one place it matters: the moment
+# before a browser is pointed at a machine.
+
+
+def watched(lines):
+    """A browser whose opening is recorded IN ORDER with what was said.
+
+    Two separate lists cannot say which happened first, and "the identity is on
+    the screen before the tab takes over" is entirely a question of order.
+    """
+    opened = []
+
+    def open_browser(url):
+        opened.append(url)
+        lines.append(f"<browser {url}>")
+
+    return opened, open_browser
+
+
+def test_a_machine_that_answers_as_another_machine_is_refused_not_opened(tmp_path):
+    """The Mac answering on a Windows box's port is the failure this prevents.
+
+    Refused rather than warned, following `host stamp`: a warning scrolls past
+    and the tab opens anyway, and everything generated in it is then attributed
+    to the machine that was named rather than the one that ran it.
+    """
+    lines, say = said()
+    opened, open_browser = watched(lines)
+    mac = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"],
+                comfyui_version="0.33.0")
+
+    with pytest.raises(LifecycleError) as caught:
+        detach(WIN, box(), say, tunnel_dir=tmp_path, probe_fn=lambda h: mac,
+               open_browser=open_browser)
+
+    assert "answered as darwin" in str(caught.value)
+    assert "That port is not reaching comfy-win" in str(caught.value)
+    assert opened == [], "a browser was opened onto a contradicting machine"
+    assert f"comfy-qat down {WIN.name}" in caught.value.fix, "the box is still billing"
+
+
+def test_the_machine_is_named_beside_the_url_the_browser_is_about_to_open(tmp_path):
+    """The last thing said before the tab takes over says WHICH machine it is.
+
+    "ComfyUI answering: …" is several lines and a startup log above by then, and
+    under a detached launch the url is printed last of all — so the url carries
+    the identity itself rather than relying on what has scrolled past.
+    """
+    lines, say = said()
+    opened, open_browser = watched(lines)
+
+    detach(WIN, box(), say, tunnel_dir=tmp_path, probe_fn=lambda h: STAMP,
+           open_browser=open_browser)
+
+    assert opened == [WIN.url]
+    assert lines[-1] == f"<browser {WIN.url}>", "the browser opened last"
+    assert WIN.url in lines[-2] and STAMP.line() in lines[-2], (
+        f"the url and the machine it reaches are not on one line: {lines[-2]!r}"
+    )
+
+
 # --- host logs -------------------------------------------------------------
 
 

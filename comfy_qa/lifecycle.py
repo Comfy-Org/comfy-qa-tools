@@ -41,7 +41,7 @@ from . import inflight
 from . import say as output
 from .config import Host
 from .gcloud import Gcloud, GcloudError
-from .stamp import ProbeError, Stamp, fetch
+from .stamp import ProbeError, Stamp, fetch, mismatch
 from .tunnel import (
     BACKEND_NOT_LISTENING,
     COMFYUI_PORT,
@@ -1051,6 +1051,69 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
         fetching.give_up()
 
 
+def _wrong_machine_fix(host: Host) -> str:
+    """What to do about a port that answered as a machine you did not name.
+
+    **Refused, not warned**, which is the treatment `host stamp` already gives
+    this exact contradiction. Its argument is that the evidence line exists to be
+    copied into a bug report and a warning on stderr does not survive being
+    copied — so printing the line at all is what creates the false evidence.
+
+    A browser session is the same artefact with nothing to copy. Nothing in the
+    tab tells the two machines apart: same title, same canvas, same favicon, and
+    only the port in the address bar differs — which is the thing that is lying.
+    Settings → About is the one in-UI signal and it is four clicks deep, so
+    everything generated in that tab is attributed to whichever machine the
+    command named. Opening it is the act that turns a mislabelled port into
+    mislabelled results, and it happens after the warning has scrolled away.
+
+    **Nothing is torn down, which is where this departs from every other refusal
+    in this module.** `_give_up` closes the tunnel and the callers around it stop
+    what the run started; both are exactly wrong here, because what has just been
+    established is that we cannot say which machine is on the other end of that
+    port. Acting on a machine you have failed to identify is the failure this
+    refusal exists to prevent, one step further along. So the box is left
+    running, the tunnel is left open — `comfy-qat list --live` and `comfy-qat
+    stamp` need it to say which machine it really reaches — and the bill is said
+    out loud instead.
+
+    The refusal carries `mismatch`'s own sentence as its message, unaltered: it
+    already names the host, the url and both machines, and it is the sentence the
+    troubleshooting page documents — so only the advice is written here.
+    """
+    return _with_the_bill(
+        host,
+        f"no browser was opened, because it would have shown a machine that is "
+        f"not {host.name}. Nothing was stopped and the tunnel is still up, so it "
+        f"can be asked what it is:",
+        "comfy-qat list --live",
+        f"comfy-qat stamp {host.name}",
+    )
+
+
+def _arrive(host: Host, stamp: Stamp, say: Callable[[str], None],
+            open_browser: Callable[[str], None] | None) -> None:
+    """Hand a machine over: name it beside its url, then open it.
+
+    The single place a browser is pointed at a host, so it is the single place
+    that can decline to. `mismatch` had exactly one caller — `host stamp` — which
+    left `go` printing "ComfyUI answering: …" and then opening a tab onto a
+    machine that had just contradicted the one it was asked for.
+
+    The identity is said again here, on the url's own line, and that repetition
+    is the point. The answering line is minutes and a whole startup log above by
+    the time this runs under `--follow`, and under a detached launch the url is
+    printed last of all — so the last thing on the screen before a browser takes
+    over has to be which machine is behind it, not just where it is.
+    """
+    problem = mismatch(host, stamp)
+    if problem is not None:
+        raise LifecycleError(problem, fix=_wrong_machine_fix(host))
+    say(f"open {host.url} — {stamp.line()}")
+    if open_browser is not None:
+        open_browser(host.url)
+
+
 def serve(
     gc: Gcloud,
     host: Host,
@@ -1083,6 +1146,12 @@ def serve(
     probe_fn = probe_fn or probe
     done = threading.Event()
     answered = threading.Event()
+    # A contradiction found by the watcher, carried back to this thread. The
+    # watcher cannot fail the command from where it stands — an exception in a
+    # daemon thread is printed and forgotten, and `serve` would go on streaming
+    # the log and return 0 — so it says the sentence, opens nothing, and leaves
+    # the raise to the body once the launch ends.
+    wrong: list[LifecycleError] = []
 
     def watch() -> None:
         deadline = now() + timeout
@@ -1107,9 +1176,11 @@ def serve(
             if stamp is not None:
                 answered.set()
                 say(f"ComfyUI answering: {stamp.line()}")
-                say(f"open {host.url}")
-                if open_browser is not None:
-                    open_browser(host.url)
+                try:
+                    _arrive(host, stamp, say, open_browser)
+                except LifecycleError as exc:
+                    say(str(exc))
+                    wrong.append(exc)
                 return
             sleep(POLL_SECONDS)
 
@@ -1135,9 +1206,7 @@ def serve(
             say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
                 "— using it rather than starting a second one")
             say(f"ComfyUI answering: {serving.line()}")
-            say(f"open {host.url}")
-            if open_browser is not None:
-                open_browser(host.url)
+            _arrive(host, serving, say, open_browser)
             return 0
 
         # ComfyUI's own message for this is "Port 8188 is already in use" plus a
@@ -1234,6 +1303,12 @@ def serve(
             fix=_with_the_bill(host, "read the log above, then get onto the machine:",
                                how_to_get_in(host)),
         )
+    # The watcher's contradiction, raised from the thread that can act on it.
+    # Late — the log has been streaming since — but the browser was never opened
+    # and the sentence was said at the time; this is what stops the command
+    # exiting 0 as though it had shown you the machine you asked for.
+    if wrong:
+        raise wrong[0]
     return code
 
 
@@ -1405,8 +1480,7 @@ def start_detached(
             say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
                 f"— using it rather than starting a second one")
             say(f"ComfyUI answering: {serving.line()}")
-            if open_browser is not None:
-                open_browser(host.url)
+            _arrive(host, serving, say, open_browser)
             return 0
         raise give_up(
             f"something is already listening on {host.name}'s ComfyUI port "
@@ -1489,8 +1563,7 @@ def start_detached(
                                sleep=sleep, now=now, timeout=timeout)
 
     say(f"ComfyUI answering: {stamp.line()}")
-    if open_browser is not None:
-        open_browser(host.url)
+    _arrive(host, stamp, say, open_browser)
     return 0
 
 

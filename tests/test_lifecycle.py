@@ -541,6 +541,105 @@ def test_the_browser_is_not_opened_after_a_launch_that_failed():
     assert opened == []
 
 
+# --- nor onto a machine that is not the one you named ----------------------
+#
+# A launch that answers is not a launch that answered from the right box. Both
+# ComfyUIs look identical in a browser — same title, same canvas, same favicon,
+# and only `127.0.0.1:<port>` between them — so a tab opened onto the wrong one
+# is never noticed, and every result taken in it is filed under the machine that
+# was asked for. `mismatch` writes the sentence; until this, only `host stamp`
+# ever asked it.
+
+MAC = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"],
+            comfyui_version="0.33.0")
+
+
+def box_holding_its_port(holder="2804 python"):
+    """A box whose ComfyUI port is already held — the "it is already up" path."""
+    def runner(args, mode):
+        joined = " ".join(args)
+        if mode == "output" and ("NetTCPConnection" in joined or "sport = :" in joined):
+            return holder
+        return 0
+
+    return Gcloud(runner=runner)
+
+
+def test_serve_refuses_a_machine_that_answers_as_a_different_one(tmp_path):
+    """Refused, not warned — the treatment `host stamp` already gives this.
+
+    `stamp` refuses because its line gets pasted into a bug report and a warning
+    on stderr does not survive being copied. A browser session is the same
+    artefact with nothing to copy: the warning scrolls away, the tab stays, and
+    what is generated in it is attributed to the machine that was named.
+    """
+    opened = []
+    lines, say = said()
+
+    with pytest.raises(LifecycleError) as caught:
+        serve(box_holding_its_port(), WIN, say, open_browser=opened.append,
+              probe_fn=lambda host: MAC, sleep=lambda _: None, timeout=0,
+              tunnel_dir=tmp_path)
+
+    assert "answered as darwin" in str(caught.value)
+    assert opened == [], "a browser was opened onto a contradicting machine"
+    assert stop_paying(WIN) in (caught.value.fix or ""), "the box is still billing"
+
+
+def test_serve_names_the_machine_beside_the_url_it_hands_over(tmp_path):
+    """The url and the identity on one line, because by the time a url is
+    printed the "ComfyUI answering" line is a whole startup log above it."""
+    lines, say = said()
+    opened = []
+
+    serve(box_holding_its_port(), WIN, say, open_browser=opened.append,
+          probe_fn=lambda host: STAMP, sleep=lambda _: None, timeout=0,
+          tunnel_dir=tmp_path)
+
+    assert opened == [WIN.url]
+    beside = [line for line in lines if WIN.url in line and STAMP.line() in line]
+    assert beside, (
+        f"nothing said the url and the machine it reaches together: {lines}"
+    )
+
+
+def test_the_follow_watcher_never_opens_a_tab_onto_a_contradicting_machine(tmp_path):
+    """The `--follow` path, where the browser is opened from a watcher thread.
+
+    A thread cannot fail the command from where it stands, so the contradiction
+    has to travel back: nothing is opened, the sentence is said as it happens,
+    and `serve` raises rather than returning 0 for a launch that showed you
+    somebody else's machine.
+    """
+    import threading
+
+    told = threading.Event()
+    lines = []
+    opened = []
+
+    def say(line):
+        lines.append(line)
+        if "That port is not reaching" in line:
+            told.set()
+
+    def runner(args, mode):
+        # The launch holds the terminal while ComfyUI runs, which is what gives
+        # the watcher something to run alongside. Bounded, so a watcher that
+        # never decides fails this test rather than hanging it.
+        if mode == "stream":
+            told.wait(10)
+        return 0
+
+    with pytest.raises(LifecycleError) as caught:
+        serve(Gcloud(runner=runner), WIN, say, open_browser=opened.append,
+              probe_fn=lambda host: MAC, sleep=lambda _: None, timeout=30,
+              tunnel_dir=tmp_path)
+
+    assert told.is_set(), f"the watcher said nothing about the machine: {lines}"
+    assert "answered as darwin" in str(caught.value)
+    assert opened == []
+
+
 def test_an_expired_credential_is_not_waited_out(tmp_path):
     """gcloud only offers to reauthenticate when stdin and stderr are terminals,
     and everything here captures output — so it does not ask, it fails, and it
