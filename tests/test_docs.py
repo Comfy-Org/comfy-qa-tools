@@ -140,10 +140,17 @@ def _literal_runs(node: ast.AST | None) -> list[str]:
 
 @dataclass(frozen=True)
 class Message:
-    """One thing the tool can say when something has gone wrong."""
+    """One thing the tool can say when something has gone wrong.
+
+    `identifying` is False when NO run in the message reached `IDENTIFYING` and
+    the phrase below is the longest run there was. That used to happen silently,
+    inside the `or` of a list comprehension, and it is the second of the two
+    holes described at `TOO_SHORT_TO_IDENTIFY`.
+    """
 
     where: str
     phrase: str
+    identifying: bool = True
 
 
 def _called_name(call: ast.Call) -> str:
@@ -295,8 +302,17 @@ def collect_messages() -> list[Message]:
                 # Nothing but interpolation and glue: this line reprints an error
                 # raised somewhere else, and that is where its entry lives.
                 continue
-            for phrase in [run for run in runs if len(run) >= IDENTIFYING] or [max(runs, key=len)]:
-                found.append(Message(f"{path.name}:{lineno}", phrase))
+            # The fallback is RECORDED rather than taken silently. A message with
+            # no run this long is a finding about the message — see
+            # `TOO_SHORT_TO_IDENTIFY` — and the flag is what lets the test below
+            # say so instead of quietly checking something weaker.
+            identifying = [run for run in runs if len(run) >= IDENTIFYING]
+            if identifying:
+                for phrase in identifying:
+                    found.append(Message(f"{path.name}:{lineno}", phrase))
+            else:
+                found.append(Message(f"{path.name}:{lineno}",
+                                     max(runs, key=len), False))
     return sorted(set(found), key=lambda m: (m.where, m.phrase))
 
 
@@ -531,6 +547,138 @@ def _troubleshooting_text() -> str:
     return re.sub(r"\s+", " ", (DOCS / "troubleshooting.md").read_text(encoding="utf-8"))
 
 
+# --- the floor under both collections ---------------------------------------
+#
+# `len(MESSAGES) > 40` above is a floor of a kind, and it is 278 short of the
+# truth, so it can only catch the walk breaking altogether. What it cannot catch
+# is one case LEAVING — and that is the failure this file has now been shown to
+# have, on itself:
+#
+#     the `--new-window` failure reworded from
+#     f"could not open a new Terminal window: {exc}. Nothing was started."
+#     to
+#     f"ZQXJ8: {exc}. Nothing was started."
+#
+#     6482 passed, 0 failed, exit 0   (6483 before)
+#
+# The message lost the run that named it and kept the run that is documented, so
+# the parametrised case for the first run was simply never generated. Nothing was
+# red. A suite that quietly collects one fewer test reads exactly like a stable
+# one, and this is the third derived collection tonight to shrink without saying
+# so — in the file whose own comments warn about vanishing cases, one layer up
+# from where this happens.
+#
+# So the count is written down, per module, and checked BOTH ways:
+#
+#   * below the floor fails — a case leaving is caught whether or not anybody
+#     thought to name it, which is the whole point of a floor over an allowlist;
+#   * too far above it fails too, so the floor is raised as the package grows
+#     rather than sitting at a number that stopped meaning anything. A floor
+#     nobody maintains is the `> 40` above.
+#
+# A module that starts producing messages and is not named here fails as well. The
+# same shape as ERROR_TYPES: the unfamiliar is a decision somebody makes, not a
+# default of "fine".
+MESSAGE_FLOOR = {
+    "auth.py": 12,
+    "commands.py": 6,
+    "config.py": 37,
+    "create.py": 51,
+    "gcloud.py": 8,
+    "host.py": 54,
+    "hostfile.py": 13,
+    "lifecycle.py": 65,
+    "relocate.py": 12,
+    "remove.py": 11,
+    "setup.py": 19,
+    "stamp.py": 10,
+    "tunnel.py": 22,
+}
+
+# The page's own two collections, floored the same way and for the same reason:
+# `ENTRIES` parametrises a test per entry, and an entry deleted from the page
+# takes its case with it.
+ENTRY_FLOOR = 233
+WORDING_FLOOR = 272
+
+# How far a count may drift above its floor before the floor has to be raised.
+# Wide enough that ordinary work does not trip it — several agents commit to this
+# tree in an hour — and narrow enough that the number cannot rot into the `> 40`
+# it replaces.
+FLOOR_SLACK = 12
+
+
+def _messages_by_module() -> dict[str, int]:
+    counted: dict[str, int] = {}
+    for message in MESSAGES:
+        module = message.where.split(":")[0]
+        counted[module] = counted.get(module, 0) + 1
+    return counted
+
+
+def test_no_module_has_quietly_lost_a_message():
+    """Below the floor. The half that catches a case nobody named."""
+    counted = _messages_by_module()
+    lost = sorted(
+        f"{module}: {counted.get(module, 0)} messages, floor is {floor}"
+        for module, floor in MESSAGE_FLOOR.items()
+        if counted.get(module, 0) < floor
+    )
+    assert not lost, (
+        f"{'; '.join(lost)}. A message stopped being collected, so its case is "
+        f"no longer generated and nothing went red. Either the message lost the "
+        f"run that identified it — reword it so it has words of its own — or the "
+        f"walk stopped reading the form it is written in. If the message was "
+        f"deliberately removed, lower the floor in the same commit."
+    )
+
+
+def test_every_module_that_reports_failures_is_floored():
+    counted = _messages_by_module()
+    unfloored = sorted(set(counted) - set(MESSAGE_FLOOR))
+    assert not unfloored, (
+        f"{', '.join(unfloored)} reports failures and has no floor, so nothing "
+        f"would notice its cases disappearing. Add it to MESSAGE_FLOOR."
+    )
+
+
+def test_the_message_floor_has_not_gone_stale():
+    """Above the floor. The half that stops the number rotting.
+
+    Without this the floor is written once and outgrown, which is exactly what
+    `len(MESSAGES) > 40` did — a true assertion, 278 short, catching nothing.
+    """
+    counted = _messages_by_module()
+    drifted = sorted(
+        f"{module}: {counted[module]} messages, floor is {MESSAGE_FLOOR[module]}"
+        for module in MESSAGE_FLOOR
+        if counted.get(module, 0) > MESSAGE_FLOOR[module] + FLOOR_SLACK
+    )
+    assert not drifted, (
+        f"{'; '.join(drifted)}. Raise the floor to what the module says now, so "
+        f"it keeps catching the next case that vanishes."
+    )
+
+
+def test_the_page_has_not_quietly_lost_entries():
+    assert len(ENTRIES) >= ENTRY_FLOOR, (
+        f"{len(ENTRIES)} entries, floor is {ENTRY_FLOOR}. An entry left the page "
+        f"and took its parametrised case with it. Lower the floor deliberately "
+        f"if it was meant to go."
+    )
+    assert len(QUOTED_WORDINGS) >= WORDING_FLOOR, (
+        f"{len(QUOTED_WORDINGS)} quoted wordings, floor is {WORDING_FLOOR} — the "
+        f"page documents fewer messages than it did, or the heading parse broke."
+    )
+    assert len(ENTRIES) <= ENTRY_FLOOR + FLOOR_SLACK, (
+        f"{len(ENTRIES)} entries against a floor of {ENTRY_FLOOR}. Raise it."
+    )
+    assert len(QUOTED_WORDINGS) <= WORDING_FLOOR + FLOOR_SLACK, (
+        f"{len(QUOTED_WORDINGS)} wordings against a floor of {WORDING_FLOOR}. "
+        f"Raise it."
+    )
+
+
 def test_the_message_list_was_actually_found():
     """A walker that silently matches nothing would pass every test below it."""
     assert len(MESSAGES) > 40, f"only found {len(MESSAGES)} messages — the walk is broken"
@@ -557,12 +705,140 @@ def test_a_message_routed_through_say_is_still_collected():
     assert routed, "no auth/commands messages collected — the say rule is not firing"
 
 
+# --- what counts as being documented ----------------------------------------
+#
+# "The phrase appears somewhere in troubleshooting.md" was the rule until now,
+# over the whole page with its whitespace flattened — so a message was documented
+# if its text collided with ANY prose on a 2,100-line page. Measured, on the
+# sentence that tells you a GPU box is on and costing money:
+#
+#     f"{host.name} is running and billing, but ComfyUI is not started on it yet"
+#     rewritten to
+#     f"{host.name} is fine"
+#
+#     6483 passed, 0 failed, exit 0
+#
+# The message now says the opposite of the truth about a billing machine and the
+# suite is green, because the words "is fine" occur somewhere in the prose. That
+# is not a documentation check; it is a spell-check against a large dictionary.
+#
+# So the match is bound to the ENTRY that is supposed to document this message —
+# the quoted wording at the head of one, which is the thing a person pastes an
+# error into the page to find. Two forms count, and both are already in use:
+#
+#   * a bold heading at the start of a line, `**...**`, whether or not the
+#     wording inside it is also in backticks. `--expect needs exactly one cloud
+#     environment, e.g. `comfy-qat env testcloud --expect <sha>`` is one, and a
+#     rule that demanded whole-heading backticks would have missed it.
+#   * a backticked bold span anywhere on the line, for the entries that carry two
+#     wordings — `**`a`** / **`b`**` — where everything after the slash is not at
+#     the start of a line and the old parse dropped it.
+#
+# Prose emphasis is neither: `**already**` and `**on purpose**` are mid-line and
+# unbackticked, so they are not entry headings and cannot document anything. That
+# distinction is the whole value of the rule — 313 bold spans on the page, 271 of
+# them entry wordings.
+
+
+def _quoted_wordings() -> list[str]:
+    """Every message wording an entry on the page actually quotes."""
+    raw = (DOCS / "troubleshooting.md").read_text(encoding="utf-8")
+    found = []
+    for match in re.finditer(r"\*\*(.+?)\*\*", raw, flags=re.S):
+        body = match.group(1)
+        at_line_start = match.start() == 0 or raw[match.start() - 1] == "\n"
+        quoted = body.startswith("`") and body.endswith("`")
+        if not (at_line_start or quoted):
+            continue
+        # ONE backtick off each end, not every backtick. `.strip("`")` ate the
+        # closing backtick of a nested code span — the entry for `could not tell
+        # whether <name> is running: <error>. Check with `comfy-qat list --live``
+        # ends in two of them — and the message stopped matching its own entry.
+        body = body.strip()
+        if body.startswith("`"):
+            body = body[1:]
+        if body.endswith("`"):
+            body = body[:-1]
+        wording = _normalise(body)
+        if wording:
+            found.append(wording)
+    return found
+
+
+QUOTED_WORDINGS = _quoted_wordings()
+
+# Messages documented in prose rather than at the head of an entry. One only, and
+# it is a gap in the PAGE rather than in the tool: `host.py` reports a move it
+# refused in a singular and a plural form, the singular has its own heading, and
+# the plural is quoted in parentheses on the line underneath it —
+#
+#     **`comfy-linux is untouched — you still have the machine you were on`**
+#     (or `comfy-linux, comfy-win are untouched — you still have the machines...`)
+#
+# The fix is to promote the second wording to a heading of its own, in `docs/`,
+# which this commit deliberately does not touch. Until then it is written down
+# here so that it is a known exception rather than a silent pass.
+DOCUMENTED_IN_PROSE = {
+    "are untouched — you still have the machines you were on":
+        "the plural of an entry that exists; the page quotes it in a "
+        "parenthesis rather than as a heading of its own",
+}
+
+
 @pytest.mark.parametrize("message", MESSAGES, ids=lambda m: f"{m.where} {m.phrase[:40]}")
 def test_every_error_has_a_troubleshooting_entry(message):
-    assert message.phrase in _troubleshooting_text(), (
-        f"{message.where} can print {message.phrase!r}, which is not in "
-        f"troubleshooting.md. Quote it there, verbatim, with what it means and "
-        f"what to do — or, if it is not a failure, say so in NOT_AN_ENTRY."
+    if message.phrase in DOCUMENTED_IN_PROSE:
+        pytest.skip("see DOCUMENTED_IN_PROSE")
+    assert any(message.phrase in wording for wording in QUOTED_WORDINGS), (
+        f"{message.where} can print {message.phrase!r}, and no troubleshooting "
+        f"entry quotes it. Quote it at the head of one, verbatim, with what it "
+        f"means and what to do — or, if it is not a failure, say so in "
+        f"NOT_AN_ENTRY. Appearing somewhere in the page's prose is not the same "
+        f"thing and no longer counts."
+    )
+
+
+# The two runs in the package too short to identify a message on their own, and
+# therefore the two that reach the recorded fallback. Both are genuinely
+# unidentifiable rather than merely undocumented:
+#
+#   auth.py   f"request for {name} failed: {exc}"        -> "request for", "failed"
+#   commands.py  f"{name} serves {got}, expected {sha}"  -> "serves", "expected"
+#
+# Eleven and eight characters. The old walk swapped the longest run in without
+# saying so, and then checked THAT against the page — so `"expected"` satisfied
+# the requirement that the message be documented, which it plainly does not.
+#
+# The set is compared both ways below. A new message that cannot identify itself
+# fails; a message that grows a real run and no longer needs the excuse fails
+# too, rather than sitting here for ever.
+TOO_SHORT_TO_IDENTIFY = {
+    "request for": "auth's quota submission: two runs, of 11 and 6 characters",
+    "expected": "env --expect's mismatch: two runs, of 6 and 8 characters",
+}
+
+
+def test_the_messages_that_cannot_identify_themselves_are_the_declared_ones():
+    """No message may fall back to a shorter run without being named here.
+
+    This is the hole that let a money sentence pass while saying the opposite:
+    `[run for run in runs if len(run) >= IDENTIFYING] or [max(runs, key=len)]`
+    silently tests something weaker when the first list is empty, and nothing
+    anywhere said it had happened. A message with nothing long enough to identify
+    it is a finding about the message.
+    """
+    short = {m.phrase for m in MESSAGES if not m.identifying}
+    undeclared = sorted(short - set(TOO_SHORT_TO_IDENTIFY))
+    assert not undeclared, (
+        f"{', '.join(repr(p) for p in undeclared)} is the longest run in a "
+        f"message, and it is under {IDENTIFYING} characters — so nothing in "
+        f"troubleshooting.md can identify that message. Give the message words "
+        f"of its own, or argue for it in TOO_SHORT_TO_IDENTIFY."
+    )
+    stale = sorted(set(TOO_SHORT_TO_IDENTIFY) - short)
+    assert not stale, (
+        f"{', '.join(repr(p) for p in stale)} is excused in "
+        f"TOO_SHORT_TO_IDENTIFY and no longer needs to be. Remove it."
     )
 
 
