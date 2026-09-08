@@ -199,10 +199,95 @@ def test_a_step_that_runs_for_minutes_keeps_saying_so():
         step.tick()
     step.done()
 
+    # 20 first, then every 30: the backoff's first interval is capped at `every`,
+    # so a half-minute cadence reaches its steady state on the second tick and
+    # the five minutes cost the same ten lines they always did.
     assert lines[0] == "snapshotting the disk"
     assert lines[1:-1] == [f"  still going, {say.elapsed(n)}" for n in
-                           (30, 60, 90, 120, 150, 180, 210, 240, 270, 300)]
+                           (20, 50, 80, 110, 140, 170, 200, 230, 260, 290)]
     assert lines[-1] == "  done in 5m00s"
+
+
+# --- the ticks back off -------------------------------------------------------
+#
+# These count lines at chosen elapsed times on a hand-driven clock. Not one of
+# them sleeps or measures a real duration: a timing assertion on a loaded laptop
+# fails for reasons that have nothing to do with the code, and the first person
+# it fails on deletes it. `Clock` is the whole harness.
+
+
+def _tick_seconds(every, run_for, poll=1):
+    """Elapsed times, in whole seconds, at which a `Slow` said "still going"."""
+    lines, emit = collected()
+    clock = Clock()
+    step = say.slow("installing", emit=emit, clock=clock, every=every,
+                    background=False).start()
+    for _ in range(int(run_for // poll)):
+        clock.now += poll
+        step.tick()
+    step.give_up()      # no closing line, so `lines` is ticks and the headline
+    return [n for n in range(int(run_for) + 1)
+            if f"  still going, {say.elapsed(n)}" in lines]
+
+
+def test_the_first_sign_of_life_comes_long_before_the_full_interval():
+    """The minute of silence is where somebody Ctrl-Cs a box that is billing.
+
+    `go`'s install goes quiet for minutes fetching torch. At a flat 60s tick the
+    first line landed a full minute after the output stopped, which is well past
+    the point where a person has already decided it hung.
+    """
+    assert _tick_seconds(every=60, run_for=19) == []
+    assert _tick_seconds(every=60, run_for=20) == [20]
+    # And it is genuinely the first thing said, not the second.
+    assert _tick_seconds(every=60, run_for=59) == [20]
+
+
+def test_the_backoff_widens_to_the_plain_cadence_and_stays_there():
+    """20, then 40, then 60 forever — the ticks rejoin the old schedule."""
+    assert _tick_seconds(every=60, run_for=480) == [
+        20, 60, 120, 180, 240, 300, 360, 420, 480]
+
+
+def test_an_earlier_first_line_costs_one_line_on_a_long_install():
+    """The count is the argument. A tick is a line someone scrolls past in Slack.
+
+    Nine lines instead of eight over eight minutes buys a first sign of life
+    three times sooner. A five-second tick would have bought it with ninety-six.
+    """
+    eight_minutes = 480
+    flat = eight_minutes // 60
+    assert len(_tick_seconds(every=60, run_for=eight_minutes)) == flat + 1
+    assert len(_tick_seconds(every=5, run_for=eight_minutes)) > 90
+
+
+def test_every_length_of_step_gets_the_early_line_and_pays_at_most_two():
+    """Both halves of the bargain, for every duration and every cadence.
+
+    Held over the whole range rather than the one example, because the numbers
+    that make the argument — one line, three times sooner — are true of the
+    eight-minute install and have to stay true of the twenty-minute one.
+    """
+    for run_for in range(30, 1201, 30):
+        for every in (30, 60, 120):
+            ticks = _tick_seconds(every=every, run_for=run_for)
+            assert ticks[0] == min(say.FIRST_TICK_SECONDS, every), (
+                f"{run_for}s at every={every}: first line at {ticks[0]}s")
+            extra = len(ticks) - int(run_for // every)
+            assert 0 <= extra <= 2, f"{run_for}s at every={every}: {extra} extra"
+
+
+def test_a_piped_run_is_told_it_is_alive_as_early_as_a_watched_one():
+    """The pipe gets FEWER lines, never a longer wait for the first one."""
+    first_piped = _tick_seconds(every=say.PIPED_TICK_SECONDS, run_for=600)[0]
+    first_watched = _tick_seconds(every=say.TICK_SECONDS, run_for=600)[0]
+    assert first_piped == first_watched == say.FIRST_TICK_SECONDS
+
+
+def test_a_step_faster_than_the_first_interval_is_not_slowed_by_it():
+    """`every` is a ceiling the backoff climbs to, never a floor it starts above."""
+    assert say.FIRST_TICK_SECONDS > 5
+    assert _tick_seconds(every=5, run_for=20) == [5, 10, 15, 20]
 
 
 def test_nothing_redraws_so_the_whole_thing_pastes():

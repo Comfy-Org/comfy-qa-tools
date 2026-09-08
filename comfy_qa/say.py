@@ -86,6 +86,11 @@ DETAIL_INDENT = "    "
 TICK_SECONDS = 30
 PIPED_TICK_SECONDS = 120
 
+# The first tick does not wait for the full interval. See `Slow` for why twenty
+# seconds and why it then doubles rather than staying there.
+FIRST_TICK_SECONDS = 20
+TICK_BACKOFF = 2
+
 # Below this, a step is not slow enough to be worth timing.
 WORTH_TIMING_SECONDS = 5
 
@@ -237,6 +242,32 @@ class Slow:
     Every line is a whole line — no redraw, nothing to erase — so a run of this
     pastes into Slack exactly as it appeared in the terminal.
 
+    The ticks BACK OFF: the first comes after `FIRST_TICK_SECONDS`, and each
+    interval after it doubles until it reaches `every`, which stays the cadence
+    for the rest of the step. Two pressures pull opposite ways and a single
+    interval can only satisfy one of them.
+
+    Sooner, because the moment that matters is the FIRST one. `go`'s install
+    streams a few hundred lines of apt and pip and then goes quiet while torch,
+    torchvision, torchaudio and the CUDA runtime download with no progress lines
+    of their own. That silence is where somebody decides it has hung and presses
+    Ctrl-C on a box that is running and billing, and at `every` = 60 the first
+    sign of life was a full minute after the output stopped. Twenty seconds is
+    long enough to still read as a lull and short enough that nobody has
+    concluded anything yet.
+
+    Rarer, because every tick is a line someone scrolls past when this run is
+    pasted into a Slack code block — the second reading the module docstring is
+    about. A five-second tick over a several-minute install is dozens of lines
+    and becomes the noise a reader learns to skip, which is worse than the
+    silence it replaced.
+
+    Doubling settles that without a third number to tune. At `every` = 60 the
+    intervals are 20, 40, then 60 forever, so the ticks land at 0m20s, 1m00s,
+    2m00s, 3m00s — from the second one onward, EXACTLY where the flat cadence
+    already put them. An eight-minute install pays one extra line for a first
+    sign of life three times sooner, and no run pays more than two.
+
     `emit` is where the lines go. It defaults to this module's own writers; the
     lifecycle functions pass the `say` they were handed, so their progress keeps
     coming out wherever their caller put it.
@@ -259,6 +290,10 @@ class Slow:
         self._every = every if every is not None else (
             TICK_SECONDS if watching() else PIPED_TICK_SECONDS)
         self._background = background
+        # The ceiling is `_every`; `_interval` is what the next tick actually
+        # waits for, and it climbs to the ceiling. `min` so a step configured to
+        # tick faster than the first interval is not slowed down by it.
+        self._interval = min(FIRST_TICK_SECONDS, self._every)
         self._started = 0.0
         self._last_tick = 0.0
         self._ticked = False
@@ -299,10 +334,11 @@ class Slow:
         if self._every <= 0:
             return
         now = self._clock()
-        if now - self._last_tick < self._every:
+        if now - self._last_tick < self._interval:
             return
         self._last_tick = now
         self._ticked = True
+        self._interval = min(self._interval * TICK_BACKOFF, self._every)
         self._under(f"still going, {elapsed(now - self._started)}")
 
     def done(self, note: str | None = None) -> None:
