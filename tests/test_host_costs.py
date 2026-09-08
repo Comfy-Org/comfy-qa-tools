@@ -28,6 +28,8 @@ import ast
 import pytest
 from typer.testing import CliRunner
 
+import comfy_qa.host as host_module
+from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.host import app
 
@@ -1655,3 +1657,90 @@ def test_every_mutating_call_failure_handler_names_the_bill():
         f"message is the only thing standing between that and an overnight "
         f"bill. Route the fix through `_with_the_bill`."
     )
+
+
+# --- the strangers check, which nothing was holding -------------------------
+#
+# `_undeclared_and_running` is what stops `down --all` printing an all-clear
+# about a project it did not read, or did not read properly. Four separate
+# mutations of it survived the whole suite: narrowing the status filter to
+# RUNNING, dropping the declared-names filter, and two of the three None
+# returns. None of it had a test.
+
+
+class _FakeGc:
+    """Answers the two calls `_undeclared_and_running` makes, and nothing else."""
+
+    def __init__(self, instances=None, project="proj", raises=None):
+        self._instances, self._project, self._raises = instances, project, raises
+
+    def current_project(self):
+        if self._raises:
+            raise self._raises
+        return self._project
+
+    def list_instances(self, project):
+        if self._raises:
+            raise self._raises
+        return self._instances or []
+
+
+_DECLARED = Host(name="comfy-win", kind="gce", port=8190, gce_instance="comfy-win",
+                 gce_zone="us-central1-a", gce_project="proj")
+
+
+def _inst(name, status, zone="us-central1-b"):
+    return {"name": name, "status": status,
+            "zone": f"https://www.googleapis.com/compute/v1/projects/p/zones/{zone}"}
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "STAGING", "PROVISIONING",
+                                    "STOPPING", "REPAIRING"])
+def test_a_stranger_that_is_not_terminated_is_reported_whatever_it_is_doing(status):
+    """A box that is STAGING is billing and is not TERMINATED. Reading only
+    RUNNING lets `down --all` say "nothing was running" over a machine that is
+    on its way up on somebody's project."""
+    gc = _FakeGc([_inst("someone-else", status)])
+    assert host_module._undeclared_and_running(gc, [_DECLARED]) == [
+        ("someone-else", "us-central1-b")]
+
+
+def test_a_terminated_stranger_is_not_reported():
+    gc = _FakeGc([_inst("someone-else", "TERMINATED")])
+    assert host_module._undeclared_and_running(gc, [_DECLARED]) == []
+
+
+def test_a_machine_this_tool_declares_is_not_a_stranger():
+    """Without the declared-names filter, `down --all` tells you to run raw
+    gcloud against a box it manages itself — advice to work around the tool,
+    printed by the tool."""
+    gc = _FakeGc([_inst("comfy-win", "RUNNING", "us-central1-a"),
+                  _inst("someone-else", "RUNNING")])
+    assert host_module._undeclared_and_running(gc, [_DECLARED]) == [
+        ("someone-else", "us-central1-b")]
+
+
+_LOCAL_ONLY = Host(name="local", kind="local", port=8188)
+
+
+def test_a_listing_that_could_not_be_read_is_None_not_empty():
+    """None and [] print different sentences: "could not be checked, so this is
+    not an all-clear" against "nothing is running on the project either". An
+    empty list here turns an unread project into a promise about it."""
+    gc = _FakeGc(raises=GcloudError("no"))
+    assert host_module._undeclared_and_running(gc, [_DECLARED]) is None
+
+
+def test_a_project_that_gcloud_could_not_name_is_None_not_empty():
+    """The other None, reached only when no declared host carries a project —
+    which is exactly the case `down --all` matters most in. The test above
+    cannot reach it, because a declared host supplies the project itself."""
+    gc = _FakeGc(raises=GcloudError("no"))
+    assert host_module._undeclared_and_running(gc, [_LOCAL_ONLY]) is None
+
+
+def test_a_project_that_cannot_be_named_is_None_not_empty():
+    """Same fact from the other direction: no declared cloud host and gcloud
+    reporting no configured project."""
+    gc = _FakeGc(project=None)
+    assert host_module._undeclared_and_running(gc, [_LOCAL_ONLY]) is None
