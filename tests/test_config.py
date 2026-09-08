@@ -161,7 +161,19 @@ def test_a_host_list_with_no_hosts_says_what_to_do_about_it(empty):
     message = str(raised.value)
     assert "no [hosts.<name>] tables found" in message
     assert "[hosts.local]" in message, "it names the shape of what is missing"
-    assert "comfy-qat init --force" in message, (
-        "and the way out — `--force` because the file exists, which is the "
-        "whole difference from the missing-file case"
+
+    # THE ASSERTION THAT MATTERS, and it is the inverse of the one that was
+    # here. An earlier version of this message offered `comfy-qat init --force`,
+    # and that was wrong for a reason no test was watching for: `parse` also
+    # validates a CANDIDATE REWRITE for `hostfile.apply`, and is quoted verbatim
+    # into its refusal. A `delete` that empties the host list therefore printed
+    # "run init --force" directly above remove.py's "take the table out by
+    # hand" — two remedies, disagreeing, the overwriting one first, while the
+    # file was still intact and still held the user's own comments.
+    #
+    # So this pins the ABSENCE of destructive advice. It is the only kind of
+    # assertion that could have caught it: the message read perfectly well.
+    assert "--force" not in message, (
+        "this text is quoted into hostfile.apply's refusal, where the file is "
+        "intact and must not be overwritten — nothing here may suggest it"
     )

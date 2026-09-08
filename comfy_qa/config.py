@@ -193,16 +193,27 @@ def parse(data: dict) -> list[Host]:
         # missing is the way out — every other refusal in this file names one,
         # and this was four words with nothing to do about them.
         #
-        # It needs to serve two arrivals. Someone editing the file down to
-        # nothing, who wants a starter list back. And someone whose `delete`
-        # took their last cloud host: `hostfile` will not write a list this
-        # function cannot read, so the entry stays and the command says so —
-        # correctly, because writing an unloadable file is worse. Both are
-        # "there is nothing here", and `init --force` is the answer to both.
+        # THE ADVICE HERE MUST BE SAFE IN BOTH CONTEXTS, and an earlier version
+        # of it was not. `parse` validates two different things: a real file
+        # being loaded, and a CANDIDATE REWRITE that `hostfile.apply` is about
+        # to write. It cannot tell them apart, and it is quoted verbatim into
+        # the rewrite's refusal.
+        #
+        # So `init --force` — which was here — reached the user at the one
+        # moment it was destructive. `delete` removing the last cloud host
+        # produces a candidate this function rejects, `apply` refuses and
+        # re-raises this text, and remove.py prints it immediately above its own
+        # "take the table out by hand". Two remedies, adjacent, disagreeing, the
+        # overwriting one first — while the file is still intact and still holds
+        # the hand-written comments this module's textual rewrite exists to
+        # preserve.
+        #
+        # Nothing here suggests overwriting anything. Naming the shape that is
+        # missing is true of a file and of a rewrite alike; `init --force`
+        # documents itself for whoever actually wants it.
         raise ConfigError(
             "no [hosts.<name>] tables found — the file parses, and declares no "
-            "machines. Add a table like [hosts.local], or run "
-            "`comfy-qat init --force` for a starter list."
+            "machines. Every host is a table named for it, like [hosts.local]."
         )
 
     hosts = [_parse_host(name, raw) for name, raw in hosts_table.items()]
