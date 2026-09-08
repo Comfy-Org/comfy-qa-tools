@@ -707,3 +707,103 @@ def test_a_step_that_was_refused_does_not_invent_what_it_did_not_create(kind):
             f"a move REFUSED inside `{action.kind}` claims {item!r} exists. Google "
             f"answered, and the answer was no. What it said was:\n{said}"
         )
+
+
+# --- 6. ambiguity: two answers with opposite money meanings need two words ----
+
+# Seen on a real host list. Three GCE boxes had been deleted for real — confirmed
+# gone at Google, disks reclaimed — and `list --live` printed:
+#
+#     comfy-win                  gce  ...  stopped
+#     comfy-win-b                gce  ...  unknown     <- deleted
+#     comfy-linux-us-central1-c  gce  ...  unknown     <- deleted
+#     comfy-linux-2              gce  ...  unknown     <- deleted
+#
+# `unknown` is also what this tool says when it could not ask Google at all. So a
+# machine that DEFINITIVELY DOES NOT EXIST and a machine we FAILED TO REACH read
+# identically — and those two facts point opposite ways about money. Gone means
+# nothing is billing and nothing can. Could-not-ask means you may still be paying
+# and nobody looked.
+#
+# **A third form of the same invariant.** Rules (a)-(d) catch a message that
+# contradicts itself; rule (e) catches one that leaves out what its step created.
+# This one is neither: every word of `unknown` was true of all four rows. It was
+# materially ambiguous, which for a money answer is the same failure wearing a
+# different coat — the test is still "does what the user reads let them act
+# correctly about money".
+#
+# `readable_state` exists because a bare `-` said "not running", "not known" and
+# "does not apply" at once. This is that conflation one layer out, on the live
+# path, and the information to separate them was already in hand: absent from a
+# project listing that SUCCEEDED is not the same event as a listing that failed.
+#
+# Nothing here asserts the wording. Two words are compared with each other, so
+# either may be rewritten and only their collapse into one fails.
+
+
+def _live_state_cell(runner):
+    """The STATE column of `list --live` for one declared cloud box."""
+    import tempfile
+
+    from comfy_qa import gcloud as gcloud_module
+
+    path = Path(tempfile.mkdtemp()) / "hosts.toml"
+    path.write_text(HOSTS, encoding="utf-8")
+    real = gcloud_module.Gcloud(runner=runner)
+    saved = gcloud_module.Gcloud
+    try:
+        gcloud_module.Gcloud = lambda *a, **k: real
+        out = CliRunner().invoke(app, ["list", "--live", "--config", str(path)]).stdout
+    finally:
+        gcloud_module.Gcloud = saved
+    row = next(line for line in out.splitlines() if line.startswith("comfy-win"))
+    return row.split("http")[-1].split(None, 1)[-1].strip()
+
+
+def _listing(instances):
+    def runner(args, mode):
+        if " ".join(args).startswith("compute instances list"):
+            return instances
+        raise AssertionError(f"unexpected: {' '.join(args)}")
+    return runner
+
+
+def _unreachable(args, mode):
+    raise GcloudError("could not reach Google Cloud", kind="network")
+
+
+def test_a_deleted_box_and_an_unreachable_one_do_not_read_alike():
+    """The whole finding, as one comparison.
+
+    Both cells are read from real runs of `list --live` rather than named here,
+    so the words may be rewritten freely; what may not happen is the two becoming
+    one, which is the state this was found in.
+    """
+    running = _live_state_cell(_listing([
+        {"name": "comfy-win", "status": "RUNNING",
+         "zone": "https://x/projects/proj/zones/us-central1-a"}]))
+    deleted = _live_state_cell(_listing([]))       # the listing worked; it is not there
+    unreachable = _live_state_cell(_unreachable)   # nobody could ask
+
+    assert deleted and unreachable and running, "a state cell came back empty"
+    assert deleted != unreachable, (
+        f"a box Google says is gone and a box nobody could ask about both read "
+        f"{deleted!r}. Gone means nothing is billing; could-not-ask means you may "
+        f"still be paying. One word cannot carry both."
+    )
+    assert deleted != running, f"a deleted box reads as {running!r}"
+
+
+def test_not_knowing_keeps_the_word_for_not_knowing():
+    """The half that stops the fix drifting the other way.
+
+    Separating the two is only worth anything if `unknown` still means nobody
+    could ask. Giving the deleted case that word back — or handing the
+    unreachable case a confident one — is the same defect returning.
+    """
+    assert "unknown" in _live_state_cell(_unreachable), (
+        "a read that failed no longer says it does not know"
+    )
+    assert "unknown" not in _live_state_cell(_listing([])), (
+        "a box the project does not have is being reported as not knowing again"
+    )

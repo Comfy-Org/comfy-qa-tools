@@ -238,20 +238,30 @@ def test_boxes_on_different_projects_still_each_get_read():
     )
 
 
-def test_a_box_that_is_not_on_the_project_reads_as_not_knowing():
-    """Absent is `UNKNOWN_STATE`, which is not TERMINATED and so counts as running.
+def test_a_box_that_is_not_on_the_project_is_told_apart_from_one_nobody_could_ask():
+    """Absent from a listing that SUCCEEDED is `GONE`, and that is not "unknown".
 
-    That is the safe direction and it matches what the per-box `describe` did: a
-    read it could not make was never taken as "the box is off". A box wrongly
-    counted gets stopped; a box wrongly skipped keeps billing and breaks the
-    switch it was blocking.
+    It used to be the same word, and the two point opposite ways about money:
+    absent from a project we read means nothing is billing and nothing can, while
+    a read that told us nothing means you may still be paying and nobody looked.
+    A real host list printed three deleted boxes and one unreachable box as four
+    identical `unknown`s.
+
+    The property this test was written for is unchanged and still asserted:
+    neither answer is TERMINATED, so `running_elsewhere` still counts both as
+    running. That is the safe direction — a box wrongly counted gets stopped, a
+    box wrongly skipped keeps billing and breaks the switch it was blocking — and
+    separating the two words does not disturb it.
     """
-    from comfy_qa.gcloud import Gcloud
+    from comfy_qa.gcloud import GONE, Gcloud
 
     gc, _calls = _counting_gcloud([_box("a", "z1", "proj")])
     states = gc.instance_statuses([("a", "z1", "proj"), ("ghost", "z1", "proj")])
 
-    assert states[("ghost", "z1", "proj")] == Gcloud.UNKNOWN_STATE
+    assert states[("ghost", "z1", "proj")] == GONE
+    assert GONE != Gcloud.UNKNOWN_STATE, (
+        "the deleted box and the unreadable one are back to sharing a word"
+    )
     assert states[("ghost", "z1", "proj")] != "TERMINATED"
 
 

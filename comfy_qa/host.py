@@ -186,7 +186,7 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
     # list with eight boxes meant eight of them.
     live_states: dict[tuple[str, str, str], str] = {}
     if live:
-        from .gcloud import Gcloud, GcloudError
+        from .gcloud import GONE, Gcloud, GcloudError
 
         remote = [(host.gce_instance, host.gce_zone, host.gce_project)
                   for host in hosts if host.is_remote]
@@ -204,15 +204,28 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
         parts = []
         if host.is_remote:
             if live:
-                # `or "unknown"`, so all three ways of not knowing land on the
-                # same word: the read failed, the machine is not on the project
-                # any more, or Google answered without a status. A declared box
-                # that has been deleted used to raise and be reported "unknown";
-                # it is now simply absent from the list, and must still say so.
+                # THREE ANSWERS, NOT ONE WORD. `or "unknown"` used to cover the
+                # read failing, the machine being absent from its project, and
+                # Google answering without a status — and the middle one is not a
+                # way of not knowing. It is knowing.
+                #
+                # Those two readings point opposite ways about money. Absent from
+                # a project we successfully listed means nothing is billing and
+                # nothing can; a read that failed means you may still be paying
+                # and nobody looked. A real host list printed three deleted boxes
+                # and one unreachable box as four identical `unknown`s, which is
+                # the ambiguity `readable_state` was written to remove, one layer
+                # out and on the live path.
+                #
+                # "not on the project" rather than "gone", because that is what
+                # the read established: the project comes off the host list, and
+                # an entry naming the wrong project would otherwise be handed a
+                # false all-clear in the one direction that costs money.
                 key = (host.gce_instance, host.gce_zone, host.gce_project)
                 state = live_states.get(key) or "unknown"
                 # TERMINATED is Google's word for stopped, and reads as broken.
-                parts.append({"RUNNING": "running", "TERMINATED": "stopped"}.get(
+                parts.append({"RUNNING": "running", "TERMINATED": "stopped",
+                              GONE: "not on the project"}.get(
                     state, state.lower()))
             if tunnel_status(host.name).running:
                 parts.append("tunnelled")

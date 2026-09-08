@@ -62,6 +62,13 @@ QUOTA = "quota"              # reached Google, allowed, and over an allowance
 NO_GCLOUD = "no-gcloud"      # the binary is not here
 UNKNOWN = "unknown"
 
+# Not a failure and not a state Google reports: the answer to "is that machine
+# there at all", which a listing that SUCCEEDED settles and a read that failed
+# does not. Module level rather than only on the class because the class is what
+# tests replace, and a constant that disappears with it is a constant nothing can
+# rely on.
+GONE = "GONE"
+
 # Ordered: the first match wins, so the specific signs come before the vague
 # ones. "reauthentication" is checked before anything else because gcloud wraps
 # it inside a generic "problem refreshing your current auth tokens" sentence that
@@ -691,11 +698,21 @@ class Gcloud:
         Matched on name AND zone, because an instance name is only unique within
         a zone, and a project can hold `comfy-win` in two of them.
 
-        A machine that is absent from its project's list gets `UNKNOWN_STATE` —
-        the same answer `instance_status` gives for a read that succeeded and
-        said nothing, which is what this is. A project whose read FAILS raises,
-        as the per-machine call did; callers that treat not-knowing as survivable
-        catch `GcloudError` around this exactly as they did around that.
+        A machine ABSENT from a listing that SUCCEEDED gets `GONE`, and that is a
+        different answer from `UNKNOWN_STATE`. This used to return the same word
+        for both, and the two facts have opposite money implications: absent from
+        a project we successfully read means nothing is billing and nothing can,
+        while a read that told us nothing means you may still be paying and
+        nobody looked. `readable_state` exists because a bare `-` said "not
+        running", "not known" and "does not apply" at once; this is the same
+        conflation one layer out, on the live path, and it reached a real host
+        list where three deleted boxes and an unreachable one printed alike.
+
+        `GONE` is scoped to what was actually established — the instance is not
+        on THAT project — because the project comes off the host list and a host
+        list can be wrong about it. A read that FAILS still raises, as the
+        per-machine call did; callers that treat not-knowing as survivable catch
+        `GcloudError` around this exactly as they did around that.
         """
         out: dict[tuple[str, str, str], str] = {}
         for project in dict.fromkeys(project for _n, _z, project in wanted):
@@ -707,7 +724,7 @@ class Gcloud:
             for name, zone, owner in wanted:
                 if owner == project:
                     out[(name, zone, owner)] = found.get(
-                        (name, zone), self.UNKNOWN_STATE)
+                        (name, zone), self.GONE)
         return out
 
     #: What `instance_status` returns when Google answered but said nothing about
@@ -717,6 +734,7 @@ class Gcloud:
     #: was reported as "the machine is unknown — it started, and it is billing",
     #: asserting a bill on no evidence at all.
     UNKNOWN_STATE = ""
+    GONE = GONE
 
     def instance_status(self, name: str, zone: str, project: str) -> str:
         """RUNNING, TERMINATED, STAGING... TERMINATED is Google's word for stopped.
