@@ -423,9 +423,21 @@ whose first entries are the only ones ever used. When those few turn up nothing
 the search widens, and the note says which half was missing — the card or the
 machine type. They are different problems and used to print the same sentence.
 
-**`this project has no L4 quota in europe-west4, so nothing can start there. Nothing was created.`**
+**`this project has no L4 quota in me-west1, so nothing can start there. It holds L4 in us-central1, europe-west1, europe-west4 and 40 more. Nothing was created.`**
 `--region` narrows the choice without naming a zone, and it can narrow it to
-nothing. Ask for the card in that region, or drop `--region`.
+nothing. Drop `--region` and let this pick, or ask for the card there.
+
+It carries the same two improvements as the `--zone` refusal below, for the same
+reasons: it **names where the grant does apply**, so a mistyped region is its own
+diagnosis at a glance — `me-west9` beside a list containing `me-west1` needs no
+further explanation — and the fix line **leads with the cheap check**,
+`gcloud compute regions list --filter=name=<region>`, before offering the slow
+one. A quota request is days; a spelling check is seconds.
+
+Note it is `regions list` here and `zones list` there. And as below, nothing
+offline can tell a typo from a genuine gap: the quota payload lists where the
+grant *applies*, not every region Google has, so a real region you hold no card
+in is absent from it exactly as a misspelling would be.
 
 **`this project has no L4 quota in me-west1, so nothing can start in me-west1-a. It holds L4 in us-central1, europe-west1, europe-west4 and 40 more. Nothing was created.`**
 The same gate, reached through `--zone` instead of `--region`. A zone in a region
