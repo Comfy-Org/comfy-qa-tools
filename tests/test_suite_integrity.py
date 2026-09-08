@@ -88,6 +88,7 @@ REQUIRED = {
     "test_relocate",
     "test_resolve",
     "test_say",
+    "test_selector_flags",
     "test_setup",
     "test_setup_flow",
     "test_shell_access",

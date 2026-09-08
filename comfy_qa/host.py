@@ -438,6 +438,38 @@ def _selector(name: str | None, os_: str | None, gpu: str | None) -> str:
     Giving both is an error rather than a precedence rule. Someone who typed
     `go windows --os linux` has made a mistake, and picking a winner would carry
     that mistake out on a machine.
+
+    ---
+
+    **`--os` and `--gpu` are hidden on all eleven commands that reach this
+    function, and this is the deprecation window, not a second permanent
+    spelling.** They still work, they no longer appear in `--help`, and anyone
+    who uses one is told the shorter form below.
+
+    Hidden rather than kept because the flags were never a second spelling of
+    one idea — the name `--os`/`--gpu` carries three different meanings in this
+    tool, and a reader of `--help` had no way to tell which one they were
+    looking at:
+
+      - `create --os windows --gpu l4` DESCRIBES A BOX TO BUILD. Both are
+        required and neither selects anything; there is nothing to select yet.
+      - the eleven commands here PICK AN EXISTING MACHINE, optionally, out of
+        the host list — and every one of them already takes that same value as
+        a positional argument.
+      - `quota request --gpu l4,a100` names A COMMA-SEPARATED LIST of cards to
+        ask Google for. No selector accepts that value, and `create` does not
+        either.
+
+    So `create` and `quota request` keep theirs, for two different reasons, and
+    the eleven redundant pairs go. What is left is one way to say which machine
+    you mean, on every command that takes one.
+
+    The note goes to stderr, on purpose. A deprecation nobody is told about
+    never ends: the flags vanish from `--help` on the day this ships, so the
+    only person who can still discover the shorter form is the person still
+    typing the longer one — and `warn` is where this tool already puts exactly
+    this (`down --keep-running`). stderr keeps `--json` and `--dry-run` output
+    clean for the script that is the other reason these flags existed.
     """
     described = SEPARATOR.join(part for part in (os_, gpu) if part)
     if name and described:
@@ -449,6 +481,12 @@ def _selector(name: str | None, os_: str | None, gpu: str | None) -> str:
             "which machine? A name, an operating system, a card, or both as "
             "os/card — or --os and --gpu."
         )
+    if described:
+        # After both refusals, never instead of one: someone who typed a name
+        # AND a flag has a mistake to fix, not a spelling to update, and two
+        # messages about one command would bury the one that matters.
+        say.warn("--os/--gpu are on their way out. They still work; say it as "
+                 f"the argument instead: {described}")
     return name or described
 
 
@@ -560,9 +598,9 @@ def up_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Start a machine and wait until ComfyUI actually answers.
 
@@ -596,9 +634,9 @@ def open_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the tunnel command instead of running it.")] = False,
 ) -> None:
@@ -653,9 +691,9 @@ def disconnect_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Close the tunnel and leave the machine running.
 
@@ -700,9 +738,9 @@ def down_cmd(
     # by the argument parser. Being refused is loud, but this is the one command
     # where not running is what costs money.
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     keep_running: Annotated[bool, typer.Option(
         "--keep-running",
         help="Deprecated: this is `comfy-qat disconnect`.")] = False,
@@ -930,9 +968,9 @@ def go_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     no_browser: Annotated[bool, typer.Option(
         "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
     no_install: Annotated[bool, typer.Option(
@@ -980,9 +1018,9 @@ def ssh_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Open a shell on a box, through the tunnel.
 
@@ -1051,9 +1089,9 @@ def rdp_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
 ) -> None:
     """Reset the Windows password and forward RDP, then hand over the details.
 
@@ -1113,9 +1151,9 @@ def logs_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     tail: Annotated[Optional[int], typer.Option(
         "--tail", help="Print this many lines and stop. Add --follow to keep reading.")] = None,
     follow: Annotated[Optional[bool], typer.Option(
@@ -1355,9 +1393,9 @@ def switch_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     keep_others: Annotated[bool, typer.Option(
         "--keep-others", help="Leave the other machines running. They keep billing.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
@@ -1616,9 +1654,9 @@ def move_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before making changes.")] = False,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="Show the plan and stop.")] = False,
     clean: Annotated[bool, typer.Option(
@@ -1929,9 +1967,9 @@ def stamp_cmd(
     config: Annotated[Optional[Path], typer.Option(
         "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
     os_: Annotated[Optional[str], typer.Option(
-        "--os", help="Pick by operating system: windows, linux, macos.")] = None,
+        "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
-        "--gpu", help="Pick by card: l4, t4, a100.")] = None,
+        "--gpu", hidden=True, help="Pick by card: l4, t4, a100.")] = None,
     as_json: Annotated[bool, typer.Option(
         "--json", help="Machine-readable, for pasting into a report or a test.")] = False,
 ) -> None:

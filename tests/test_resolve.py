@@ -193,13 +193,33 @@ def _run(*args):
     return CliRunner().invoke(app, list(args))
 
 
+def _without_the_note(result):
+    """The output, minus the line that says `--os`/`--gpu` are on their way out.
+
+    The flags are hidden now and print a deprecation note naming the shorter
+    form (`tests/test_selector_flags.py` owns that). This file is about the two
+    spellings reaching the SAME MACHINE, which is a separate promise and the one
+    the window rests on: drop the note and the rest has to be identical.
+    """
+    return "\n".join(line for line in result.output.splitlines()
+                      if "on their way out" not in line)
+
+
 def test_the_flags_say_the_same_thing_as_the_positional():
     """`go windows/l4` is what anyone types by hand; `--os`/`--gpu` are for a
     script, or for when a machine's name could be mistaken for a description."""
-    assert _run("stamp", "--os", "windows").output == _run("stamp", "windows").output
-    assert _run("stamp", "--gpu", "l4").output == _run("stamp", "l4").output
-    assert (_run("stamp", "--os", "windows", "--gpu", "l4").output
-            == _run("stamp", "windows/l4").output)
+    assert (_without_the_note(_run("stamp", "--os", "windows"))
+            == _without_the_note(_run("stamp", "windows")))
+    assert (_without_the_note(_run("stamp", "--gpu", "l4"))
+            == _without_the_note(_run("stamp", "l4")))
+    assert (_without_the_note(_run("stamp", "--os", "windows", "--gpu", "l4"))
+            == _without_the_note(_run("stamp", "windows/l4")))
+
+
+def test_the_note_is_the_only_difference():
+    """And the note really is there, so the check above is not deleting nothing."""
+    assert "on their way out" in _run("stamp", "--os", "windows").output
+    assert "on their way out" not in _run("stamp", "windows").output
 
 
 def test_saying_it_twice_is_an_error_not_a_precedence_rule():

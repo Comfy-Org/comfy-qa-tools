@@ -1132,6 +1132,23 @@ used": a local ComfyUI and a tunnel to a cloud box both answer on `127.0.0.1` an
 look identical in a browser, so the machine is always said out loud. `comfy-qat
 list` shows what is declared.
 
+**`warning: --os/--gpu are on their way out. They still work; say it as the argument instead: windows/l4`**
+
+Not a failure, and nothing you typed has stopped working. `--os` and `--gpu` were
+a second spelling of the argument every one of these commands already takes:
+`comfy-qat go --os windows --gpu l4` and `comfy-qat go windows/l4` go through the
+same resolution and reach the same machine. They no longer appear in `--help`, and
+this note is the only place you will now be told the shorter form — so it is
+printed rather than left silent.
+
+They are hidden rather than deleted, so every script and run sheet written before
+today keeps working while there is one way in the help.
+
+`create` and `quota request` keep theirs, and they are not the same case as each
+other. `comfy-qat create --os windows --gpu l4` describes a box to build — there is
+nothing yet to select. `comfy-qat quota request --gpu l4,a100` names a
+comma-separated list of cards to ask Google for, which no selector accepts.
+
 Every command that takes a machine accepts its name, an operating system, a card,
 or both as `os/card` — `host switch windows`, `host go l4`, `host up windows/l4`.
 These are the refusals, and each one is a refusal rather than a guess on purpose:
