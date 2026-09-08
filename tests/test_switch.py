@@ -238,7 +238,7 @@ def stops(result) -> list[str]:
 # --- the six ways a switch ends -------------------------------------------
 
 def test_the_target_is_stopped_and_startable(cli):
-    result = cli("host", "switch", "comfy-win", "--no-browser",
+    result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": ["TERMINATED", "RUNNING"],
                            "comfy-linux": "RUNNING"},
                  serving=("comfy-win",))
@@ -254,7 +254,7 @@ def test_the_target_is_stopped_and_startable(cli):
 
 def test_the_target_is_already_serving(cli):
     """Nothing is restarted, and the tunnel that exists is reused, not stacked."""
-    result = cli("host", "switch", "comfy-win", "--no-browser",
+    result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": "RUNNING"},
                  open_tunnels=("comfy-win",), serving=("comfy-win",))
 
@@ -270,7 +270,7 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
     The box you were on is still up — the target is brought up first for exactly
     this reason — and the next command is on the screen rather than in the docs.
     """
-    result = cli("host", "switch", "windows", "--no-browser",
+    result = cli("switch", "windows", "--no-browser",
                  statuses={"comfy-linux": "RUNNING"},
                  fail=GcloudError("---", raw=STOCKOUT))
 
@@ -287,7 +287,7 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
 
 def test_up_gives_the_same_advice_as_switch_does(cli):
     """The advice belongs to the failure, not to one command that can hit it."""
-    result = cli("host", "up", "windows", fail=GcloudError("---", raw=STOCKOUT))
+    result = cli("up", "windows", fail=GcloudError("---", raw=STOCKOUT))
 
     assert result.exit_code == 1
     assert "no L4 capacity in us-central1-a" in result.output
@@ -295,7 +295,7 @@ def test_up_gives_the_same_advice_as_switch_does(cli):
 
 
 def test_the_target_cannot_start_and_there_is_nowhere_else(cli):
-    result = cli("host", "switch", "comfy-win", "--no-browser", declared=ONE_BOX,
+    result = cli("switch", "comfy-win", "--no-browser", declared=ONE_BOX,
                  fail=GcloudError("---", raw=STOCKOUT))
 
     assert result.exit_code == 1
@@ -306,7 +306,7 @@ def test_the_target_cannot_start_and_there_is_nowhere_else(cli):
 
 
 def test_an_ambiguous_selector_refuses_before_anything_is_touched(cli):
-    result = cli("host", "switch", "windows", declared=TWO_WINDOWS,
+    result = cli("switch", "windows", declared=TWO_WINDOWS,
                  statuses={"comfy-linux": "RUNNING"})
 
     assert result.exit_code == 2
@@ -317,7 +317,7 @@ def test_an_ambiguous_selector_refuses_before_anything_is_touched(cli):
 
 
 def test_an_unknown_selector_says_what_is_declared(cli):
-    result = cli("host", "switch", "rtx4090")
+    result = cli("switch", "rtx4090")
 
     assert result.exit_code == 2
     assert "unknown host 'rtx4090'" in result.output
@@ -328,7 +328,7 @@ def test_an_unknown_selector_says_what_is_declared(cli):
 # --- what gets stopped, and what does not ---------------------------------
 
 def test_a_dry_run_prints_the_plan_and_changes_nothing(cli):
-    result = cli("host", "switch", "comfy-win", "--dry-run",
+    result = cli("switch", "comfy-win", "--dry-run",
                  statuses={"comfy-linux": "RUNNING"})
 
     assert result.exit_code == 0
@@ -340,7 +340,7 @@ def test_a_dry_run_prints_the_plan_and_changes_nothing(cli):
 
 
 def test_keep_others_leaves_them_running_and_says_so(cli):
-    result = cli("host", "switch", "comfy-win", "--keep-others", "--no-browser",
+    result = cli("switch", "comfy-win", "--keep-others", "--no-browser",
                  statuses={"comfy-win": ["TERMINATED", "RUNNING"],
                            "comfy-linux": "RUNNING"},
                  serving=("comfy-win",))
@@ -351,13 +351,13 @@ def test_keep_others_leaves_them_running_and_says_so(cli):
 
 
 def test_a_box_that_is_already_stopped_is_not_stopped_again(cli):
-    result = cli("host", "switch", "comfy-win", "--dry-run")
+    result = cli("switch", "comfy-win", "--dry-run")
 
     assert "nothing else is running, so nothing to stop" in result.output
 
 
 def test_the_target_is_never_in_its_own_stop_list(cli):
-    result = cli("host", "switch", "comfy-win", "--dry-run",
+    result = cli("switch", "comfy-win", "--dry-run",
                  statuses={"comfy-win": "RUNNING"})
 
     assert "stop comfy-win" not in result.output
@@ -365,7 +365,7 @@ def test_the_target_is_never_in_its_own_stop_list(cli):
 
 def test_a_tunnel_left_open_counts_as_being_on_that_machine(cli):
     """The box is stopped but the tunnel still points at it — close it anyway."""
-    result = cli("host", "switch", "comfy-win", "--dry-run",
+    result = cli("switch", "comfy-win", "--dry-run",
                  open_tunnels=("comfy-linux",))
 
     assert "then stop comfy-linux" in result.output
@@ -373,7 +373,7 @@ def test_a_tunnel_left_open_counts_as_being_on_that_machine(cli):
 
 
 def test_switch_takes_a_description_just_like_go(cli):
-    result = cli("host", "switch", "windows/l4", "--dry-run")
+    result = cli("switch", "windows/l4", "--dry-run")
 
     assert result.exit_code == 0
     assert "windows/l4 -> comfy-win (Windows Server 2022, L4)" in result.output
@@ -393,7 +393,7 @@ def rows_of(output: str) -> dict[str, str]:
 
 
 def test_the_state_column_shows_which_box_you_are_tunnelled_to(cli):
-    result = cli("host", "list", open_tunnels=("comfy-linux",))
+    result = cli("list", open_tunnels=("comfy-linux",))
 
     assert result.exit_code == 0
     rows = rows_of(result.output)
@@ -412,7 +412,7 @@ def test_a_cloud_box_with_no_tunnel_says_so_rather_than_a_bare_dash(cli):
     Google". A tester could not tell a running box from a stopped one, which is
     the question the column exists to answer.
     """
-    result = cli("host", "list")
+    result = cli("list")
     rows = rows_of(result.output)
 
     assert "not tunnelled" in rows["comfy-win"]
@@ -421,14 +421,14 @@ def test_a_cloud_box_with_no_tunnel_says_so_rather_than_a_bare_dash(cli):
 
 
 def test_listing_asks_google_nothing_by_default(cli):
-    result = cli("host", "list")
+    result = cli("list")
 
     assert result.calls == [], "listing made a cloud call"
     assert "STATE" in result.output
 
 
 def test_live_asks_google_and_says_stopped_rather_than_terminated(cli):
-    result = cli("host", "list", "--live", statuses={"comfy-win": "RUNNING"})
+    result = cli("list", "--live", statuses={"comfy-win": "RUNNING"})
 
     rows = {line.split()[0]: line for line in result.output.splitlines()[1:]}
     assert "running" in rows["comfy-win"]
@@ -496,7 +496,7 @@ def test_the_ceiling_makes_it_stop_first(cli, monkeypatch):
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
                         lambda gc, host, others: 1)
-    result = cli("host", "switch", "comfy-win", "--no-browser",
+    result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": ["TERMINATED", "RUNNING"],
                            "comfy-linux": "RUNNING"},
                  open_tunnels=("comfy-linux",), serving=("comfy-win",))

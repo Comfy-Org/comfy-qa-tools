@@ -157,7 +157,7 @@ def test_go_detaches_and_hands_the_terminal_back(world):
     """The whole point. It comes back, and it says so."""
     world.cloud(statuses=["RUNNING"], installed=True, on_launch=serving_now(world))
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0, result.output
@@ -170,7 +170,7 @@ def test_go_detaches_and_hands_the_terminal_back(world):
 def test_the_launch_is_detached_on_the_box_not_streamed_here(world):
     world.cloud(statuses=["RUNNING"], installed=True, on_launch=serving_now(world))
 
-    run(world, "host", "go", BOX)
+    run(world, "go", BOX)
 
     launched = [r for r in world.gc.remote if "main.py" in r and "pip" not in r]
     assert launched, "nothing was launched"
@@ -185,7 +185,7 @@ def test_the_url_is_the_last_thing_said(world):
     machine the local install. Whatever is said last is what gets opened."""
     world.cloud(statuses=["RUNNING"], installed=True, on_launch=serving_now(world))
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     lines = [line for line in result.output.splitlines() if line.strip()]
     assert world.url in lines[-1]
@@ -198,7 +198,7 @@ def test_go_still_does_not_return_until_comfyui_answers(world):
     ComfyUI failed to import something."""
     world.cloud(statuses=["RUNNING"], installed=True)   # never starts serving
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1, "exiting 0 here is how a dead box looks healthy"
@@ -214,7 +214,7 @@ def test_a_failed_launch_quotes_the_log_off_the_box(world):
     world.cloud(statuses=["RUNNING"], installed=True,
                 log="  File main.py, line 1\nRuntimeError: no CUDA device")
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     assert result.exit_code == 1
     assert "the last of its log on" in result.output
@@ -225,7 +225,7 @@ def test_go_on_a_box_that_is_already_serving_still_changes_nothing(world):
     world.comfy.mode = "serving"
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0, result.output
@@ -273,8 +273,8 @@ def test_two_boxes_can_be_up_at_once(world, tmp_path):
         world.comfy.mode = "serving"
         world.cloud(statuses=["RUNNING"], installed=True)
 
-        first = run(world, "host", "go", BOX)
-        other = run(world, "host", "go", "comfy-linux")
+        first = run(world, "go", BOX)
+        other = run(world, "go", "comfy-linux")
 
         assert first.exit_code == 0, first.output
         assert other.exit_code == 0, other.output
@@ -287,7 +287,7 @@ def test_follow_keeps_the_old_behaviour(world):
     """Streamed here, and Ctrl-C reaches ComfyUI. Unchanged on purpose."""
     world.cloud(statuses=["RUNNING"], installed=True, launch_exit=130)
 
-    result = run(world, "host", "go", BOX, "--follow", "--no-browser")
+    result = run(world, "go", BOX, "--follow", "--no-browser")
 
     no_traceback(result)
     assert "its log follows" in result.output
@@ -306,7 +306,7 @@ def test_tail_prints_that_many_lines_and_stops(world):
     does not then sit there following."""
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    result = run(world, "host", "logs", BOX, "--tail", "50")
+    result = run(world, "logs", BOX, "--tail", "50")
 
     no_traceback(result)
     assert result.exit_code == 0, result.output
@@ -317,7 +317,7 @@ def test_tail_prints_that_many_lines_and_stops(world):
 def test_tail_with_follow_asked_for_does_both(world):
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    run(world, "host", "logs", BOX, "--tail", "50", "--follow")
+    run(world, "logs", BOX, "--tail", "50", "--follow")
 
     assert any("-Tail 50 -Wait" in r or "tail -n 50 -f" in r for r in world.gc.remote)
 
@@ -325,7 +325,7 @@ def test_tail_with_follow_asked_for_does_both(world):
 def test_logs_follows_by_default(world):
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    run(world, "host", "logs", BOX)
+    run(world, "logs", BOX)
 
     assert any("-Wait" in r or " -f " in r for r in world.gc.remote)
 
@@ -335,7 +335,7 @@ def test_logs_on_a_stopped_box_answers_rather_than_waiting(world):
     paying for."""
     world.cloud(statuses=["TERMINATED"])
 
-    result = run(world, "host", "logs", BOX)
+    result = run(world, "logs", BOX)
 
     no_traceback(result)
     # 2, not 1. This is a refusal: the box is off, nothing was read and nothing
@@ -353,7 +353,7 @@ def test_logs_with_nothing_ever_launched_says_the_box_is_still_billing(world):
 
     world.cloud(statuses=["RUNNING"], log_exit=NO_LOG_EXIT)
 
-    result = run(world, "host", "logs", BOX)
+    result = run(world, "logs", BOX)
 
     no_traceback(result)
     # The ssh ran, but the precondition it checks — that something started
@@ -365,7 +365,7 @@ def test_logs_with_nothing_ever_launched_says_the_box_is_still_billing(world):
 
 
 def test_logs_on_the_local_machine_says_where_its_log_really_is(world):
-    result = run(world, "host", "logs", "local")
+    result = run(world, "logs", "local")
 
     no_traceback(result)
     # Refused before Google is asked anything at all.
@@ -395,7 +395,7 @@ def test_a_read_that_was_attempted_and_failed_still_exits_1(world):
 
     cloud.ssh = refuse
 
-    result = run(world, "host", "logs", BOX)
+    result = run(world, "logs", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1, (
@@ -411,7 +411,7 @@ def test_new_window_off_macos_refuses_without_starting_anything(world, monkeypat
     monkeypatch.setattr("sys.platform", "linux")
     world.cloud(statuses=["TERMINATED"])
 
-    result = run(world, "host", "go", BOX, "--new-window")
+    result = run(world, "go", BOX, "--new-window")
 
     no_traceback(result)
     # A platform check, before osascript is called — and the message says
@@ -442,7 +442,7 @@ def test_new_window_hands_over_the_command_it_was_actually_given(world, monkeypa
                         lambda args, **kwargs: (seen.update(args=args), Ran())[1])
     world.cloud(statuses=["TERMINATED"])
 
-    result = run(world, "host", "go", BOX, "--new-window")
+    result = run(world, "go", BOX, "--new-window")
 
     no_traceback(result)
     assert result.exit_code == 0, result.output

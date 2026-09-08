@@ -226,7 +226,7 @@ def cli(tmp_path, monkeypatch):
         cloud = gc or FakeGcloud()
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
         result = CliRunner().invoke(
-            app, ["host", "create", *args, "--config", str(path)], input=answer)
+            app, ["create", *args, "--config", str(path)], input=answer)
         result.gc = cloud                                     # type: ignore[attr-defined]
         result.path = path                                    # type: ignore[attr-defined]
         result.hosts = (path.read_text(encoding="utf-8")      # type: ignore[attr-defined]

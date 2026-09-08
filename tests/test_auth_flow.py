@@ -128,7 +128,7 @@ def run(cloud, *args, clock=None):
         patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
         if clock is not None:
             patch.setattr("comfy_qa.auth.time", clock)
-        return runner.invoke(app, ["auth", *args])
+        return runner.invoke(app, [*args])
 
 
 # --- status ------------------------------------------------------------------
@@ -246,7 +246,7 @@ def test_login_hands_over_the_commands_and_signs_nobody_in(monkeypatch):
         raise AssertionError("login must not touch gcloud")
 
     monkeypatch.setattr("comfy_qa.auth.Gcloud", explode)
-    result = runner.invoke(app, ["auth", "login"])
+    result = runner.invoke(app, ["login"])
 
     assert result.exit_code == 0
     assert "gcloud auth login" in result.output

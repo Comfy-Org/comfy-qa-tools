@@ -124,7 +124,7 @@ def cli(tmp_path, monkeypatch):
         cloud = gc or FakeGcloud()
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
         result = CliRunner().invoke(
-            app, ["host", "create", *args, "--config", str(path)], input=answer)
+            app, ["create", *args, "--config", str(path)], input=answer)
         result.gc = cloud                                    # type: ignore[attr-defined]
         result.hosts = path.read_text(encoding="utf-8")      # type: ignore[attr-defined]
         return result
@@ -431,7 +431,7 @@ def test_a_box_that_cannot_be_recorded_leads_with_the_command_that_stops_it(
     monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
 
     result = CliRunner().invoke(app, [
-        "host", "create", "--os", "linux", "--gpu", "l4", "--yes",
+        "create", "--os", "linux", "--gpu", "l4", "--yes",
         "--config", str(blocked / "hosts.toml")])
 
     assert result.exit_code == 1, "the work started and failed — not a refusal"
@@ -454,7 +454,7 @@ def test_the_stop_command_is_on_a_line_of_its_own(tmp_path, monkeypatch):
     monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: FakeGcloud())
 
     result = CliRunner().invoke(app, [
-        "host", "create", "--os", "linux", "--gpu", "l4", "--yes",
+        "create", "--os", "linux", "--gpu", "l4", "--yes",
         "--config", str(blocked / "hosts.toml")])
 
     line = next(line for line in result.output.splitlines()

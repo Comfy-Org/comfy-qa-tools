@@ -180,7 +180,7 @@ def test_go_on_a_stopped_box_starts_tunnels_installs_and_serves(world):
 
     world.cloud(statuses=["TERMINATED", "RUNNING"], installed=False, on_launch=launch)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0, result.output
@@ -201,7 +201,7 @@ def test_go_on_a_box_that_is_already_serving_changes_nothing(world):
     world.comfy.mode = "serving"
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0, result.output
@@ -217,7 +217,7 @@ def test_go_on_a_box_that_is_already_serving_changes_nothing(world):
 def test_go_when_the_box_never_reaches_running_says_so_and_stops(world):
     world.cloud(statuses=["TERMINATED", "STAGING"])
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -234,7 +234,7 @@ def test_go_when_the_tunnel_dies_blames_the_tunnel_not_comfyui(world, monkeypatc
     monkeypatch.setattr(tunnel, "_spawn", _dead_tunnel_launcher(world.processes))
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -264,7 +264,7 @@ def test_go_when_the_tunnel_never_opens_repeats_what_gcloud_said(world, monkeypa
     monkeypatch.setattr(tunnel, "_spawn", dying)
     world.cloud(statuses=["TERMINATED", "RUNNING"], installed=True)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -279,7 +279,7 @@ def test_go_when_the_tunnel_never_opens_repeats_what_gcloud_said(world, monkeypa
 def test_go_when_the_install_exits_non_zero_stops_before_launching(world):
     world.cloud(statuses=["RUNNING"], installed=False, install_exit=1)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -299,7 +299,7 @@ def test_go_when_the_install_claims_success_but_installed_nothing(world):
     world.cloud(statuses=["RUNNING"], installed=False, install_exit=0,
                 install_works=False)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -313,7 +313,7 @@ def test_go_when_comfyui_never_answers_after_being_launched(world):
     """Exit 0 from the launch is not the same as ComfyUI being up."""
     world.cloud(statuses=["RUNNING"], installed=True, launch_exit=0)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1, "exiting 0 here is how a dead box looks healthy"
@@ -328,7 +328,7 @@ def test_go_when_comfyui_never_answers_after_being_launched(world):
 def test_go_when_the_box_has_no_python_says_which_failure_it_is(world):
     world.cloud(statuses=["RUNNING"], installed=True, launch_exit=3)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -340,7 +340,7 @@ def test_go_when_the_box_has_no_python_says_which_failure_it_is(world):
 def test_go_when_the_box_never_accepts_commands(world):
     world.cloud(statuses=["RUNNING"], installed=False, ssh_ready=False)
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -363,7 +363,7 @@ def test_go_when_the_credential_dies_mid_flow_stops_immediately(world):
     world.cloud(statuses=["TERMINATED", "RUNNING"], installed=False,
                 ssh_ready=GcloudError(REAUTH, fix="gcloud auth login"))
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -382,7 +382,7 @@ def test_go_on_a_stockout_names_the_zone_and_the_way_out(world):
     world.cloud(statuses=["TERMINATED"],
                 start=GcloudError("---", raw=STOCKOUT_OUTPUT))
 
-    result = run(world, "host", "go", BOX)
+    result = run(world, "go", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -393,7 +393,7 @@ def test_go_on_a_stockout_names_the_zone_and_the_way_out(world):
 
 
 def test_go_on_a_local_machine_that_is_down_hands_over_the_start_command(world):
-    result = run(world, "host", "go", "local")
+    result = run(world, "go", "local")
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -408,25 +408,25 @@ def test_up_then_open_twice_then_down_twice(world):
     world.comfy.mode = "serving"
     world.cloud(statuses=["TERMINATED", "RUNNING"])
 
-    up = run(world, "host", "up", BOX)
+    up = run(world, "up", BOX)
     no_traceback(up)
     assert up.exit_code == 0, up.output
     assert f"open {world.url}" in up.output
     assert world.pid_file().exists()
     assert len(world.processes) == 1
 
-    first = run(world, "host", "open", BOX)
+    first = run(world, "open", BOX)
     no_traceback(first)
     assert first.exit_code == 0
     assert "tunnel already open" in first.output
     assert str(world.processes[0].pid) in first.output, "it names the tunnel it found"
 
-    second = run(world, "host", "open", BOX)
+    second = run(world, "open", BOX)
     no_traceback(second)
     assert "tunnel already open" in second.output
     assert len(world.processes) == 1, "a second tunnel on the same port answers at random"
 
-    down = run(world, "host", "down", BOX)
+    down = run(world, "down", BOX)
     no_traceback(down)
     assert down.exit_code == 0, down.output
     assert "tunnel closed" in down.output
@@ -435,7 +435,7 @@ def test_up_then_open_twice_then_down_twice(world):
     assert not world.pid_file().exists(), "a pid file outliving its tunnel is a trap"
     assert wait_until(lambda: world.processes[0].poll() is not None), "the tunnel is gone"
 
-    again = run(world, "host", "down", BOX)
+    again = run(world, "down", BOX)
     no_traceback(again)
     assert again.exit_code == 0, "putting away a machine twice is not a failure"
     assert "tunnel closed" not in again.output
@@ -444,9 +444,9 @@ def test_up_then_open_twice_then_down_twice(world):
 def test_down_keep_running_closes_the_tunnel_and_says_it_still_costs(world):
     world.comfy.mode = "serving"
     world.cloud(statuses=["RUNNING"])
-    run(world, "host", "up", BOX)
+    run(world, "up", BOX)
 
-    result = run(world, "host", "down", BOX, "--keep-running")
+    result = run(world, "down", BOX, "--keep-running")
 
     no_traceback(result)
     assert result.exit_code == 0
@@ -457,7 +457,7 @@ def test_down_keep_running_closes_the_tunnel_and_says_it_still_costs(world):
 
 
 def test_open_dry_run_shows_the_command_and_starts_nothing(world):
-    result = run(world, "host", "open", BOX, "--dry-run")
+    result = run(world, "open", BOX, "--dry-run")
 
     no_traceback(result)
     assert "--tunnel-through-iap" in result.output
@@ -477,7 +477,7 @@ def test_a_recycled_pid_is_never_reported_as_a_tunnel(world):
     world.tunnel_dir.mkdir(parents=True, exist_ok=True)
     world.pid_file().write_text(str(other.pid))
 
-    result = run(world, "host", "open", BOX)
+    result = run(world, "open", BOX)
 
     no_traceback(result)
     assert "tunnel already open" not in result.output
@@ -492,7 +492,7 @@ def test_down_never_signals_a_process_that_is_not_our_tunnel(world):
     world.pid_file().write_text(str(other.pid))
     world.cloud(statuses=["RUNNING"])
 
-    result = run(world, "host", "down", BOX, "--keep-running")
+    result = run(world, "down", BOX, "--keep-running")
 
     no_traceback(result)
     assert result.exit_code == 0
@@ -506,7 +506,7 @@ def test_up_reports_a_box_that_boots_but_serves_nothing_as_a_failure(world):
     """The failure this whole tool exists to prevent."""
     world.cloud(statuses=["RUNNING"])
 
-    result = run(world, "host", "up", BOX)
+    result = run(world, "up", BOX)
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -534,7 +534,7 @@ INSTANCE = {
 def test_move_dry_run_shows_the_plan_and_changes_nothing(world):
     world.cloud(describe=INSTANCE)
 
-    result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--dry-run")
+    result = run(world, "move", BOX, "--to", "us-central1-b", "--dry-run")
 
     no_traceback(result)
     assert result.exit_code == 0
@@ -550,7 +550,7 @@ def test_move_does_nothing_when_the_box_simply_starts(world):
     stockout and nothing to move."""
     world.cloud(statuses=["TERMINATED"])
 
-    result = run(world, "host", "move", BOX)
+    result = run(world, "move", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0
@@ -567,7 +567,7 @@ def test_move_that_fails_partway_says_nothing_was_removed(world):
     world.cloud(describe=INSTANCE,
                 create_disk=GcloudError("disk quota exceeded", fix="ask for more disk"))
 
-    result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+    result = run(world, "move", BOX, "--to", "us-central1-b", "--yes")
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -612,7 +612,7 @@ def test_a_move_whose_host_list_cannot_be_rewritten_still_names_the_bill(world):
     original_mode = directory.stat().st_mode
     directory.chmod(0o500)          # r-x: the file is readable, nothing new lands
     try:
-        result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+        result = run(world, "move", BOX, "--to", "us-central1-b", "--yes")
     finally:
         directory.chmod(original_mode)
 
@@ -652,7 +652,7 @@ def test_moving_a_box_home_again_is_refused_before_it_spends_anything(world):
         encoding="utf-8")
     world.cloud(describe=INSTANCE)
 
-    result = run(world, "host", "move", BOX, "--to", "us-central1-b", "--yes")
+    result = run(world, "move", BOX, "--to", "us-central1-b", "--yes")
 
     no_traceback(result)
     # 2, because nothing was created. Both refusals on this path run before the
@@ -677,7 +677,7 @@ def test_move_with_no_zone_asks_google_by_trying_to_start(world):
     world.cloud(statuses=["TERMINATED"], describe=INSTANCE,
                 start=GcloudError("---", raw=STOCKOUT_OUTPUT))
 
-    result = run(world, "host", "move", BOX, "--yes")
+    result = run(world, "move", BOX, "--yes")
 
     no_traceback(result)
     assert "us-central1-a has none free; us-central1-b does" in result.output
@@ -694,7 +694,7 @@ def test_a_dry_run_with_no_zone_refuses_rather_than_starting_the_box(world):
     world.cloud(statuses=["TERMINATED"], describe=INSTANCE,
                 start=GcloudError("---", raw=STOCKOUT_OUTPUT))
 
-    result = run(world, "host", "move", BOX, "--dry-run")
+    result = run(world, "move", BOX, "--dry-run")
 
     no_traceback(result)
     assert result.exit_code == 2, "nothing was changed, so it is a refusal"
@@ -765,7 +765,7 @@ def test_a_launch_that_dies_on_a_missing_dependency_repairs_itself_once(world):
     """
     world.cloud(statuses=["RUNNING"], installed=True, launch_exit=[1, 0])
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     told = result.output
     assert "installing its requirements" in told
@@ -777,7 +777,7 @@ def test_the_repair_is_tried_once_and_not_in_a_loop(world):
     """A box that fails for some other reason must not reinstall forever."""
     world.cloud(statuses=["RUNNING"], installed=True, launch_exit=[1, 1])
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     assert result.exit_code == 1
     assert result.output.count("installing its requirements") == 1
@@ -795,7 +795,7 @@ def test_a_repair_that_fails_is_not_followed_by_the_same_traceback_again(world):
     world.cloud(statuses=["RUNNING"], installed=True,
                 launch_exit=[1, 0], repair_exit=1)
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     assert result.exit_code == 1
     assert result.output.count("ModuleNotFoundError") == 0, "the fake prints none"
@@ -815,7 +815,7 @@ def test_a_cpu_only_torch_is_found_before_the_launch_not_during_it(world):
     """
     world.cloud(statuses=["RUNNING"], installed=True, verify="TORCH_NO_CUDA")
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     told = result.output
     assert "cannot see the" in told and "CPU-only build" in told
@@ -827,7 +827,7 @@ def test_a_box_that_is_ready_is_not_reinstalled(world):
     """The check must not become a reason to reinstall torch on every run."""
     world.cloud(statuses=["RUNNING"], installed=True, verify="READY")
 
-    run(world, "host", "go", BOX, "--no-browser")
+    run(world, "go", BOX, "--no-browser")
 
     assert world.gc.repairs == 0
     assert "download.pytorch.org" not in world.gc.remote_commands_joined()
@@ -838,7 +838,7 @@ def test_a_box_that_cannot_be_asked_is_still_launched(world):
     the question is still worth trying — the launch says what happened."""
     world.cloud(statuses=["RUNNING"], installed=True, verify="")
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     assert world.gc.repairs == 0
     assert "starting ComfyUI" in result.output
@@ -853,7 +853,7 @@ def test_the_two_checks_disagreeing_is_reported_not_crashed(world):
     """
     world.cloud(statuses=["RUNNING"], installed=True, verify="NO_COMFYUI")
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     no_traceback(result)
     assert result.exit_code == 1
@@ -866,7 +866,7 @@ def test_the_cpu_torch_repair_forces_the_reinstall(world):
     reports the problem as handled and changes nothing."""
     world.cloud(statuses=["RUNNING"], installed=True, verify="TORCH_NO_CUDA")
 
-    run(world, "host", "go", BOX, "--no-browser")
+    run(world, "go", BOX, "--no-browser")
 
     sent = world.gc.remote_commands_joined()
     assert "--force-reinstall" in sent
@@ -879,7 +879,7 @@ def test_the_url_that_is_right_for_this_machine_is_said_before_the_log(world):
     it sends them to the wrong machine. Observed exactly that."""
     world.cloud(statuses=["RUNNING"], installed=True)
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     assert "on this machine that is" in result.output
     assert world.url in result.output
@@ -894,7 +894,7 @@ def test_a_port_held_by_something_that_is_not_comfyui_still_refuses(world):
     world.comfy.mode = "reset"
     world.cloud(statuses=["RUNNING"], installed=True, port_holder="2804 python")
 
-    result = run(world, "host", "go", BOX, "--no-browser")
+    result = run(world, "go", BOX, "--no-browser")
 
     assert result.exit_code == 1
     assert "not answering as ComfyUI" in result.output
