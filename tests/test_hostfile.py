@@ -783,6 +783,7 @@ def _lived_in(preamble, own_comment, blank_between, example, crlf,
 AXES = tuple(inspect.signature(_lived_in).parameters)
 EXAMPLE_IN_GAP = AXES.index("example_in_gap")
 BLANK_BETWEEN = AXES.index("blank_between")
+CRLF = AXES.index("crlf")
 
 
 @pytest.mark.parametrize("shape", SHAPES)
@@ -1097,7 +1098,7 @@ def test_the_whole_delete_write_leaves_the_file_crlf(tmp_path):
 #
 # Only the CRLF half of the shapes — the LF half is already the delivered case.
 
-CRLF_SHAPES = [shape for shape in SHAPES if shape[4]]
+CRLF_SHAPES = [shape for shape in SHAPES if shape[CRLF]]
 
 
 def _on_disk(tmp_path, shape):

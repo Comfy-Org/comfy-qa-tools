@@ -35,6 +35,12 @@ def test_the_config_redirect_is_one_numbered_dir_for_the_whole_session(tmp_path_
 
     So the redirect's grandparent is the base temp directory in the first case
     and the base temp directory's PARENT in the second.
+
+    Unlike its sibling below, this test is deliberately NOT order-dependent: it
+    compares two paths and never walks the shared base temp directory, so it
+    reads the same whether it runs first, last or alone. The pair is meant to be
+    read together — this one holds in any order and says less, that one says the
+    number and only holds in a full run.
     """
     from comfy_qa import config
 
@@ -58,6 +64,25 @@ def test_only_one_config_redirect_root_is_ever_made(tmp_path_factory):
     Weaker than the shape check above on its own — it would pass trivially in a
     session where this was the first test — and kept because when it does fail
     it names the problem in one number.
+
+    READ THIS BEFORE DEBUGGING A FAILURE HERE. This test is ORDER-DEPENDENT BY
+    CONSTRUCTION, and that is a property of it rather than an aside. It counts
+    entries in the pytest base temp directory, which is SHARED by the whole
+    session and accumulates as tests run. So what it sees is a function of how
+    much of the suite ran before it, not of the code it guards:
+
+        run the suite whole   it sees every redirect the session made
+        run half of it        it sees fewer
+        run it by itself      it sees one, and passes no matter what
+
+    Which means a failure here can look like it "only happens in the full run"
+    and vanish under every attempt to narrow it down — because halving the suite
+    changes the quantity being measured. If you are bisecting this, stop: the
+    bisection is altering the input. Reproduce it by running the suite WHOLE and
+    reading the number in the message, which is the actual finding.
+
+    It is the count that is order-dependent, not the property. One
+    `config-redirect` root per session is correct whatever else ran.
     """
     # `not p.is_symlink()`: `make_numbered_dir` also drops a
     # `config-redirectcurrent` symlink beside the directory it makes, which is
@@ -94,7 +119,22 @@ def test_every_region_is_probed_in_one_wave():
     in_flight = 0
     high_water = 0
     lock = threading.Lock()
-    gate = threading.Barrier(len(regions), timeout=5)
+    # 30s, not 5. Nothing here is being timed — this is the ceiling on how long
+    # a BROKEN rendezvous may hang the suite, and it wants to be far above the
+    # worst scheduling delay this machine produces rather than near it. Measured
+    # on this laptop the same suite took 55.76s idle and 524.67s under five
+    # concurrent agents: a 9.4x spread on the machine, not on the code. Filling
+    # a 43-thread barrier is microseconds of work, so a wider ceiling costs the
+    # healthy case nothing and buys the loaded case a result that still means
+    # something.
+    #
+    # Worth knowing when this does go red: `BrokenBarrierError` is swallowed in
+    # the worker below, so a barrier that timed out does NOT surface as a
+    # timeout. It surfaces as `high_water` short of 43 — the same symptom as a
+    # narrowed thread pool, which is the thing this test is actually for. The
+    # message names the pool because that is the overwhelmingly likely cause;
+    # if the pool is provably wide, suspect the ceiling instead.
+    gate = threading.Barrier(len(regions), timeout=30)
 
     def probe(region, timeout=None):
         nonlocal in_flight, high_water
