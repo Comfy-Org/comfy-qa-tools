@@ -152,16 +152,53 @@ def init_cmd(
         "--force", help="Overwrite an existing host list.")] = False,
 ) -> None:
     """Write a starter host list you can edit."""
+    from .hostfile import HostFileError, apply
+
     path = config or DEFAULT_CONFIG_PATH
     if path.exists() and not force:
         say.fail(f"{path} already exists", fix="--force overwrites it",
                  code=2, blank_line=False)
+    # `--force` is the ONLY write of STARTER in this tool that lands on a file
+    # that already exists — the three others (`discover`, `create`, `setup`) are
+    # each guarded by `if not path.exists()`. So it is the only one that can
+    # destroy a host list, and it used to be a bare `write_text`: no copy, no
+    # read-back, no atomic replace, and nothing to restore afterwards.
+    #
+    # The sharper half was what it did to an EXISTING backup. `hostfile.apply`
+    # keeps `hosts.toml.bak` one rewrite behind the live file, so after an
+    # ordinary rewrite v1 -> v2 the pair reads live=v2, .bak=v1. `--force` then
+    # replaced the live file and left the backup alone:
+    #
+    #     live = STARTER,  .bak = STILL v1
+    #
+    # v2 — the state the overwrite actually destroyed — was gone with no copy
+    # anywhere, and `hosts.toml.bak` is the recovery path docs/machines.md,
+    # docs/troubleshooting.md and R5d/R5f all point at. Restoring it handed back
+    # a host list one rewrite too old AND LOOKED LIKE IT HAD WORKED. A missing
+    # backup announces itself; a stale one does not.
+    #
+    # So this goes through the same path `move` and `delete` use. The file is
+    # hand-maintained and has no other copy on this machine, which is the whole
+    # argument in `hostfile`'s docstring, and it does not stop being true because
+    # the caller typed `--force`. `--force` still means "overwrite it" — it now
+    # means "overwrite it recoverably", and if a verified copy cannot be made it
+    # refuses, exactly as a move does. Declining an overwrite is recoverable;
+    # performing one that cannot be undone is not.
+    #
     # A folder you cannot write to, and `--force` aimed at a directory, both
     # arrive here as an OSError. This is the command someone runs first, so a
     # traceback is the first thing the tool would ever show them.
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(STARTER, encoding="utf-8")
+        # `expect` is what STARTER declares. Checking it here is not ceremony:
+        # it means a STARTER edited into something the loader would refuse is
+        # caught before it lands, rather than after, on the one file every other
+        # command has to read.
+        apply(path, STARTER, expect={"local"})
+    except HostFileError as exc:
+        # The message already says what was not done and that nothing was
+        # written; it is documented where it is raised, in `hostfile`.
+        say.fail(exc, code=2, blank_line=False)
     except OSError as exc:
         say.fail(f"could not write a host list to {path}: {exc}",
                  fix="give --config a path you can write to — the file itself, "
@@ -1355,8 +1392,17 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                  code=1, blank_line=False)
 
     if no_install:
-        say.fail("ComfyUI is not answering and --no-install was given", code=1,
-                 blank_line=False)
+        # The sibling refusal four lines up hands over a runnable command; this
+        # one used to state the fact and stop. Being the DELIBERATE refusal is
+        # the reason it needs a way out, not a reason to skip one: the tool is
+        # doing exactly what it was told, so the question it leaves hanging is
+        # not "what went wrong" but "then what". Both answers are one line, and
+        # neither depends on which command got here — `go` and `switch` both do.
+        say.fail("ComfyUI is not answering and --no-install was given",
+                 fix=say.fix("drop --no-install to let it install, "
+                             "or read the log to see why it is not answering:",
+                             f"comfy-qat logs {host.name}"),
+                 code=1, blank_line=False)
 
     try:
         wait_for_ssh(gc, host, say.step)

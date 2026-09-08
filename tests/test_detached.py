@@ -693,3 +693,50 @@ def test_new_window_runs_the_command_it_says_it_will(monkeypatch):
     assert script.startswith('tell application "Terminal" to do script "')
     assert "go comfy-linux --follow" in script
     assert any("opened a new Terminal window" in line for line in lines)
+
+
+# --- the refusal that was a dead end ----------------------------------------
+#
+# `_serve` splits the same condition — ComfyUI is not answering — into a local
+# branch and a remote one. The local branch hands over the command that starts
+# it. The remote branch stated the fact and stopped, four lines away from a
+# sibling that does not.
+#
+# Being the DELIBERATE refusal is the reason it needs a way out, not a reason to
+# skip one. The user asked for `--no-install`, so the tool is doing exactly what
+# it was told; the question left hanging is not "what went wrong" but "then
+# what". Both commands are reachable from `go` and from `switch`, which are the
+# two callers of this function.
+
+
+def test_the_no_install_refusal_says_what_to_do_next(capsys):
+    """It named the problem and offered nothing. Its sibling offers a command."""
+    import typer
+
+    from comfy_qa import host as host_module
+
+    with pytest.raises(typer.Exit) as caught:
+        host_module._serve(None, WIN, None, no_install=True)
+
+    assert caught.value.exit_code == 1
+    told = capsys.readouterr().err
+    assert "--no-install was given" in told
+    assert "drop --no-install" in told, (
+        "the way out of a refusal the user asked for is to stop asking for it")
+    assert "comfy-qat logs comfy-win" in told, (
+        "and the way to find out WHY it is not answering is one command")
+
+
+def test_the_local_refusal_still_hands_over_its_own_command(capsys):
+    """The sibling this was measured against, so a fix cannot flatten both."""
+    import typer
+
+    from comfy_qa import host as host_module
+
+    with pytest.raises(typer.Exit) as caught:
+        host_module._serve(None, LOCAL, None, no_install=True)
+
+    assert caught.value.exit_code == 1
+    told = capsys.readouterr().err
+    assert "ComfyUI is not running locally" in told
+    assert "main.py" in told
