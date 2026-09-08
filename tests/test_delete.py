@@ -45,17 +45,33 @@ port         = 8192
 class Cloud:
     """Records every call. Anything not expected is the failure being tested."""
 
-    def __init__(self, status="TERMINATED", fail=None, disk_gb="200"):
+    def __init__(self, status="TERMINATED", fail=None, disk_gb="200", listing=None):
         self.calls: list[str] = []
         self._status = status
         self._fail = fail
         self._disk_gb = disk_gb
+        self._listing = listing
 
     def instance_status(self, name, zone, project):
         self.calls.append(f"status {name}")
         if isinstance(self._status, Exception):
             raise self._status
         return self._status
+
+    def instance_statuses(self, wanted):
+        """The question `delete` asks once its own read has failed: is it there?
+
+        By default it fails the same way `instance_status` did, because a run
+        where the per-box read is refused is a run where the listing is refused
+        too — expired credentials do not expire for one call. `listing=` is how a
+        test says the project answered and did not have the machine.
+        """
+        self.calls.append("statuses")
+        if self._listing is not None:
+            return self._listing
+        if isinstance(self._status, Exception):
+            raise self._status
+        return {key: self._status for key in wanted}
 
     def describe_instance(self, name, zone, project):
         """Read for one thing: the boot disk's name, so the confirmation can
@@ -332,9 +348,11 @@ def test_an_interrupted_delete_says_the_record_may_now_be_wrong(capsys):
     assert "this was probably destroyed, and the host list still names it:" in tail
     assert "gcloud compute instances describe comfy-win" in tail
     assert "[hosts.comfy-win]" in tail
-    # The obvious recovery is the one that does not work: this command reads the
-    # box's state first and refuses anything it cannot read as TERMINATED.
-    assert "will not do it" in tail
+    # The recovery it names has to be one that works. It used to say running the
+    # command again "will not do it", which was true and was the trap: nothing
+    # else could remove the entry either. `delete` now asks the project when its
+    # own read fails, so running it again is the answer.
+    assert "run it again" in tail
 
 
 def test_a_delete_that_finishes_leaves_nothing_registered(capsys):

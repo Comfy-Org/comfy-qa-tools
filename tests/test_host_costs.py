@@ -1418,9 +1418,10 @@ class StopFails(Cloud):
     wrong. `after` is that second answer — a state, or an exception to raise.
     """
 
-    def __init__(self, *, after, **kwargs):
+    def __init__(self, *, after, listing=None, **kwargs):
         super().__init__(**kwargs)
         self._after = after
+        self._listing = listing
         self._read = 0
 
     def instance_status(self, instance, zone, project):
@@ -1431,6 +1432,20 @@ class StopFails(Cloud):
         if isinstance(self._after, Exception):
             raise self._after
         return self._after
+
+    def instance_statuses(self, wanted):
+        """The last question asked once the per-box read has failed: is it there?
+
+        Answered the same way as `after` unless a test says otherwise, because a
+        run where every read is timing out is a run where this one times out too
+        — and `is_gone` must not turn "nobody could ask" into "it is gone".
+        """
+        self.calls.append("instance_statuses")
+        if self._listing is not None:
+            return self._listing
+        if isinstance(self._after, Exception):
+            raise self._after
+        return {key: self._after for key in wanted}
 
 
 def test_a_failed_stop_says_the_box_is_still_running_and_billing(cli):

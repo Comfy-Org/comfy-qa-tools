@@ -40,7 +40,7 @@ from typing import Callable
 from . import inflight
 from . import say as output
 from .config import Host
-from .gcloud import Gcloud, GcloudError
+from .gcloud import GONE, Gcloud, GcloudError
 from .osfamily import family, is_windows
 from .stamp import ProbeError, Stamp, fetch, mismatch
 from .tunnel import (
@@ -87,6 +87,33 @@ def state_of(gc: Gcloud, host: Host) -> str:
     at each of the nine call sites, two of which had it wrong.
     """
     return gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
+
+
+def is_gone(gc: Gcloud, host: Host) -> bool:
+    """Does the box's own project say it does not have it?
+
+    ONE answer to "what does Google say about this box", and it is `list --live`'s
+    answer — `instance_statuses`, the same call, the same `GONE`. There were
+    already two answers to that question and that was the whole defect: at one
+    moment `list --live` said `not on the project` about three deleted boxes
+    while `switch` called them running and `down` called them maybe-billing. A
+    third implementation here would have made it three.
+
+    Asked only where a per-box `describe` has ALREADY failed, so it costs a
+    gcloud call on a path that was about to give up anyway, and never on a path
+    that worked.
+
+    **False on any doubt.** A listing that fails, or that answers without
+    settling anything, means nobody established that the box is absent — and
+    every caller uses this to stop worrying about a bill or to remove a host list
+    entry. Refuting is not confirming, and this is the side of that line where
+    guessing costs something.
+    """
+    key = (host.gce_instance, host.gce_zone, host.gce_project)
+    try:
+        return gc.instance_statuses([key]).get(key) == GONE
+    except GcloudError:
+        return False
 
 
 def readable_state(state: str | None) -> str:
@@ -1897,13 +1924,21 @@ def running_elsewhere(
         # and the switch then fails on the ceiling it was trying to respect.
         # Fifth site of the same mistake; the other four were fixed today.
         #
-        # A machine absent from its project's list reads as UNKNOWN_STATE, which
-        # is not TERMINATED and so still counts as running. That is the same way
-        # round as before — an unreadable box was never assumed to be off — and
-        # it is the safe direction: a box wrongly counted gets stopped, a box
-        # wrongly skipped keeps billing and breaks the switch it was blocking.
+        # A machine the project does not have is not running, and saying it is
+        # cost `switch` outright. On the real fleet three deleted boxes were
+        # counted here, the 1-GPU ceiling was read as full, and every switch
+        # chose the order `_blocked_by_the_ceiling` calls the destructive one —
+        # while `list --live`, at the same second and from the same call, said
+        # `not on the project` about all three. Same tool, same source, opposite
+        # answers.
+        #
+        # UNKNOWN_STATE is still counted, and that is not the same judgement: a
+        # box nobody could read might be running, and being wrong there costs a
+        # redundant stop, while being wrong the other way leaves a GPU billing
+        # against a ceiling this command exists to respect. GONE is not doubt —
+        # it is a listing that succeeded and did not contain the machine.
         if states.get((host.gce_instance, host.gce_zone,
-                       host.gce_project), "") != TERMINATED:
+                       host.gce_project), "") not in (TERMINATED, GONE):
             reasons.append("running")
         if tunnel_status(host.name, tunnel_dir).running:
             reasons.append("tunnelled")
@@ -2079,6 +2114,25 @@ def put_away(
                                        host.gce_project)
         except GcloudError:
             after = None
+
+        # A 404 is an ANSWER, and this path was reading it as silence. `down
+        # comfy-win-b` on a box deleted hours earlier said "could not stop it …
+        # so it may still be running and billing" — about a machine that
+        # provably does not exist and cannot bill. The vocabulary for this was
+        # built two hours before, and this branch never got it.
+        #
+        # The direction is the harmless one for the wallet and the expensive one
+        # for trust. A tool that cries "may still be billing" about a machine
+        # that is not there is a tool people stop reading, and the true warning
+        # goes unread with it. That is the whole reason to fix an over-report.
+        if after is None and is_gone(gc, host):
+            # `{exc}` first, so the sentence after it is one uninterrupted run
+            # a troubleshooting entry can quote. Interpolating mid-sentence is
+            # what left `delete`'s equivalent warning unquotable in three pieces.
+            say(f"could not stop {host.name} ({exc}), and the project does not "
+                f"have it — the box no longer exists, so nothing is billing for "
+                f"it. Its host list entry is stale: comfy-qat discover --prune")
+            return "idle"
 
         # The stop landed and only the reply was lost. Not a failure: the bill
         # HAS stopped, and raising here would tell `down --all`'s summary — the

@@ -74,6 +74,7 @@ REQUIRED = {
     "test_docs",
     "test_env",
     "test_gcloud_auth",
+    "test_ghosts",
     "test_delete",
     "test_host_costs",
     "test_interrupt",

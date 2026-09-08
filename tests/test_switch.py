@@ -562,8 +562,12 @@ def test_the_local_install_is_never_something_switch_stops():
 
 
 def test_both_signs_of_being_on_are_reported(monkeypatch, tmp_path):
+    # `declared=HOSTS`, so the fake's `instances list` actually carries the box.
+    # Without it the listing came back empty, which is now GONE — the project
+    # saying it does not have the machine — and a box that is not there is not
+    # running. The fixture was leaning on those two answers being one word.
     monkeypatch.setattr(lifecycle, "tunnel_status", tunnels("comfy-linux"))
-    gc = gcloud({"comfy-linux": "RUNNING"})
+    gc = gcloud({"comfy-linux": "RUNNING"}, declared=HOSTS)
 
     found = running_elsewhere(gc, [WIN, LINUX], WIN, tunnel_dir=tmp_path)
 

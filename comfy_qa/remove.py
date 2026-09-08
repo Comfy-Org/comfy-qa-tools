@@ -140,10 +140,27 @@ def delete_cmd(
         _refuse(f"{host.name} is this machine, not a cloud box")
 
     gc = Gcloud()
+    already_gone = False
     try:
         state = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
-        say.fail(exc, code=2)
+        # A box that does not exist is not a reason to refuse; it is most of the
+        # job already done. This read raises on a 404, so `delete` exited 2 with
+        # Google's raw sentence and never reached the host list — and `discover`
+        # only added. Between them the entry was unremovable by any command in
+        # the tool, leaving hand-editing hosts.toml as the only route out, which
+        # is the one thing this tool tells people not to do.
+        #
+        # It stays strict about everything else. The promise is that what you
+        # destroy is something you have just looked at, and a project that says
+        # it does not have the machine IS having looked. A read that failed for
+        # any other reason is not, and still refuses.
+        from .lifecycle import is_gone
+
+        if not is_gone(gc, host):
+            say.fail(exc, code=2)
+        already_gone = True
+        state = "TERMINATED"
 
     # An allowlist of one, for the reason lifecycle.TERMINATED spells out: a box
     # in STAGING is not RUNNING and is not stopped either, and this command's
@@ -157,9 +174,13 @@ def delete_cmd(
             fix=f"comfy-qat down {host.name}",
         )
 
-    say.result(f"delete {host.gce_instance} in {host.gce_zone}, and "
-               f"{_boot_disk_phrase(gc, host)}.")
-    say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
+    if already_gone:
+        say.result(f"{host.gce_instance} is not on {host.gce_project} — it has "
+                   f"already been deleted, so only the host list entry is left.")
+    else:
+        say.result(f"delete {host.gce_instance} in {host.gce_zone}, and "
+                   f"{_boot_disk_phrase(gc, host)}.")
+        say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
 
     if not yes:
         if not can_prompt():
@@ -172,6 +193,20 @@ def delete_cmd(
             # script as "the delete was attempted and went wrong".
             say.result("nothing was deleted.")
             raise typer.Exit(code=2)
+
+    if already_gone:
+        # Nothing to call: the instance is not there, its disk went with it, and
+        # the remaining work is the entry. Falling through to `instances delete`
+        # would 404 in exactly the place this branch exists to get past.
+        say.result("")
+    else:
+        _delete_the_box(gc, host, config)
+
+    _forget_the_entry(config, host, hosts, already_gone=already_gone)
+
+
+def _delete_the_box(gc, host, config) -> None:
+    from .gcloud import GcloudError
 
     removing = say.slow(f"deleting {host.name}", expect="up to a minute").start()
     try:
@@ -200,15 +235,15 @@ def delete_cmd(
                 "find out which of the two happened:",
                 f"gcloud compute instances describe {host.gce_instance} "
                 f"--zone={host.gce_zone} --project={host.gce_project}",
-                f"if it is gone, take [hosts.{host.name}] out of "
-                f"{config or DEFAULT_CONFIG_PATH} by hand:",
-                # Said because the obvious recovery is the one that does not
-                # work. This command reads the box's state first and refuses
-                # anything it cannot read as TERMINATED, so running it again
-                # against a box that IS deleted exits 2 on a gcloud "not found"
-                # and never reaches the host list at all.
-                f"running `comfy-qat delete {host.name}` again will not do it — "
-                f"it refuses a box it cannot read",
+                # This used to end "running `comfy-qat delete <name>` again
+                # will not do it — it refuses a box it cannot read", and that
+                # was true and was a trap: with `discover` only ever adding, it
+                # meant no command in the tool could remove the entry and
+                # hand-editing hosts.toml was the only way out. `delete` now
+                # asks the project when its own read fails, so if the box really
+                # did go, running it again finishes the job.
+                f"if it is gone, run it again — it now asks the project and "
+                f"takes the entry out: comfy-qat delete {host.name}",
             ],
             note=(f"the entry is stale whichever way it went, and while "
                   f"[hosts.{host.name}] is there, `create --name {host.name}` "
@@ -230,6 +265,8 @@ def delete_cmd(
         raise
     removing.done()
 
+
+def _forget_the_entry(config, host, hosts, *, already_gone: bool) -> None:
     # Taking the entry out is not tidying. `create` refuses a name that a host
     # list entry holds, and ports come from the same list, so leaving it reserves
     # both for a machine that does not exist — and the refusal arrives weeks later
@@ -241,12 +278,17 @@ def delete_cmd(
         text = without(read(path), host.name)
         apply(path, text, expect={h.name for h in hosts} - {host.name})
     except (HostFileError, OSError) as exc:
-        say.result(f"\n{host.name} and its disk are gone.")
+        say.result(f"\n{host.name} was already deleted." if already_gone
+                   else f"\n{host.name} and its disk are gone.")
         say.warn(f"it is still in your host list and could not be removed: {exc}")
         say.warn(f"take [hosts.{host.name}] out by hand — while it is there, "
                  f"`create --name {host.name}` will refuse it, and its port stays "
                  "reserved for a machine that no longer exists")
         raise typer.Exit(code=1) from exc
 
+    if already_gone:
+        say.result(f"\n{host.name} was already deleted, and it is now out of your "
+                   "host list too.")
+        return
     say.result(f"\n{host.name} and its disk are gone, and it is out of your host "
                "list.")

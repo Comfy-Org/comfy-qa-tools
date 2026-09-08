@@ -886,6 +886,21 @@ started, and only when it is still holding the port.
 The tidy-up failed, usually because the box became unreachable. The next launch
 will refuse with the message above and print the command to stop it by hand.
 
+### Stopping a box that has already been deleted
+
+**`), and the project does not have it — the box no longer exists, so nothing is billing for it. Its host list entry is stale: comfy-qat discover --prune`**
+`comfy-qat down` asked Google to stop a machine and Google answered that there is
+no such machine — most often a 404 after somebody deleted the box in the console.
+Nothing is billing, because there is nothing left to bill: this is not the
+hedged **`it may still be running and billing`**, which is what you get when the
+state genuinely could not be read. The only thing still wrong is the record, and
+`comfy-qat discover --prune` fixes it.
+
+`comfy-qat delete <name>` also works on a box that is already gone — it asks the
+project when its own read fails, and takes the entry out. It still refuses a box
+it merely could not reach, because not knowing whether something is running is
+not permission to drop the record of it.
+
 ## ComfyUI running on the box, and its log
 
 `comfy-qat go` launches ComfyUI **on the machine** and hands the prompt back, so two
