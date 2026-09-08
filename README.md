@@ -178,21 +178,37 @@ when a zone has no GPUs left.
 
 ## Commands
 
-Twenty of them. Every target is a **declared host**, local or cloud — naming them
-all is the point, so local stops being an invisible default and picking the wrong
-machine becomes something you do on purpose.
+Every target is a **declared host**, local or cloud — naming them all is the
+point, so local stops being an invisible default and picking the wrong machine
+becomes something you do on purpose.
 
-| | |
+| command | what it does |
 |---|---|
-| set up | `setup` `status` `login` `quota` |
-| your machines | `init` `list` `discover` `create` `delete` |
-| use one | `go` `up` `open` `disconnect` `down` |
-| on the box | `ssh` `rdp` `logs` `stamp` |
-| change machine | `switch` `move` |
+| `comfy-qat setup` | get this machine ready, in one command |
+| `comfy-qat status` | signed in? which project? billing and GPU quota? |
+| `comfy-qat login` | print the sign-in commands |
+| `comfy-qat quota list` | what cards you can start, and where — `--by-region` |
+| `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` |
+| `comfy-qat init` | write a starter host list you can edit |
+| `comfy-qat list` | every declared machine and what is up — `--live` asks Google |
+| `comfy-qat discover` | find cloud boxes and add them — `--prune` drops ones that are gone |
+| `comfy-qat create` | make a GPU box; the zone is chosen, not typed |
+| `comfy-qat delete` | remove a box and its disk, permanently |
+| `comfy-qat go` | start it, make sure ComfyUI is on it, hand the prompt back |
+| `comfy-qat up` | start a machine and wait until ComfyUI answers |
+| `comfy-qat open` | tunnel to a machine already running |
+| `comfy-qat disconnect` | close the tunnel, leave the machine running |
+| `comfy-qat down` | close the tunnel and stop the machine, so it stops costing |
+| `comfy-qat ssh` | a shell on a box, through the tunnel |
+| `comfy-qat rdp` | reset the Windows password and forward RDP |
+| `comfy-qat logs` | read the ComfyUI log on a box — `--tail N` to stop at the end |
+| `comfy-qat stamp` | ask a machine what it is, and print the line you paste |
+| `comfy-qat switch` | start the one you want, stop the one you were on |
+| `comfy-qat move` | move a box to a zone with capacity, keeping its ComfyUI |
+| `comfy-qat --version` | what you are running, with the commit |
 
-**[docs/commands.md](docs/commands.md) is the reference** — what each one does,
-its flags, and which to reach for. `comfy-qat <command> --help` says the same
-thing at the prompt.
+**[docs/commands.md](docs/commands.md)** has the flags and which to reach for.
+`comfy-qat <command> --help` says the same at the prompt.
 
 
 ## The host list
