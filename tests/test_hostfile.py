@@ -690,13 +690,21 @@ def test_removing_from_a_lived_in_file_keeps_everything_else():
 # unseen shape open. Five defects in a row, all in one function, all "the fixtures
 # differ from a real file in exactly the way that hides it".
 #
-# So this stops hand-writing shapes. Seven binary axes, chosen because each one
+# So this stops hand-writing shapes. Nine binary axes, chosen because each one
 # has broken this function at least once, or is the shape of a defect the earlier
 # five could not generate: a file preamble, a comment above each host, a blank
 # line between blocks, CRLF endings, a commented-out worked example like the one
 # `init` writes, that example sitting in the GAP between two hosts rather than at
-# the top, and a note trailing a host's body rather than heading it. 128 files,
-# three victims each.
+# the top, a note trailing a host's body rather than heading it, an INDENTED
+# table header, and a comment on the END of the header and port lines rather than
+# on a line of its own. 512 files, three victims each — 1,536 cases.
+#
+# This header said SEVEN axes and 128 files while `repeat=9` below generated 512,
+# so it described less than a third of what actually runs. The two it left out
+# are the two added most recently, and both already carry their own note further
+# down: `indented` is D10, and mutation says it earns its place — reinstate that
+# defect without it and every generated case passes. A header that undercounts
+# the matrix is how an axis comes to be deleted as surplus.
 #
 # It asserts only what the module already promises: remove a host, and what is
 # left is valid TOML holding exactly the other hosts, with their own notes intact.

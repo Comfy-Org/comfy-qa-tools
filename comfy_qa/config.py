@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from .osfamily import DARWIN, FAMILY_WORDS, LINUX, WINDOWS
+
 # ComfyUI's own default. The primary local install on this machine holds it, and
 # forwarding a remote onto it is the single mistake this tool exists to prevent,
 # so no remote host may ever claim it.
@@ -317,13 +319,27 @@ def load(path: Path | None = None) -> list[Host]:
 # written by discover from Google's licence names — "Ubuntu 22.04", "Debian 12",
 # "Windows Server 2022" — so "linux" has to cover the distributions, because no
 # host is ever labelled "Linux".
+#
+# THE FAMILY ROWS ARE NOT WRITTEN OUT HERE. Three of these words also had to be
+# recognised by `stamp.mismatch`, which was keeping its own copy of them, and the
+# two copies drifted: this one knew `rhel` and `suse` and that one did not, so a
+# box declared `rhel-9` was linux to `switch` and unclassifiable to the stamp.
+# `osfamily` holds them now and both read the same tuple.
+#
+# What is NOT shared, and is the reason this table survives rather than being
+# replaced: THESE ARE SELECTOR WORDS, NOT FAMILIES. A family puts every host in
+# exactly one bucket; a selector has to let one host answer to several words at
+# several grains, so `ubuntu` and `linux` both find an Ubuntu box and both must
+# keep working. And `local` is not an operating system at all — it means "the
+# machine I am sitting at" and is matched on `kind`, below. Those three rows are
+# this module's own and belong to nothing else.
 OS_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "windows": ("windows",),
-    "linux": ("linux", "ubuntu", "debian", "rocky", "centos", "rhel", "fedora", "suse"),
+    "windows": FAMILY_WORDS[WINDOWS],
+    "linux": FAMILY_WORDS[LINUX],
     "ubuntu": ("ubuntu",),
     "debian": ("debian",),
-    "macos": ("macos", "mac os", "darwin"),
-    "local": ("macos", "mac os", "darwin"),
+    "macos": FAMILY_WORDS[DARWIN],
+    "local": FAMILY_WORDS[DARWIN],
 }
 
 # These two mean "the machine I am sitting at", so a `kind = "local"` host
@@ -347,6 +363,12 @@ def describe(host: Host) -> str:
 
 
 def _matches_os(host: Host, keyword: str) -> bool:
+    # This branch is a SECOND MECHANISM, not a shortcut, and deleting it as
+    # redundant breaks the one config every new user has. The starter hosts.toml
+    # declares the local install as `kind = "local"` and `port = 8188` and
+    # NOTHING ELSE — no `os` field at all — so `go local` and `go macos` resolve
+    # off `kind` here and never reach the word table below. The `macos` row
+    # looking like it already covers this is exactly the trap.
     if keyword in _LOCAL_KEYWORDS and host.kind == "local":
         return True
     declared = (host.os or "").lower()

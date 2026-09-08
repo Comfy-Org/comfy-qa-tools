@@ -41,6 +41,7 @@ from . import inflight
 from . import say as output
 from .config import Host
 from .gcloud import Gcloud, GcloudError
+from .osfamily import family, is_windows
 from .stamp import ProbeError, Stamp, fetch, mismatch
 from .tunnel import (
     BACKEND_NOT_LISTENING,
@@ -221,10 +222,6 @@ def suggested_zones(message: str | None) -> list[str]:
         if _ZONE.fullmatch(zone) and zone not in found:
             found.append(zone)
     return found
-
-
-def is_windows(host: Host) -> bool:
-    return "windows" in (host.os or "").lower()
 
 
 def how_to_get_in(host: Host) -> str:
@@ -1832,12 +1829,6 @@ def in_a_new_window(rest: list[str], say: Callable[[str], None]) -> None:
     say("anything that goes wrong from here is reported in that window, not here")
 
 
-def _family(host: Host) -> str:
-    """"Windows Server 2022" -> "windows". Enough to say "the same kind of box"."""
-    words = (host.os or "").lower().split()
-    return words[0] if words else ""
-
-
 def alternatives(hosts: list[Host], unavailable: Host) -> list[Host]:
     """Where else a tester could work, when one machine will not start.
 
@@ -1847,11 +1838,20 @@ def alternatives(hosts: list[Host], unavailable: Host) -> list[Host]:
     because someone who asked for Windows usually needs Windows; then anywhere
     but the zone that just refused; local last, since MPS is not CUDA and it
     answers a different question.
+
+    "Same operating system" is `osfamily.family`, and it used to be the FIRST
+    WORD of `host.os` written out here. That made `Rocky Linux 9` a family called
+    `rocky` — its own kind of box, the same kind as nothing else — while every
+    other place in this package that asked the question called it linux. It only
+    ever ORDERED, never filtered, so no machine was ever hidden by it; a Rocky
+    box was simply offered to a stranded Ubuntu tester as a change of platform
+    rather than as the like-for-like it is. Unrecognised still groups with
+    unrecognised, exactly as the empty string used to.
     """
     def rank(host: Host) -> tuple:
         return (
             1 if host.kind == "local" else 0,
-            0 if _family(host) == _family(unavailable) else 1,
+            0 if family(host.os) == family(unavailable.os) else 1,
             1 if host.gce_zone and host.gce_zone == unavailable.gce_zone else 0,
             host.name,
         )

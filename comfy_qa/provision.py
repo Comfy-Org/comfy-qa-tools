@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 
 from .config import Host
+from .osfamily import is_windows
 from .tunnel import COMFYUI_PORT
 
 # Where ComfyUI lives on each kind of box. Windows matches the convention already
@@ -161,8 +162,11 @@ ALIVE = "ALIVE"
 GONE = "GONE"
 
 
-def is_windows(host: Host) -> bool:
-    return "windows" in (host.os or "").lower()
+# `is_windows` is imported, not written here. It was written here AND in
+# `lifecycle`, byte for byte, and this module and that one decide different halves
+# of the same session about the same box — which path root to install into, and
+# whether to tell the tester to open RDP or SSH. Two copies of one predicate is
+# how they come to disagree.
 
 
 def root_for(host: Host) -> str:
