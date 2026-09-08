@@ -305,14 +305,86 @@ def test_a_gcloud_refusal_during_move_exits_2_with_its_fix(cli):
     already reported as exit 2 with a `to fix:` line. `move` reported it as exit 1
     with no fix at all, and an exit code that means something different per
     command is worse than no exit code.
+
+    `status="TERMINATED"` was added when the probe learned to read the machine
+    back, and it is what a refusal ACTUALLY looks like — the start was refused,
+    so the box is still off. The fake said RUNNING before, which is the timeout
+    shape and not this one: a start that was refused and a machine that is
+    running is not a state the project can be in. Every assertion here is
+    unchanged; the fixture now describes the case the name claims.
     """
-    result = cli("move", "comfy-win", cloud=Cloud(start=GcloudError(
-        "your Google session has expired", raw="ERROR: reauthentication required",
-        fix="comfy-qat login")))
+    result = cli("move", "comfy-win", cloud=Cloud(
+        status="TERMINATED",
+        start=GcloudError(
+            "your Google session has expired", raw="ERROR: reauthentication required",
+            fix="comfy-qat login")))
 
     assert result.exit_code == 2
     assert "your Google session has expired" in result.output
     assert "to fix: comfy-qat login" in result.output
+
+
+# --- 10. the probe is a start, so a probe whose answer was lost may be billing --
+#
+# The mirror of section 8, on the other side of the same `start_instance`, and
+# the guard that catches this class could not see it: it read one module.
+#
+#     $ comfy-qat move comfy-win
+#       asking Google where there is capacity
+#     timed out waiting for the operation to complete
+#     exit: 2
+#
+# Nothing about the bill, and exit 2 is not neutral — `_refused`'s own docstring
+# defines it as "nothing was changed". So the command positively asserted that
+# nothing happened, at the one moment nobody can know it, about a probe whose own
+# comment says "a try that is not refused leaves a GPU box running".
+#
+# The capacity branch is fine and is checked first: a stockout refusal means
+# nothing started, so saying nothing about money is correct there.
+
+
+def test_a_probe_that_times_out_with_the_box_up_says_it_is_billing(cli):
+    """The state was read back and it came back running, so nothing is hedged."""
+    cloud = Cloud(status="RUNNING",
+                  start=GcloudError("timed out waiting for the operation",
+                                    raw="ERROR: operation timed out"))
+    result = cli("move", "comfy-win", cloud=cloud)
+
+    # 1, not 2. The work started and failed, which is what 1 is for; 2 would
+    # assert that nothing changed about a box that is running.
+    assert result.exit_code == 1, result.output
+    assert "billing" in result.output, result.output
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in result.output), result.output
+
+
+def test_a_probe_that_times_out_and_cannot_be_re_read_claims_nothing(cli):
+    """Both calls failed. "It is running" asserts what was not read, and a bare
+    "could not start" reads as though nothing happened."""
+    # `Cloud` raises when `status` is an exception, and the probe's re-read is
+    # the FIRST status call on this path — `_zone_with_capacity` starts the box
+    # without reading it first, which is the whole reason the read happens here.
+    cloud = Cloud(status=GcloudError("still timing out"),
+                  start=GcloudError("timed out waiting for the operation",
+                                    raw="ERROR: operation timed out"))
+    result = cli("move", "comfy-win", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    assert "may be running and billing" in result.output, result.output
+    assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
+            in result.output), result.output
+
+
+def test_a_probe_refused_with_the_box_still_off_stays_a_refusal(cli):
+    """The re-read proves TERMINATED, so nothing started and 2 is honest. This is
+    the branch that keeps the rule above true rather than making it conditional."""
+    cloud = Cloud(status="TERMINATED",
+                  start=GcloudError("the zone does not exist",
+                                    raw="ERROR: invalid zone", fix="check --to"))
+    result = cli("move", "comfy-win", cloud=cloud)
+
+    assert result.exit_code == 2, result.output
+    assert "billing" not in result.output, result.output
 
 
 def test_no_zone_suggested_is_also_a_refusal(cli):
@@ -855,6 +927,24 @@ KEEPS_A_BOX_UP = "put_away"
 INCLUSION_VOCABULARY = STARTS_A_BOX | {KEEPS_A_BOX_UP}
 
 BILL_TOKENS = ("comfy-qat down", "stop_paying", "_with_the_bill")
+
+# The same rule one layer out, for FAILURE handlers only, and kept separate from
+# BILL_TOKENS on purpose: widening the vocabulary the ordinary-path guard reads
+# would loosen that guard too, and it is the tight one.
+#
+# Three more ways a failure — and only a failure — says what is still costing
+# money. Each is a function whose whole job is that sentence, so accepting the
+# name is accepting the thing it builds, not a word near it:
+#
+#   `_raw_stop`      lifecycle's `gcloud compute instances stop ...`, complete
+#                    with zone and project. Offered where `comfy-qat down` is
+#                    the command that has just failed.
+#   `_state_after`   relocate's "what exists because of this run, and the
+#                    commands that remove it" — the bill for a half-done move.
+#   "still billing"  said inline, by the one branch of `run_move` that reports a
+#                    leftover rather than raising: a snapshot that would not
+#                    delete, with its delete command on the same line.
+FAILURE_BILL_TOKENS = BILL_TOKENS + ("_raw_stop", "_state_after", "still billing")
 
 
 def _called_name(call: ast.Call) -> str:
@@ -1480,6 +1570,27 @@ def test_the_mutating_method_derivation_still_finds_them():
     )
 
 
+def _failure_bodies(modules) -> dict[str, list[str]]:
+    """Every function in `modules`, as source text, for the one-hop alibi.
+
+    Its own index rather than `_bodies_by_name`, because that one reads gcloud.py
+    and not relocate.py, and this rule needs the opposite: `Gcloud`'s own methods
+    are what make a handler GUILTY here, so letting one of them clear a handler
+    would be the evidence-as-alibi defect `test_no_token_that_makes_a_command
+    _billable_can_also_clear_it` exists to stop, arriving through the back door.
+    """
+    import inspect
+
+    found: dict[str, list[str]] = {}
+    for module in modules:
+        source = inspect.getsource(module)
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef):
+                found.setdefault(node.name, []).append(
+                    ast.get_source_segment(source, node) or "")
+    return found
+
+
 def test_every_mutating_call_failure_handler_names_the_bill():
     """A gcloud call that starts, stops or creates something, and whose
     `except GcloudError` says nothing about the bill.
@@ -1491,29 +1602,57 @@ def test_every_mutating_call_failure_handler_names_the_bill():
     """
     import inspect
 
+    from comfy_qa import create as create_module
+    from comfy_qa import host as host_module
     from comfy_qa import lifecycle as lifecycle_module
+    from comfy_qa import relocate as relocate_module
 
-    source = inspect.getsource(lifecycle_module)
-    tree = ast.parse(source)
     mutating = _mutating_gcloud_methods()
+    modules = (host_module, lifecycle_module, create_module, relocate_module)
+    bodies = _failure_bodies(modules)
+
+    def names_the_bill(text: str) -> bool:
+        return any(token in text for token in FAILURE_BILL_TOKENS)
 
     naked = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
-            continue
-        called = {_called_name(call) for call in ast.walk(node)
-                  if isinstance(call, ast.Call)} & mutating
-        if not called:
-            continue
-        for handler in node.handlers:
-            names = ast.unparse(handler.type) if handler.type else ""
-            if "GcloudError" not in names:
+    for module in modules:
+        source = inspect.getsource(module)
+        name = module.__name__.split(".")[-1] + ".py"
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Try):
                 continue
-            body = "\n".join(ast.get_source_segment(source, stmt) or ""
-                             for stmt in handler.body)
-            if not any(token in body for token in BILL_TOKENS):
-                naked.append(f"line {handler.lineno} (around "
-                             f"{', '.join(sorted(called))})")
+            called = {_called_name(call) for call in ast.walk(node)
+                      if isinstance(call, ast.Call)} & mutating
+            if not called:
+                continue
+            for handler in node.handlers:
+                types = ast.unparse(handler.type) if handler.type else ""
+                if "GcloudError" not in types:
+                    continue
+                body = "\n".join(ast.get_source_segment(source, stmt) or ""
+                                 for stmt in handler.body)
+                if names_the_bill(body):
+                    continue
+                # ONE HOP, exactly as the ordinary-path guard allows, and for the
+                # same reason its docstring gives: a handler is entitled to defer
+                # to a function whose whole job is that sentence. Both real
+                # deferrals in this package are of that shape — `host` hands the
+                # probe failure to `_probe_failed`, `relocate` hands a stopped
+                # move to `_stopped` — and neither can be seen by reading the
+                # handler alone.
+                #
+                # Not transitive. Following calls to exhaustion reaches
+                # `output.fix` from almost anywhere in these four modules and
+                # clears everything, which is the guard defeating itself from the
+                # exoneration side — the disease this file already names.
+                deferred = any(
+                    names_the_bill(text)
+                    for call in ast.walk(handler)
+                    if isinstance(call, ast.Call)
+                    for text in bodies.get(_called_name(call), []))
+                if not deferred:
+                    naked.append(f"{name}:{handler.lineno} (around "
+                                 f"{', '.join(sorted(called))})")
 
     assert not naked, (
         f"a failure handler for a mutating gcloud call says nothing about the "

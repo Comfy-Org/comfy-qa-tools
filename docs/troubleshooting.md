@@ -1741,6 +1741,41 @@ Until this existed, all three cases printed `could not stop <name>: <error>` and
 gcloud's own advice, which is empty for the timeout that makes this matter. The
 box was left running and the message said nothing about money.
 
+## A capacity probe whose answer was lost
+
+`comfy-qat move <name>` with no `--to` has to find a zone with capacity, and
+nothing answers "where is there an L4 free". The only way to ask is to try to
+start the machine and read the zone out of the refusal — so **the probe is a
+start**, and a probe that is not refused leaves a GPU box running.
+
+A stockout refusal means nothing started, and that path says nothing about money
+because there is nothing to say. These are the other failures.
+
+**`asking Google where there is capacity did not report back (<error>), and <name> is <state> — the probe started it, and it is billing.`**
+
+The request reached Google, the reply did not, and reading the machine back found
+it running or coming up. The probe worked as a start; only the confirmation was
+lost. Exit 1 — the work started and failed — with gcloud's own stop handed over:
+
+```
+gcloud compute instances stop <name> --zone=<zone> --project=<project>
+```
+
+**`asking Google where there is capacity failed (<error>), and reading <name>'s state afterwards failed too. The probe is a start, so it may have landed — it may be running and billing.`**
+
+Both calls failed, so which way it went cannot be established from here. Exit 1
+rather than 2, because 2 means "nothing was changed" and that is the one thing
+nobody can assert at this point. `comfy-qat list --live` settles it.
+
+A credential failure is not in this group: it is a refusal, exits 2, and cannot
+have started anything — an expired session never reaches the compute API.
+Likewise a bad zone or any other flat refusal, where reading the machine back
+finds it still stopped.
+
+Until this existed, every one of these exited **2** with gcloud's error and
+nothing else — a command asserting that nothing changed, about a probe whose own
+job is to start a machine.
+
 ## A new box and its GPU driver
 
 **`<name> still has no working GPU driver after 900s. The machine is running and billing.`**

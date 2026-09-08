@@ -1657,6 +1657,77 @@ def switch_cmd(
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
 
 
+def _probe_failed(gc, host: Host, exc) -> None:
+    """A capacity probe that failed for any reason other than a stockout.
+
+    Never returns — every path exits. The question it answers is the one
+    `bring_up` and `put_away` both answer at their own mutating calls: a request
+    that reached Google and whose ANSWER was lost is not a request that did not
+    happen, so read the state back before saying anything about it.
+
+    The exit code carries the finding rather than a habit. This tool's rule is
+    that 2 means nothing was changed and 1 means the work started and failed, so
+    a machine proved TERMINATED keeps 2 and everything else takes 1 — including
+    "could not tell", because 2 there is the assertion nobody can make.
+
+    The raw gcloud stop leads, and `comfy-qat down` is not offered at all. The
+    box IS in the host list here — unlike `create`'s case, where the reason is
+    that it is not — but this tool has just failed to read or act on it, so its
+    own command is the one thing that has already been shown not to work.
+    `create._stop_the_box` reached the same place from the other direction: a
+    fix line that cannot run is worse than none.
+    """
+    from .gcloud import GcloudError
+    from .lifecycle import TERMINATED, _raw_stop, is_auth_failure, readable_state
+
+    # A credential failure is a REFUSAL: the request never got far enough to
+    # start anything, so "nothing was changed" is true and 2 is right. Checked
+    # first and separately because the re-read below would fail for the very
+    # same reason — an expired session cannot answer `instances describe`
+    # either — and this would then report "could not be read" and exit 1 about a
+    # box that is certainly off.
+    #
+    # `bring_up` and `wait_for_ssh` both take this branch ahead of everything
+    # else, for the same reason stated the same way: a credential will not come
+    # back on its own, so waiting or re-asking spends time on what cannot work.
+    if is_auth_failure(exc):
+        _refused(exc)
+
+    try:
+        after = gc.instance_status(host.gce_instance, host.gce_zone,
+                                   host.gce_project)
+    except GcloudError:
+        after = None
+
+    # The start did not land. Nothing is billing, so "nothing was changed" is
+    # true and 2 is the honest code — this is the only branch where it is.
+    if after == TERMINATED:
+        _refused(exc)
+
+    # An empty status is a third answer and not a state: the read succeeded and
+    # said nothing about the machine. `bring_up` makes the same distinction at
+    # the same call, and taking it for a state is how a confident sentence gets
+    # printed on no evidence.
+    if after not in (None, ""):
+        say.fail(
+            f"asking Google where there is capacity did not report back ({exc}), "
+            f"and {host.name} is {readable_state(after).lower()} — the probe "
+            f"started it, and it is billing.",
+            fix=say.fix("stop it with gcloud directly:", _raw_stop(host)),
+            code=1, blank_line=False)
+
+    say.fail(
+        # Not "could not be read": that four-word run is one config.py also
+        # builds, and test_docs then classifies this as a ConfigError and fails
+        # it for not being one. Active voice, same meaning, no collision.
+        f"asking Google where there is capacity failed ({exc}), and reading "
+        f"{host.name}'s state afterwards failed too. The probe is a start, so "
+        f"it may have landed — it may be running and billing.",
+        fix=say.fix("stop it with gcloud directly:", _raw_stop(host),
+                    "or look at what is running:", "comfy-qat list --live"),
+        code=1, blank_line=False)
+
+
 def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
     """Would the project-wide GPU ceiling refuse this machine while those run?
 
@@ -1740,7 +1811,23 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
             gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
     except GcloudError as exc:
         if not is_capacity_failure(exc.raw):
-            _refused(exc)
+            # THE MIRROR OF THE STOP FAILURE, and the same defect on the other
+            # side of the same call. A capacity refusal means nothing started,
+            # which is why that branch below says nothing about money and is
+            # right to. This branch is everything else — the timeout, the lost
+            # reply — and it called `_refused`, which exits 2.
+            #
+            # 2 is not a neutral code here. `_refused`'s own docstring defines it
+            # as "nothing was changed", with 1 reserved for "the work started and
+            # failed". So the command POSITIVELY ASSERTED that nothing happened,
+            # at the one moment nobody can know that — twenty lines below, this
+            # function's own comment says "the probe IS a start… a try that is
+            # not refused leaves a GPU box running".
+            #
+            # `inflight` does not cover it either: its `except Exception` drops
+            # the entry and re-raises, on the reasoning that "the command has its
+            # own words for a failure it can name". Here the command had none.
+            _probe_failed(gc, host, exc)
         zones = suggested_zones(exc.raw)
         if not zones:
             say.fail("Google did not name a zone with capacity",
