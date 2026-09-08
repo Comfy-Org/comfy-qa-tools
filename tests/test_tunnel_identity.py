@@ -400,3 +400,123 @@ def test_one_process_has_one_identity_whatever_the_shell_looks_like(environment)
         f"the same process reads differently under {environment} — a tunnel "
         "opened in one shell cannot be closed from another"
     )
+
+
+# --- the same question, asked of the source ---------------------------------
+#
+# This file's subject is "reading a result off a machine you did not mean to be
+# on", and a browser tab is the fastest way there: nothing in it tells two
+# ComfyUIs apart — same title, same canvas, same favicon, and only
+# `127.0.0.1:<port>` between them. `stamp.mismatch` writes the sentence that
+# catches it, and for a long time it had exactly ONE caller, `host stamp`, so
+# `go` opened tabs onto contradicting machines in silence.
+#
+# Fixing the two call sites that existed is not the same as fixing the class of
+# defect. A third browser call added next month would be the same bug again,
+# green suite and all — so the rule is asserted against the SOURCE rather than
+# against the two sites we happen to know about.
+
+
+def _package_functions():
+    """Every function in comfy_qa/, with the calls it makes, by name."""
+    import ast
+
+    package = Path(__file__).resolve().parent.parent / "comfy_qa"
+    functions = {}
+    for path in sorted(package.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        parents = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+
+        def owner(node):
+            """The named function a node sits in — through lambdas, which is how
+            `host._serve` holds its browser: `lambda url: webbrowser.open(url)`."""
+            while node is not None:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    return node
+                node = parents.get(node)
+            return None
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.setdefault(f"{path.name}:{node.name}", set())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            holder = owner(node)
+            if holder is None:
+                continue
+            functions.setdefault(f"{path.name}:{holder.name}", set()).add(
+                _call_name(node.func))
+    return functions
+
+
+def _call_name(func) -> str:
+    """`mismatch`, `webbrowser.open` — dotted when the receiver is a plain name.
+
+    Dotted, because `open` on its own is `Path.open` half the time and the rule
+    would then be reading tea leaves.
+    """
+    import ast
+
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name):
+            return f"{func.value.id}.{func.attr}"
+        return func.attr
+    return ""
+
+
+# What opening a browser looks like in this package: the stdlib call, and the
+# injected seam every caller passes it around as.
+OPENS_A_BROWSER = {"webbrowser.open", "browser", "open_browser"}
+
+
+def test_every_browser_in_the_package_asks_which_machine_first():
+    """No tab is opened onto a host that has not been checked against its stamp.
+
+    Asserted as a closure, not as a list of blessed call sites: a function counts
+    as having asked if it calls `mismatch` itself, or calls something that does.
+    `lifecycle._arrive` reaches it through `_must_be_the_named_machine`, and a
+    guard written tomorrow with a third name is covered without editing this.
+    """
+    functions = _package_functions()
+
+    asks = {"mismatch"}
+    while True:
+        grown = {name for name, calls in functions.items() if calls & asks}
+        grown = {name.split(":", 1)[1] for name in grown} | asks
+        if grown == asks:
+            break
+        asks = grown
+
+    opens = {name for name, calls in functions.items() if calls & OPENS_A_BROWSER}
+    unguarded = sorted(name for name in opens if not (functions[name] & asks))
+
+    assert not unguarded, (
+        f"{', '.join(unguarded)} opens a browser without asking `mismatch` "
+        f"whether the machine that answered is the machine that was named. "
+        f"Nothing in the tab tells the two apart, so a result taken in it is "
+        f"filed under the wrong hardware. Consult `mismatch` before the open, "
+        f"or refuse: `lifecycle._arrive` is the shape."
+    )
+
+
+def test_that_rule_can_actually_fail():
+    """The closure above is subtle enough to be wrong in the safe direction.
+
+    A bug in it — a name never collected, an `opens` set that comes back empty —
+    reports success on a package with no guard at all, which is the failure mode
+    of every structural check. So the machinery is asked a question whose answer
+    is known: the browser sites must be FOUND, and a guardless function must be
+    reported.
+    """
+    functions = _package_functions()
+    opens = {name for name, calls in functions.items() if calls & OPENS_A_BROWSER}
+
+    assert len(opens) >= 2, f"the walk found no browser call sites at all: {opens}"
+    assert any(name.startswith("lifecycle.py") for name in opens), opens
+    assert any(name.startswith("host.py") for name in opens), opens

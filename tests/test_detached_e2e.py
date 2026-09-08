@@ -233,13 +233,34 @@ def test_go_on_a_box_that_is_already_serving_still_changes_nothing(world):
     assert "ComfyUI 0.3.44" in result.output, "the stamp is the evidence line"
 
 
+# What the second machine in `test_two_boxes_can_be_up_at_once` answers, matching
+# the `comfy-linux` entry that test writes into the host list.
+SECOND_BOX = {
+    "system": {
+        "os": "linux",
+        "comfyui_version": "0.3.44",
+        "python_version": "3.12.3",
+        "pytorch_version": "2.8.0+cu128",
+    },
+    "devices": [
+        {"name": "cuda:0 NVIDIA A100-SXM4-80GB", "type": "cuda",
+         "vram_total": 85899345920},
+    ],
+}
+
+
 def test_two_boxes_can_be_up_at_once(world, tmp_path):
     """The reason for all of this. One terminal, two machines, two tunnels.
 
     Each `go` returns, so the second one is reachable at all — which under the
     old foreground launch it simply was not.
     """
-    second = FakeComfyUI(mode="serving")
+    # The payload has to agree with the declaration written below it. A host
+    # list that says Ubuntu/A100 while the port answers `nt` and an L4 is the
+    # wrong-machine contradiction `go` refuses — correctly — and the second box
+    # here is meant to be a second real machine, not that failure. It went
+    # unnoticed while nothing compared the two.
+    second = FakeComfyUI(mode="serving", payload=SECOND_BOX)
     try:
         world.config.write_text(
             world.config.read_text()

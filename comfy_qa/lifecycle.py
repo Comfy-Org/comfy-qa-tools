@@ -337,6 +337,72 @@ def probe(host: Host) -> Stamp | None:
         return None
 
 
+def wrong_machine_fix(host: Host) -> str:
+    """What to do about a port that answered as a machine you did not name.
+
+    Public, and the only thing in this module's refusal vocabulary that is:
+    `host._serve` opens a browser of its own, on the path described below, and
+    has to refuse in exactly these words rather than inventing a second wording
+    for the same contradiction.
+
+    **Refused, not warned**, which is the treatment `host stamp` already gives
+    this exact contradiction. Its argument is that the evidence line exists to be
+    copied into a bug report and a warning on stderr does not survive being
+    copied — so printing the line at all is what creates the false evidence.
+
+    A browser session is the same artefact with nothing to copy. Nothing in the
+    tab tells the two machines apart: same title, same canvas, same favicon, and
+    only the port in the address bar differs — which is the thing that is lying.
+    Settings → About is the one in-UI signal and it is four clicks deep, so
+    everything generated in that tab is attributed to whichever machine the
+    command named. Opening it is the act that turns a mislabelled port into
+    mislabelled results, and it happens after the warning has scrolled away.
+
+    **The ordinary path is the one that matters, and it is not the launch.** A
+    box that is already serving never reaches `serve` or `start_detached` —
+    `bring_up` gets a stamp, `go` hands it to `host._serve`, and the browser
+    opens from there. Guarding only the launch would have protected the rare
+    route and left the everyday one open, which is close to no guard at all. So
+    the check lives in `bring_up` too, which also puts it under `up`, where
+    nothing is opened at all: reporting a machine under the wrong name is
+    `stamp`'s own failure with the same consequences, and gets the same answer.
+
+    **Nothing is torn down, which is where this departs from every other refusal
+    in this module.** `_give_up` closes the tunnel and the callers around it stop
+    what the run started; both are exactly wrong here, because what has just been
+    established is that we cannot say which machine is on the other end of that
+    port. Acting on a machine you have failed to identify is the failure this
+    refusal exists to prevent, one step further along. So the box is left
+    running, the tunnel is left open — `comfy-qat list --live` and `comfy-qat
+    stamp` need it to say which machine it really reaches — and the bill is said
+    out loud instead.
+
+    The refusal carries `mismatch`'s own sentence as its message, unaltered: it
+    already names the host, the url and both machines, and it is the sentence the
+    troubleshooting page documents — so only the advice is written here.
+    """
+    advice = (
+        f"nothing was opened or reported as {host.name}, because that port does "
+        f"not reach it. Nothing was stopped, so it can still be asked what it is:",
+        "comfy-qat list --live",
+        f"comfy-qat stamp {host.name}",
+    )
+    # The bill only when there is one. `up local` reaches this too, and
+    # `comfy-qat down local` is not a command that stops paying for anything.
+    return _with_the_bill(host, *advice) if host.is_remote else output.fix(*advice)
+
+
+def _must_be_the_named_machine(host: Host, stamp: Stamp) -> None:
+    """Raise unless the machine that answered is the machine that was asked for.
+
+    One raise site for the whole module, so the refusal cannot drift between the
+    path that opens a browser and the path that only reports.
+    """
+    problem = mismatch(host, stamp)
+    if problem is not None:
+        raise LifecycleError(problem, fix=wrong_machine_fix(host))
+
+
 def bring_up(
     gc: Gcloud,
     host: Host,
@@ -372,6 +438,7 @@ def bring_up(
                 fix=f"~/ComfyUI/venv/bin/python ~/ComfyUI/main.py --port {host.port} "
                     "--listen 127.0.0.1",
             )
+        _must_be_the_named_machine(host, stamp)
         say(f"{host.name} is already up")
         return Ready(host=host, stamp=stamp, started=False, tunnelled=False)
 
@@ -598,6 +665,13 @@ def bring_up(
     # "answered in 2m10s" above it would be the same fact twice.
     answering.give_up()
     say(f"ComfyUI answering: {stamp.line()}")
+    # The ordinary way to a browser tab, and the reason guarding `serve` alone was
+    # close to no guard at all: a box that is ALREADY serving never reaches
+    # `serve` or `start_detached`. `go` gets this `Ready` back, sees a stamp, and
+    # opens the browser from `host._serve` without either of them running. The
+    # person that protects is the one who reconnects to a running box, which is
+    # everybody, most days.
+    _must_be_the_named_machine(host, stamp)
     return Ready(host=host, stamp=stamp, started=started, tunnelled=True)
 
 
@@ -1051,46 +1125,6 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
         fetching.give_up()
 
 
-def _wrong_machine_fix(host: Host) -> str:
-    """What to do about a port that answered as a machine you did not name.
-
-    **Refused, not warned**, which is the treatment `host stamp` already gives
-    this exact contradiction. Its argument is that the evidence line exists to be
-    copied into a bug report and a warning on stderr does not survive being
-    copied — so printing the line at all is what creates the false evidence.
-
-    A browser session is the same artefact with nothing to copy. Nothing in the
-    tab tells the two machines apart: same title, same canvas, same favicon, and
-    only the port in the address bar differs — which is the thing that is lying.
-    Settings → About is the one in-UI signal and it is four clicks deep, so
-    everything generated in that tab is attributed to whichever machine the
-    command named. Opening it is the act that turns a mislabelled port into
-    mislabelled results, and it happens after the warning has scrolled away.
-
-    **Nothing is torn down, which is where this departs from every other refusal
-    in this module.** `_give_up` closes the tunnel and the callers around it stop
-    what the run started; both are exactly wrong here, because what has just been
-    established is that we cannot say which machine is on the other end of that
-    port. Acting on a machine you have failed to identify is the failure this
-    refusal exists to prevent, one step further along. So the box is left
-    running, the tunnel is left open — `comfy-qat list --live` and `comfy-qat
-    stamp` need it to say which machine it really reaches — and the bill is said
-    out loud instead.
-
-    The refusal carries `mismatch`'s own sentence as its message, unaltered: it
-    already names the host, the url and both machines, and it is the sentence the
-    troubleshooting page documents — so only the advice is written here.
-    """
-    return _with_the_bill(
-        host,
-        f"no browser was opened, because it would have shown a machine that is "
-        f"not {host.name}. Nothing was stopped and the tunnel is still up, so it "
-        f"can be asked what it is:",
-        "comfy-qat list --live",
-        f"comfy-qat stamp {host.name}",
-    )
-
-
 def _arrive(host: Host, stamp: Stamp, say: Callable[[str], None],
             open_browser: Callable[[str], None] | None) -> None:
     """Hand a machine over: name it beside its url, then open it.
@@ -1106,9 +1140,7 @@ def _arrive(host: Host, stamp: Stamp, say: Callable[[str], None],
     printed last of all — so the last thing on the screen before a browser takes
     over has to be which machine is behind it, not just where it is.
     """
-    problem = mismatch(host, stamp)
-    if problem is not None:
-        raise LifecycleError(problem, fix=_wrong_machine_fix(host))
+    _must_be_the_named_machine(host, stamp)
     say(f"open {host.url} — {stamp.line()}")
     if open_browser is not None:
         open_browser(host.url)

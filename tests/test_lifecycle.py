@@ -541,6 +541,126 @@ def test_the_browser_is_not_opened_after_a_launch_that_failed():
     assert opened == []
 
 
+# --- and the same refusal on the path people actually take -----------------
+#
+# A box that is ALREADY serving never reaches `serve` or `start_detached`:
+# `bring_up` comes back with a stamp, `go` sees one, and `host._serve` opens the
+# browser itself. That is reconnecting to a running box — the everyday case — so
+# a refusal that guarded only the launch would have guarded the rare route and
+# left the common one open.
+
+
+LOCAL_MAC = Host(name="local", kind="local", port=8188, os="macOS 15.5")
+
+
+def test_bring_up_refuses_a_box_that_answers_as_a_different_machine(tmp_path):
+    """`go` on an already-serving box, which is most `go`s."""
+    _, say = said()
+    mac = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"],
+                comfyui_version="0.33.0")
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud(["RUNNING"]), WIN, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None, probe_fn=lambda host: mac)
+
+    assert "answered as darwin" in str(caught.value)
+    assert "That port is not reaching comfy-win" in str(caught.value)
+    assert stop_paying(WIN) in (caught.value.fix or ""), "the box is still billing"
+
+
+def test_up_refuses_it_too_even_though_it_opens_nothing(monkeypatch, tmp_path,
+                                                       run_main):
+    """`up` is the same question with no browser at the end of it.
+
+    It exists to certify that a machine is up, and certifying the wrong one is
+    `host stamp`'s failure with the same consequences. Driven through the real
+    command rather than through `bring_up`, because the claim is about what `up`
+    now does: it exits 1 and says which two machines disagree, instead of
+    printing `open http://127.0.0.1:8190` under a name that is not what answered.
+    """
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import lifecycle as lifecycle_module
+
+    class Cloud:
+        def instance_status(self, instance, zone, project):
+            return "RUNNING"
+
+    path = tmp_path / "hosts.toml"
+    path.write_text(
+        "[hosts.comfy-win]\n"
+        'kind = "gce"\n'
+        'os = "Windows Server 2022"\n'
+        'gpu = "L4"\n'
+        'gce_instance = "comfy-win"\n'
+        'gce_zone = "us-central1-a"\n'
+        'gce_project = "proj"\n'
+        "port = 8190\n",
+        encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: Cloud())
+    monkeypatch.setattr(lifecycle_module, "probe", lambda host: Stamp(
+        host="comfy-win", url=WIN.url, os="darwin", devices=["mps"]))
+
+    code, output = run_main(["up", "comfy-win", "--config", str(path)])
+
+    assert code == 1, output
+    assert "answered as darwin" in output, output
+    assert "open http://127.0.0.1:8190" not in output, (
+        f"`up` certified a machine that contradicted itself: {output}"
+    )
+
+
+def test_the_handover_in_go_refuses_before_it_opens_anything(monkeypatch, capsys):
+    """`host._serve`'s fast return — the line that actually opens the browser.
+
+    Lives here rather than in a host test because it is the same refusal as the
+    three above, and because reaching it through `go` is no longer possible:
+    `bring_up` now refuses first, so the only way to put a contradicting `Ready`
+    in front of this branch is to hand it one. That is the point of guarding
+    both — one refuses to RETURN a machine it cannot identify, the other refuses
+    to OPEN one, and the second is what a future caller with its own `Ready`
+    will meet.
+    """
+    import typer
+
+    from comfy_qa.host import _serve
+    from comfy_qa.lifecycle import Ready
+
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url))
+    mac = Stamp(host="comfy-win", url=WIN.url, os="darwin", devices=["mps"])
+
+    with pytest.raises(typer.Exit) as caught:
+        _serve(gcloud(["RUNNING"]), WIN,
+               Ready(host=WIN, stamp=mac, started=False, tunnelled=True))
+
+    assert caught.value.exit_code == 1
+    assert opened == [], "a browser was opened onto a contradicting machine"
+    printed = capsys.readouterr()
+    assert "answered as darwin" in printed.err, printed.err
+    # The handover is two `say.result` lines — the url, then the stamp — and
+    # stdout is where a person copies from. Neither may be there.
+    assert mac.line() not in printed.out, (
+        f"the contradicting machine was handed over anyway: {printed.out!r}"
+    )
+    assert WIN.url not in printed.out, printed.out
+
+
+def test_a_local_machine_that_answers_as_another_one_is_refused_without_a_bill(tmp_path):
+    """A local host declares what it runs too, and `comfy-qat down local` is not
+    a command that stops paying for anything."""
+    _, say = said()
+    windows = Stamp(host="local", url=LOCAL_MAC.url, os="Windows Server 2022")
+
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gcloud([]), LOCAL_MAC, say, tunnel_dir=tmp_path,
+                 probe_fn=lambda host: windows)
+
+    assert "That port is not reaching local" in str(caught.value)
+    assert "comfy-qat down" not in (caught.value.fix or ""), (
+        f"a local machine was invoiced: {caught.value.fix!r}"
+    )
+
+
 # --- nor onto a machine that is not the one you named ----------------------
 #
 # A launch that answers is not a launch that answered from the right box. Both
