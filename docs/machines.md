@@ -163,11 +163,19 @@ launch and want to watch it happen.
 comfy-qat go linux --new-window
 ```
 
-Opens a new **macOS Terminal** window and runs `go <name> --follow` in it,
-leaving this terminal free. That is the only thing it supports: anywhere else it
+Opens a new **macOS Terminal** window and runs the same `go` in it, leaving this
+terminal free. It hands over what you typed and nothing more: `comfy-qat go linux
+--new-window --follow` streams the log in that window, and **Ctrl-C there stops
+ComfyUI on the box**; without `--follow`, Ctrl-C in that window stops nothing on
+the box. The window itself stays either way — Terminal leaves a shell behind when
+the command finishes.
+
+That macOS Terminal is the only thing `--new-window` supports: anywhere else it
 says so and starts nothing, printing the exact command to paste into a window you
 open yourself. A window that silently does not appear, on a command that starts a
-GPU box, is a machine you are paying for and cannot see.
+GPU box, is a machine you are paying for and cannot see. Once the window *is*
+open, this terminal is out of the story — whatever goes wrong is reported in
+there, and the command you ran here has already exited 0.
 
 ## Changing machine: Windows to Linux and back
 

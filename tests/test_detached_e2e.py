@@ -405,7 +405,7 @@ def test_new_window_off_macos_refuses_without_starting_anything(world, monkeypat
     assert not world.pid_file().exists()
 
 
-def test_new_window_hands_over_the_following_form_of_the_command(world, monkeypatch):
+def test_new_window_hands_over_the_command_it_was_actually_given(world, monkeypatch):
     import subprocess
 
     monkeypatch.setattr("sys.platform", "darwin")
@@ -426,7 +426,161 @@ def test_new_window_hands_over_the_following_form_of_the_command(world, monkeypa
     no_traceback(result)
     assert result.exit_code == 0, result.output
     script = seen["args"][-1]
-    assert f"go {BOX} --follow" in script, "the new window is the one that streams"
+    # `--follow` used to be appended here regardless, and this test asserted it.
+    # It was the defect: nobody typed the flag whose Ctrl-C stops ComfyUI.
+    assert f"go {BOX}" in script, "the new window runs the go it was handed"
+    assert "--follow" not in script, "and only what was asked for"
     assert str(world.config) in script, "and reads the same host list"
     assert world.gc.calls == [], "nothing was started in this terminal"
 
+
+
+# --- what the spawned window is actually told to run -------------------------
+#
+# `--new-window` is the one command in this tool whose argv is executed
+# somewhere this process cannot see. osascript returns 0 once *Terminal* has
+# accepted the script, not once the command inside it has worked, so anything
+# wrong with that argv fails in a window the person may already have closed,
+# while this terminal says "opened a new Terminal window running: ..." and exits
+# 0. There is no runtime check that can be trusted to be read, so the checking
+# happens here.
+
+
+def _handed_over(world, monkeypatch, *args: str) -> str:
+    """The AppleScript `--new-window` would run, with osascript stubbed out.
+
+    No window is opened and no `osascript` is executed: `subprocess.run` is
+    replaced before the command is invoked.
+    """
+    import subprocess
+
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/" + name)
+    seen = {}
+
+    class Ran:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def record(argv, **kwargs):
+        seen["args"] = argv
+        return Ran()
+
+    monkeypatch.setattr(subprocess, "run", record)
+    world.cloud(statuses=["TERMINATED"])
+
+    result = run(world, *args, "--new-window")
+
+    no_traceback(result)
+    assert result.exit_code == 0, result.output
+    assert world.gc.calls == [], "nothing was started in this terminal"
+    return seen["args"][-1]
+
+
+def test_new_window_re_execs_the_live_spelling_not_the_deprecated_group(world, monkeypatch):
+    """`host` is a deprecation window, not a second permanent spelling.
+
+    cli.py registers `host` hidden and says in as many words that 26 command
+    paths is not a simplification of 13. This argv was the one caller inside the
+    tool still spelling a command the deprecated way — so the day that group is
+    deleted, the breakage lands in a spawned Terminal window, on the command that
+    starts a GPU box, where nobody is looking.
+    """
+    script = _handed_over(world, monkeypatch, "go", BOX)
+
+    assert f"go {BOX}" in script, "it still hands over the `go` it was asked for"
+    assert "host go" not in script, (
+        "--new-window re-execs `host go`, the hidden deprecated spelling. When "
+        "the deprecation window closes, this breaks inside a Terminal window "
+        "that may already be shut. Hand over the live spelling: `go <name>`."
+    )
+
+
+def test_the_handed_over_command_line_is_one_the_cli_still_understands(world, monkeypatch):
+    """The argv, parsed by the real app rather than read by eye.
+
+    `--help` is appended so the parse is all that happens — no box is started —
+    and a command word this app no longer registers exits 2 here instead of in a
+    window that may close before it is read.
+    """
+    import shlex
+
+    script = _handed_over(world, monkeypatch, "go", BOX)
+    line = script[script.index('do script "') + len('do script "'):-1]
+    words = shlex.split(line.replace('\\"', '"').replace("\\\\", "\\"))
+    # Drop however many words name the tool itself — one for an installed
+    # `comfy-qat`, three for `python -m comfy_qa` — and keep the rest verbatim.
+    # Anything cleverer than this (searching for the host name, say) would strip
+    # a leading `host` along with the interpreter and hide the very thing this
+    # test exists to catch.
+    prefix = len(shlex.split(lifecycle._tool_invocation()))
+    argv = words[prefix:]
+    assert argv[0] != "--config", "the argv is nothing but flags — the parse is broken"
+
+    parsed = CliRunner().invoke(app, [*argv, "--help"])
+
+    assert parsed.exit_code == 0, (
+        f"--new-window hands a Terminal window {argv!r}, which this CLI does not "
+        f"accept:\n{parsed.output}"
+    )
+
+
+def test_new_window_does_not_quietly_turn_on_follow(world, monkeypatch):
+    """--follow changes what Ctrl-C destroys, so nothing may switch it on for you.
+
+    Under `--follow`, `serve` streams the log over SSH and its `finally` calls
+    `_stop_ours`, so Ctrl-C in that terminal stops ComfyUI on the box. Someone
+    who spawns a window and then interrupts it expecting to detach kills the
+    thing they just started, on a machine they are paying for.
+    """
+    script = _handed_over(world, monkeypatch, "go", BOX)
+
+    assert "--follow" not in script, (
+        "--new-window turned on --follow, which nobody asked for. Ctrl-C in that "
+        "window then stops ComfyUI on the box."
+    )
+
+
+def test_new_window_forwards_follow_when_it_was_asked_for(world, monkeypatch):
+    script = _handed_over(world, monkeypatch, "go", BOX, "--follow")
+
+    assert f"go {BOX} --follow" in script, "asked for, so it is handed over"
+
+
+def test_new_window_forwards_the_other_flags_it_was_given(world, monkeypatch):
+    script = _handed_over(world, monkeypatch, "go", BOX, "--no-browser", "--no-install")
+
+    assert str(world.config) in script, "and reads the same host list"
+    assert "--no-browser" in script
+    assert "--no-install" in script
+
+
+def test_new_window_help_says_what_ctrl_c_in_that_window_reaches(world, monkeypatch):
+    """The disclosure, in the place someone reads before they type it.
+
+    `--follow`'s own help states the consequence; `--new-window`'s said nothing
+    about it while silently implying it. Whatever this flag ends up doing, the
+    interrupt is the part that costs money to learn by accident, so it is stated
+    where the flag is documented.
+    """
+    result = CliRunner().invoke(app, ["go", "--help"])
+    assert result.exit_code == 0, result.output
+    help_text = " ".join(result.output.split())
+
+    where = help_text.find("--new-window")
+    assert where != -1, "--new-window is not in `go --help` at all"
+    # Its own row and nothing else: `--help` is the next option, and reading past
+    # it would let `--follow`'s row two rows above satisfy this test instead.
+    ends = help_text.find("--help", where)
+    disclosure = help_text[where:ends if ends != -1 else len(help_text)]
+
+    assert "Ctrl-C" in disclosure, (
+        "--new-window's help does not say what Ctrl-C in the spawned window "
+        "reaches. That window may be running --follow, where Ctrl-C stops "
+        "ComfyUI on the box — the flag that opts you in must say so."
+    )
+    assert "--follow" in disclosure, (
+        "--new-window's help does not mention --follow, so the reader cannot "
+        "tell which of the two interrupt behaviours their window will have."
+    )

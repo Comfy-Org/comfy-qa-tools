@@ -753,7 +753,12 @@ from here, because L7's truncation means a box that has ever served has a log.
       only thing that tells you. *(Run between phase K and phase E — that is the
       `=== E0` step, which grades the same output as the baseline for E3.)*
 - [ ] **L6** — `qat go $BOX --new-window` opens a macOS Terminal window running
-      `--follow` and leaves this terminal free. Anywhere that is not a Mac with
+      the same command and leaves this terminal free. It must **not** have added
+      `--follow` on your behalf: under `--follow`, Ctrl-C in that window stops
+      ComfyUI on the box, so a flag nobody typed would make closing the window
+      kill what it just started. `qat go $BOX --new-window --follow` does stream,
+      and there the interrupt stopping ComfyUI is the asked-for behaviour.
+      Anywhere that is not a Mac with
       `osascript`, it **says so and starts nothing**, printing the exact command
       to paste. A window that silently does not appear, on a command that starts a
       GPU box, is a machine you are paying for and cannot see — so a half-success

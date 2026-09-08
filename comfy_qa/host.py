@@ -980,7 +980,11 @@ def go_cmd(
         help="Stream ComfyUI's log here, and Ctrl-C then stops ComfyUI itself. "
              "To watch without that, use `comfy-qat logs`.")] = False,
     new_window: Annotated[bool, typer.Option(
-        "--new-window", help="Run this in a new macOS Terminal window instead.")] = False,
+        "--new-window",
+        help="Run this in a new macOS Terminal window instead. That window runs "
+             "what you asked for and nothing more, so Ctrl-C in it stops nothing "
+             "on the box — unless you passed --follow too, and then Ctrl-C "
+             "there stops ComfyUI itself.")] = False,
 ) -> None:
     """Start the machine, make sure ComfyUI is on it, and hand the prompt back.
 
@@ -997,7 +1001,26 @@ def go_cmd(
     if new_window:
         # Before anything is started: a hand-off that fails must not leave a box
         # running behind a window that never opened.
-        rest = ["host", "go", host.name, "--follow"]
+        #
+        # `go`, not `host go`. cli.py says in as many words that the `host` group
+        # is a deprecation window and not a second permanent spelling, and this
+        # line was the last caller inside the tool still using it — so deleting
+        # that group would have broken `--new-window` and nothing else, inside a
+        # spawned Terminal window, on the command that starts a GPU box, which is
+        # the least visible place in this tool for anything to break.
+        #
+        # And `--follow` only when it was asked for. It used to be appended here
+        # unconditionally, on the theory that a window needs something to hold it
+        # open. It does not: Terminal's `do script` runs the command in a new
+        # interactive shell and the shell outlives the command, so the window and
+        # its scrollback stay either way. What the implication did buy was the
+        # interrupt — under `--follow` the log is streamed over SSH and Ctrl-C
+        # reaches ComfyUI on the box and stops it — so someone who spawned a
+        # window and then interrupted it expecting to detach stopped the thing
+        # they had just started, on a machine they are still paying for, having
+        # never typed the flag that does that.
+        rest = ["go", host.name]
+        rest += ["--follow"] if follow else []
         rest += ["--config", str(config)] if config else []
         rest += ["--no-browser"] if no_browser else []
         rest += ["--no-install"] if no_install else []

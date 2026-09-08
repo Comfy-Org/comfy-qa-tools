@@ -1718,7 +1718,13 @@ def in_a_new_window(rest: list[str], say: Callable[[str], None]) -> None:
             "Nothing was started.",
             fix=by_hand,
         )
+    # osascript exits 0 once *Terminal* has accepted the script, not once the
+    # command inside it has worked — so from here on, a failure is reported in
+    # that window and nowhere else, and this process exits 0 either way. Saying
+    # where to look is the whole of what this end of the hand-off can do, and it
+    # is worth saying on a command whose next act is to start a billable machine.
     say(f"opened a new Terminal window running: {line}")
+    say("anything that goes wrong from here is reported in that window, not here")
 
 
 def _family(host: Host) -> str:

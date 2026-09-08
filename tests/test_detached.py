@@ -630,7 +630,7 @@ def test_new_window_refuses_plainly_off_macos(monkeypatch):
     _, say = said()
 
     with pytest.raises(LifecycleError) as caught:
-        in_a_new_window(["host", "go", "comfy-win", "--follow"], say)
+        in_a_new_window(["go", "comfy-win", "--follow"], say)
 
     assert "can only open a macOS Terminal window" in str(caught.value)
     assert "Nothing was started" in str(caught.value)
@@ -643,7 +643,7 @@ def test_new_window_refuses_when_osascript_is_missing(monkeypatch):
     _, say = said()
 
     with pytest.raises(LifecycleError):
-        in_a_new_window(["host", "go", "comfy-win"], say)
+        in_a_new_window(["go", "comfy-win"], say)
 
 
 def test_new_window_reports_a_terminal_that_would_not_open(monkeypatch):
@@ -661,7 +661,7 @@ def test_new_window_reports_a_terminal_that_would_not_open(monkeypatch):
     _, say = said()
 
     with pytest.raises(LifecycleError) as caught:
-        in_a_new_window(["host", "go", "comfy-win"], say)
+        in_a_new_window(["go", "comfy-win"], say)
 
     assert "could not open a new Terminal window" in str(caught.value)
     assert "Not authorised" in str(caught.value)
@@ -687,7 +687,7 @@ def test_new_window_runs_the_command_it_says_it_will(monkeypatch):
     monkeypatch.setattr(subprocess, "run", record)
     lines, say = said()
 
-    in_a_new_window(["host", "go", "comfy-linux", "--follow"], say)
+    in_a_new_window(["go", "comfy-linux", "--follow"], say)
 
     script = seen["args"][-1]
     assert script.startswith('tell application "Terminal" to do script "')

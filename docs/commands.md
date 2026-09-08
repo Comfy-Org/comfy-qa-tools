@@ -65,7 +65,7 @@ type it. `init` is for the case where you want to write the file yourself.
 
 | command | what it does |
 |---|---|
-| `comfy-qat go <host>` | the one worth memorising: start the box, install ComfyUI if it has none, launch it **on the box**, forward a port, and hand your prompt back. `--follow` streams the log here instead and Ctrl-C then stops ComfyUI; `--new-window` runs that in a new macOS Terminal; `--no-browser`, `--no-install`, `--os`, `--gpu` |
+| `comfy-qat go <host>` | the one worth memorising: start the box, install ComfyUI if it has none, launch it **on the box**, forward a port, and hand your prompt back. `--follow` streams the log here instead and Ctrl-C then stops ComfyUI; `--new-window` runs the same command in a new macOS Terminal, `--follow` included only if you asked for it; `--no-browser`, `--no-install`, `--os`, `--gpu` |
 | `comfy-qat logs <host>` | read the ComfyUI log on the box. Follows by default, because "what is it doing now" is the question people have; `--tail N` prints that many lines and stops. Ctrl-C ends the reading and nothing else, `--os`, `--gpu` |
 | `comfy-qat stamp <host>` | ask a machine what it is, in one line you paste into a report. `--json`, `--os`, `--gpu` |
 | `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install`, `--os`, `--gpu` |
