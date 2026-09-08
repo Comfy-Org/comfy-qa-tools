@@ -942,6 +942,25 @@ def summary(blueprint: Blueprint, ordering: Ordering) -> list[str]:
                      in enumerate(ordering.lines(), start=1)]
 
 
+def _grant_reaches(check: QuotaCheck, most: int = 3) -> str:
+    """Where the grant DOES apply, as a phrase: three regions and a count.
+
+    Both quota refusals in `order_zones` say this, because it is the sentence
+    that separates the two readings of "no quota in <place>". For a typo the
+    list settles it at a glance — `us-central9` beside a list containing
+    `us-central1` is its own diagnosis. For a real gap it answers the question
+    the refusal raises, which is "then where?". Three, because forty-three is
+    not a sentence.
+
+    One function rather than the same three lines twice: the two refusals were
+    written as copies and then drifted, which is what this whole change is
+    repairing.
+    """
+    granted = ", ".join(check.regions[:most])
+    others = len(check.regions) - most
+    return f"{granted} and {others} more" if others > 0 else granted
+
+
 def order_zones(
     gc: Gcloud, project: str, blueprint: Blueprint, check: QuotaCheck, *,
     zone: str | None = None, region: str | None = None, config=None, probe=None,
@@ -971,17 +990,20 @@ def order_zones(
     region = region.strip().lower() if region else region
 
     if zone:
-        # The same gate `--region` gets. `--region me-west1` is refused here with
-        # the reason; `--zone me-west1-a` used to sail past and find out from
-        # gcloud instead, a minute and a confirmation prompt later. Skipped when
-        # the grant names no region at all, which `problem()` refuses on its own.
+        # The same gate `--region` gets — and it says so truthfully only now.
+        # `--zone me-west1-a` used to sail past and find out from gcloud instead,
+        # a minute and a confirmation prompt later; this branch closed that. But
+        # the next two commits improved the wording HERE and nowhere else, while
+        # this comment went on claiming parity, so `--region` kept the bare
+        # reason and a fix that opened with a quota request for a region that may
+        # not exist. Two commits, believed identical, sixty lines apart. The
+        # refusals are one message in two places: change one, change the other.
+        # Skipped when the grant names no region at all, which `problem()`
+        # refuses on its own.
         if check.regions and region_of(zone) not in set(check.regions):
             # Naming where the grant DOES apply is what separates the two
             # readings, and it costs nothing — `check.regions` is already read.
-            # For a typo the list settles it at a glance: `us-central9` next to
-            # a list containing `us-central1` is its own diagnosis. For a real
-            # gap it is the answer to the question the refusal raises, which is
-            # "then where?". Three, because forty-three is not a sentence.
+            # `_grant_reaches` holds the wording and the reasons.
             #
             # And the payload cannot be made to separate them either, which is
             # the next idea and a worse message than this one. The tempting move
@@ -997,13 +1019,11 @@ def order_zones(
             # known, and reading it as "no such region" would tell someone their
             # correct spelling is wrong. Ambiguous and true beats specific and
             # backwards; there is a test for both zones below.
-            granted = ", ".join(check.regions[:3])
-            others = len(check.regions) - 3
-            elsewhere = f"{granted}{f' and {others} more' if others > 0 else ''}"
             raise LifecycleError(
                 f"this project has no {blueprint.card.name} quota in "
                 f"{region_of(zone)}, so nothing can start in {zone}. It holds "
-                f"{blueprint.card.name} in {elsewhere}. Nothing was created.",
+                f"{blueprint.card.name} in {_grant_reaches(check)}. "
+                f"Nothing was created.",
                 # The zone name is checked FIRST, and that ordering is the
                 # whole of this fix. `--zone us-central9-a` is a typo, not a
                 # quota gap: `region_of` turns it into `us-central9`, this
@@ -1062,11 +1082,33 @@ def order_zones(
     if region:
         regions = [name for name in regions if name == region]
         if not regions:
+            # The `--zone` gate above, said about a region, and deliberately in
+            # the same two moves: name where the grant DOES apply, then lead the
+            # advice with the spelling check.
+            #
+            # `--region us-central9` is as easy to mistype as `--zone
+            # us-central9-a`, and this branch is where the mistyped one lands
+            # first. It used to answer with the bare reason and open the fix
+            # with `quota request --region us-central9` — asking Google for a
+            # region it has never had, which is a slow way to learn you
+            # mistyped. The zone branch was fixed for exactly that and this one
+            # was not, for the reason its own comment gives.
+            #
+            # Nothing here calls the region unreal, and nothing can: the quota
+            # payload lists where the grant APPLIES, not every region Google
+            # has, so `me-west1` — a real region and the docs' example of a
+            # genuine gap — is absent from it entirely. The advice says "check
+            # the spelling", never "no such region", and there is a test for it.
             raise LifecycleError(
                 f"this project has no {blueprint.card.name} quota in {region}, so "
-                f"nothing can start there. Nothing was created.",
-                fix=(f"comfy-qat quota request --gpu {blueprint.card.key} "
-                     f"--region {region}, or drop --region and let this pick"),
+                f"nothing can start there. It holds {blueprint.card.name} in "
+                f"{_grant_reaches(check)}. Nothing was created.",
+                fix=(f"check the region name first — a typo reads as a region "
+                     f"this project has no quota in: gcloud compute regions "
+                     f"list --filter=name={region}; then either drop --region "
+                     f"and let this pick, or ask for the card there: "
+                     f"comfy-qat quota request --gpu {blueprint.card.key} "
+                     f"--region {region}"),
                 kind=NO_QUOTA,
             )
 

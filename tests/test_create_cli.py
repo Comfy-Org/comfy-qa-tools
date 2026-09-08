@@ -398,8 +398,15 @@ def test_a_name_google_would_refuse_never_reaches_a_create(cli):
 
 
 def test_an_explicit_zone_in_a_region_with_no_quota_is_refused(cli):
-    """`--region me-west1` was already refused with the reason. `--zone me-west1-a`
-    meant the same thing and used to be found out by gcloud instead."""
+    """`--zone me-west1-a` means what `--region me-west1` means, and used to be
+    found out by gcloud instead, a minute and a confirmation prompt later.
+
+    This said `--region` "was already refused with the reason", and that belief
+    is how the two branches came to differ: it was refused, but with the bare
+    sentence and a fix that opened with a quota request, while this branch went
+    on to gain both improvements and nobody re-read the other one. They say the
+    same thing now, and the test in test_create.py that names the `--region`
+    grant reads the advice rather than only the reason."""
     result = cli("--os", "linux", "--gpu", "l4", "--zone", "me-west1-a", "--yes")
     assert result.exit_code == 2
     assert "no L4 quota in me-west1" in result.output

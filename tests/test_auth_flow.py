@@ -454,6 +454,31 @@ def test_the_wait_is_one_window_for_the_command_not_one_per_card():
     assert clock.slept, "it really did wait — on a clock that costs nothing"
 
 
+def test_the_wait_window_is_half_an_hour_and_that_is_written_down_here():
+    """The sibling above calls it "the documented half hour". Nothing documented it.
+
+    Its assertion is `clock.t == WAIT_TIMEOUT_SECONDS` — the measured value
+    checked against the constant that produced it, so both sides move together
+    and the comparison holds for any value at all. Measured: `30 * 60` changed
+    to `3 * 60` left the whole suite identical, pass for pass. And until this
+    line, no literal `1800`, "30 minutes" or "half an hour" appeared anywhere in
+    `docs/`, `comfy_qa/` or `tests/` either — so the window `quota request`
+    waits before handing back exit 75 could be cut to three minutes or pushed to
+    six hours and nothing would notice.
+
+    So here is the oracle, independent of its subject the way "stopping after 6
+    zones" pins `MAX_ATTEMPTS`. Half an hour is the trade: long enough that a
+    grant landing while you wait is caught by the command that asked for it —
+    approvals do arrive in minutes — and short enough that a terminal is not
+    held all afternoon for a decision that can take days. Change the number and
+    change this line, deliberately; that is the point of it.
+    """
+    from comfy_qa.auth import WAIT_TIMEOUT_SECONDS
+
+    assert WAIT_TIMEOUT_SECONDS == 1800, (
+        f"half an hour, in seconds — this is {WAIT_TIMEOUT_SECONDS / 60:g} minutes")
+
+
 def test_request_with_no_project_says_which_command_sets_one():
     """The exception carries the fix and `request` was throwing it away, so the
     same failure that `quota list` explains left this command silent."""

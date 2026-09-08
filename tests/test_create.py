@@ -878,6 +878,43 @@ def test_a_zone_in_an_ungranted_region_says_where_the_grant_does_apply():
     assert "gcloud compute zones list --filter=name=us-central9-a" in caught.value.fix
 
 
+def test_a_region_with_no_grant_says_where_the_grant_does_apply_and_reads_the_fix():
+    """The sibling above, reached through `--region`, which did not read this way.
+
+    Two commits improved the `--zone` refusal — name the regions the grant DOES
+    apply in, then lead the advice with a spelling check instead of a quota
+    request — and both stopped at that branch. Sixty lines below it `--region`
+    went on saying only "no L4 quota in me-west1", with a fix whose opening move
+    was `quota request --region me-west1`: for a mistyped region, a request to
+    Google for a place it has never had, and days of waiting to find that out.
+
+    Nothing pinned it. Three tests reach this branch and all three assert the
+    half that was never wrong — the reason sentence — and NOT ONE reads `.fix`,
+    so the advice could have said anything at all. This one reads it, and reads
+    the order, because leading with the cheap check is the whole of that fix.
+    """
+    check = check_quota(CARDS["l4"], LIVE, [])
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, LINUX_L4, check, region="me-west1")
+
+    message = str(caught.value)
+    assert "no L4 quota in me-west1" in message
+    assert "It holds L4 in" in message, message
+    assert check.regions[0] in message, "a region it does hold, named"
+    assert f"and {len(check.regions) - 3} more" in message, (
+        "forty-three regions is not a sentence; three and a count is")
+    # `me-west1` is real, and the payload cannot show that. Same bar as the
+    # zone branch: never tell somebody their correct spelling is wrong.
+    for wrong in ("does not exist", "no such", "not a region", "typo"):
+        assert wrong not in message.lower(), message
+
+    fix = caught.value.fix
+    assert "gcloud compute regions list --filter=name=me-west1" in fix, fix
+    assert fix.index("gcloud compute regions list") < fix.index("comfy-qat quota"), (
+        f"the cheap check comes first — a quota request for a region Google may "
+        f"never have had is a slow way to learn you mistyped: {fix}")
+
+
 def test_a_real_region_with_no_grant_is_not_accused_of_being_a_typo():
     """The refusal reads the same for `me-west1-a` as for `us-central9-a`, and
     that sameness is the fix, not a gap in it.
