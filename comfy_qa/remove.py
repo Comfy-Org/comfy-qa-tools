@@ -33,7 +33,6 @@ Two refusals rather than warnings:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
@@ -41,6 +40,7 @@ import typer
 from . import say
 from . import inflight
 from .config import DEFAULT_CONFIG_PATH, ConfigError, load
+from .host import ConfigOption
 
 app = typer.Typer()
 
@@ -86,8 +86,7 @@ def _boot_disk_phrase(gc, host) -> str:
 @app.command("delete")
 def delete_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine to delete: its name.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     yes: Annotated[bool, typer.Option(
         "--yes", help="Skip the name confirmation. You have already decided.")] = False,
 ) -> None:
@@ -95,6 +94,10 @@ def delete_cmd(
 
     Stopping a box ends the expensive part of the bill; its disk keeps costing a
     few pounds a month. Deleting removes both, and the install with them.
+
+    This one writes: the box's entry goes out of your host list — the file
+    `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
+    off — so the file is read and then rewritten, with a backup left beside it.
     """
     from .gcloud import Gcloud, GcloudError, can_prompt
 

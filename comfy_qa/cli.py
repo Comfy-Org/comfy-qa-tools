@@ -7,6 +7,7 @@ existing one.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
@@ -46,8 +47,12 @@ for _group in auth.app.registered_groups:
 # written down before today — a script, a run sheet, muscle memory — keeps
 # working; `--help` shows one way to do each thing rather than two.
 #
-# These are a deprecation window, not a second permanent spelling: 26 command
-# paths is not a simplification of 13.
+# These are a deprecation window, not a second permanent spelling: 42 command
+# paths is not a simplification of 23. Those two numbers are walked out of the
+# live Click tree — 42 leaves behind 23 distinct implementations, 19 of the
+# leaves being these hidden duplicates — rather than counted by hand, which is
+# how the pair that stood here before (26 and 13) came to be wrong in both
+# halves while reading as though somebody had checked.
 app.add_typer(host.app, name="host", hidden=True)
 app.add_typer(auth.app, name="auth", hidden=True)
 
@@ -64,6 +69,11 @@ def _version_callback(asked: bool) -> None:
 @app.callback(invoke_without_command=True)
 def root(
     ctx: typer.Context,
+    config: Annotated[Optional[Path], typer.Option(
+        "--config", callback=host.remember_config,
+        help="Host list to read, and to rewrite where a command changes it. "
+             "Default: ~/.config/comfy-qa-tools/hosts.toml. Subcommands inherit "
+             "this — no need to repeat it on each one.")] = None,
     version: Annotated[bool, typer.Option(
         "--version", callback=_version_callback, is_eager=True,
         help="Print the build — version, plus the commit in a checkout — and exit.")] = False,
@@ -76,12 +86,12 @@ def root(
         from .config import ConfigError, load
 
         try:
-            load(None)
+            load(config)
         except ConfigError:
             typer.echo(ctx.get_help())
             typer.echo("\nNo machines yet. Start with:  comfy-qat setup")
             raise typer.Exit(code=0)
-        ctx.invoke(host.list_cmd, config=None, live=False)
+        ctx.invoke(host.list_cmd, config=config, live=False)
 
 # v0's environment check, carried forward so it stays reachable under the new
 # binary. It is not part of release 1 and gets rewritten when its own release

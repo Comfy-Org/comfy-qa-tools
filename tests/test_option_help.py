@@ -1,7 +1,9 @@
 """Every option and argument says what it is.
 
-`--config` is declared seventeen times. For most of the tool's life fifteen of
-those carried no `help=` at all, so `comfy-qat up --help` printed
+`--config` was declared seventeen times — it is now declared twice, at the root
+and once for every command to inherit, and `tests/test_config_inheritance.py`
+holds it there. For most of the tool's life fifteen of those seventeen carried
+no `help=` at all, so `comfy-qat up --help` printed
 
     --config PATH
 
@@ -89,8 +91,28 @@ DEFAULT_AS_WRITTEN = "~/" + DEFAULT_CONFIG_PATH.relative_to(Path.home()).as_posi
 # count does exactly that: `CONFIG_FLOOR = 17` turned removing one `--config`
 # into "the collector has stopped seeing them", which is the confusion this file
 # exists to avoid.
-DECLARATION_FLOOR = 90
-CONFIG_FLOOR = 14
+#
+# That hoist has since happened, so the 17 is now 2: the root option in `cli.py`
+# and the shared `host.ConfigOption` every command annotates with. `CONFIG_FLOOR`
+# is 1 rather than 2 for the same reason it was never 17 — it asks whether the
+# filter still finds anything, and `tests/test_config_inheritance.py` is what
+# holds the count at exactly 2 and fails when a command declares its own again.
+#
+# `DECLARATION_FLOOR` is 40 for the same reason, and it was 90 for the opposite
+# one: 90 is a headcount of a surface this branch is deliberately shrinking. That
+# makes it wrong by design rather than by drift — nothing has to go stale for it
+# to become a false alarm, the project only has to do what it has said it will.
+# It reads as comfortable, because the package declares 106; but closing the
+# `--os`/`--gpu` deprecation window retires 25 and lands on 81, under the floor,
+# on the commit that carries the plan out. The hoist above takes 15 more.
+#
+# So: chosen against what is already planned rather than against today. A floor
+# has to survive every retirement this project has announced and still fail when
+# the walk itself breaks — a renamed `typer.Option`, a moved module, a glob
+# matching nothing — and a broken walk goes to nearly zero, not to 66. Raise it
+# only if the collector's reach changes; never to record a headcount again.
+DECLARATION_FLOOR = 40
+CONFIG_FLOOR = 1
 
 
 class Decl(NamedTuple):
@@ -185,8 +207,12 @@ def test_the_declarations_are_actually_being_found():
     """
     assert len(SITES) >= DECLARATION_FLOOR, (
         f"only {len(SITES)} option/argument declarations found, under the floor of "
-        f"{DECLARATION_FLOOR} — the collector has stopped seeing them, not the "
-        f"package that has shed a fifth of its interface"
+        f"{DECLARATION_FLOOR}. The floor is set well under the real count and asks "
+        f"one question: does this walk still find anything? Going under it points "
+        f"at the walk — a renamed `typer.Option`, a moved module, a glob matching "
+        f"nothing — not at a package that has shed most of its interface. If the "
+        f"interface really has shrunk that far and this is the only complaint, "
+        f"lower the floor and say what it is now defending against."
     )
     assert {"auth.py", "commands.py", "host.py", "remove.py"} <= {s.module for s in SITES}
 
@@ -205,7 +231,7 @@ def test_the_config_declarations_are_still_being_found():
         f"or a command has been retired, lower it (or key it on `--config` being "
         f"declared at all) rather than putting the declarations back"
     )
-    assert {"host.py", "remove.py"} <= {s.module for s in CONFIG_SITES}
+    assert {"cli.py", "host.py"} <= {s.module for s in CONFIG_SITES}
 
 
 def test_a_bare_declaration_is_recognised_as_bare():

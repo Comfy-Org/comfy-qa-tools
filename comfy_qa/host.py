@@ -42,6 +42,53 @@ app = typer.Typer(
     no_args_is_help=False,
 )
 
+
+# `--config` is declared once, at the root, and inherited from there.
+#
+# It used to be spelled out seventeen times — on all fifteen commands here, on
+# `remove`'s `delete`, and on the `host` callback — which put an identical row in
+# seventeen different `--help` screens and gave one sentence seventeen chances to
+# drift. It already had: fifteen of the seventeen carried no `help=` at all until
+# recently, and the fix was to write the sentence out fifteen more times.
+# `comfy-cli` does not do this with `--workspace`; it declares it on the root and
+# says subcommands inherit it. This is that shape.
+#
+# The option is still *accepted* after a command name, and that is deliberate.
+# `comfy-qat list --config X` is what scripts, run sheets and this suite all type,
+# and `go --new-window` re-execs itself with `--config` in exactly that position —
+# so dropping it would break the tool inside a spawned Terminal window, on the
+# command that starts a GPU box, where nobody would see the error. Hidden rather
+# than removed: the deprecation window `cli.py` already uses for the `host` and
+# `auth` spellings, and `host.py` for `--os`/`--gpu` on the eleven selectors.
+CONFIG_INHERITED = "comfy_qa.config_path"
+
+
+def remember_config(ctx: typer.Context, value: Optional[Path]) -> Optional[Path]:
+    """One `--config` for the whole invocation, wherever in the line it was typed.
+
+    `ctx.meta` is Click's own root-wide scratch dict — every context in the stack
+    hands back the same object — so a value read at the root is still there when
+    a subcommand is parsed, and a value read on a subcommand is visible to
+    anything nested under it. Whichever spelling was typed last wins, which is
+    the more specific one: `comfy-qat --config A move --config B` moves what B
+    says.
+
+    Filling the command's own `config` parameter, rather than leaving the value
+    at the root for each body to go and fetch, is what keeps `go --new-window`
+    honest: it builds the argv for the spawned window out of that parameter, so a
+    root `--config` reaches the new window without `go` knowing anything about
+    where the option was declared.
+    """
+    if value is not None:
+        ctx.meta[CONFIG_INHERITED] = value
+        return value
+    return ctx.meta.get(CONFIG_INHERITED)
+
+
+ConfigOption = Annotated[Optional[Path], typer.Option(
+    "--config", hidden=True, callback=remember_config,
+    help="Host list. Declared at the root — see `comfy-qat --help`.")]
+
 STARTER = f"""\
 # comfy-qat list.
 #
@@ -117,8 +164,7 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
 
 @app.command("list")
 def list_cmd(
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     live: Annotated[bool, typer.Option(
         "--live", help="Ask Google whether each cloud box is running. One call per box.")] = False,
 ) -> None:
@@ -146,12 +192,16 @@ def list_cmd(
 
 @app.command("init")
 def init_cmd(
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Where to write the starter host list.")] = None,
+    config: ConfigOption = None,
     force: Annotated[bool, typer.Option(
         "--force", help="Overwrite an existing host list.")] = False,
 ) -> None:
-    """Write a starter host list you can edit."""
+    """Write a starter host list you can edit.
+
+    The one command where `--config` is a destination rather than a source: it
+    says where to write the starter file, and nothing is read. Left off, it
+    writes ~/.config/comfy-qa-tools/hosts.toml, and refuses if that exists.
+    """
     from .hostfile import HostFileError, apply
 
     path = config or DEFAULT_CONFIG_PATH
@@ -210,8 +260,7 @@ def init_cmd(
 
 @app.command("discover")
 def discover_cmd(
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Show what would be added without writing anything.")] = False,
 ) -> None:
@@ -219,6 +268,10 @@ def discover_cmd(
 
     Google already knows each box's zone, card and operating system, so nothing
     here needs typing by hand. Existing entries are never touched.
+
+    This one writes: your host list — the file `--config` names, and
+    ~/.config/comfy-qa-tools/hosts.toml when it is left off — is read and then
+    appended to. `--dry-run` shows what would be added and writes nothing.
     """
     from .gcloud import Gcloud, GcloudError
     from .discover import new_hosts, parse as parse_instance, to_toml
@@ -281,8 +334,7 @@ def create_cmd(
         "--region", help="Narrow to one region; the zone inside it is still chosen.")] = None,
     disk: Annotated[int, typer.Option(
         "--disk", help="Boot disk in GB. Models live on it.")] = 200,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before creating.")] = False,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the plan, the quota and the zone order. Create nothing.")] = False,
@@ -297,6 +349,10 @@ def create_cmd(
 
     Quota is checked before anything exists, because a refusal costs nothing and
     a quota failure after the instance exists costs money and a cleanup.
+
+    This one writes: the new box is appended to your host list — the file
+    `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
+    off — so the file is read and then rewritten. `--dry-run` writes nothing.
     """
     from .create import (
         build, check_quota, host_entry, next_steps, nowhere, order_zones,
@@ -632,8 +688,7 @@ def _known_verdict(host: Host, found: str) -> str:
 @app.command("up")
 def up_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -668,8 +723,7 @@ def up_cmd(
 @app.command("open")
 def open_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -725,8 +779,7 @@ def open_cmd(
 @app.command("disconnect")
 def disconnect_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -767,8 +820,7 @@ def down_cmd(
     name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4. "
              "Omit it with --all.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     # `down` was the only machine-taking command without these — go, up, open,
     # switch, logs, stamp, ssh, rdp and move all take them — so a session spent
     # typing `go --os windows` ended at `down --os windows`, which was refused
@@ -1002,8 +1054,7 @@ def down_cmd(
 @app.command("go")
 def go_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1075,8 +1126,7 @@ def go_cmd(
 @app.command("ssh")
 def ssh_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — linux, l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1146,8 +1196,7 @@ def ssh_cmd(
 @app.command("rdp")
 def rdp_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1208,8 +1257,7 @@ def rdp_cmd(
 @app.command("logs")
 def logs_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1459,8 +1507,7 @@ def switch_cmd(
     # mandatory made the flags on the same help panel unusable.
     name: Annotated[Optional[str], typer.Argument(
         help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1720,8 +1767,7 @@ def move_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")] = None,
     to: Annotated[Optional[str], typer.Option(
         "--to", help="Zone to move it to. Default: whichever one Google says has capacity.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read and update. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -1736,6 +1782,11 @@ def move_cmd(
     A GPU stockout cannot be fixed where you are: the zone has none of that card
     and retrying will not change it. Done by hand this is a snapshot, a disk, an
     instance and a config edit — four chances to get it wrong.
+
+    This one writes: that config edit is the fourth step, so your host list — the
+    file `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is
+    left off — is read and then rewritten, with a backup left beside it.
+    `--dry-run` shows the plan and writes nothing.
     """
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
@@ -2033,8 +2084,7 @@ def _probe_fix(host: Host) -> str | None:
 @app.command("stamp")
 def stamp_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
     os_: Annotated[Optional[str], typer.Option(
         "--os", hidden=True, help="Pick by operating system: windows, linux, macos.")] = None,
     gpu: Annotated[Optional[str], typer.Option(
@@ -2078,14 +2128,14 @@ def stamp_cmd(
 @app.callback(invoke_without_command=True)
 def default(
     ctx: typer.Context,
-    config: Annotated[Optional[Path], typer.Option(
-        "--config", help="Host list to read. Default: ~/.config/comfy-qa-tools/hosts.toml.")] = None,
+    config: ConfigOption = None,
 ) -> None:
     """With no subcommand, listing is the safe thing to do.
 
-    `--config` is accepted here as well as on the subcommands: every other
-    command takes it, so `host --config x` failing as a usage error is a
-    surprise, and a surprise on the read-only default is a bad one.
+    `--config` is accepted here as well as at the root and on the subcommands.
+    It is one option in three positions, not three options: `remember_config`
+    keeps whichever was typed last, so `host --config x` is neither a usage
+    error nor a value that quietly goes nowhere.
 
     And this is where the `host` noun says it is going. `cli.py` registers this
     whole sub-app `hidden=True` and calls that a deprecation window rather than a

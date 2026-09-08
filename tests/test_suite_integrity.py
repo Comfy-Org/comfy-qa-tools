@@ -61,6 +61,7 @@ REQUIRED = {
     "test_auth_flow",
     "test_config",
     "test_config_hostile",
+    "test_config_inheritance",
     "test_create",
     "test_create_cli",
     "test_create_e2e",
