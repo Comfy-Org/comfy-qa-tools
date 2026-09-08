@@ -254,15 +254,54 @@ def test_the_truncation_check_is_registered_in_this_very_session(pytestconfig):
         )
 
 
+# The session that really does get cut short, generated into a temp directory and
+# run as its own pytest.
+#
+# TWO THINGS IN HERE ARE LOAD-BEARING AND BOTH WERE WRONG.
+#
+# 1. THE SIGNAL HAS TO BE DELIVERABLE. A process started in the BACKGROUND from
+#    a non-interactive shell — `&`, `nohup`, CI, any agent harness — inherits
+#    SIGINT as SIG_IGN, and CPython respects an inherited SIG_IGN rather than
+#    installing `default_int_handler` over it. `os.kill(os.getpid(), SIGINT)` is
+#    then a NO-OP: all four tests below run, the session is never truncated, and
+#    the test that reads this output fails saying nothing said so.
+#
+#    Measured on this file, ONE process, no concurrency and no load:
+#
+#        foreground     63 passed in 1.02s
+#        backgrounded   1 failed, 62 passed in 1.76s
+#
+#    Deterministic both ways. The only variable is how the process was started,
+#    which is exactly why this was carried as a test that "only fails in the
+#    full run": whoever ran the suite ran it from a harness, and whoever tried
+#    to reproduce it typed it into a terminal.
+#
+#    What is modelled here is a person pressing Ctrl-C, where the handler is
+#    always installed. So install it rather than inherit it.
+#
+# 2. NO SLEEP MAY STAND IN FOR A FACT. This used to be `time.sleep(0.05)` in the
+#    thread racing `time.sleep(0.5)` in the main thread: if the thread lost that
+#    race the session completed normally and the failure looked identical to the
+#    one above. That is the same "sleep used as a DEADLINE" that
+#    tests/test_interrupt.py's header records being removed from itself — the
+#    fix was made one file away and never reached this one. The thread now waits
+#    on an EVENT, and the main thread's sleep is a ceiling on a broken fixture
+#    rather than a deadline anybody has to beat.
 _A_RUN_THAT_ABORTS = '''
 import os, signal, threading, time
 
+signal.signal(signal.SIGINT, signal.default_int_handler)
+
 def test_a_leaves_a_signal_in_flight():
+    parked = threading.Event()
+
     def boom():
-        time.sleep(0.05)
+        parked.wait(30)
         os.kill(os.getpid(), signal.SIGINT)
+
     threading.Thread(target=boom, daemon=True).start()
-    time.sleep(0.5)
+    parked.set()
+    time.sleep(30)
 
 def test_b_innocent(): pass
 def test_c_innocent(): pass
@@ -339,6 +378,58 @@ def test_a_truncated_run_says_so_and_without_the_hooks_says_nothing(tmp_path):
     missing, collected = int(stated.group(1)), int(stated.group(2))
     assert collected == 4, loud
     assert 1 <= missing <= 4, loud
+
+
+def test_the_abort_fixture_does_not_depend_on_an_inherited_signal_handler(tmp_path):
+    """The floor under the test above, and the reason it needs one.
+
+    That test was GREEN AND VACUOUS under every non-interactive launch this repo
+    has ever had. `os.kill(os.getpid(), SIGINT)` does nothing when SIGINT is
+    SIG_IGN, so the generated session ran to completion, was never truncated,
+    and the assertion about the banner was the only thing that noticed — which
+    read as "a test that only fails in the full run", because the people running
+    the full run ran it from a harness and the people reproducing it typed it
+    into a terminal.
+
+    `trap "" INT` is exactly what `&`, `nohup`, CI runners and agent harnesses
+    hand a child: SIGINT already ignored, inherited across the exec, and CPython
+    deliberately declines to install `default_int_handler` over it.
+
+    Measured before the fixture installed its own handler — one process, no
+    concurrency, no load:
+
+        foreground                   63 passed in 1.02s
+        under an ignored SIGINT      1 failed, 62 passed in 1.76s
+
+    Deterministic both ways. This test is that second column, kept.
+    """
+    import os
+    import subprocess
+    import sys
+
+    conftest_path = TESTS / "conftest.py"
+    (tmp_path / "conftest.py").write_text(
+        _LOAD_THE_HOOKS.format(path=str(conftest_path)), encoding="utf-8")
+    (tmp_path / "test_aborts.py").write_text(_A_RUN_THAT_ABORTS, encoding="utf-8")
+
+    finished = subprocess.run(
+        # `sh -c 'trap "" INT; exec "$@"' sh <argv...>` — ignore SIGINT, then
+        # exec, so the interpreter starts with the disposition already set.
+        ["sh", "-c", 'trap "" INT; exec "$@"', "sh",
+         sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         str(tmp_path / "test_aborts.py")],
+        cwd=tmp_path, capture_output=True, text=True, timeout=300,
+        env={**os.environ, "PYTHONPATH": str(TESTS.parent),
+             "WITH_THE_CHECK": "1"})
+    out = finished.stdout + finished.stderr
+
+    assert "SESSION TRUNCATED" in out, (
+        f"the generated session was NOT cut short when SIGINT arrived ignored, "
+        f"so `test_a_truncated_run_says_so_and_without_the_hooks_says_nothing` "
+        f"is passing without testing anything under every backgrounded run. The "
+        f"fixture must install its own handler rather than inherit one:\n{out}"
+    )
+    assert "never ran" in out, out
 
 
 # --- and nothing else may take the session down -----------------------------

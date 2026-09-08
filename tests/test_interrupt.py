@@ -92,6 +92,11 @@ class Interrupter:
         self.timeout = timeout
         self.signalled = False
         self.late = False
+        # True when SIGINT arrived here as SIG_IGN and had to be re-armed. Not a
+        # failure — it is the normal state under any non-interactive launcher —
+        # but it is the fact that explains a whole class of "only fails in CI".
+        self.repaired_disposition = False
+        self._restore_sigint = None
         self.why = "the interrupter never ran at all"
         self._lock = threading.Lock()
         self._stood_down = False
@@ -126,6 +131,33 @@ class Interrupter:
             os.kill(os.getpid(), signal.SIGINT)
 
     def __enter__(self) -> "Interrupter":
+        # SIGINT HAS TO BE DELIVERABLE, AND IT IS NOT ALWAYS INHERITED THAT WAY.
+        # A process started in the BACKGROUND from a non-interactive shell — `&`,
+        # `nohup`, most CI runners, every agent harness — inherits SIGINT as
+        # SIG_IGN, and CPython deliberately respects an inherited SIG_IGN rather
+        # than installing `default_int_handler` over it. `os.kill` below is then
+        # a NO-OP, and this whole test passes by doing nothing: the signal is
+        # "sent", the call returns normally, and the assertion that a
+        # KeyboardInterrupt came back is the only thing that notices.
+        #
+        # Measured on this file, one process, no concurrency and no load:
+        #
+        #     foreground     19 passed in 0.58s
+        #     backgrounded   1 failed, 18 passed in 32.21s
+        #
+        # The 32s is the stand-in gcloud's `sleep 30` running to completion,
+        # because nothing interrupted it. The only variable is how the process
+        # was started — which is why this was reported for weeks as a test that
+        # "only fails in the full run" and never reproduced for anyone who ran
+        # it by hand in a terminal.
+        #
+        # The condition being modelled is a person pressing Ctrl-C at a
+        # terminal, where the handler is always installed. So install it, and
+        # put it back on the way out rather than leaving the session altered.
+        self._restore_sigint = signal.getsignal(signal.SIGINT)
+        if self._restore_sigint == signal.SIG_IGN:
+            self.repaired_disposition = True
+            signal.signal(signal.SIGINT, signal.default_int_handler)
         self._thread.start()
         return self
 
@@ -141,6 +173,8 @@ class Interrupter:
             # difference between a failing test and a truncated session.
             self.late = True
             self._thread.join(timeout=10)
+        if self._restore_sigint is not None:
+            signal.signal(signal.SIGINT, self._restore_sigint)
         assert not self._thread.is_alive(), (
             "the interrupter thread outlived the test that started it; it may "
             "still signal this process during a later one"
