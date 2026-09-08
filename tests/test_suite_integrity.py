@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -433,6 +434,18 @@ def test_the_abort_fixture_does_not_depend_on_an_inherited_signal_handler(tmp_pa
 
 
 # --- and nothing else may take the session down -----------------------------
+class _Site(NamedTuple):
+    """One call that aims a signal at the pytest process, and where it lives."""
+
+    file: str
+    owner: str | None
+    lineno: int
+    call: ast.Call
+    scope: ast.AST      # the module this call is a part of — the real file, or
+                        # the source parsed out of a string literal inside it
+
+    def __str__(self) -> str:
+        return f"{self.file}:{self.lineno} in {self.owner or 'a test'}"
 
 
 def _signals_at_this_process(tree: ast.AST) -> list[ast.Call]:
@@ -458,7 +471,136 @@ def _signals_at_this_process(tree: ast.AST) -> list[ast.Call]:
     return found
 
 
-def test_only_the_one_guarded_interrupter_signals_the_test_runner():
+def _owner(tree: ast.AST, node: ast.AST) -> str | None:
+    """The class a node sits inside, or None for one at module level."""
+    return next((cls.name for cls in ast.walk(tree)
+                 if isinstance(cls, ast.ClassDef)
+                 and cls.lineno <= node.lineno <= (cls.end_lineno or cls.lineno)),
+                None)
+
+
+def _documentation(tree: ast.AST) -> set[int]:
+    """The id() of every string node that is a docstring rather than a value.
+
+    Prose is allowed to quote `os.kill(os.getpid(), signal.SIGINT)` in order to
+    explain it — the comment above `_A_RUN_THAT_ABORTS` does exactly that, at
+    length, and so does half the header of tests/test_interrupt.py. A guard that
+    flagged those would be deleted by the third person it interrupted, so
+    docstrings are excluded by construction here and comments never reach the
+    tree at all.
+    """
+    kinds = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, kinds) and node.body:
+            first = node.body[0]
+            if (isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant)
+                    and isinstance(first.value.value, str)):
+                found.add(id(first.value))
+    return found
+
+
+def _sources_written_as_string_literals(tree: ast.AST):
+    """Test files that live inside this file as strings, parsed as the code they are.
+
+    `ast.walk` does not descend into the CONTENTS of a string, so a session
+    generated into a temp directory and run as its own pytest is invisible to
+    every check in this section — which is how `_A_RUN_THAT_ABORTS` came to hold
+    a second self-directed SIGINT under a guard whose name said there was one.
+    The string is written to `test_aborts.py` and executed; it is source, and the
+    only thing that made it look like data is the quoting.
+
+    Three things keep this from firing on prose, in the order they apply:
+
+    1. Docstrings are excluded, and comments are not in the tree.
+    2. An f-string's literal parts are excluded — those are message text by
+       construction, and this file's own assertion messages are f-strings.
+    3. What is left must PARSE as a Python module and then must contain a
+       self-directed signal call. Both, not either. A sentence that happens to
+       parse yields nothing, because the caller asks it for signal sites rather
+       than for strings.
+
+    The substring pre-filter is not a fourth rule: `_signals_at_this_process`
+    can only match a call whose name contains `kill` or `raise_signal`, so a
+    string with neither cannot produce a site however it parses. It is there so
+    this does not attempt a parse of several thousand assertion messages.
+
+    THE ONE OVER-MATCH, named rather than left to be discovered. A string whose
+    ENTIRE content is `"os.kill(os.getpid(), signal.SIGINT)"` — a message, say,
+    that quotes the call and nothing else — parses and is flagged. Nothing can
+    tell that apart from a one-line module, because there is no difference: the
+    same bytes written to a `.py` file run. It costs one line in ALLOWED, which
+    is the trade `_signals_at_this_process` already states above, and every
+    quotation in this repository today sits in a docstring or a comment, where
+    rules 1 and 2 reach it first. Verified: the four prose quotations already in
+    this file and in tests/test_interrupt.py produce zero findings.
+    """
+    documentation = _documentation(tree)
+    interpolated = {id(part)
+                    for node in ast.walk(tree) if isinstance(node, ast.JoinedStr)
+                    for part in node.values}
+
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+            continue
+        if id(node) in documentation or id(node) in interpolated:
+            continue
+        if "kill" not in node.value and "raise_signal" not in node.value:
+            continue
+        try:
+            inner = ast.parse(node.value)
+        except SyntaxError:
+            continue
+        yield node, inner
+
+
+def _bound_name(tree: ast.AST, literal: ast.Constant) -> str | None:
+    """The name a string literal is assigned to, which is what names it in a report.
+
+    `_A_RUN_THAT_ABORTS` is the string's identity the same way `Interrupter` is
+    the class's, so ALLOWED can hold both in the same shape and a reader can find
+    what was allowed by searching for the name in the message.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and node.value is literal:
+            targets = [ast.unparse(target) for target in node.targets]
+            return targets[0] if targets else None
+    return None
+
+
+def _self_directed_signals(path: Path) -> list[_Site]:
+    """Every self-directed signal in a test file, including the ones it writes out."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+
+    sites = [_Site(path.name, _owner(tree, call), call.lineno, call, tree)
+             for call in _signals_at_this_process(tree)]
+
+    for literal, inner in _sources_written_as_string_literals(tree):
+        name = _bound_name(tree, literal)
+        for call in _signals_at_this_process(inner):
+            # The literal's own line plus the offset inside it. Exact for a
+            # triple-quoted string that opens its own line, which is the only
+            # way a whole test module is ever written down.
+            sites.append(_Site(path.name, name,
+                               literal.lineno + call.lineno - 1, call, inner))
+    return sites
+
+
+# `Interrupter` in tests/test_interrupt.py, and the four-test session
+# `test_suite_integrity.py` generates in order to watch a run be truncated.
+#
+# THE SECOND ENTRY IS THE ONE THIS SECTION WAS WRONG ABOUT. It was always there;
+# the check could not see it, because it is a string. Its two properties are the
+# ones the docstring below asks for — the thread waits on an EVENT that the main
+# thread sets rather than racing a clock, and the signal is aimed at a session
+# that exists only inside `tmp_path` and cannot reach the one reading its output.
+ALLOWED = {
+    ("test_interrupt.py", "Interrupter"),
+    ("test_suite_integrity.py", "_A_RUN_THAT_ABORTS"),
+}
+
+
+def test_every_self_directed_signal_is_one_of_the_guarded_interrupters():
     """A test that signals ITSELF is the one shape that can end the whole run.
 
     Not "can fail" — end. pytest treats a KeyboardInterrupt raised in a test
@@ -476,28 +618,33 @@ def test_only_the_one_guarded_interrupter_signals_the_test_runner():
     produce a false SESSION. So that is the one property held here, by walking
     the directory rather than by anybody remembering to keep a list.
 
-    If a second one is ever needed: give it the same two properties
-    `Interrupter` has — it waits for the thing it is interrupting to ANNOUNCE
-    itself rather than racing a clock, and it can STAND DOWN so a lost race
-    leaves no signal in flight — and then say so here. Adding a name to the
-    allowance is a decision; a check that quietly permitted the second one would
-    be no check at all.
-    """
-    ALLOWED = {("test_interrupt.py", "Interrupter")}
+    WHAT THE DERIVATION COULD NOT SEE, AND WHY THE NAME OF THIS TEST CHANGED.
+    It said "only the one guarded interrupter" and there were two. The second is
+    `_A_RUN_THAT_ABORTS`, forty lines above: a whole test module written down as
+    a string, saved to `test_aborts.py` and run. `ast.walk` does not descend into
+    a string's contents, so the sweep returned one and read as exhaustive.
+    Another agent's independent count hit the same wall and also returned one,
+    which is how the gap was noticed at all. That is the failure mode worth
+    naming — not an unsafe interrupter, but an instrument whose answer was
+    complete about the wrong domain, and which reported a number rather than
+    "I could not see in there".
 
-    offenders = []
-    for path in sorted(TESTS.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        owners = [
-            (node.lineno, node.end_lineno, node.name)
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ClassDef)
-        ]
-        for call in _signals_at_this_process(tree):
-            owner = next((name for start, end, name in owners
-                          if start <= call.lineno <= end), None)
-            if (path.name, owner) not in ALLOWED:
-                offenders.append(f"{path.name}:{call.lineno} in {owner or 'a test'}")
+    Severity, so nobody re-reads this as a near miss: the safety property was
+    never breached. The second signaller runs in a pytest of its own, in a
+    subprocess, and cannot truncate the session that watches it. What was wrong
+    was the claim, and a claim is what a guard is for.
+
+    If a third one is ever needed: give it the same two properties `Interrupter`
+    has — it waits for the thing it is interrupting to ANNOUNCE itself rather
+    than racing a clock, and it can STAND DOWN so a lost race leaves no signal in
+    flight — and then say so in ALLOWED. Adding a name to the allowance is a
+    decision; a check that quietly permitted the next one would be no check at
+    all.
+    """
+    offenders = [str(site)
+                 for path in sorted(TESTS.glob("*.py"))
+                 for site in _self_directed_signals(path)
+                 if (site.file, site.owner) not in ALLOWED]
 
     assert not offenders, (
         f"{', '.join(offenders)} sends a signal to the pytest process. Losing "
@@ -507,4 +654,115 @@ def test_only_the_one_guarded_interrupter_signals_the_test_runner():
         f"waits for the child to announce itself and stands down rather than "
         f"leaving a signal in flight — or, if this one is genuinely different, "
         f"add it to ALLOWED here and write down why."
+    )
+
+
+def _aims_a_sigint(call: ast.Call) -> bool:
+    """Whether a self-directed signal call is sending SIGINT specifically.
+
+    `os.kill(pid, sig)` and `os.killpg(pgid, sig)` carry it second;
+    `signal.raise_signal(sig)` carries it first.
+    """
+    name = ast.unparse(call.func)
+    carries = call.args[1:2] if name in ("os.kill", "os.killpg") else call.args[:1]
+    return bool(carries) and "SIGINT" in ast.unparse(carries[0])
+
+
+def _arms_sigint(call: ast.Call, scope: ast.AST) -> bool:
+    """Whether a `signal.signal(SIGINT, h)` call makes SIGINT RAISE, or merely puts back.
+
+    THE DISTINCTION IS THE WHOLE CHECK, and leaving it out produced a false
+    negative on the first mutation run: `Interrupter.__exit__` ends with
+    `signal.signal(signal.SIGINT, self._restore_sigint)`, so deleting the real
+    install in `__enter__` left a `signal.signal(SIGINT, ...)` standing and the
+    guard stayed green over a site that had just lost the only thing making its
+    signal deliverable. A restore hands back whatever was inherited — under a
+    non-interactive launcher that is SIG_IGN, and restoring SIG_IGN is not
+    installing a handler, it is the defect.
+
+    So an ARM is one of the three ways CPython lets you say "make SIGINT raise":
+    `default_int_handler`, `SIG_DFL`, or a function defined in this same source.
+    A saved value read back out of `getsignal` is none of them. That is a
+    property of the signal module rather than a house style, which is why it can
+    be written down as a list without becoming the kind of list this file exists
+    to avoid.
+    """
+    if len(call.args) < 2:
+        return False
+    handler = ast.unparse(call.args[1])
+    if handler in ("signal.default_int_handler", "signal.SIG_DFL"):
+        return True
+    return any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name == handler
+               for node in ast.walk(scope))
+
+
+def _installs_a_sigint_handler(site: _Site) -> bool:
+    """Whether SIGINT is armed in the same class as the site, or module level alongside it.
+
+    The same owner, not merely the same file: a handler installed in an unrelated
+    class is not the one this site depends on, and accepting it anywhere in the
+    module would make the check "the word appears somewhere", which is the
+    failure the test above was written for.
+
+    Both places this holds today are a class apart from the call rather than a
+    line before it: `Interrupter` arms in `__enter__` and signals from
+    `_wait_then_signal`, and the generated session arms at module level and
+    signals from a thread. Requiring the two to be adjacent would flag both.
+    """
+    here = _owner(site.scope, site.call)
+    for node in ast.walk(site.scope):
+        if not (isinstance(node, ast.Call) and node.args):
+            continue
+        if ast.unparse(node.func) != "signal.signal":
+            continue
+        if "SIGINT" not in ast.unparse(node.args[0]):
+            continue
+        if _owner(site.scope, node) == here and _arms_sigint(node, site.scope):
+            return True
+    return False
+
+
+def test_every_self_directed_sigint_installs_the_handler_it_depends_on():
+    """An inherited SIGINT disposition makes `os.kill` a no-op, silently.
+
+    This is the defect recorded twice in this repository — in the comment above
+    `_A_RUN_THAT_ABORTS` and again in `Interrupter.__enter__` — and both times it
+    was found by measurement rather than by reading. A process started in the
+    background from a non-interactive shell (`&`, `nohup`, CI, any agent harness)
+    inherits SIGINT as SIG_IGN, and CPython respects the inherited disposition
+    rather than installing `default_int_handler` over it. The signal is then sent
+    and nothing happens: the interrupt never arrives, the call under test returns
+    normally, and the test asserting that a KeyboardInterrupt came back is the
+    only thing that notices — which is how this was carried for weeks as "only
+    fails in the full run".
+
+    Measured on the two files that do it, one process, no load:
+
+        test_interrupt.py         foreground    19 passed in 0.58s
+                                  backgrounded  1 failed, 18 passed in 32.21s
+        test_suite_integrity.py   foreground    63 passed in 1.02s
+                                  backgrounded  1 failed, 62 passed in 1.76s
+
+    Deterministic both ways. The only variable is how the process was started.
+
+    So the rule is not "handle SIGINT" as a courtesy — it is that a self-directed
+    SIGINT has no meaning until the handler is installed rather than inherited,
+    and the fix was applied to one file and did not reach the other. This is what
+    stops the third one from being found the same way.
+    """
+    offenders = [str(site)
+                 for path in sorted(TESTS.glob("*.py"))
+                 for site in _self_directed_signals(path)
+                 if _aims_a_sigint(site.call)
+                 and not _installs_a_sigint_handler(site)]
+
+    assert not offenders, (
+        f"{', '.join(offenders)} sends itself SIGINT without installing a "
+        f"handler for it first. Under any non-interactive launcher SIGINT is "
+        f"inherited as SIG_IGN, CPython keeps it, and the call is a NO-OP — the "
+        f"test then passes by doing nothing, in exactly the runs nobody watches. "
+        f"Call `signal.signal(signal.SIGINT, signal.default_int_handler)` in the "
+        f"same class, or at module level for a generated session, and put the "
+        f"previous handler back on the way out."
     )
