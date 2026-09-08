@@ -460,7 +460,18 @@ def _writes_to_stderr(function: ast.FunctionDef, writers: set[str]) -> bool:
     for node in ast.walk(function):
         if not isinstance(node, ast.Call):
             continue
-        if _called_name(node) == "echo" and any(
+        # Both spellings, for the reason written out at `_message_argument` —
+        # which is 285 lines above this and already reads both, because this is
+        # the second time the narrow version has been written in this file. The
+        # wider one was sitting right there. Measured on a clean extract, one
+        # new reporter in say.py, spelling the only variable:
+        #
+        #     say.refuse via echo    1 failed, caught by name
+        #     say.refuse via secho   718 passed, identical to baseline
+        #
+        # And `secho` is the spelling typer documents for coloured output, so it
+        # is what someone adding a warning reporter reaches for first.
+        if _called_name(node) in ("echo", "secho") and any(
                 kw.arg == "err" and _is_true(kw.value) for kw in node.keywords):
             return True
         if isinstance(node.func, ast.Name) and node.func.id in writers:
@@ -489,6 +500,16 @@ def test_every_failure_reporter_in_say_is_named_here():
         if grown == writers:
             break
         writers = grown
+
+    # The floor every other derived guard in this file carries, and this one
+    # did not. `unlisted` is a difference, so an EMPTY `writers` passes it while
+    # checking nothing — which is what a broken walk, a decorated function or an
+    # aliased `typer.echo` all look like from here.
+    assert {"error", "fail", "warn"} <= writers, (
+        f"the walk over say.py found {sorted(writers) or 'no'} stderr writers "
+        f"and has to find at least error, fail and warn — it is broken, and "
+        f"everything below it is passing vacuously."
+    )
 
     unlisted = sorted(writers - set(SAY_FAILURES) - set(NOT_A_FAILURE))
     assert not unlisted, (
@@ -936,6 +957,34 @@ class Construction:
     pattern: str
 
 
+def _matches_anything(pattern: str) -> bool:
+    r"""Would this pattern accept any string at all, including the empty one?
+
+    ONE of these in the pool silences the whole check, because a quotation only
+    has to match SOMETHING. It arrives from the most ordinary line there is:
+
+        raise ConfigError(f"{exc}")
+
+    Every part of that is an interpolation, so `_construction` drops the lot and
+    what is left is `(?:.+?|\.\.\.)?` — which fullmatches `''`, and matches a
+    sentence about ferrets just as happily. Proven end to end on a clean extract:
+    a quotation perturbed until it failed by name went back to green, still
+    wrong, with that one function added and nothing else changed.
+
+    And the two anti-vacuity checks below cannot see it happen. The pool got
+    BIGGER, so the `> 20` floor rises; recognition is by literal runs and a bare
+    interpolation contributes none, so the expected count does not move. Both
+    guards pass while the thing they guard has stopped checking anything, which
+    is the worst failure a guard has.
+
+    `config.py` has no such line today. That is luck: this package writes exactly
+    that shape in twenty-four places as `say.fail(exc)`, and `hostfile.apply`
+    re-raises a ConfigError's text. Testing the pattern rather than the source
+    catches every future spelling of it without anyone predicting them.
+    """
+    return re.fullmatch(pattern, "", flags=re.S) is not None
+
+
 def _config_constructions() -> list[Construction]:
     constructions: list[Construction] = []
     for node in ast.walk(ast.parse(CONFIG.read_text(encoding="utf-8"))):
@@ -1004,7 +1053,14 @@ def _quoted_config_errors() -> list[tuple[int, str]]:
     return found
 
 
-CONFIG_CONSTRUCTIONS = _config_constructions()
+# Discarded rather than trusted, so the guard cannot be silenced even if the
+# test that reports them is deleted. Soundness comes from the filter; the test
+# below only makes the loss visible.
+_ALL_CONSTRUCTIONS = _config_constructions()
+CONFIG_CONSTRUCTIONS = [construction for construction in _ALL_CONSTRUCTIONS
+                        if not _matches_anything(construction.pattern)]
+NO_WORDS_OF_ITS_OWN = [construction.where for construction in _ALL_CONSTRUCTIONS
+                       if _matches_anything(construction.pattern)]
 QUOTED_CONFIG_ERRORS = _quoted_config_errors()
 
 
@@ -1019,6 +1075,50 @@ QUOTED_CONFIG_ERRORS = _quoted_config_errors()
 # config error or stops, the fix is one line, and it catches the one failure that
 # reading a rising test count never will.
 QUOTED_CONFIG_ERRORS_EXPECTED = 26
+
+
+def test_no_config_error_construction_matches_everything():
+    """The pool is a guard only while every pattern in it can still FAIL.
+
+    This is the regression test on the filter above, kept separate from it so
+    that removing the filter goes red here rather than going quiet. Three probes
+    rather than one: the empty string is what the filter tests, and the other two
+    are what a reviewer would actually try, so a pattern that is universal in
+    some narrower way than "matches empty" is caught too.
+    """
+    for probe in ("", "a totally unrelated sentence about ferrets", "..."):
+        universal = sorted(construction.where for construction in CONFIG_CONSTRUCTIONS
+                           if re.fullmatch(construction.pattern, probe, flags=re.S))
+        assert not universal, (
+            f"{', '.join(universal)} matches {probe!r}, so it matches every "
+            f"quotation on the page and the whole check below it passes on "
+            f"anything. Neither count assertion can see this: the pool gets "
+            f"BIGGER and the expected number does not move."
+        )
+
+
+def test_every_config_error_has_words_of_its_own():
+    """And the discarding is reported, so the lost coverage is not silent.
+
+    A ConfigError built entirely out of interpolations has no text to check a
+    quotation against, so it is dropped from the pool. That keeps the guard
+    sound, but it also means the message cannot be documented — troubleshooting
+    .md would have nothing of it to quote, and any entry claiming to would be
+    checking nothing. Both of those are worth a failure rather than a silence.
+
+    The fix is almost always to give the message words: `f"{exc}"` hands a user
+    the parser's sentence with no indication of what was being attempted, which
+    every other refusal in config.py does say. `f"the host list could not be
+    read: {exc}"` is both documentable and a better message.
+    """
+    assert not NO_WORDS_OF_ITS_OWN, (
+        f"{', '.join(NO_WORDS_OF_ITS_OWN)} builds a message out of nothing but "
+        f"interpolations, so it has no literal text a troubleshooting entry "
+        f"could quote. It has been dropped from the pool rather than trusted — "
+        f"one pattern that matches everything makes every quotation match. Give "
+        f"the message some words of its own, or record it here with the reason "
+        f"it cannot have any."
+    )
 
 
 def test_the_config_error_quotations_were_actually_found():

@@ -694,6 +694,47 @@ SINK_SHAPES = {
 }
 
 
+# The three numbers out of that paragraph, written down, because a parametrised
+# TABLE CAN BE EMPTIED SILENTLY. Measured: deleting the three rows the secho
+# commit added gives 6101 passed, nothing red — a drop of three in a total that
+# moves every commit anyway, and every habit for noticing lost cover reports
+# success. Same failure as the file list in test_suite_integrity.py, one level
+# down: deleted cases do not fail, they stop existing.
+#
+# It also makes the natural regression a single act rather than two. Reverting
+# `secho` from `_means_stderr` turns two rows red; the way to green is to delete
+# them, and that is exactly the change this stops being free.
+CATCHING_SHAPES, CONTROL_SHAPES, KNOWN_LIMITS = 10, 4, 1
+
+
+def test_every_sink_shape_is_still_on_the_table():
+    """The table's own contents, asserted rather than described in prose.
+
+    Going UP is ordinary — a new evasion was found, raise the number. Going DOWN
+    is the thing to look at, and the categories are counted separately because
+    they fail in opposite directions: losing a catching shape narrows the guard,
+    losing a control lets a rule that flags everything look green, and losing the
+    limit means the guard has stopped stating its own edge.
+    """
+    catching = [shape for shape, (_, catch) in SINK_SHAPES.items() if catch]
+    controls = [shape for shape in SINK_SHAPES if shape.startswith("CONTROL:")]
+    limits = [shape for shape in SINK_SHAPES if shape.startswith("KNOWN LIMIT:")]
+
+    assert (len(catching), len(controls), len(limits)) == (
+        CATCHING_SHAPES, CONTROL_SHAPES, KNOWN_LIMITS), (
+        f"the sink table holds {len(catching)} catching shapes, {len(controls)} "
+        f"controls and {len(limits)} known limits, not "
+        f"{CATCHING_SHAPES}/{CONTROL_SHAPES}/{KNOWN_LIMITS}. A row added is a "
+        f"number to raise. A row REMOVED is cover that has gone without anything "
+        f"going red — confirm it was deliberate before lowering this."
+    )
+    assert len(catching) + len(controls) + len(limits) == len(SINK_SHAPES), (
+        "a row is in none of the three categories: a shape the guard must not "
+        "catch has to say which it is, CONTROL: or KNOWN LIMIT:, or nobody "
+        "reading the table can tell a deliberate blind spot from a bug."
+    )
+
+
 @pytest.mark.parametrize("shape", list(SINK_SHAPES), ids=list(SINK_SHAPES))
 def test_the_sink_guard_can_actually_fire(shape, tmp_path):
     """The guard, held to the standard it holds the package to.
