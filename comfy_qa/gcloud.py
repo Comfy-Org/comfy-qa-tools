@@ -43,6 +43,22 @@ INSTANCE_TIMEOUT = 300
 # it does the network is the problem, which is worth knowing before a GPU starts.
 PREFLIGHT_TIMEOUT = 20
 
+# Resetting a Windows password is not one call and is not quick. gcloud writes a
+# public key into the instance's metadata, waits for that update to complete, and
+# then POLLS THE SERIAL PORT for the guest agent to answer with the encrypted
+# password — `reset_windows_password.py` in the SDK on this machine puts
+# `WINDOWS_PASSWORD_TIMEOUT_SEC` at 30 and `POLLING_SEC` at 2, and that clock
+# starts only after the two metadata round-trips.
+#
+# So the floor is the metadata write and the ceiling is thirty seconds of polling
+# on top of it, and the whole of it sat under `DEFAULT_TIMEOUT`. On real hardware
+# `rdp` against a running Windows box produced NOTHING for ten minutes and was
+# killed — with no narration there is no telling which side of that minute the
+# time went, which is the defect the ticker on the call now answers. The number is
+# named here rather than left to the default so that changing it is a decision
+# about this operation, and so the message that reports it names the operation.
+PASSWORD_TIMEOUT = 180
+
 
 # --- what kind of failure was that ------------------------------------------
 #
@@ -862,7 +878,7 @@ class Gcloud:
         answer = self.run([
             "compute", "reset-windows-password", instance,
             f"--zone={zone}", f"--project={project}", "--quiet",
-        ])
+        ], timeout=PASSWORD_TIMEOUT)
         if isinstance(answer, dict) and answer.get("username") and answer.get("password"):
             return answer
         raise GcloudError(

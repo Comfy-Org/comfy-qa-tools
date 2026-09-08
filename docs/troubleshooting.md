@@ -1667,6 +1667,17 @@ certainty it cannot support, but the exact resource and the exact command:
   have just started. The exit code was 130 throughout; the sentence was what was
   missing.
 
+* **`rdp`** prints a third heading, **`this may already have happened, and it
+  does not undo:`**, and it is the only one of the four that is not about a
+  resource. Nothing was created and nothing is billing — what may have happened is
+  that the Windows password on the box was reset, so the one that was working has
+  stopped working, for you and for anyone else who signs in there. There is no
+  object to look up afterwards and no state to read back: the evidence is a
+  password nobody has. So the undo is to run the reset again and read the new one
+  off the screen. The command says what it is about to do before it does it, and
+  says how long it has been going while it waits, precisely so that someone who
+  interrupts it knows which side of the reset they are on.
+
 Two interrupts are deliberately not reported here, because they are not failures
 and leave nothing behind: Ctrl-C out of `comfy-qat logs` ends the reading, and
 Ctrl-C out of `go --follow` stops ComfyUI on the box. Both say so themselves, and
@@ -1914,6 +1925,35 @@ gcloud compute reset-windows-password <instance> --zone=<zone> --project=<projec
 Two causes account for most of it: the box is not RUNNING — the guest agent has to
 be up to accept a reset, so start it first — or the account signed in lacks
 `compute.instances.setMetadata` on that instance.
+
+**`the reset ran out of clock, which settles nothing: the request had already
+reached Google, so the password on <instance> may have been changed anyway — and
+nothing here ever saw the new one.`**
+
+The reset did not answer inside `PASSWORD_TIMEOUT`, which is 180 seconds. It is
+printed under gcloud's own `gcloud timed out after 180s` line, and it exists
+because that line on its own reads as "nothing happened", which is the one thing
+nobody can say here.
+
+A reset is not a single call. gcloud writes a public key into the instance's
+metadata, waits for that update, and only then polls the serial port for the guest
+agent to answer with the encrypted password. The metadata write goes first — so a
+timeout anywhere after it leaves the password changed on the box and unreadable
+from here. **The client ran out of clock; the operation did not stop.** Exit 1,
+not 2, for exactly that reason: 2 in this tool means nothing was changed.
+
+So the old password may already have stopped working, for you and for anyone else
+who signs in to that box. Run the reset yourself and read the new one off the
+screen:
+
+```sh
+gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project>
+```
+
+If it is slow every time rather than once, the box is the likely cause: a Windows
+instance that has just booted has not started its guest agent yet, and the reset
+waits on an agent that is not listening. `comfy-qat list --live` says whether it is
+RUNNING; a minute or two after a start is normal.
 
 ## Stamping a machine
 

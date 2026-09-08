@@ -1251,8 +1251,14 @@ def rdp_cmd(
     Two gcloud commands and a port number to remember. Google documents no way
     around the password reset, so this does the parts it can and prints the one
     thing only a person can do — typing the password into Remote Desktop.
+
+    The reset is minutes of waiting and it changes something, so it is announced
+    before it starts and keeps saying how long it has been going. Ctrl-C in that
+    window is reported the way every other mutating call here reports one: the
+    password may already have been reset, and the report says so.
     """
-    from .gcloud import Gcloud, GcloudError
+    from .gcloud import PASSWORD_TIMEOUT, Gcloud, GcloudError
+    from .relocate import UNRESOLVED
 
     host = _host(_selector(name), config)
     if not host.is_remote or not is_windows(host):
@@ -1260,11 +1266,91 @@ def rdp_cmd(
                  fix=f"comfy-qat ssh {host.name}", code=2)
 
     gc = Gcloud()
+    # THE ONLY COMMAND IN THIS TOOL THAT WENT SILENT ON A LONG OPERATION, and it
+    # went silent on the one that changes something. Measured on real hardware:
+    # `rdp comfy-win` against a running Windows box printed NOT ONE LINE for ten
+    # minutes and was killed. `up` says the box is starting and how long that may
+    # take, `go` says ComfyUI stays running, `down` says a stop takes about a
+    # minute, `move` prints every step it plans and every step it reaches. This
+    # printed the credentials or nothing, and the reset is minutes of nothing.
+    #
+    # A name that resolves exactly makes it worse rather than better: `_lookup`
+    # prints the resolution line only when there was something to resolve, so
+    # `rdp comfy-win` reaches this point having written nothing at all, and the
+    # first thing the terminal shows is whatever the reset eventually says.
+    #
+    # AND IT IS SAID BEFORE THE CALL, NOT AFTER. The reset is destructive in the
+    # way that matters here — the password that was working stops working, for
+    # anyone else signed in to that box — and gcloud warns about it in its own
+    # words, including that an account with encrypted data can lose it. `--quiet`
+    # is exactly the flag that suppresses that warning, and this tool passes it.
+    # So either it is said here, on the way in, or nobody is told. Someone who
+    # watches ten minutes of nothing and presses Ctrl-C has to be able to know
+    # what may already have happened, and the only line they can read is one that
+    # was printed before the silence started.
+    resetting = say.slow(
+        f"resetting the Windows password on {host.name} — the one in use now "
+        f"stops working",
+        expect=f"up to {PASSWORD_TIMEOUT}s",
+    ).start()
+    say.detail("gcloud's own warning, which --quiet suppresses: on an account "
+               "that already exists this can lose data encrypted with the old "
+               "password")
     try:
-        credentials = gc.windows_password(host.gce_instance, host.gce_zone,
-                                          host.gce_project)
+        # Registered for the same reason `create`, `up` and `delete` are: the
+        # request reaches Google before the interrupt reaches gcloud, and this
+        # one leaves no resource to look up afterwards — the evidence is a
+        # password nobody has. `heading` says so, because neither of the standard
+        # sentences fits: nothing here exists, and nothing here is billing.
+        with inflight.may_leave(
+            f"the Windows password on {host.gce_instance} ({host.name}), reset",
+            undo=[
+                "nothing printed the new one, so reset it again and read it off "
+                "the screen:",
+                f"gcloud compute reset-windows-password {host.gce_instance} "
+                f"--zone={host.gce_zone} --project={host.gce_project}",
+            ],
+            note=(f"anyone else signing in to {host.name} is holding a password "
+                  f"that may no longer work"),
+            heading="this may already have happened, and it does not undo:",
+        ):
+            credentials = gc.windows_password(host.gce_instance, host.gce_zone,
+                                              host.gce_project)
     except GcloudError as exc:
+        resetting.give_up()
+        if exc.kind in UNRESOLVED:
+            # `move`'s lesson, on the command that had further to fall: A CLIENT
+            # TIMEOUT DOES NOT STOP THE SERVER-SIDE OPERATION. `UNRESOLVED` is
+            # `relocate`'s list and is imported rather than restated, so the
+            # judgement it encodes — DENIED and QUOTA got an answer, NETWORK
+            # never arrived, TIMEOUT settles nothing — is made in one place and a
+            # second member covers this site on the day it is added.
+            #
+            # 1 and not 2. This group's rule is that 2 means nothing was changed,
+            # and that is the one thing a timeout here cannot promise: the
+            # metadata write goes first and the polling comes after it, so the
+            # password may be reset and unreadable at exactly this point.
+            say.fail(
+                f"{exc}\nthe reset ran out of clock, which settles nothing: "
+                f"the request had already reached Google, so the password on "
+                f"{host.gce_instance} may have been changed anyway — and "
+                f"nothing here ever saw the new one.",
+                fix=say.fix(
+                    "run the reset yourself and read the password off the "
+                    "screen:",
+                    f"gcloud compute reset-windows-password {host.gce_instance} "
+                    f"--zone={host.gce_zone} --project={host.gce_project}",
+                ),
+                code=1,
+                blank_line=False,
+            )
         _refused(exc)
+    except inflight.Interrupted:
+        # Close the step before the report prints, so its ticker cannot land a
+        # "still going" line on top of the interrupt's own message.
+        resetting.give_up()
+        raise
+    resetting.done("password reset")
 
     # Read and checked before a single line is printed, because the next thing
     # after those lines is `execvp` and this process is gone. gcloud exiting 0

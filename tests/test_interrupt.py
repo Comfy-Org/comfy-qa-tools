@@ -581,6 +581,10 @@ def _troubleshooting() -> str:
     inflight.HEADLINE,
     "this may exist and be billing:",
     "and this had already happened when you stopped it:",
+    # `rdp`'s, and the only heading about something that is not a resource: an
+    # interrupted password reset leaves nothing to look up, only a password
+    # nobody has.
+    "this may already have happened, and it does not undo:",
 ])
 def test_every_line_the_report_prints_has_a_troubleshooting_entry(phrase):
     assert phrase in _troubleshooting(), (

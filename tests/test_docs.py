@@ -592,7 +592,11 @@ MESSAGE_FLOOR = {
     # back reworded, the "which machine?" refusal with its `--os` tail cut off.
     # Lowered here, in the commit that removed them, which is the only way this
     # floor is allowed to move down.
-    "host.py": 48,
+    #
+    # 48 until `rdp` was given words for a reset that runs out of clock. One
+    # message, two identifying runs, counted as two — raised here in the commit
+    # that added it, so the floor keeps meaning what it says.
+    "host.py": 50,
     "hostfile.py": 13,
     "lifecycle.py": 65,
     "relocate.py": 12,
@@ -611,8 +615,9 @@ MESSAGE_FLOOR = {
 # arrived, for the parser's "No such option: --os", which is what a run sheet
 # written before today now produces. Both lowered deliberately, in the same
 # commit as the deletions.
-ENTRY_FLOOR = 229
-WORDING_FLOOR = 266
+# 229 and 266 until `rdp`'s timeout entry arrived with them.
+ENTRY_FLOOR = 230
+WORDING_FLOOR = 267
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

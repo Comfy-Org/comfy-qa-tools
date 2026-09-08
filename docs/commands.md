@@ -70,7 +70,7 @@ type it. `init` is for the case where you want to write the file yourself.
 | command | what it does |
 |---|---|
 | `comfy-qat ssh <host>` | a shell on a Linux box. The long form is `gcloud compute ssh <instance> --tunnel-through-iap --zone <zone> --project <project>` and this tool already knows the last three. It replaces this terminal; `exit` brings you back |
-| `comfy-qat rdp <host>` | a Windows box: resets the password, prints user, password and `localhost:33389`, **then** forwards RDP. Google documents no way around the password reset, so this does the parts it can and leaves you the one thing only a person can do. Ctrl-C closes the forward |
+| `comfy-qat rdp <host>` | a Windows box: says it is resetting the password and that the one in use stops working, waits (saying how long it has been waiting), then prints user, password and `localhost:33389`, **then** forwards RDP. Google documents no way around the password reset, so this does the parts it can and leaves you the one thing only a person can do. Ctrl-C closes the forward |
 
 `ssh` at a Windows box points you at `rdp`, and `rdp` at a Linux box points you at
 `ssh`, rather than failing obscurely. Neither needs a `comfy-qat open` first —
