@@ -7,8 +7,11 @@ that avoids them.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
+from comfy_qa import provision
 from comfy_qa.config import Host
 from comfy_qa.provision import (
     APT_LOCK_WAIT,
@@ -32,6 +35,65 @@ LINUX = Host(name="l", kind="gce", port=8191, os="Ubuntu 22.04", gpu="L4",
 ALL = [WIN, LINUX]
 
 
+# Every builder in the module that turns a Host into a command for the box.
+#
+# DERIVED, not listed. The three rules below used to be parametrised over three
+# builders — `check_command`, `install_command`, `launch_command` — out of the
+# thirteen that emit PowerShell, and the gap was invisible because the tests
+# read as if they covered the module. Measured by mutation on 2026-09-08:
+# dropping `-NonInteractive` from `alive_command`, `logs_command`,
+# `cuda_command` and `firewall_command`, putting a UTF-8 em-dash into
+# `repair_command`, `$ErrorActionPreference='Stop'` into `verify_command` and a
+# `Split-Path` into `port_holder_command` left all 6,104 tests green — seven
+# reinstatements of the three defects this file exists to prevent, none caught.
+#
+# A hand-written list is how that happened, so this one is not hand-written: a
+# new builder is covered the moment it is added, and one that is renamed cannot
+# fall out. The extra arguments are the smallest that make each call legal;
+# nothing here depends on their values.
+_EXTRA_ARGUMENTS = {"pid": "1234", "python": "py", "tail": 20, "follow": False}
+
+
+def _builders() -> list:
+    """Every function in `provision` that takes a Host and returns a command.
+
+    Found by the `host` parameter rather than by position: `torch_install` takes
+    the interpreter first, and a rule that only looked at parameter one would
+    have dropped it without saying so — which is the failure this whole block
+    is about.
+    """
+    found = []
+    for name, function in sorted(vars(provision).items()):
+        if not inspect.isfunction(function) or function.__module__ != provision.__name__:
+            continue
+        parameters = list(inspect.signature(function).parameters.values())
+        if not any(p.name == "host" for p in parameters):
+            continue
+        if name in ("is_windows", "root_for", "log_for"):
+            continue          # predicates and paths, not commands
+        extra = {p.name: _EXTRA_ARGUMENTS[p.name] for p in parameters
+                 if p.name != "host" and p.default is inspect.Parameter.empty}
+        found.append(pytest.param(
+            (lambda f, kw: lambda host: f(host=host, **kw))(function, extra), id=name))
+    return found
+
+
+EVERY_BUILDER = _builders()
+
+
+def test_the_builder_list_is_derived_and_finds_them_all():
+    """The guard on the guard. If this shrinks, the three rules below have
+    quietly stopped covering the module and nothing else will say so."""
+    names = {param.id for param in EVERY_BUILDER}
+    assert "launch_detached_command" in names, "the detached launch is a builder too"
+    assert names >= {
+        "alive_command", "check_command", "cuda_command", "firewall_command",
+        "install_command", "launch_command", "launch_detached_command",
+        "logs_command", "port_holder_command", "repair_command", "stop_command",
+        "torch_install", "verify_command",
+    }, "a builder stopped being seen by the three rules below"
+
+
 def test_the_os_decides_the_script():
     """`root_for` dispatches on the platform, which is all this proves.
 
@@ -52,26 +114,49 @@ def test_the_os_decides_the_script():
     assert root_for(LINUX) == LINUX_ROOT
 
 
-@pytest.mark.parametrize("host", ALL)
-@pytest.mark.parametrize("build", [check_command, install_command, launch_command])
+@pytest.mark.parametrize("host", ALL, ids=["windows", "linux"])
+@pytest.mark.parametrize("build", EVERY_BUILDER)
 def test_every_remote_command_is_ascii_only(host, build):
     """A BOM-less .ps1 is read as CP1252, so a UTF-8 dash becomes a stray quote
-    and breaks the parse tens of lines later. ASCII removes the whole class."""
+    and breaks the parse tens of lines later. ASCII removes the whole class.
+
+    Every builder, because an em-dash in a progress line is the likeliest way
+    back in and progress lines are exactly what the untested builders carry:
+    `repair_command` says "installing torch for this GPU (the slow part)".
+    """
     build(host).encode("ascii")
 
 
-@pytest.mark.parametrize("host", ALL)
-@pytest.mark.parametrize("build", [check_command, install_command, launch_command])
+@pytest.mark.parametrize("host", ALL, ids=["windows", "linux"])
+@pytest.mark.parametrize("build", EVERY_BUILDER)
 def test_no_remote_command_turns_stderr_into_a_fatal_error(host, build):
     """`$ErrorActionPreference='Stop'` makes any native stderr terminating, so a
     successful install aborts and hides the real message."""
     assert "ErrorActionPreference" not in build(host)
 
 
-@pytest.mark.parametrize("build", [check_command, install_command, launch_command])
+@pytest.mark.parametrize("build", EVERY_BUILDER)
 def test_windows_commands_never_prompt(build):
-    """A prompt hangs a non-interactive SSH command forever."""
-    assert "-NonInteractive" in build(WIN)
+    """A prompt hangs a non-interactive SSH command forever.
+
+    The worst failure mode this tool has. Every other defect here reports
+    something wrong; this one reports nothing at all, on a machine that goes on
+    billing while the terminal sits there. So it is asserted on every builder
+    that emits PowerShell, not on the three somebody happened to list.
+    """
+    command = build(WIN)
+    if "powershell" not in command:
+        pytest.skip("this builder emits no PowerShell on Windows")
+    assert "-NonInteractive" in command
+
+
+@pytest.mark.parametrize("build", EVERY_BUILDER)
+def test_no_windows_command_uses_split_path(build):
+    """`Split-Path` with an empty value prompts for a mandatory parameter, and a
+    prompt hangs a non-interactive SSH command forever — the one failure that
+    looks like nothing at all. It was asserted on `launch_detached_command`
+    alone, which is one of thirteen."""
+    assert "Split-Path" not in build(WIN)
 
 
 def test_the_check_answers_in_one_word():
