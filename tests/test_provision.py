@@ -8,6 +8,7 @@ that avoids them.
 from __future__ import annotations
 
 import inspect
+import re
 
 import pytest
 
@@ -651,6 +652,30 @@ def test_the_repair_guard_names_the_root_before_the_install_directory_is_used():
     assert windows.index(NOTHING_TO_REPAIR) < windows.index("Set-Location")
 
 
+def _powershell_invocations(command: str) -> list[str]:
+    """One segment per `powershell` token in a command.
+
+    `launch_detached_command` emits two — the outer one that runs over SSH and
+    the inner `Start-Process` it launches — so any rule about *an invocation*
+    has to be asserted once per segment. Asserted on the whole string instead,
+    it is a first-occurrence check: it sees the outer pair and says nothing at
+    all about the inner one.
+    """
+    starts = [match.start() for match in re.finditer("powershell", command)]
+    edges = starts + [len(command)]
+    return [command[edges[i]:edges[i + 1]] for i in range(len(starts))]
+
+
+def _flag_position(text: str, flag: str) -> int | None:
+    """Where a PowerShell flag really appears, ignoring words that merely end in
+    it. `Get-Command` contains `-Command`, and every builder that searches for an
+    interpreter carries one — counting those inflates the flag by one per
+    builder and puts the comparison below on the wrong token.
+    """
+    match = re.search(rf"(?<!\w){re.escape(flag)}", text)
+    return None if match is None else match.start()
+
+
 @pytest.mark.parametrize("build", EVERY_BUILDER)
 def test_no_windows_command_runs_the_boxs_powershell_profile(build):
     """`-NonInteractive` is not the whole guard against a prompt.
@@ -660,10 +685,33 @@ def test_no_windows_command_runs_the_boxs_powershell_profile(build):
     every other protection in this file — the one failure that reports nothing
     at all while the machine goes on billing. `-NoProfile` also makes the
     invocation identical on every box, which is the point of a QA tool.
+
+    Counted and paired, not searched for, for the same reason
+    `test_windows_commands_never_prompt` above is. This rule shipped as
+    `"-NoProfile" in command` plus one `.index("-NoProfile") < .index("-Command")`
+    — both first-occurrence checks — hours after the docstring above was written
+    about exactly that, one test away, in this file. The fix had copied the
+    assertion's shape rather than its lesson. Dropping `-NoProfile` from the
+    inner `Start-Process` alone left `powershell: 2, -NoProfile: 1` and the
+    whole suite green, with the box's profile running on the detached launch:
+    the long-running invocation, on the machine that is billing.
     """
     command = build(WIN)
     if "powershell" not in command:
         pytest.skip("this builder emits no PowerShell on Windows")
-    assert "-NoProfile" in command
-    assert command.index("-NoProfile") < command.index("-Command"), (
-        "it has to come before the command it is protecting")
+    assert command.count("-NoProfile") >= command.count("powershell"), (
+        "a PowerShell invocation here does not carry -NoProfile; the box's "
+        "profile runs before -NonInteractive can stop it prompting")
+    invocations = _powershell_invocations(command)
+    for number, invocation in enumerate(invocations, start=1):
+        profile = _flag_position(invocation, "-NoProfile")
+        runs = _flag_position(invocation, "-Command")
+        assert profile is not None, (
+            f"PowerShell invocation {number} of {len(invocations)} carries no "
+            "-NoProfile")
+        assert runs is not None, (
+            f"PowerShell invocation {number} of {len(invocations)} runs no "
+            "-Command")
+        assert profile < runs, (
+            f"PowerShell invocation {number} of {len(invocations)}: -NoProfile "
+            "has to come before the command it is protecting")
