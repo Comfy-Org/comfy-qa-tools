@@ -523,6 +523,91 @@ def test_a_root_config_reaches_the_bare_listing(tmp_path):
     assert "comfy-win" in result.output
 
 
+class _StoppedAtBilling:
+    """Just enough Google Cloud to reach the host list and stop just after it.
+
+    `run_setup` writes the host list *before* it checks billing, deliberately: a
+    newcomer stopped at billing should still end the run owning the one thing the
+    command could always produce. That ordering is what makes a refusal the
+    shortest honest path to the write this test is about — the file is written,
+    and nothing project-scoped is.
+
+    Written here rather than imported from `test_setup_flow.py`, because a
+    `--config` test that borrows another module's fake inherits that module's
+    future edits, and this one exists to be stable.
+    """
+
+    def available(self):
+        return "/usr/bin/gcloud"
+
+    def python_location(self):
+        return "/no/such/python"          # so the NumPy step is a no-op
+
+    def active_account(self):
+        return "ali@comfy.org"
+
+    def list_projects(self):
+        return [{"projectId": "proj-1"}]
+
+    def current_project(self):
+        return "proj-1"
+
+    def billing_enabled(self, project):
+        return False                      # stop, having already written the list
+
+
+@pytest.mark.parametrize("form", [
+    ["--config", "{path}", "setup"],      # the root spelling, which is the promise
+    ["setup", "--config", "{path}"],      # the trailing one, which run sheets type
+])
+def test_setup_writes_the_host_list_config_named_and_not_the_default(
+    tmp_path, monkeypatch, form,
+):
+    """`--config` on `setup` has to REACH the file, not merely be accepted.
+
+    Every other check in this file reads the source or the Click tree, and none
+    of them can see this. Give `setup_cmd` a `config` parameter and forget to
+    hand it to `run_setup` and all of them still pass: the parameter is there,
+    the live tree parses `--config`, it is hidden, it is not a new declaration.
+    What the user gets is the original defect exactly — the flag accepted, the
+    root help promising it is inherited, and their own host list written anyway.
+    Measured: with the parameter in place and `config_path=` dropped, the two
+    derived guards above pass and only this fails. So this one drives the
+    command and then looks at the disk.
+
+    `setup` is the reason the distinction is worth a test rather than a comment.
+    Twenty of the twenty-one subcommands only READ the file `--config` names;
+    this one writes it, and the default it falls back to is a host list people
+    keep by hand with no other copy on the machine.
+
+    `DEFAULT_CONFIG_PATH` is redirected to a sentinel under `tmp_path` instead of
+    being left alone, and the sentinel is asserted absent. A test of a bug whose
+    whole nature is writing the real host list must not be able to write it even
+    when the fix under it is wrong, and "the default was not touched" is a
+    stronger statement than "the wanted path exists".
+    """
+    wanted = tmp_path / "mine.toml"
+    default = tmp_path / "default" / "hosts.toml"
+    monkeypatch.setattr("comfy_qa.setup.DEFAULT_CONFIG_PATH", default)
+    monkeypatch.setattr("comfy_qa.cli.Gcloud", lambda *a, **k: _StoppedAtBilling())
+
+    argv = [word.format(path=wanted) for word in form]
+    result = CliRunner().invoke(comfy_qa.cli.app, argv)
+
+    assert result.exit_code == 1, result.output
+    assert "no billing account" in result.stderr, result.output
+    assert wanted.exists(), (
+        f"`comfy-qat {' '.join(argv)}` wrote no host list where it was told to. "
+        f"Output: {result.output}"
+    )
+    assert "[hosts.local]" in wanted.read_text(encoding="utf-8")
+    assert not default.exists(), (
+        f"`--config` was accepted and then dropped: setup wrote "
+        f"DEFAULT_CONFIG_PATH rather than {wanted}. On a real machine that is "
+        f"the tester's own hand-maintained host list, and nothing said so."
+    )
+
+
 @pytest.mark.parametrize("form", [["go"], ["host", "go"]])
 def test_a_root_config_reaches_the_window_go_re_execs_into(tmp_path, monkeypatch, form):
     """`go --new-window` re-execs the tool in a Terminal window, and has to carry

@@ -118,8 +118,12 @@ COMFY_WIN = {
 def hosts(tmp_path, monkeypatch):
     """Point the CLI's default host list somewhere disposable.
 
-    `setup` takes no --config, so without this the first run of this suite would
-    rewrite the tester's own host list.
+    `setup` takes `--config` now, but these tests deliberately do not pass it —
+    they are about the default path, which is the one a newcomer gets. So the
+    default has to be moved, or the first run of this suite would rewrite the
+    tester's own host list. That `setup` writes at all is what made the missing
+    `--config` a defect rather than an inconsistency; the flag reaching the file
+    is pinned in `test_config_inheritance.py`.
     """
     path = tmp_path / "hosts.toml"
     monkeypatch.setattr("comfy_qa.setup.DEFAULT_CONFIG_PATH", path)
