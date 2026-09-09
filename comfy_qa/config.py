@@ -71,10 +71,10 @@ _KNOWN_FIELDS = frozenset({"kind", "port", *_REQUIRED_FOR_GCE})
 _CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project")
 
 # The one name this tool reserves. The starter host list teaches it, every
-# example uses it, and `host stamp local` has exactly one obvious meaning.
+# example uses it, and `comfy-qat stamp local` has exactly one obvious meaning.
 LOCAL_NAME = "local"
 
-# A host name is two things at once: an argument you type (`host stamp <name>`)
+# A host name is two things at once: an argument you type (`comfy-qat stamp <name>`)
 # and part of a filename (`tunnels/<name>.pid`). Both want the same shape, and
 # TOML table keys are otherwise unrestricted — `""`, `"   "`, `"--config"`,
 # `"../evil"` and `"comfy\nwin"` are all valid keys and none of them is a name
@@ -122,10 +122,10 @@ def _parse_host(name: str, raw: object) -> Host:
         )
 
     if kind == "local":
-        # This one costs money. `host down` decides what to stop from `kind`
+        # This one costs money. `comfy-qat down` decides what to stop from `kind`
         # alone: for a local host it reports "local ComfyUI left running" and
         # returns without calling stop. A cloud box mistyped as local — or edited
-        # down to one after a move — therefore reads as a successful `host down`
+        # down to one after a move — therefore reads as a successful `comfy-qat down`
         # while the GPU keeps billing all night.
         cloud = [key for key in _CLOUD_FIELDS if raw.get(key)]
         if cloud:

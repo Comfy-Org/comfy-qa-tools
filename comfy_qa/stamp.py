@@ -477,7 +477,7 @@ def fetch(url: str, *, host: str, opener=urllib.request.urlopen,
 _TOKEN = re.compile(r"[a-z0-9]+")
 
 # Words that turn up in a declaration or in a device name but not in both, so
-# their absence proves nothing. `host discover` writes the declaration from
+# their absence proves nothing. `comfy-qat discover` writes the declaration from
 # Google's own acceleratorType — `nvidia-h100-mega-80gb` becomes `H100-MEGA-80GB`
 # — and ComfyUI calls that same card `NVIDIA H100 80GB HBM3`. Neither vocabulary
 # is wrong; they simply do not overlap on these words.
@@ -505,7 +505,7 @@ def _gpu_contradicts(declared: str | None, device_names: list[str]) -> bool:
     `NVIDIA A100-SXM4-80GB`, so a machine that *was* the declared card
     contradicted itself. That was noise while this only decorated a line. It
     blocks the stamp now, which means it costs a tester the command outright — on
-    a string `host discover` wrote and they never typed.
+    a string `comfy-qat discover` wrote and they never typed.
 
     Whole tokens fix the error running the other way too: `"l4" in "nvidia l40s"`
     was true, so an L40S passed as an L4.
@@ -538,10 +538,10 @@ def mismatch(host, stamp: Stamp) -> str | None:
     Returns None when there is nothing to compare, because `os` and `gpu` are
     optional for a local host.
 
-    Both halves fail open, deliberately. `host stamp` refuses to print an
+    Both halves fail open, deliberately. `comfy-qat stamp` refuses to print an
     evidence line when this returns a complaint, so a false positive is not a
     warning someone can read past — it is the tool declining to describe a
-    machine that is fine, over a declaration `host discover` wrote rather than
+    machine that is fine, over a declaration `comfy-qat discover` wrote rather than
     anyone typed. Anything this cannot be sure of has to pass.
     """
     declared, answering = family(getattr(host, "os", None)), family(stamp.os)

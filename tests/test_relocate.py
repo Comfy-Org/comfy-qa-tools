@@ -30,6 +30,7 @@ from comfy_qa.relocate import (
     plan_move,
     remove_leftovers,
     suffix_for,
+    survey,
 )
 
 WIN = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022", gpu="L4",
@@ -496,14 +497,27 @@ def test_an_unlimited_ceiling_refuses_nothing():
     assert blocked(moving(), survey_with(gc)) is None
 
 
-def test_the_minute_long_quota_read_is_skipped_when_nothing_holds_a_card():
-    """`gpu_quotas` is the ~58-second call and `move` is slow already. Nothing
-    can be over the ceiling while nothing holds any of it, so the free half —
-    counting cards in the list `survey` has already fetched — decides first."""
+def test_the_minute_long_quota_read_is_skipped_only_when_no_card_is_wanted():
+    """`gpu_quotas` is the ~58-second call, so it is worth not making — and the
+    reason for skipping it has to be one that holds.
+
+    It used to be skipped whenever nothing already held a card: "nothing can be
+    over the ceiling while nothing holds any of it". That is false, and false in
+    the direction that costs money — `held + needed > ceiling` at `held == 0` is
+    every ceiling below what this box needs, a lapsed GPUS_ALL_REGIONS of 0
+    included. The one case where the answer cannot matter is a move that wants no
+    card at all, and that is now the only case that skips it.
+    """
+    cpu = Host(name="comfy-cpu", kind="gce", port=8190, os="Ubuntu 22.04",
+               gpu="none", gce_instance="comfy-cpu", gce_zone="us-central1-a",
+               gce_project="proj")
     gc = _Project([gpu_instance("comfy-win", status="TERMINATED")], ceiling=1)
-    survey_with(gc)
+
+    found = survey(gc, plan_move(cpu, MOVE_INSTANCE, "us-central1-b"))
 
     assert gc.quota_reads == 0
+    assert found.cards_needed == 0
+    assert blocked(plan_move(cpu, MOVE_INSTANCE, "us-central1-b"), found) is None
 
 
 def test_the_quota_is_read_when_the_answer_could_be_no():
@@ -513,12 +527,80 @@ def test_the_quota_is_read_when_the_answer_could_be_no():
     assert gc.quota_reads == 1
 
 
+def test_a_ceiling_of_zero_refuses_a_move_that_nothing_else_is_holding_back():
+    """The refusal the old short-circuit made unreachable.
+
+    A GPUS_ALL_REGIONS of 0 under a box that already exists is a quota that
+    lapsed, and it means the moved box cannot start — Google refuses it at the
+    create, which is the step after the snapshot and the 300 GB disk. Nothing
+    else is running, so `held` is 0, so the free half of the check saw nothing to
+    worry about and never read the number that says no.
+    """
+    gc = _Project([gpu_instance("comfy-win", status="TERMINATED")], ceiling=0)
+
+    problem = blocked(moving(), survey_with(gc))
+
+    assert gc.quota_reads == 1
+    assert problem is not None
+    assert "GPUS_ALL_REGIONS is 0" in str(problem)
+    assert "Nothing was created" in str(problem)
+
+
 def test_a_box_with_no_card_at_all_is_not_gated_on_a_gpu_ceiling():
-    gc = _Project([{"name": "comfy-win", "status": "RUNNING",
+    """`gpu = "none"` is how this tool spells a CPU box, and it is an ANSWER:
+    such a move takes nothing from the allowance and is not checked against it."""
+    cpu = Host(name="comfy-cpu", kind="gce", port=8190, os="Ubuntu 22.04",
+               gpu="none", gce_instance="comfy-cpu", gce_zone="us-central1-a",
+               gce_project="proj")
+    plan = plan_move(cpu, {"name": "comfy-cpu", "status": "RUNNING",
+                           "machineType": "https://x/zones/a/machineTypes/n1-standard-8",
+                           "disks": [{"boot": True, "source": "https://x/disks/d"}]},
+                     "us-central1-b")
+    gc = _Project([{"name": "comfy-cpu", "status": "RUNNING",
                     "zone": "https://x/projects/p/zones/us-central1-a"}], ceiling=0)
 
-    assert blocked(moving(), survey_with(gc)) is None
+    assert blocked(plan, survey(gc, plan)) is None
     assert gc.quota_reads == 0
+
+
+def test_a_declared_card_that_the_payload_does_not_show_fails_closed():
+    """The fail-open this guard was built on, from the other side.
+
+    `needed` used to be counted off the source's row in `instances list`, so a
+    row without `guestAccelerators` — or a source the list did not carry at all —
+    read as zero cards needed, and zero skipped the quota read and the whole
+    check. The host list says this box has an L4. A payload that shows no card is
+    a contradiction, not a licence to stop checking, so it counts as one and the
+    arithmetic runs.
+    """
+    gc = _Project([gpu_instance("console-box", zone="us-west4-b")], ceiling=1)
+
+    # MOVE_INSTANCE carries no `guestAccelerators`, and WIN declares gpu="L4".
+    found = survey_with(gc)
+
+    assert found.cards_needed == 1, "one card assumed, not none"
+    problem = blocked(moving(), found)
+    assert problem is not None, "1 held plus 1 needed is over a ceiling of 1"
+    assert "GPUS_ALL_REGIONS is 1" in str(problem)
+
+
+def test_what_the_new_box_needs_is_read_from_the_payload_in_hand():
+    """Not from the instance list, where the source may not appear at all.
+
+    `move` describes the source before it plans anything, and that payload is the
+    authority: the box being created is this box, in another zone. An eight-card
+    machine whose row the list does not carry used to need nothing.
+    """
+    eight = dict(MOVE_INSTANCE, guestAccelerators=[
+        {"acceleratorType": "https://x/nvidia-h100-80gb", "acceleratorCount": 8}])
+
+    assert plan_move(WIN, eight, "us-central1-b").cards == 8
+
+    gc = _Project([], ceiling=4)          # nothing running, and the list is empty
+    found = survey(gc, plan_move(WIN, eight, "us-central1-b"))
+
+    assert (found.cards_held, found.cards_needed) == (0, 8)
+    assert blocked(plan_move(WIN, eight, "us-central1-b"), found) is not None
 
 
 # --- the flag that stops a 300 GB disk outliving the box it belonged to --------
@@ -544,8 +626,26 @@ HANDED_OVER_COMMANDS = {
     "delete_disk_command",
     "delete_instance_command",
     "delete_snapshot_command",
+    "disk_delete_command",
+    "snapshot_delete_command",
     "stop_instance_command",
 }
+
+
+def hand_over(name: str, plan) -> str:
+    """Call one of them, whatever shape it takes its subject in.
+
+    Two are built from NAMES rather than from a plan, and that is the point of
+    them: a plan knows one disk in one zone — the one this move is about to
+    create — while the leftovers of an earlier move sit in whatever zone that
+    move was going to. The plan-shaped pair call straight through to them, so
+    the wording is shared and the rule below still judges every line.
+    """
+    if name == "disk_delete_command":
+        return relocate.disk_delete_command(plan.project, plan.new_disk, plan.to_zone)
+    if name == "snapshot_delete_command":
+        return relocate.snapshot_delete_command(plan.project, plan.snapshot)
+    return getattr(relocate, name)(plan)
 
 
 def test_the_box_a_move_leaves_behind_takes_its_disk_with_it():
@@ -582,7 +682,7 @@ def test_nothing_a_move_hands_over_deletes_an_instance_without_its_disk():
     deletes = []
 
     for name in sorted(HANDED_OVER_COMMANDS):
-        command = getattr(relocate, name)(plan)
+        command = hand_over(name, plan)
         if "compute instances delete" not in command:
             continue
         deletes.append(name)

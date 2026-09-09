@@ -250,17 +250,30 @@ def _delete_the_box(gc, host, config) -> None:
                   f"refuses that name and its port stays reserved"),
             heading="this was probably destroyed, and the host list still names it:",
         ):
-            gc.run([
-                "compute", "instances", "delete", host.gce_instance,
-                f"--zone={host.gce_zone}", f"--project={host.gce_project}",
-                "--delete-disks=all", "--quiet",
-            ], parse_json=False, timeout=300)
+            # Inside the registration for the reason spelled out at the same
+            # shape in `host.rdp_cmd`: `may_leave` prints the leftovers report
+            # from its OWN handler and raises `Interrupted` afterwards, so an
+            # `except inflight.Interrupted` further out closes this step after
+            # the report rather than before it. `removing` is a background
+            # `Slow` writing `still going, …` from a thread every second, and
+            # what it can land on here is the heading saying the host list may
+            # now name a box that no longer exists.
+            try:
+                gc.run([
+                    "compute", "instances", "delete", host.gce_instance,
+                    f"--zone={host.gce_zone}", f"--project={host.gce_project}",
+                    "--delete-disks=all", "--quiet",
+                ], parse_json=False, timeout=300)
+            except BaseException:
+                removing.give_up()
+                raise
     except GcloudError as exc:
         removing.give_up()
         say.fail(exc, code=1)
     except inflight.Interrupted:
-        # Close the step before the report prints, so its ticker cannot land a
-        # "still going" line on top of the interrupt's own message.
+        # A no-op in the ordinary case: the step was closed inside the
+        # registration, before the report printed. Kept for an `Interrupted`
+        # arriving from a nested registration that never touched this ticker.
         removing.give_up()
         raise
     removing.done()

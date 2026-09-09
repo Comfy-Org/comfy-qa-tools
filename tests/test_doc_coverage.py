@@ -379,3 +379,273 @@ def test_that_check_would_have_caught_the_one_it_can():
         "a fix= line has gone back to the retired `comfy-qat auth …` spelling. "
         "That silently weakens the check above — a doc quoting `auth` would stop "
         "being distinguishable from a doc quoting something current.")
+
+
+# --- the commands the DOCS PAGES offer, held to the bar the README already is --
+#
+# `tests/test_readme.py::test_the_readme_invents_no_commands` walks every
+# `comfy-qat <verb>` on that one page against the live command tree, and it is
+# the reason the README is the page that has stayed right. `docs/` had nothing
+# equivalent, and the gap is exactly the shape of finding #4 one directory over:
+# the starter host list explained a rule with `host down`, a command removed at
+# 1.1.0, and it took a real run to notice. The guard written for that walks
+# `comfy_qa/*.py`; a docs page saying the same thing was still invisible.
+#
+# Proven by mutation rather than argued: three sentences were inserted into the
+# tree — ``Run `host down` to stop it.`` into machines.md, and
+# ``Run `comfy-qat frobnicate` to stop it.`` into troubleshooting.md and into
+# getting-started.md — and all 8508 tests passed on every one. The two checks
+# below are what fails on them.
+#
+# `docs/machines.md` is deliberately exempt from the COVERAGE rule at the top of
+# this file, for the reason stated there: it is narrative, and demanding all 21
+# command paths appear in it would teach people to paste rows into prose. That
+# argument is about completeness and says nothing about correctness. A page is
+# free to mention no command at all; it is not free to offer one that does not
+# run. So every page is held to this, machines.md included.
+
+_DOC_INVOCATION = re.compile(r"comfy-qat((?:[ \t]+[a-z][a-z0-9-]*){1,3})")
+
+
+def _in_command_position(line: str, start: int) -> bool:
+    """An offered command, or the tool's name inside a sentence?
+
+    The same rule `tests/test_docs.py` applies to package strings, restated here
+    rather than imported so this file keeps standing on its own: an offered
+    command starts a line or follows punctuation, and prose has an ordinary word
+    in front of it.
+    """
+    before = line[:start].rstrip()
+    return not before or not before[-1].isalnum()
+
+
+def _doc_lines() -> list[tuple[str, str]]:
+    return [(f"{path.name}:{number}", line)
+            for path in sorted(DOCS.glob("*.md"))
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1)]
+
+
+def _command_tree(typer_app: typer.Typer) -> dict:
+    """The real command surface, as nested names, straight off the Typer app."""
+    tree: dict = {}
+    for command in typer_app.registered_commands:
+        tree[command.name or command.callback.__name__] = {}
+    for group in typer_app.registered_groups:
+        tree[group.name] = _command_tree(group.typer_instance)
+    return tree
+
+
+def _offered_commands() -> list[tuple[str, tuple[str, ...]]]:
+    return [(where, tuple(match.group(1).split()))
+            for where, line in _doc_lines()
+            for match in _DOC_INVOCATION.finditer(line)
+            if _in_command_position(line, match.start())]
+
+
+def _unknown_path(tree: dict, words: tuple[str, ...]) -> str | None:
+    """How far into the real tree these words walk, and where they stop.
+
+    Stopping at a leaf is fine — what follows is an argument, `stamp local`.
+    Stopping at a GROUP means the next word was meant to name a subcommand and
+    does not, which is the case `auth quota` vs `auth quotas` was about.
+    """
+    node, walked = tree, []
+    for word in words:
+        if word not in node:
+            return None if not node else f"comfy-qat {' '.join(walked + [word])}"
+        walked.append(word)
+        node = node[word]
+    return None
+
+
+# `host` and `auth` are the ONE exclusion, and it is a decision rather than an
+# oversight. These pages document the retirement on purpose — commands.md's
+# migration table is a two-column list of the old spelling beside the new one,
+# and getting-started and machines.md both explain that notes written before
+# 1.1.0 carry the old noun. A guard that fired on them would be a guard that
+# gets deleted, or worse, one that gets satisfied by deleting the migration
+# table. Nothing is given up: the retired nouns already have two checks of their
+# own — `test_troubleshooting_quotes_no_command_the_tool_has_stopped_printing`
+# above, on the one page made entirely of quoted tool output where prose about
+# them is not allowed, and `test_nothing_in_the_package_writes_a_retired_spelling`
+# in `test_docs.py`, on the source. What this check adds is everything else: a
+# verb that never existed, a subcommand under a real group that does not, and a
+# spelling that was renamed rather than retired, none of which any other check
+# can see on these pages.
+RETIRED_NOUNS = ("host", "auth")
+
+
+def test_the_doc_walk_actually_finds_commands():
+    """A collector that matched nothing would make the check below pass silently.
+
+    The failure mode of every derived list in this suite, and the reason each one
+    carries a floor. The number is set well under the real count and asks one
+    question: is this still reading the pages?
+    """
+    offered = _offered_commands()
+    assert len(offered) > 60, (
+        f"only {len(offered)} `comfy-qat …` invocations found across "
+        f"{len(list(DOCS.glob('*.md')))} pages, which points at the walk having "
+        f"stopped seeing them rather than at the docs having stopped naming "
+        f"commands. Check `_offered_commands` before believing this."
+    )
+
+
+def test_the_docs_invent_no_commands():
+    """A page offering a command that does not run is worse than one that is silent.
+
+    The reader has nothing else to go on: they type it, get click's exit 2, and
+    conclude the tool is broken rather than the page. `test_readme.py` has held
+    the README to this for several releases and the README is the page that has
+    stayed right; every other page drifted until something failed on real
+    hardware.
+    """
+    tree = _command_tree(app)
+    invented = sorted(
+        f"{where}: `{unknown}`"
+        for where, words in _offered_commands()
+        if words[0] not in RETIRED_NOUNS
+        and (unknown := _unknown_path(tree, words)) is not None)
+    assert not invented, (
+        "a docs page offers a command the binary does not have:\n  "
+        + "\n  ".join(invented)
+    )
+
+
+# The bare form — `host <verb>`, `auth <verb>`, with no binary in front — which
+# is how a command gets written in prose and how the starter host list wrote the
+# one that shipped. `_DOC_INVOCATION` cannot see it, for the same reason A8's
+# grep could not: there is no `comfy-qat ` to match.
+#
+# THE VERBS ARE DERIVED. `host` and `auth` were second spellings of the root, so
+# every name registered on the root today is a verb one of them used to prefix,
+# and a command added next month is guarded the day it lands. `list` is excluded
+# for the reason `test_docs.py` gives at length: `host list` is the noun this
+# package is about, written throughout these pages in correct English, and a
+# guard that fires on the vocabulary is a guard that gets deleted.
+def _retired_verbs() -> list[str]:
+    names = ({command.name or command.callback.__name__
+              for command in app.registered_commands}
+             | {group.name for group in app.registered_groups})
+    return sorted(names - {"list"})
+
+
+def _bare_retired_phrase() -> re.Pattern:
+    return re.compile(r"\b(?:%s)[ \t]+(?:%s)\b"
+                      % ("|".join(RETIRED_NOUNS), "|".join(_retired_verbs())))
+
+
+# The lines whose SUBJECT is the retirement, quoted so the exemption is an
+# argument about a line rather than a pattern that waves through a class of
+# them. commands.md's migration table cannot be corrected — correcting it
+# deletes the thing the table is for — and test-criteria.md's is a criterion
+# about what a message must NOT say, which becomes false if the spelling is
+# taken out of it. Same licence `NOT_OUR_MESSAGE` gives troubleshooting.md for
+# quoting click's own "No such command 'host'".
+#
+# Written down rather than matched, because "a line about the retirement" is not
+# something a regex can tell from a line nobody has fixed yet — which is the
+# whole failure this guard exists for. The two hygiene tests below eject an
+# entry the moment it stops doing its job, so it cannot rot into a hole.
+NAMING_THE_RETIREMENT = {
+    "commands.md": (
+        "| `comfy-qat auth status`, `auth login` |",
+        "| `comfy-qat auth quota list`, `auth quota request` |",
+    ),
+    "test-criteria.md": (
+        "If it names `host list` or `auth status` that is",
+    ),
+}
+
+
+def _bare_retired_offers(lines: list[tuple[str, str]]) -> list[str]:
+    pattern = _bare_retired_phrase()
+    offers = []
+    for where, line in lines:
+        page = where.split(":")[0]
+        if any(quoted in line for quoted in NAMING_THE_RETIREMENT.get(page, ())):
+            continue
+        for match in pattern.finditer(line):
+            if _in_command_position(line, match.start()):
+                offers.append(f"{where}: `{match.group()}`")
+    return offers
+
+
+def test_no_docs_page_writes_a_bare_retired_spelling():
+    """`host <verb>` and `auth <verb>` do not run, in prose or anywhere else.
+
+    The starter host list explained its last rule as "`host down` would leave a
+    real instance running and billing" — line 13 of the first file every new
+    user owns, naming a command that exits 2. The guard written for that reads
+    the package source. A docs page saying it was still unguarded, and these
+    pages are read by exactly the person with nothing else to go on.
+    """
+    offers = _bare_retired_offers(_doc_lines())
+    assert not offers, (
+        "a spelling removed at 1.1.0 is written as a command here — drop the "
+        "noun and name the binary, `comfy-qat down`:\n  " + "\n  ".join(sorted(offers))
+    )
+
+
+def test_the_bare_guard_catches_the_line_it_was_written_for():
+    """The guard on the guard, and the reason it is not optional here.
+
+    A check with nothing left to find reads exactly like a check that can no
+    longer find anything — which is how the `comfy-qat `-prefixed version passed
+    for a whole release with the starter file saying `host down` the entire
+    time. So the line as it was is put through the matcher in this file, where it
+    cannot go quietly green.
+    """
+    was = "#     `host down` would leave a real instance running and billing"
+    assert _bare_retired_offers([("machines.md:1", was)]) == [
+        "machines.md:1: `host down`"], (
+        "the starter file's old line is no longer caught, so this check has "
+        "stopped guarding the removal it was written for")
+
+
+def test_the_invented_command_guard_catches_an_invented_command():
+    """The same, for the walk. `frobnicate` is the mutation that survived."""
+    tree = _command_tree(app)
+    assert _unknown_path(tree, ("frobnicate",)) == "comfy-qat frobnicate"
+    assert _unknown_path(tree, ("quota", "requests")) == "comfy-qat quota requests"
+    # And it does not fire on a real leaf followed by its argument.
+    assert _unknown_path(tree, ("stamp", "local")) is None
+    assert _unknown_path(tree, ("quota", "request")) is None
+
+
+@pytest.mark.parametrize("page", sorted(NAMING_THE_RETIREMENT))
+def test_every_exempted_line_is_still_on_its_page(page):
+    """An exemption for a line nobody has any more is clutter, and clutter in an
+    allowlist is where a real hole eventually hides."""
+    text = (DOCS / page).read_text(encoding="utf-8")
+    absent = [quoted for quoted in NAMING_THE_RETIREMENT[page] if quoted not in text]
+    assert not absent, (
+        f"{page} no longer contains {absent}, so the exemption written for it "
+        f"should go with it."
+    )
+
+
+@pytest.mark.parametrize("page", sorted(NAMING_THE_RETIREMENT))
+def test_no_exempted_line_is_needed_any_more_than_it_was(page):
+    """Each entry must still be excusing a hit, and excusing exactly one.
+
+    Two ways an allowlist grows without anyone adding to it, and this closes
+    both: a key that no longer matches any offending line is dead weight, and a
+    key short enough to reach a SECOND line waves that one through on an argument
+    made about a different one. Lengthen the key until it names one line.
+    """
+    pattern = _bare_retired_phrase()
+    numbered = [(f"{page}:{number}", line) for number, line in enumerate(
+        (DOCS / page).read_text(encoding="utf-8").splitlines(), 1)]
+    for quoted in NAMING_THE_RETIREMENT[page]:
+        hits = [where for where, line in numbered
+                if quoted in line
+                and any(_in_command_position(line, m.start())
+                        for m in pattern.finditer(line))]
+        assert len(hits) == 1, (
+            f"{page}: the exemption {quoted!r} covers {len(hits)} offending "
+            f"lines ({', '.join(hits) or 'none'}). An exemption is an argument "
+            f"about one line: if it covers none it is dead and should go, and if "
+            f"it covers two it is excusing one of them on somebody else's reason."
+        )

@@ -140,14 +140,40 @@ def run_checks(gc: Gcloud) -> list[Check]:
     # for one card nobody wants — while the L4 you would actually use fell off
     # the end of a silent truncation at four. Say how many there are, and never
     # cut without saying so.
+    #
+    # And DRIVABLE, not merely granted. Quota for a pre-Turing card starts an
+    # instance and cannot start a working one — the open kernel module this tool
+    # installs needs a GSP (see `create.GSP_ARCHITECTURES`) — so counting one
+    # here reported a project ready when nothing it holds can generate a pixel.
+    # That is the same defect this block was already fixed for once, with
+    # committed and preemptible allowances, one layer further down.
+    from .create import card_named
+
+    def drivable(name: str) -> bool:
+        card = card_named(name)
+        return card is None or card.has_gsp
+
     summary = [card for card in summarise(cards) if card.usable]
+    stranded = [card.gpu for card in summary if not drivable(card.gpu)]
+    summary = [card for card in summary if drivable(card.gpu)]
+    if not summary:
+        results.append(Check(
+            "gpu quota", False,
+            f"only {', '.join(stranded)} — cards this tool cannot drive, because "
+            f"the open NVIDIA kernel module it installs needs a GPU System "
+            f"Processor and only Turing and newer have one",
+            "comfy-qat quota request --gpu t4,l4 --region <region>",
+        ))
+        return results
     shown = ", ".join(f"{card.gpu}={card.limit}" for card in summary[:4])
     if len(summary) > 4:
         shown += f" (+{len(summary) - 4} more)"
-    results.append(Check(
-        "gpu quota", True,
-        f"{shown} — {say.count(len(summary), 'card')} ready",
-    ))
+    detail = f"{shown} — {say.count(len(summary), 'card')} ready"
+    if stranded:
+        # Named, not silently dropped: the grant is real, and somebody looking at
+        # the console will otherwise see a card here that this row does not.
+        detail += f"; {', '.join(stranded)} granted but not drivable"
+    results.append(Check("gpu quota", True, detail))
 
     # LAST, deliberately. Tunnel speed is readiness and belongs here — `setup`
     # installs NumPy into gcloud's own python now, so this row is the catch-up
@@ -265,11 +291,24 @@ def quota_list_cmd(
     rows = readiness(quotas, prefs, region=region)
     cards = summarise(rows)
 
+    # "ready" here has only ever meant one thing: Google will let you start it.
+    # It said nothing about whether this tool can then bring the card up, and for
+    # four of the cards it can order, it cannot — the driver it installs is the
+    # open kernel module and those cards have no GSP. So a project holding P100
+    # quota read `P100 1 ready` off this table, and `create --gpu p100` built a
+    # billing box whose GPU never initialised. The grant and the driver are two
+    # different questions and this table now answers both.
+    from .create import card_named
+
+    def undrivable(name: str) -> bool:
+        card = card_named(name)
+        return card is not None and not card.has_gsp
+
     if as_json:
         say.result(json.dumps({
             "project": project,
-            "gpus": [asdict(c) for c in cards],
-            "by_region": [asdict(r) for r in rows],
+            "gpus": [{**asdict(c), "drivable": not undrivable(c.gpu)} for c in cards],
+            "by_region": [{**asdict(r), "drivable": not undrivable(r.gpu)} for r in rows],
         }, indent=2))
         return
 
@@ -283,17 +322,42 @@ def quota_list_cmd(
         "none": "none — request it",
     }
 
+    def status_of(name: str, state: str) -> str:
+        if undrivable(name):
+            return f"{notes[state]} — this tool cannot drive it"
+        return notes[state]
+
+    # Once, under the table, rather than a repeated parenthesis in the STATUS
+    # column. The column says which rows; this says why, and what it costs to
+    # ignore, which is the half a person needs before asking for more of one.
+    def footnote() -> None:
+        stranded = sorted({c.gpu for c in cards if undrivable(c.gpu)})
+        if not stranded:
+            return
+        say.result(
+            f"\nnote: {', '.join(stranded)} — quota you hold and this tool will not "
+            f"use. It installs the open NVIDIA kernel module, which needs a GPU "
+            f"System Processor (GSP); only Turing and newer cards have one, so on "
+            f"these the driver installs, no module loads, and nvidia-smi never "
+            f"works. `create` refuses them rather than letting you pay to find out."
+        )
+
     if by_region:
         width = max([len(r.region) for r in rows] + [6])
         say.result(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>5}  STATUS")
         for row in rows:
-            say.result(f"{row.gpu:<14} {row.region:<{width}} {row.limit:>5}  {notes[row.status]}")
+            say.result(f"{row.gpu:<14} {row.region:<{width}} {row.limit:>5}  "
+                       f"{status_of(row.gpu, row.status)}")
+        footnote()
         return
 
     width = max([len(c.where) for c in cards] + [6])
     say.result(f"{'GPU':<14} {'LIMIT':>5}  {'WHERE':<{width}}  STATUS")
     for card in cards:
-        say.result(f"{card.gpu:<14} {card.limit:>5}  {card.where:<{width}}  {notes[card.status]}")
+        say.result(f"{card.gpu:<14} {card.limit:>5}  {card.where:<{width}}  "
+                   f"{status_of(card.gpu, card.status)}")
+
+    footnote()
 
     if not any(c.usable for c in cards):
         say.result("\nnothing is usable yet. Ask for a card:")
@@ -341,6 +405,13 @@ def quota_request_cmd(
         # so it can no longer be lost by forgetting a line.
         say.fail(exc, code=2)
 
+    # Asking Google for a card this tool cannot bring up is a request that can
+    # only be granted into a dead end: approval takes days, and at the end of it
+    # `create --gpu p100` still refuses, because the driver installed here is the
+    # open kernel module and Pascal has no GSP. Refused at the point of asking,
+    # where it costs nothing, rather than after the wait.
+    from .create import card_named, drivable_cards
+
     wanted: list[tuple[str, str]] = []
     if quota_id:
         wanted.append((quota_id, quota_id))
@@ -348,9 +419,24 @@ def quota_request_cmd(
         name = name.strip()
         if not name:
             continue
+        card = card_named(name)
+        if card is not None and not card.has_gsp:
+            say.fail(
+                f"there is no point asking for {card.name} quota: this tool cannot "
+                f"bring that card up. The driver it installs is the open NVIDIA "
+                f"kernel module, which needs a GPU System Processor, and only "
+                f"Turing and newer cards have one.",
+                fix=f"ask for one that works: {', '.join(drivable_cards())}",
+                code=2,
+            )
         resolved = resolve(name, quotas, region=region)
         if resolved is None:
-            offer = ", ".join(available_gpus(quotas)) or "none"
+            # Never a card this tool cannot drive. "ask for one of: P100" is
+            # advice that ends in a billing box with a dead GPU.
+            offer = ", ".join(
+                found for found in available_gpus(quotas)
+                if (card_named(found) is None or card_named(found).has_gsp)
+            ) or "none"
             # A card this project does have, just not where you asked, used to
             # come back as "no quota for 'l4' … Available: L4" — which reads as
             # a contradiction. Say where it is metered instead.
@@ -380,7 +466,13 @@ def quota_request_cmd(
         try:
             gc.run(args)
         except GcloudError as exc:
-            say.error(f"request for {name} failed: {exc}", blank_line=False)
+            # `exc.fix` explicitly. Interpolating the exception into the
+            # message leaves `say.error` looking for a `.fix` on a STRING, so
+            # the one gcloud's classifier had already worked out — which region
+            # to use, which quota id is the real one — was computed and thrown
+            # away, on the command where a refusal is the ordinary outcome.
+            say.error(f"request for {name} failed: {exc}", exc.fix,
+                      blank_line=False)
             continue
         say.result(f"requested {name} = {value}" + (f" in {region}" if region else ""))
         submitted.append((name, resolved))

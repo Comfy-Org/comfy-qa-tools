@@ -201,6 +201,11 @@ def _listed(items: list[Leftover]) -> list[str]:
 HEADLINE = ("interrupted — Ctrl-C stops this tool, it does not cancel a request "
             "Google has already accepted")
 
+# The headline as it is printed. Named because `report` compares against it to
+# decide where a group break goes, and re-spelling `f"{HEADLINE}."` at the
+# comparison is how the two come to disagree about a full stop.
+HEADLINE_LINE = f"{HEADLINE}."
+
 
 def _report_safely() -> None:
     """`report`, with a second Ctrl-C unable to swallow the first one's message.
@@ -237,7 +242,7 @@ def report() -> bool:
     if not left:
         return False
 
-    lines = [f"{HEADLINE}."]
+    lines = [HEADLINE_LINE]
     # INNERMOST FIRST, which is last-registered first. Not a taste: the
     # registration nearest the interrupt is the call that was actually in
     # flight, and on `switch` that is the box being started — the half that
@@ -267,6 +272,23 @@ def report() -> bool:
     # merely fixed: there is now one sequence, not two that have to agree.
     ordered = [item for heading in order for item in grouped[heading]]
     for heading in order:
+        # A blank line between the groups, because each heading is a different
+        # claim about money and they were printed flush against each other:
+        #
+        #     this may exist and be billing:
+        #       comfy-linux-snap-20260909 (a snapshot, in comfy-qa-testing-01)
+        #     this may still be running — the stop request had gone, and ...
+        #       comfy-win (comfy-win in us-central1-a)
+        #
+        # Five lines, two claims, one wall. The indent already says which items
+        # belong to which heading; nothing said where one group ended, so the
+        # heading that matters most — a GPU box that may still be running — read
+        # as the fourth line of a list about a snapshot.
+        #
+        # Not before the first: the headline is directly above it and they are
+        # one thought.
+        if lines[-1] != HEADLINE_LINE:
+            lines.append("")
         lines.append(heading)
         lines += _listed(grouped[heading])
 

@@ -136,6 +136,68 @@ def test_an_empty_fix_prints_no_label(capsys):
     assert capsys.readouterr().err.splitlines() == ["", "it broke"]
 
 
+def test_the_notes_beside_a_run_of_commands_are_in_one_column(capsys):
+    """The gap used to be typed at the call site, so it was counted by eye.
+
+    `comfy-qat stamp l4` against a box with no tunnel printed the three commands
+    below with the last note two columns right of the other two — in the block
+    someone reads when nothing is working.
+    """
+    say.error("nothing answered", say.fix(
+        "comfy-qat open comfy-win   # tunnel to a box that is already running",
+        "comfy-qat go comfy-win     # start it and tunnel, in one step",
+        "comfy-qat list --live        # which of the two it is",
+    ))
+    rest = capsys.readouterr().err.splitlines()[3:]
+    hashes = {line.index("#") for line in rest if "#" in line}
+    assert len(hashes) == 1, f"the notes are in {len(hashes)} columns: {rest}"
+    assert rest[-1].endswith("comfy-qat list --live      # which of the two it is")
+
+
+def test_a_column_is_shared_by_the_commands_it_belongs_to_and_no_others(capsys):
+    """A prose line ends a run. Two groups, two columns — a column shared across
+    a paragraph break lines nothing up with anything."""
+    say.error("it broke", say.fix(
+        "comfy-qat down comfy-win   # a short one",
+        "or, if you would rather look first:",
+        "comfy-qat list --live --config some/rather/long/path   # a long one",
+    ))
+    # From the label line, which carries the first command and its note.
+    rest = capsys.readouterr().err.splitlines()[2:]
+    hashes = [line.index("#") for line in rest if "#" in line]
+    assert len(set(hashes)) == 2, f"the two groups share a column: {rest}"
+
+
+def test_a_sentence_among_the_commands_gets_a_line_of_its_own(capsys):
+    """The Ctrl-C block was eight lines flush against each other at one indent —
+    four commands, a sentence introducing two of them, and a remark about what a
+    snapshot costs, all reading as things to paste."""
+    say.error("interrupted", say.fix(
+        "gcloud compute snapshots delete comfy-linux-snap",
+        "comfy-qat down comfy-win",
+        "or check first, if you would rather look:",
+        "comfy-qat list --live",
+        "a snapshot costs pennies a month, but it is not free",
+    ))
+    rest = capsys.readouterr().err.splitlines()[3:]
+    assert rest == [
+        "        comfy-qat down comfy-win",
+        "",
+        "        or check first, if you would rather look:",
+        "        comfy-qat list --live",
+        "",
+        "        a snapshot costs pennies a month, but it is not free",
+    ], rest
+
+
+def test_a_short_fix_gets_no_blank_lines_because_it_has_no_groups(capsys):
+    """Two lines are already legible; a break between them is only air."""
+    say.error("it broke", say.fix("comfy-qat down comfy-win",
+                                  "the machine is still billing."))
+    assert capsys.readouterr().err.splitlines()[3:] == [
+        "        the machine is still billing."]
+
+
 # --- counting --------------------------------------------------------------
 
 

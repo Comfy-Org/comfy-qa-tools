@@ -18,7 +18,15 @@ comfy-qat create --os linux --gpu t4 --dry-run
 **You do not type a machine type.** It follows from the card, and this is the
 thing most often got wrong by hand: an L4 is the G2 family with the GPU built
 *into* the machine type — passing `--accelerator` alongside one is refused — while
-a T4, P4, P100, V100 or K80 is an N1 with a card attached to it.
+a T4 is an N1 with a card attached to it.
+
+**Five cards, and not the five you might expect.** `--gpu` takes `t4`, `l4`,
+`a100`, `a100-80gb` and `h100`. P4, P100, V100 and K80 are refused, whatever your
+quota says: the driver installed on every Linux box here is the open NVIDIA kernel
+module, which needs a GPU System Processor, and only Turing and newer cards have
+one. On an older card the install succeeds, the box boots and bills, and no kernel
+module ever loads — so `create` says no before anything exists. A T4 is the same
+`n1-standard-8` machine those four would have used.
 
 **You do not type a zone either.** It is chosen, in this order:
 

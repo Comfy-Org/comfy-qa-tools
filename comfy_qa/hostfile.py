@@ -35,6 +35,7 @@ import os
 import re
 import stat
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 from .config import ConfigError
@@ -423,6 +424,39 @@ def apply(path: Path, text: str, *, expect: set[str]) -> None:
     `expect` is every host name the result must contain — exactly, no more and no
     fewer. Getting this wrong is how a rewrite quietly loses a machine.
     """
+    would_apply(path, text, expect=expect)
+
+    if path.exists():
+        _keep_a_copy(path)
+
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        _write_durably(temporary, text, like=path)
+        os.replace(temporary, path)
+        # And the rename itself. `os.replace` is atomic in ORDERING — you get the
+        # old file or the new one, never a half-written one — which is not the
+        # same as durable. The directory entry lives in the directory's own
+        # metadata, so without this the rename can still be lost by a crash that
+        # the data fsync above survived, and the file reverts to its old content
+        # while `.bak` says the write happened.
+        _sync_directory(path.parent)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def would_apply(path: Path, text: str, *, expect: set[str]) -> None:
+    """Every refusal `apply` can make, decided without writing anything.
+
+    `apply` itself is the first caller, so what one refuses the other refuses and
+    the two cannot drift. The second is `move`, which rewrites the host list as
+    its SEVENTH action — after a snapshot, a 200-300 GB disk and a running GPU
+    instance. Every check below reads the local file and the text built from it,
+    and every one of them was therefore free at the point where the answer was
+    still worth something: refusing then costs nothing, and refusing at the end
+    leaves the user paying for a box whose old entry `comfy-qat down` still
+    points at.
+    """
     try:
         parsed = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -463,23 +497,41 @@ def apply(path: Path, text: str, *, expect: set[str]) -> None:
             f"the rewritten host list would not load: {exc} Nothing was written."
         ) from exc
 
-    if path.exists():
-        _keep_a_copy(path)
+    _could_keep_a_copy(path)
 
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        _write_durably(temporary, text, like=path)
-        os.replace(temporary, path)
-        # And the rename itself. `os.replace` is atomic in ORDERING — you get the
-        # old file or the new one, never a half-written one — which is not the
-        # same as durable. The directory entry lives in the directory's own
-        # metadata, so without this the rename can still be lost by a crash that
-        # the data fsync above survived, and the file reverts to its old content
-        # while `.bak` says the write happened.
-        _sync_directory(path.parent)
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        raise
+
+def _could_keep_a_copy(path: Path) -> None:
+    """Could the backup `apply` insists on be written at all?
+
+    `_keep_a_copy` refuses the whole rewrite when the copy cannot be made, for
+    the reason in its docstring — declining a move is recoverable and doing one
+    that cannot be undone is not. That refusal is worth as much before the move
+    as after it, and a read-only config directory is knowable now.
+
+    Probed rather than proved: `os.access` answers about permissions and not
+    about a full disk, so `_keep_a_copy` still does the real work and still
+    refuses. This closes the case that is decidable while it is free.
+    """
+    if not path.exists():
+        return
+    # The directory only, and deliberately not a trial read of the file itself:
+    # `init --force` can be pointed at a directory NAMED hosts.toml, and reading
+    # that raises here rather than reaching the message written for it. What
+    # cannot be answered without touching the file is left to `_keep_a_copy`,
+    # which still refuses for real.
+    #
+    # One vocabulary for one refusal: this is `_keep_a_copy`'s sentence, said
+    # earlier. A user who hits it from the rehearsal and from the write should
+    # not have to work out that they are the same thing.
+    if not os.access(path.parent, os.W_OK):
+        # The reason is composed rather than interpolated inline so that this
+        # sentence is the same STRING as `_keep_a_copy`'s, not merely the same
+        # words: one wording, one troubleshooting entry, one thing to fix.
+        reason = f"{path.parent} is not writable"
+        raise HostFileError(
+            f"the previous {path.name} could not be copied ({reason}), so this "
+            f"rewrite could not be undone. Nothing was written."
+        )
 
 
 # How many superseded copies to keep, and where.
@@ -496,6 +548,45 @@ def apply(path: Path, text: str, *, expect: set[str]) -> None:
 # maintains by hand is neither.
 BACKUP_GENERATIONS = 5
 BACKUP_DIRECTORY = "backups"
+
+
+#: Paths already copied during the current command, or None outside one. Set by
+#: `one_backup`, read by `_keep_a_copy`, and never touched anywhere else.
+_copied: set[Path] | None = None
+
+
+@contextmanager
+def one_backup():
+    """One `.bak` for a whole command, rather than one for each of its writes.
+
+    `.bak` answers "what did this file look like before I ran that", and for a
+    command that writes ONCE the two are the same sentence. `discover --prune`
+    writes twice — an append for what it adopted, a rewrite for what it removed —
+    so each went through `_keep_a_copy` and the second overwrote the first. After
+    a run that both added a host and pruned one, `hosts.toml.bak` held the file
+    with the additions already in it: a state that existed for milliseconds,
+    that nobody asked for, and that is not what anybody reaching for `.bak`
+    wants. The pre-run file was still there, under a timestamp in `backups/`,
+    which is the copy nobody knows to look for.
+
+    Inside this block the first write to a path keeps its copy and later writes
+    to the SAME path skip theirs. Nothing else changes: the copy is still
+    fsynced, still read back byte for byte, and the write is still refused when
+    it cannot be made — and a copy that FAILED does not count as taken, so the
+    next write in the block still tries, rather than proceeding with no backup at
+    all.
+
+    Not a lock and not reentrant bookkeeping: this is one CLI process doing one
+    command, and the block restores whatever it found so a nested use cannot
+    leave the flag set behind it.
+    """
+    global _copied
+    outer = _copied
+    _copied = set() if outer is None else outer
+    try:
+        yield
+    finally:
+        _copied = outer
 
 
 def _keep_a_copy(path: Path) -> None:
@@ -518,6 +609,13 @@ def _keep_a_copy(path: Path) -> None:
     anyway. It now refuses. Declining a move is recoverable; doing one that
     cannot be undone is not.
     """
+    # Already copied earlier in this command, so `.bak` holds the file as it was
+    # before the command ran and this write must not replace it with the state
+    # the command's own previous write left behind. Outside a `one_backup` block
+    # `_copied` is None and every write copies, exactly as it always did.
+    if _copied is not None and path in _copied:
+        return
+
     content = path.read_bytes()
     backup = path.with_name(path.name + ".bak")
 
@@ -540,6 +638,13 @@ def _keep_a_copy(path: Path) -> None:
             f"it was copied from, so the previous host list is not recoverable. "
             f"Nothing was written."
         )
+
+    # Recorded only once the copy is on the disk and has read back, never before:
+    # a backup that FAILED is not one that was taken, and marking it taken would
+    # let the next write in the same block proceed with no copy at all — which is
+    # the opposite of what `one_backup` is for.
+    if _copied is not None:
+        _copied.add(path)
 
     # Pruned AFTER the new copy is on the disk, never before: a prune that runs
     # first and then fails to write leaves fewer copies than it started with.

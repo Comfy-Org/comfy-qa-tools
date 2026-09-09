@@ -62,6 +62,7 @@ NO_QUOTA = "no-quota"          # the project's grant will not allow this
 NO_ZONE = "no-zone"            # nowhere offers this combination at all
 EXHAUSTED = "exhausted"        # every zone tried was out of capacity
 CREATE_FAILED = "create-failed"  # Google refused for some other reason
+NO_DRIVER = "no-driver"        # the card is real; this tool cannot bring it up
 
 DEFAULT_DISK_GB = 200
 
@@ -80,6 +81,56 @@ MAX_DISK_GB = 4000
 MAX_NAME_LEN = 63
 
 
+# --- which cards this tool can actually bring up ---------------------------
+#
+# THE MOST EXPENSIVE THING IN THIS FILE, so it is written down before the table
+# it constrains. Every Linux box created here installs its driver exactly one
+# way: Google's own `cuda_installer.pyz install_driver`, as a startup script
+# (LINUX_DRIVER, below). That installer lays down the OPEN NVIDIA kernel module,
+# and the open module only works on a GPU that has a GSP — a GPU System
+# Processor, the on-board microcontroller NVIDIA moved most of the driver onto
+# with Turing. NVIDIA's own words, from the source of the modules themselves
+# (https://github.com/NVIDIA/open-gpu-kernel-modules, read 2026-09-09): "The
+# NVIDIA open kernel modules can be used on any Turing or later GPU."
+#
+# On anything older every visible sign is success and the card is dead. Read off
+# a V100 box this tool created on 2026-09-09: `create` returned 0, the startup
+# script finished 0 with the packages installed and `nvidia-open set on hold`,
+# the instance booted, `lspci` showed the card — and no nvidia module loaded,
+# `nvidia-smi` failed, and a clean reboot did not change it. The kernel says why:
+#
+#   NVRM: The NVIDIA GPU 0000:00:04.0 (PCI ID: 10de:1db1)
+#   NVRM: installed in this system is not supported by open
+#   NVRM: nvidia.ko because it does not include the required GPU
+#   NVRM: System Processor (GSP).
+#   NVRM: The NVIDIA probe routine failed for 1 device(s).
+#   NVRM: None of the NVIDIA devices were initialized.
+#
+# Nothing in the run says that. The box is up, it is billing, and the only thing
+# it was made for cannot work.
+#
+# So the line is drawn at GSP, and by ARCHITECTURE rather than by a list of card
+# names — every card is described by its architecture anyway, and a name list is
+# a thing somebody has to remember to extend. GSP is silicon: a Pascal card will
+# not grow one, so this is not a version skew that waiting out will fix.
+#
+# WHY THIS IS A REFUSAL AND NOT A SECOND DRIVER FLAVOUR. The obvious repair is
+# to install the proprietary module on the older cards instead of the open one.
+# There is no way to ask for that here: `cuda_installer.pyz` takes
+# `--installation-branch` (prod, nfb, lts) and no flavour switch at all, so
+# driving a pre-Turing card would mean abandoning Google's documented installer
+# for a hand-rolled one and pinning a driver branch old enough to still carry
+# the card. That is exactly the "probably works" this file already refuses to
+# build on for the Windows driver, and it cannot be verified from a laptop. If
+# someone builds it and proves it on real hardware, THIS is the one place to
+# change: give those cards a driver that suits them and the table below decides
+# the rest — the refusal, the card lists and the help all read from it.
+#
+# Turing introduced the GSP and everything since has one. Kepler, Maxwell,
+# Pascal and Volta predate it and never got one.
+GSP_ARCHITECTURES = frozenset({"Turing", "Ampere", "Ada", "Hopper", "Blackwell"})
+
+
 @dataclass(frozen=True)
 class Card:
     """One GPU, and the machine it has to be ordered as.
@@ -94,10 +145,10 @@ class Card:
     * `key` is what a person types after `--gpu`, and the only one a fix line
       may ever suggest. `H100-80GB` is the card's name and `--gpu h100-80gb` is
       not a command — the tool refuses it.
-    * `name` is what `host list` shows, and it is *not* free: `discover`
+    * `name` is what `comfy-qat list` shows, and it is *not* free: `discover`
       derives it from the instance's accelerator type, so it has to be exactly
       what `discover.accelerator` would read back off a box holding this card.
-      Otherwise `host discover` finds a box this tool created and adds it a
+      Otherwise `comfy-qat discover` finds a box this tool created and adds it a
       second time.
     * `quota_aliases` are the other spellings Google meters the same card
       under. Empty for almost every card, and the reason it exists is H100:
@@ -106,12 +157,26 @@ class Card:
     """
 
     key: str             # what a person types after --gpu
-    name: str            # what `host list` shows, and what discovery reads back
+    name: str            # what `comfy-qat list` shows, and what discovery reads back
     accelerator: str     # Google's own accelerator-type id
     machine_type: str
     attached: bool       # is the card part of the machine type?
+    # The GPU's generation, and the field that decides whether this tool will
+    # order the card at all — see GSP_ARCHITECTURES above. It has no default on
+    # purpose: a card added without one will not construct, which is the only
+    # way to be sure the question gets asked about the next card as well.
+    architecture: str
     count: int = 1
     quota_aliases: tuple[str, ...] = ()
+
+    @property
+    def has_gsp(self) -> bool:
+        """Can the open kernel module this tool installs drive this card at all?
+
+        False means the box would be created, billed and useless: the driver
+        installs, the startup script exits 0, and no module ever loads.
+        """
+        return self.architecture in GSP_ARCHITECTURES
 
     @property
     def accelerator_flag(self) -> str | None:
@@ -126,22 +191,36 @@ class Card:
         return (self.name, *self.quota_aliases)
 
 
-# The cards this tool can order, and the family each one has to be ordered in.
-# Sizes are the smallest that fits a GPU: this is a box for reproducing a bug,
-# not for training, and the card is what costs.
+# Every card this tool has a machine-type mapping for, and the family each one
+# has to be ordered in. Sizes are the smallest that fits a GPU: this is a box for
+# reproducing a bug, not for training, and the card is what costs.
+#
+# NOT every one of these can be ordered. The four pre-Turing cards stay in the
+# table for the reason K80 was always kept in it — asking for one should be
+# answered with the truth about that card rather than with "unknown card" — and
+# `plan` refuses them by reading `has_gsp`. Two of them, T4 and L4, were proved
+# on real hardware on 2026-09-09: driver up, ComfyUI generating in 8.6s and 6.3s.
 CARDS: dict[str, Card] = {
-    "l4": Card("l4", "L4", "nvidia-l4", "g2-standard-8", attached=True),
-    "t4": Card("t4", "T4", "nvidia-tesla-t4", "n1-standard-8", attached=False),
-    "p4": Card("p4", "P4", "nvidia-tesla-p4", "n1-standard-8", attached=False),
-    "p100": Card("p100", "P100", "nvidia-tesla-p100", "n1-standard-8", attached=False),
-    "v100": Card("v100", "V100", "nvidia-tesla-v100", "n1-standard-8", attached=False),
-    # Retired by Google in most regions. Left in because asking for it should
-    # fail with "no zone offers this", which is the truth, rather than with
-    # "unknown card", which is not.
-    "k80": Card("k80", "K80", "nvidia-tesla-k80", "n1-standard-8", attached=False),
-    "a100": Card("a100", "A100", "nvidia-tesla-a100", "a2-highgpu-1g", attached=True),
+    "l4": Card("l4", "L4", "nvidia-l4", "g2-standard-8", attached=True,
+               architecture="Ada"),
+    "t4": Card("t4", "T4", "nvidia-tesla-t4", "n1-standard-8", attached=False,
+               architecture="Turing"),
+    # Pascal and Volta: real cards, real quota, no GSP. Ordering one buys a box
+    # whose GPU cannot initialise — see GSP_ARCHITECTURES.
+    "p4": Card("p4", "P4", "nvidia-tesla-p4", "n1-standard-8", attached=False,
+               architecture="Pascal"),
+    "p100": Card("p100", "P100", "nvidia-tesla-p100", "n1-standard-8", attached=False,
+                 architecture="Pascal"),
+    "v100": Card("v100", "V100", "nvidia-tesla-v100", "n1-standard-8", attached=False,
+                 architecture="Volta"),
+    # Retired by Google in most regions, and Kepler besides, so it fails this
+    # tool's own driver check before it ever reaches a zone.
+    "k80": Card("k80", "K80", "nvidia-tesla-k80", "n1-standard-8", attached=False,
+                architecture="Kepler"),
+    "a100": Card("a100", "A100", "nvidia-tesla-a100", "a2-highgpu-1g", attached=True,
+                 architecture="Ampere"),
     "a100-80gb": Card("a100-80gb", "A100-80GB", "nvidia-a100-80gb", "a2-ultragpu-1g",
-                      attached=True),
+                      attached=True, architecture="Ampere"),
     # Two things about the H100 that nothing in the name tells you. Both were
     # read off a live project on 2026-08-28.
     #
@@ -157,18 +236,80 @@ CARDS: dict[str, Card] = {
     # reports "no H100-80GB quota" on a project that holds one. A100 carries both
     # spellings, which is why this is a per-card alias rather than a rule.
     "h100": Card("h100", "H100-80GB", "nvidia-h100-80gb", "a3-highgpu-8g",
-                 attached=True, count=8, quota_aliases=("H100",)),
+                 attached=True, architecture="Hopper", count=8,
+                 quota_aliases=("H100",)),
 }
+
+
+def drivable_cards() -> list[str]:
+    """The `--gpu` spellings this tool can actually bring up, in help order.
+
+    The one source for every list of cards the tool shows anybody: the `--gpu`
+    help, the "no card called" refusal, `quota list`, `setup`. They used to be
+    typed out separately, which is how a card the provisioning cannot drive gets
+    advertised in three places and refused in none.
+    """
+    return sorted(key for key, card in CARDS.items() if card.has_gsp)
+
+
+def undrivable_cards() -> list[str]:
+    """The cards this tool knows about and will not order. See GSP_ARCHITECTURES."""
+    return sorted(key for key, card in CARDS.items() if not card.has_gsp)
+
+
+def card_named(name: str) -> Card | None:
+    """The card a QUOTA's friendly name means — `P100`, `H100`, `A100-80GB`.
+
+    `card_for` answers for what a person types after `--gpu` and raises when
+    there is no such card. This answers for what Google meters, which is not the
+    same string: the H100 is metered as `H100` and ordered as `h100`, and a
+    project can hold quota for cards this tool has never heard of. So it returns
+    None rather than raising — "not one of ours" is an ordinary answer here.
+    """
+    wanted = (name or "").strip().lower().replace("_", "-").replace(" ", "")
+    wanted = wanted.removeprefix("nvidia-").removeprefix("tesla-")
+    if not wanted:
+        return None
+    for card in CARDS.values():
+        spellings = {card.key, *card.quota_names}
+        if wanted in {spelling.lower() for spelling in spellings}:
+            return card
+    return None
+
+
+def undrivable(card: Card, image: Image | None = None) -> LifecycleError:
+    """Why a real card with real quota is still refused, before anything exists.
+
+    Raised by `plan`, which runs offline and before the quota read, so this
+    costs a second and no money. The alternative — the behaviour this replaced —
+    is a created, billing instance whose GPU never initialises and a run that
+    reported success.
+    """
+    os_key = image.key if image else "linux"
+    return LifecycleError(
+        f"this tool cannot bring up a {card.name}, so nothing was created. The "
+        f"driver it installs is the open NVIDIA kernel module, and that needs a "
+        f"GPU System Processor — a GSP — which only Turing and newer cards have. "
+        f"{card.architecture} has none, so no module loads at all: the box would "
+        f"boot, bill, and never see its own GPU. Cards that do work: "
+        f"{', '.join(drivable_cards())}.",
+        # The comma is load-bearing: a fix line is read as a command up to the
+        # first comma or semicolon, so prose after an em-dash would be parsed as
+        # more flags. `tests/test_create_e2e.py::_invocations` is what reads it.
+        fix=(f"comfy-qat create --os {os_key} --gpu t4, the same n1-standard-8 "
+             f"machine and the cheapest card that works"),
+        kind=NO_DRIVER,
+    )
 
 
 @dataclass(frozen=True)
 class Image:
-    """A public image family, and the name `host discover` will read back off it.
+    """A public image family, and the name `comfy-qat discover` reads back off it.
 
     `os` matches what `discover.operating_system` derives from the boot disk's
     licence, so a box created here and a box found by discovery describe
-    themselves identically. They stopped agreeing once, and `host switch
-    windows` then matched one of them and not the other.
+    themselves identically. They stopped agreeing once, and
+    `comfy-qat switch windows` then matched one of them and not the other.
     """
 
     key: str
@@ -326,7 +467,12 @@ def card_for(gpu: str) -> Card:
     if key in CARDS:
         return CARDS[key]
     raise LifecycleError(
-        f"no card called {gpu!r}. This tool can create: {', '.join(sorted(CARDS))}.",
+        # The DRIVABLE cards, not every key in the table. The table also holds
+        # four cards this tool refuses to order at all (GSP_ARCHITECTURES), and
+        # naming those here would answer "which card should I ask for instead"
+        # with cards that produce a billing box whose GPU never comes up.
+        f"no card called {gpu!r}. This tool can create: "
+        f"{', '.join(drivable_cards())}.",
         fix="comfy-qat quota list — the cards this project is allowed",
         kind=NO_QUOTA,
     )
@@ -414,6 +560,11 @@ def plan(
     """Everything decided before anything is contacted. Offline, and total."""
     image = image_for(os_choice)
     card = card_for(gpu)
+    # BEFORE the disk checks, and long before the quota read: a card this tool
+    # cannot drive is not a detail of the box, it is the box. `plan` is the last
+    # thing that runs while a create is still free.
+    if not card.has_gsp:
+        raise undrivable(card, image)
     if disk_gb < MIN_DISK_GB:
         raise LifecycleError(
             f"a {disk_gb} GB disk is too small — the image will not fit and models "
@@ -888,8 +1039,19 @@ def build(
             f"{len(ordering.offering)} regions this project can use the card in, the "
             f"nearest ones — not everywhere. Nothing was created and nothing is "
             f"billing. Not tried, and possibly free: {_a_few(untried)}.",
+            # `image.key`, never `image.os`. `--os` takes the key — `linux`,
+            # `windows` — and `os` is the DISPLAY name this tool reads back off a
+            # box, `Ubuntu 22.04`. This line had drifted to the second one while
+            # its two siblings in `plan` kept the first, and what it printed was
+            # `comfy-qat create --os Ubuntu 22.04 --gpu l4 --region <x>`: run
+            # unquoted, Typer exits 2 on the stray `22.04`; run quoted,
+            # `image_for` refuses it. So the one command offered to somebody
+            # holding a stockout could not be run either way — and this is the
+            # ordinary stockout branch, not a corner, because `choose` returns at
+            # most six zones against a cap of six, so the queue drains, `capped`
+            # stays False and this is what a real shortage lands on.
             fix=(f"try somewhere this did not reach: comfy-qat create "
-                 f"--os {blueprint.image.os} --gpu {blueprint.card.key} --region "
+                 f"--os {blueprint.image.key} --gpu {blueprint.card.key} --region "
                  f"{untried[0]}; or wait and run the same command again — a stockout "
                  f"is usually minutes to hours"),
             kind=EXHAUSTED,
@@ -930,7 +1092,7 @@ def host_entry(blueprint: Blueprint, zone: str, project: str):
     """The discovered-box record `discover.to_toml` turns into a host list entry.
 
     Written through `discover` rather than by hand so a created box and a
-    discovered one are the same shape — otherwise `host discover` finds this
+    discovered one are the same shape — otherwise `comfy-qat discover` finds this
     instance again and adds it a second time under a different port.
     """
     from .discover import Discovered

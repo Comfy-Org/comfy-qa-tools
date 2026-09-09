@@ -39,6 +39,28 @@ QUOTA_TIMEOUT = 240
 # Linux. gcloud blocks until the operation completes.
 INSTANCE_TIMEOUT = 300
 
+# Copying a disk is not one of those operations, and it was run under that clock
+# anyway. A real move proved it: a 200 GB snapshot exceeded 300s, gcloud was
+# killed, and Google went on holding the snapshot in UPLOADING — so the tool
+# reported a failure about a resource that was in fact being created and would
+# bill. `relocate._stopped` was taught to report that doubt honestly, which is
+# the right answer to an unresolved call and the wrong answer to a clock set
+# below the work.
+#
+# 200 GB is the DEFAULT boot disk this tool creates, so the timeout was under the
+# ordinary case rather than over it: a first snapshot of one is a full copy, runs
+# at Google's pace and not the network's, and tens of minutes is normal. An hour
+# is chosen to sit clear above that whole range rather than at the edge of it —
+# nothing is waited on that is not still running, because gcloud only returns
+# when the operation ends, and the cost of being wrong on this side is a wait
+# while the cost of being wrong on the other side is an orphaned snapshot the
+# user is billed for and a move that has to start over.
+#
+# Its own name, not `INSTANCE_TIMEOUT` reused: the two are not the same
+# operation, and the reason this number is what it is has nothing to do with how
+# long Windows takes to boot.
+SNAPSHOT_TIMEOUT = 3600
+
 # Proving the credential is one small API call. It should never take long, and if
 # it does the network is the problem, which is worth knowing before a GPU starts.
 PREFLIGHT_TIMEOUT = 20
@@ -76,6 +98,14 @@ NETWORK = "network"          # never reached Google
 TIMEOUT = "timeout"          # reached Google, or did not, but ran out of clock
 QUOTA = "quota"              # reached Google, allowed, and over an allowance
 NO_GCLOUD = "no-gcloud"      # the binary is not here
+# Reached Google, was allowed, and Google says there is no such resource. A
+# REFUSAL that is also an ANSWER, which is why it needs a name of its own: every
+# other kind here means the question did not get through, and this one means it
+# did and came back negative. `discover --prune` is the caller that needs the
+# difference — it is the only thing in this tool that removes something on the
+# strength of an absence, and "nobody could tell me" and "Google told me no" are
+# the two answers it must never merge.
+NOT_FOUND = "not-found"
 UNKNOWN = "unknown"
 
 # Not a failure and not a state Google reports: the answer to "is that machine
@@ -84,6 +114,23 @@ UNKNOWN = "unknown"
 # tests replace, and a constant that disappears with it is a constant nothing can
 # rely on.
 GONE = "GONE"
+
+# The project HAS a machine of that name, and not in the zone the host list
+# declares. Neither a state nor an absence, and it exists because it used to be
+# reported as the second one.
+#
+# `GONE` means "the project does not have it", and that is a fact about a NAME
+# across the whole project. It was being read off a `(name, zone)` lookup, so a
+# host list that declared the wrong zone produced `GONE` for a machine the same
+# listing positively contained, RUNNING, one zone over — and `discover --prune`
+# removed the entry for a live L4, said "not on the project any more — the box is
+# gone", and exited 0. The box kept billing with nothing in the host list naming
+# it, so `down` and `list` could no longer reach it.
+#
+# A hand-typed zone does it, so does a box recreated in another zone from the
+# console, so does a `move` that did not finish. The entry IS wrong and saying so
+# is the point; what it is not is a machine that does not exist.
+ELSEWHERE = "ELSEWHERE"
 
 # Ordered: the first match wins, so the specific signs come before the vague
 # ones. "reauthentication" is checked before anything else because gcloud wraps
@@ -136,6 +183,22 @@ _SIGNS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "caller does not have permission",
         "permission_denied",
     )),
+    # AFTER DENIED, and that order is the whole safety of it. Google answers a
+    # resource you may not see with a 403 naming the permission, not a 404 — so
+    # anything that could be read as "not there" must be given the chance to be
+    # read as "not yours" first. Getting this backwards would turn a narrowed
+    # role into a confirmed absence, which is the one mistake `--prune` cannot
+    # take back.
+    #
+    # The quote in the sign is load-bearing and not a typo. Google's 404 is
+    #
+    #     The resource 'projects/p/zones/z/instances/n' was not found
+    #
+    # so the run always ends a quoted resource path. gcloud ALSO writes
+    # "External IP address was not found; defaulting to IAP tunneling" as an
+    # ordinary warning on a perfectly healthy `ssh`, and matching a bare "was not
+    # found" would classify a failure carrying that line as a missing machine.
+    (NOT_FOUND, ("' was not found",)),
 )
 
 # What to say and what to do about it. A kind with no entry keeps gcloud's own
@@ -153,6 +216,32 @@ _ADVICE: dict[str, tuple[str | None, str | None]] = {
     QUOTA: (None, "raise the limit at https://console.cloud.google.com/iam-admin/quotas "
                   "or ask for less"),
 }
+
+
+# The resource path out of Google's not-found sentence, which reads
+#
+#     The resource 'projects/p/zones/z/instances/n' was not found
+#
+# The quotes are the only reliable delimiters — the path itself contains slashes
+# and the sentence around it varies — so the capture is between them, and the
+# `was not found` after them is required so this cannot pick up a quoted name out
+# of some unrelated line.
+_MISSING = re.compile(r"'([^']*)'\s+was not found", re.IGNORECASE)
+
+
+def _missing_resource(text: str | None) -> str:
+    """WHAT Google said was not found — the resource path, or "" if it said none.
+
+    `classify` answers what KIND of failure it was, and NOT_FOUND is one kind
+    covering three quite different statements: no such instance, no such zone, no
+    such project. Callers that act on an absence need to know which, and the only
+    place that survives is the resource path in the sentence itself.
+
+    Split out from `confirms_absent` so the parsing can be tested against the
+    real sentences on its own, without a fake cloud in the way.
+    """
+    found = _MISSING.search(text or "")
+    return found.group(1) if found else ""
 
 
 def classify(text: str) -> str:
@@ -686,10 +775,37 @@ class Gcloud:
                          parse_json=False) or "").strip()
 
     def list_instances(self, project: str) -> list[dict]:
-        """Every Compute Engine instance on the project, across all zones."""
-        return self.run([
+        """Every Compute Engine instance on the project, across all zones.
+
+        NOT `... or []`. `run` answers `None` for an exit-0 with EMPTY STDOUT,
+        deliberately (see `run`), because nothing printed is a third answer and
+        not an empty result: `gcloud compute instances list` prints `[]` for a
+        project that holds no instances, so an empty string is a reply that never
+        arrived rather than a project with nothing in it.
+
+        `or []` collapsed those two into one, and the collapse reached the one
+        command that acts on absence. Stubbed to returncode 0 with no output:
+        `run` returned None, this returned `[]`, `instance_statuses` answered
+        `GONE` for every declared host, and `discover --prune` removed all of
+        them — an entire host list destroyed on no evidence, with `hosts.toml`
+        hand-maintained and no copy of it anywhere else on the machine.
+
+        So it is raised instead, which is where the callers already handle it:
+        every one of them catches `GcloudError` around this call and leaves what
+        it was reconciling alone. Refuting is not confirming, and an answer
+        nobody can read is not a refutation.
+        """
+        answer = self.run([
             "compute", "instances", "list", f"--project={project}",
-        ]) or []
+        ])
+        if answer is None:
+            raise GcloudError(
+                f"gcloud listed the instances on {project} and printed nothing at "
+                f"all, so what that project holds was not established",
+                fix=f"run it yourself and see: gcloud compute instances list "
+                    f"--project={project}",
+            )
+        return answer
 
     def instance_statuses(
         self, wanted: list[tuple[str, str, str]],
@@ -714,6 +830,20 @@ class Gcloud:
         Matched on name AND zone, because an instance name is only unique within
         a zone, and a project can hold `comfy-win` in two of them.
 
+        A MISS ON THAT KEY IS NOT AN ABSENCE, and reading it as one is what
+        `ELSEWHERE` exists to stop. The question `GONE` answers is "does this
+        project have a machine called that", which is about the NAME across the
+        whole listing; `(name, zone)` answers the narrower "is it where the host
+        list says", and the two differ exactly when the host list is wrong about
+        the zone. Reproduced end to end: an entry declaring `comfy-win` in
+        us-central1-a against a listing positively containing `comfy-win`
+        RUNNING in us-central1-b answered `GONE`, and `discover --prune` deleted
+        the entry for a live L4 while it went on billing.
+
+        So absence is established across the project and the zone is checked
+        second: the name nowhere in the listing is `GONE`, the name in a
+        different zone is `ELSEWHERE`, and only the first may ever be pruned.
+
         A machine ABSENT from a listing that SUCCEEDED gets `GONE`, and that is a
         different answer from `UNKNOWN_STATE`. This used to return the same word
         for both, and the two facts have opposite money implications: absent from
@@ -733,14 +863,24 @@ class Gcloud:
         out: dict[tuple[str, str, str], str] = {}
         for project in dict.fromkeys(project for _n, _z, project in wanted):
             found = {}
+            # Every name the project holds, whatever zone it holds it in. This is
+            # what "the project does not have it" is decided against; `found` only
+            # decides whether it is where the entry says.
+            on_the_project: set[str] = set()
             for instance in self.list_instances(project):
                 zone = (instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
-                found[(instance.get("name") or "", zone)] = (
+                name = instance.get("name") or ""
+                on_the_project.add(name)
+                found[(name, zone)] = (
                     instance.get("status") or self.UNKNOWN_STATE)
             for name, zone, owner in wanted:
-                if owner == project:
-                    out[(name, zone, owner)] = found.get(
-                        (name, zone), self.GONE)
+                if owner != project:
+                    continue
+                if (name, zone) in found:
+                    out[(name, zone, owner)] = found[(name, zone)]
+                else:
+                    out[(name, zone, owner)] = (
+                        ELSEWHERE if name in on_the_project else self.GONE)
         return out
 
     #: What `instance_status` returns when Google answered but said nothing about
@@ -751,6 +891,7 @@ class Gcloud:
     #: asserting a bill on no evidence at all.
     UNKNOWN_STATE = ""
     GONE = GONE
+    ELSEWHERE = ELSEWHERE
 
     def instance_status(self, name: str, zone: str, project: str) -> str:
         """RUNNING, TERMINATED, STAGING... TERMINATED is Google's word for stopped.
@@ -763,6 +904,83 @@ class Gcloud:
             f"--zone={zone}", f"--project={project}",
         ]) or {}
         return info.get("status") or self.UNKNOWN_STATE
+
+    def confirms_absent(self, name: str, zone: str, project: str) -> bool:
+        """Ask Google about ONE machine, and answer True only to a flat not-found.
+
+        THE DIFFERENCE BETWEEN AN INFERENCE AND A STATEMENT, and `discover
+        --prune` is the only caller because it is the only thing in this tool
+        that destroys something on the strength of an absence.
+
+        `instance_statuses` decides absence by a name failing to appear in a bulk
+        `instances list`. That is an inference, and it is exactly as complete as
+        the listing was: anything the listing did not carry — for whatever reason
+        it did not carry it — reads as a machine that does not exist. The
+        command's own docstring promises it removes only what Google POSITIVELY
+        says is absent, and a non-appearance is not Google saying anything.
+
+        A `describe` of one instance is Google saying something. It has three
+        outcomes and they stay three:
+
+          True    Google answered, was allowed to, and says there is no such
+                  instance in that zone. That is the positive statement.
+          False   it answered and described a machine, so the listing missed one.
+          raises  nobody established anything — denied, timed out, no network,
+                  an answer that could not be read.
+
+        Only the first may remove an entry. The classifier's ordering is what
+        keeps the third from being mistaken for the first: `DENIED` is matched
+        before `NOT_FOUND`, so a credential that may not see the instance
+        produces a raise and not a confirmation.
+
+        AND `NOT_FOUND` ALONE IS NOT THE FIRST OUTCOME EITHER, which is the whole
+        of `_missing_resource`. `describe` answers not-found about whatever it
+        could not reach, and only one of those answers is about the machine:
+
+            'projects/p/zones/z/instances/n' was not found   <- the instance
+            'projects/p/zones/z'             was not found   <- the zone
+            'projects/p'                     was not found   <- the project
+
+        Reading the second or third as the first is how ONE MISTYPED FIELD
+        deletes a fleet. `gce_project` is hand-typed into a hand-maintained file;
+        get it wrong and every entry naming it is answered "that project does not
+        exist", every one of those is taken as a confirmed absent instance, and a
+        single `y` removes the only record of machines that are still running on
+        the project that was meant. Reproduced end to end before this guard: three
+        entries removed, announced as "the box is gone", exit 0.
+
+        It is the worse for being on this path in particular. The second read
+        exists to stop unverified removals, so a second read that endorses one
+        hands the operator a run which says every entry was checked individually
+        — and it was, and the check answered about something else.
+
+        So the resource path in Google's own sentence is read, and absence is
+        confirmed only when the thing not found is the instance that was asked
+        about. Anything larger raises: nothing was established about the machine,
+        which is exactly the third outcome.
+
+        One process per candidate, and only for candidates — a host list with no
+        ghosts in it makes none of these calls, and a `--prune` that finds five
+        pays five `describe`s to remove five entries.
+        """
+        try:
+            self.run([
+                "compute", "instances", "describe", name,
+                f"--zone={zone}", f"--project={project}",
+            ])
+        except GcloudError as exc:
+            if exc.kind != NOT_FOUND:
+                raise
+            missing = _missing_resource(exc.raw)
+            if missing.lower().endswith(f"/zones/{zone}/instances/{name}".lower()):
+                return True
+            raise GcloudError(
+                f"Google says {missing or 'something larger'} does not exist, "
+                f"which is not a statement about the instance inside it",
+                fix="check gce_project and gce_zone for that entry: comfy-qat list",
+                kind=NOT_FOUND,
+            ) from exc
+        return False
 
     def start_instance(self, name: str, zone: str, project: str) -> None:
         # From here on the project is being charged. Everything below this line
@@ -928,12 +1146,18 @@ class Gcloud:
         ]) or {}
 
     def snapshot_disk(self, disk: str, zone: str, project: str, snapshot: str) -> None:
+        """Copy a boot disk, and wait for Google to finish copying it.
+
+        `SNAPSHOT_TIMEOUT`, which exists because this ran under the clock written
+        for starting an instance and a 200 GB disk — the default size this tool
+        creates — went over it. See the constant for what that cost.
+        """
         self._ready_for(project)
         self.run([
             "compute", "disks", "snapshot", disk,
             f"--zone={zone}", f"--project={project}",
             f"--snapshot-names={snapshot}",
-        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
+        ], parse_json=False, timeout=SNAPSHOT_TIMEOUT)
 
     def create_disk_from_snapshot(self, disk: str, zone: str, project: str, snapshot: str) -> None:
         self._ready_for(project)

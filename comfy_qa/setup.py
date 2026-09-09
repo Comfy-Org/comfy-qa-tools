@@ -43,7 +43,7 @@ class SetupStopped(Exception):
 def _needs_login(gc: Gcloud) -> bool:
     """True if nobody is signed in, or the stored credentials have expired.
 
-    An expired session still lists an account, so asking `auth list` is not
+    An expired session still lists an account, so asking `gcloud auth list` is not
     enough — a real call has to be attempted.
     """
     try:
@@ -271,12 +271,36 @@ def ensure_gpu_quota(
     # allowance that cannot start an ordinary box.
     from .quota import GLOBAL_ALLOWANCE
 
+    # A card this tool cannot bring up is not a card setup should report as
+    # ready. The driver installed on every Linux box here is the open NVIDIA
+    # kernel module and it needs a GSP, so P100/V100/P4/K80 quota starts an
+    # instance that never sees its own GPU — see `create.GSP_ARCHITECTURES`.
+    from .create import card_named
+
+    def drivable(name: str) -> bool:
+        card = card_named(name)
+        return card is None or card.has_gsp
+
     rows = [row for row in readiness(quotas, region=region) if row.usable]
     # The project-wide allowance is not a card. Naming it alongside L4 and T4
     # reads as a GPU model nobody has heard of.
-    cards = [row.gpu for row in rows if row.gpu != GLOBAL_ALLOWANCE]
+    named = [row.gpu for row in rows if row.gpu != GLOBAL_ALLOWANCE]
+    cards = [name for name in named if drivable(name)]
+    stranded = [name for name in named if not drivable(name)]
     if cards:
-        p.say(f"GPU quota ready: {', '.join(dict.fromkeys(cards))}")
+        line = f"GPU quota ready: {', '.join(dict.fromkeys(cards))}"
+        if stranded:
+            line += (f" ({', '.join(dict.fromkeys(stranded))} is granted too, and "
+                     f"this tool cannot drive it — no GSP)")
+        p.say(line)
+        return True
+    if stranded:
+        p.say(
+            f"GPU quota is only {', '.join(dict.fromkeys(stranded))}, which this "
+            f"tool cannot drive: the open NVIDIA kernel module it installs needs a "
+            f"GPU System Processor, and only Turing and newer cards have one. Ask "
+            f"for a T4 or an L4: comfy-qat quota request --gpu t4,l4"
+        )
         return True
     if rows:
         p.say("GPU quota: a project-wide allowance only, no specific card granted")
@@ -295,8 +319,11 @@ def ensure_gpu_quota(
     if not interactive:
         # `--quota-id <id>` left a placeholder only another command could fill,
         # while this one is holding the ids already.
-        offer = [name for name in available_gpus(quotas) if name != GLOBAL_ALLOWANCE]
-        card = offer[0].lower() if offer else "<card>"
+        # `drivable` as well as "not the global ceiling": offering P100 here is
+        # advice that ends in days of waiting and then a refusal at `create`.
+        offer = [name for name in available_gpus(quotas)
+                 if name != GLOBAL_ALLOWANCE and drivable(name)]
+        card = offer[0].lower() if offer else "t4"
         hint = f"comfy-qat quota request --gpu {card}"
         hint += f" --region {region}" if region else " --region <region>"
         p.say(f"skipping the request. Run: {hint}")
@@ -304,7 +331,9 @@ def ensure_gpu_quota(
     if not p.confirm("Request GPU quota now?"):
         return False
 
-    cards = available_gpus(quotas)
+    # Same filter as the non-interactive branch above: a card this tool cannot
+    # drive should not be one of the options.
+    cards = [name for name in available_gpus(quotas) if drivable(name)]
     if not cards:
         p.say("no GPU quota ids reported for this project; nothing to request.")
         return False

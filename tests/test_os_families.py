@@ -58,16 +58,29 @@ EXPECTED_READERS = {
     ("config", "_matches_os"): "SELECTOR, not a family. Deliberately not merged.",
     ("config", "describe"): "renderer — one-line description of a host",
     ("create", "steps"): "renderer — what `create` says it is about to build",
-    # Renderer, and it has to be: the fix line for a stockout hands back a whole
-    # `comfy-qat create --os ... --gpu ... --region ...` to paste, and `--os` is
-    # a required option — a fix line without it is a command that refuses.
-    ("create", "build"): "renderer — the create command a stockout tells you to retry",
+    # `create.build` was here, and its reason was WRONG in a way this list was the
+    # last place anyone would look for it. The line read: the fix line for a
+    # stockout hands back a whole `comfy-qat create --os ... --gpu ... --region
+    # ...` to paste, so `build` has to read the os. It hands back a command, yes —
+    # and `--os` takes `image.key`, `linux` or `windows`, never the display name
+    # `image.os` reads back off a box. `build` was interpolating `image.os`, so
+    # the one command offered to somebody holding a stockout came out as
+    # `comfy-qat create --os Ubuntu 22.04 --gpu l4 --region <x>`: unquoted, Typer
+    # exits 2 on the stray `22.04`; quoted, `image_for` refuses it. Its two
+    # siblings in `plan` had `image.key` all along.
+    #
+    # So the entry did not merely record a reader — it recorded the defect as
+    # intended behaviour, and would have failed anybody who fixed it. Deleted
+    # rather than renamed, which is what the docstring below asks for: `build`
+    # reads `image.key` now, and reads no host's `os` at all.
     ("create", "host_entry"): "writer — records the image's own os in the host list",
     ("discover", "to_toml"): "writer — the [hosts.x] block, os from the licence",
     ("setup", "add_discovered_hosts"): "renderer — what was just added",
     ("host", "list_cmd"): "renderer — the os column of `host list`",
     ("host", "discover_cmd"): "renderer — what discovery found",
-    ("host", "register"): "writer — hands a host to the stamp",
+    # `move`'s host-list rewrite, split out of `register` so it can be rehearsed
+    # before the move spends anything. The `os` read travelled with it.
+    ("host", "rewritten"): "writer — hands a host to the stamp",
     ("stamp", "line"): "renderer — the os in a stamp's evidence line",
 }
 

@@ -54,7 +54,10 @@ ALL = [WIN, LINUX]
 # new builder is covered the moment it is added, and one that is renamed cannot
 # fall out. The extra arguments are the smallest that make each call legal;
 # nothing here depends on their values.
-_EXTRA_ARGUMENTS = {"pid": "1234", "python": "py", "tail": 20, "follow": False}
+_EXTRA_ARGUMENTS = {"pid": "1234", "python": "py", "tail": 20, "follow": False,
+                    # `listening_command` takes the port it is asking about,
+                    # because the one caller asks about 3389 and not ComfyUI's.
+                    "port": 3389}
 
 
 def _builders() -> list:

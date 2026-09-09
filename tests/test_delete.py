@@ -387,6 +387,65 @@ def test_an_interrupted_delete_says_the_record_may_now_be_wrong(capsys):
     assert "run it again" in tail
 
 
+def test_the_ticker_is_stopped_before_the_interrupt_report_prints(monkeypatch):
+    """The same defect `rdp` had, in the same shape, found by looking for it.
+
+    `may_leave` prints the leftovers report from its OWN handler and raises
+    `Interrupted` afterwards, so an `except inflight.Interrupted` sitting outside
+    the registration closes the step AFTER the report rather than before it. Both
+    sites carried a comment claiming the opposite; both were wrong.
+
+    `removing` is a background `Slow`, so its thread writes `still going, …` down
+    the same stream every second. Here it can land on the heading that says the
+    box was probably destroyed while the host list still names it — the lines
+    that tell somebody their `hosts.toml` now reserves a name and a port for a
+    machine that is gone.
+
+    Order, not final state: the equivalent in tests/test_shell_access.py explains
+    why `_stop.is_set()` after the command cannot tell the two apart.
+    """
+    from comfy_qa import inflight
+    from comfy_qa import say as say_module
+
+    events: list[str] = []
+    real_slow = say_module.slow
+    real_report = inflight.report
+
+    def watched(*args, **kwargs):
+        step = real_slow(*args, **kwargs)
+        closing = step.give_up
+
+        def give_up():
+            events.append("give_up")
+            closing()
+
+        step.give_up = give_up
+        return step
+
+    def reporting():
+        events.append("report")
+        return real_report()
+
+    monkeypatch.setattr(say_module, "slow", watched)
+    monkeypatch.setattr(inflight, "report", reporting)
+
+    class _Interrupted(Cloud):
+        def run(self, args, **kwargs):
+            joined = " ".join(str(a) for a in args)
+            if not joined.startswith("compute instances delete"):
+                return super().run(args, **kwargs)
+            raise KeyboardInterrupt
+
+    with pytest.raises(inflight.Interrupted):
+        _delete_with(_Interrupted())
+
+    assert "report" in events, "the report never ran — this would pass vacuously"
+    assert "give_up" in events, "no ticker was closed at all"
+    assert events.index("give_up") < events.index("report"), (
+        f"the ticker was still running while the report printed: {events}"
+    )
+
+
 def test_a_delete_that_finishes_leaves_nothing_registered(capsys):
     from comfy_qa import inflight
 

@@ -169,3 +169,78 @@ def test_the_docstring_names_the_exception_it_depends_on():
         "proves it — so the claim reads as one about the tool and is false. Say "
         "whose output the paragraph is about."
     )
+
+
+# --- NO_COLOR ----------------------------------------------------------------
+#
+# The caveat above says Typer colours the help and argues that is tolerable
+# because the escapes are terminal-only and cannot reach a paste. That argument
+# covers the person who does not mind colour. It says nothing about the person
+# who has asked for none — and NO_COLOR is how they ask.
+#
+# It was ignored. Measured on a pty before the fix: 348 escapes with NO_COLOR
+# set, 348 without. Rich honours the variable; Typer builds its own Console and
+# does not pass it on, so setting it did precisely nothing.
+
+
+def _help_on_a_terminal(**env_extra: str) -> str:
+    """`comfy-qat --help` with a pty on the other end, which is the only place
+    Rich colours at all — a pipe is plain however the environment is set, so a
+    captured run cannot tell whether NO_COLOR was honoured or irrelevant."""
+    import pty
+    import subprocess
+
+    env = {**os.environ, "COLUMNS": "80", "LINES": "50"}
+    for name in ("NO_COLOR", "FORCE_COLOR", "_TYPER_FORCE_DISABLE_TERMINAL"):
+        env.pop(name, None)
+    env.update(env_extra)
+
+    main, worker = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, "-m", "comfy_qa", "--help"],
+        stdout=worker, stderr=worker, stdin=worker, env=env, cwd=ROOT)
+    os.close(worker)
+    seen = b""
+    try:
+        while True:
+            chunk = os.read(main, 65536)
+            if not chunk:
+                break
+            seen += chunk
+    except OSError:
+        # The child exited and the pty went away, which is the ordinary end.
+        pass
+    process.wait(timeout=120)
+    os.close(main)
+    return seen.decode("utf-8", "replace")
+
+
+def test_no_colour_is_honoured_in_the_one_place_this_tool_has_colour():
+    coloured = _help_on_a_terminal()
+    assert ESCAPE.search(coloured), (
+        "the help emits no colour on a terminal even without NO_COLOR, so this "
+        "test can no longer tell an honoured request from an empty one"
+    )
+    plain = _help_on_a_terminal(NO_COLOR="1")
+    assert not ESCAPE.search(plain), (
+        "NO_COLOR is set and comfy-qat --help still writes escape sequences. "
+        "comfy_qa/__init__.py sets Typer's disable switch for exactly this; "
+        "either the switch was renamed by an upgrade or the import that reads "
+        "it now happens before __init__ runs."
+    )
+
+
+def test_turning_the_colour_off_does_not_take_the_help_layout_with_it():
+    """The reason this is done with Typer's switch rather than
+    `rich_markup_mode=None`: the box, the columns and the option names all have
+    to survive. Only the escapes go."""
+    plain = _help_on_a_terminal(NO_COLOR="1")
+    for expected in ("Usage:", "--config", "--version", "Commands", "setup"):
+        assert expected in plain, f"{expected!r} went with the colour"
+
+
+def test_an_empty_no_colour_is_not_a_request():
+    """The standard is explicit that any non-empty value means yes, which makes
+    the empty string mean nothing — and an exported-but-empty variable is a
+    common shape in a shell profile."""
+    assert ESCAPE.search(_help_on_a_terminal(NO_COLOR=""))

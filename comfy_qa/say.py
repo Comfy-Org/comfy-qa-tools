@@ -57,6 +57,7 @@ Exit codes, so the fourteen places that used to pick their own agree:
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from typing import Callable, NoReturn
@@ -121,7 +122,7 @@ def result(text: str = "") -> None:
 
 
 def check(ok: bool, text: str) -> None:
-    """One row of a pass/fail report — `auth status`, `env --expect`.
+    """One row of a pass/fail report — `comfy-qat status`, `env --expect`.
 
     On stdout: a readiness report is the answer to the question that was asked,
     not commentary on it. The exit code says the same thing to a machine.
@@ -140,8 +141,22 @@ def detail(text: str) -> None:
 
 
 def warn(text: str) -> None:
-    """True, worth saying, and not a reason to stop."""
-    typer.echo(f"{WARNING}{text}", err=True)
+    """True, worth saying, and not a reason to stop.
+
+    A leading blank line is a caller asking for air above the warning, not for
+    the label to be left on a line by itself. Concatenated, it was the second
+    thing — `comfy-qat discover --prune` printed
+
+        warning:
+        the project listing did not have these and a direct check did not ...
+
+    with the word that says how to read the sentence stranded a line above it.
+    The blank lines come out first and the label stays welded to its text.
+    """
+    body = str(text).lstrip("\n")
+    for _ in range(len(str(text)) - len(body)):
+        typer.echo("", err=True)
+    typer.echo(f"{WARNING}{body}", err=True)
 
 
 def error(problem: object, fix: str | None = None, *, blank_line: bool = True) -> None:
@@ -177,12 +192,142 @@ def write_fix(fix: str) -> None:
     that still carries the old hand-written indent render identically. That is
     what lets the modules convert one at a time.
     """
-    lines = [line.strip() for line in str(fix).splitlines() if line.strip()]
+    lines = _align_comments(
+        [line.strip() for line in str(fix).splitlines() if line.strip()])
     if not lines:
         return
     typer.echo(f"{FIX_LABEL}{lines[0]}", err=True)
-    for line in lines[1:]:
+    for index, line in enumerate(lines[1:], start=1):
+        if _opens_a_group(lines, index):
+            typer.echo("", err=True)
         typer.echo(f"{FIX_INDENT}{line}", err=True)
+
+
+# Below this a fix has no groups to show, so a blank line is only air. Two
+# commands, or a command and the sentence about it, are already legible.
+GROUPED_FIX_LINES = 3
+
+
+def _opens_a_group(lines: list[str], index: int) -> bool:
+    """Does a blank line belong above `lines[index]`?
+
+    The block someone reads after a Ctrl-C on a billing box was eight lines
+    flush against each other — four runnable commands, one sentence introducing
+    two of them, and one about what a snapshot costs, all at the same indent
+    and all reading as things to paste:
+
+        to fix: gcloud compute snapshots delete comfy-linux-snap-20260909
+                comfy-qat down comfy-win
+                or check first, if you would rather look:
+                comfy-qat list --live
+                a snapshot costs pennies a month, but it is not free
+
+    Prose interleaved with commands is what a fix looks like whenever more than
+    one thing is offered, and the eight-space indent that holds the block
+    together is also what flattens it. A blank line before each sentence puts
+    the commands into the groups they were written in, and the indent still says
+    they are one block.
+
+    Only where there is grouping to show, and only for a sentence that FOLLOWS a
+    command — a fix that opens with prose and lists commands under it is already
+    one group, and the label does that job.
+    """
+    if len(lines) < GROUPED_FIX_LINES:
+        return False
+    return _is_prose(lines[index]) and not _is_prose(lines[index - 1])
+
+
+# What a runnable line in a fix starts with. Everything this tool offers is one
+# of its own commands, a gcloud call, or an absolute path to an interpreter —
+# walked out of every `say.fix` in the package rather than guessed.
+_RUNNABLE = ("comfy-qat ", "gcloud ", "ssh ", "scp ", "curl ", "python", "pip",
+             "sudo ", "/", "~/")
+
+
+def _is_prose(line: str) -> bool:
+    """A sentence rather than something to paste.
+
+    One test, in one place, so the blank lines and the `#` columns agree about
+    where a group ends. Two ways of being prose, and both are needed:
+
+    Punctuation first, because it is the reliable half — a line that ends in a
+    full stop or in the colon that introduces the commands under it is a
+    sentence whatever it starts with, which is what keeps `open a terminal
+    window and run:` out of the runnable set.
+
+    Then the opening word, for the case punctuation cannot reach: a trailing
+    note like `a snapshot costs pennies a month, but it is not free` ends in no
+    punctuation at all and is the line most likely to be pasted by mistake,
+    being the last one under `to fix:`.
+
+    The cost of the second half is a command starting with a word not in
+    `_RUNNABLE` gaining a blank line above it. That is one line of air on a
+    block that is already grouped, which is why the list is allowed to be short
+    rather than exhaustive.
+    """
+    if _COMMENTED.match(line):
+        return False
+    if line.endswith((":", ".")):
+        return True
+    return not line.startswith(_RUNNABLE)
+
+
+# A command with a trailing `#` note, split at the run of spaces between them.
+# Two spaces at least, so a `#` inside a URL fragment or a shell word is not one.
+_COMMENTED = re.compile(r"^(?P<command>\S.*?)\s{2,}(?P<note>#.*)$")
+
+
+def _align_comments(lines: list[str]) -> list[str]:
+    """Put the `#` notes in a run of commands into one column.
+
+    The gap between a command and its note used to be typed at the call site,
+    which means it was counted by eye and got it wrong. Three commands offered
+    together came out as
+
+        comfy-qat open comfy-win   # tunnel to a box that is already running
+        comfy-qat go comfy-win     # start it and tunnel, in one step
+        comfy-qat list --live        # which of the two it is
+
+    — two columns out on the last one, in the block someone reads when nothing
+    is working. Alignment is a property of the whole block and only the printer
+    sees the whole block, so it belongs here and not in the twenty places that
+    compose one.
+
+    A RUN, not the file: the notes line up with the commands they are offered
+    beside, and a prose line between two groups ends one run and starts another,
+    because a shared column across a paragraph break lines nothing up with
+    anything. Lines with no note are still part of the run — they set the column
+    without taking one.
+    """
+    out = list(lines)
+    run: list[int] = []
+
+    def flush() -> None:
+        commented = [i for i in run if _COMMENTED.match(out[i])]
+        if not commented:
+            return
+        # Every line in the run, noted or not, argues for the column: a long
+        # bare command with a short noted one under it would otherwise have the
+        # note start left of where the command above it ended.
+        width = max(len(_COMMENTED.match(out[i])["command"]) if _COMMENTED.match(out[i])
+                    else len(out[i]) for i in run)
+        for i in commented:
+            parts = _COMMENTED.match(out[i])
+            out[i] = f"{parts['command'].ljust(width)}   {parts['note']}"
+
+    for index, line in enumerate(out):
+        # A sentence is not a command, so it closes the run rather than joining
+        # it. `_COMMENTED` cannot tell them apart — prose rarely carries a `#` —
+        # so the test is the one thing a fix's prose reliably does: it reads as
+        # a sentence, and ends in a full stop or in the colon that introduces
+        # the commands under it.
+        if _is_prose(line):
+            flush()
+            run = []
+            continue
+        run.append(index)
+    flush()
+    return out
 
 
 def fix(*lines: str) -> str:
@@ -199,6 +344,41 @@ def fix(*lines: str) -> str:
             continue
         parts += [piece.strip() for piece in str(line).splitlines() if piece.strip()]
     return ("\n" + FIX_INDENT).join(parts)
+
+
+# --- tables ----------------------------------------------------------------
+
+# Two spaces between columns. Wide enough that the eye reads a gap rather than a
+# word break, narrow enough that six columns of host still fit a laptop window.
+COLUMN_GAP = "  "
+
+
+def rows(cells: list[tuple[str, ...]]) -> list[str]:
+    """Pad a table so its columns line up. Returns the lines; does not print.
+
+    `list` had this written out inline and `discover` did not, so the same five
+    facts about the same machine came out as a padded table under one command
+    and as a ragged join under the other:
+
+        comfy-linux  Ubuntu 22.04  L4  running  port 8192
+        comfy-win-2  Windows Server 2022  L4  stopped  port 8193
+
+    Nothing lines up, so nothing can be compared down the page — which is the
+    only reason to put machines in rows at all.
+
+    Returned rather than printed because the two callers are on different
+    streams' worth of context: one is the answer to `list` and one sits inside a
+    longer report. Padding is a shape, and the stream is the caller's decision.
+
+    Trailing whitespace is stripped: the last column pads to nothing, and a
+    trailing run of spaces is invisible in a terminal and very visible in a diff
+    of a pasted log.
+    """
+    if not cells:
+        return []
+    width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
+    return [COLUMN_GAP.join(cell.ljust(width[i]) for i, cell in enumerate(row)).rstrip()
+            for row in cells]
 
 
 # --- counting --------------------------------------------------------------
