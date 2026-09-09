@@ -77,10 +77,19 @@ class Cloud:
         # `down` reads before it stops, so that "stopped" means something
         # happened rather than that the call did not raise. RUNNING is the
         # realistic default for a command someone runs to stop paying.
+        #
+        # A LIST answers one call each, because `move`'s probe path now makes two
+        # and they are not the same question: what the box was before the probe,
+        # and — when the start fails — what it is afterwards. A single value
+        # cannot say "the first read worked and the second did not", which is the
+        # only shape one of the tests below can be written in.
         self.calls.append("instance_status")
-        if isinstance(self._status, Exception):
-            raise self._status
-        return self._status
+        answer = self._status
+        if isinstance(answer, list):
+            answer = answer.pop(0) if len(answer) > 1 else answer[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
 
     def stop_instance(self, instance, zone, project):
         self.calls.append("stop_instance")
@@ -108,6 +117,16 @@ class Cloud:
 
     def list_instances(self, project):
         self.calls.append("list_instances")
+        return []
+
+    def gpu_quotas(self, project):
+        # Answered rather than refused, for the same reason as the reads above:
+        # `move` reads the ceiling whenever the box it would create wants a card,
+        # which is every move in this file. An empty list is a project that
+        # reports no GPU quota record at all — real, and the one shape that
+        # refuses nothing, so it leaves these tests measuring what they are for:
+        # what gets SPENT, not what the allowance says.
+        self.calls.append("gpu_quotas")
         return []
 
     def run(self, args, **kwargs):
@@ -205,8 +224,12 @@ def test_a_real_move_still_asks_google_where_there_is_capacity(cli):
     result = cli("move", "comfy-win", cloud=cloud)
 
     # The survey reads follow the probe: they cost nothing and change nothing,
-    # which is exactly the distinction this file exists to hold.
-    assert cloud.calls[0] == "start_instance"
+    # which is exactly the distinction this file exists to hold. The one read
+    # AHEAD of it is the state the probe is about to overwrite — a box found
+    # stopped is stopped again once the answer is in, and after a start there is
+    # nothing left to read.
+    assert cloud.calls[:2] == ["instance_status", "start_instance"]
+    # Nothing to put back: the probe was refused, so the box never came up.
     assert "stop_instance" not in cloud.calls
     assert "us-central1-a has none free; us-central1-b does" in result.output
     # It asked, so it goes on to ask whether to do it — nothing was moved here.
@@ -363,10 +386,13 @@ def test_a_probe_that_times_out_with_the_box_up_says_it_is_billing(cli):
 def test_a_probe_that_times_out_and_cannot_be_re_read_claims_nothing(cli):
     """Both calls failed. "It is running" asserts what was not read, and a bare
     "could not start" reads as though nothing happened."""
-    # `Cloud` raises when `status` is an exception, and the probe's re-read is
-    # the FIRST status call on this path — `_zone_with_capacity` starts the box
-    # without reading it first, which is the whole reason the read happens here.
-    cloud = Cloud(status=GcloudError("still timing out"),
+    # Two status reads on this path, and this is about the SECOND. The first is
+    # the one `_zone_with_capacity` makes before the probe, so that a box found
+    # stopped can be stopped again afterwards; it answers TERMINATED here, which
+    # is the state that makes the probe worth reporting on at all. Then the start
+    # times out and the re-read — the one that would settle whether the box came
+    # up — fails as well.
+    cloud = Cloud(status=["TERMINATED", GcloudError("still timing out")],
                   start=GcloudError("timed out waiting for the operation",
                                     raw="ERROR: operation timed out"))
     result = cli("move", "comfy-win", cloud=cloud)
@@ -424,6 +450,15 @@ def test_down_all_stops_every_cloud_machine(cli):
     assert "was billing: comfy-win. Stopped. Nothing is now." in result.output, (
         "the closing summary is the command's own line; put_away cannot write it"
     )
+    # THE LAST FOUR WORDS ARE CONDITIONAL, and nothing here says so. This world is
+    # clean — `Cloud.list_instances` returns `[]` and the one box was RUNNING —
+    # so the whole sentence is correct, and asserting it in full is right. But it
+    # is correct for a reason this test does not state, and a reader deleting the
+    # `if all_clear` guard would leave this green: the all-clear was once printed
+    # unconditionally, over a paragraph naming an undeclared box that was still
+    # running. What holds that is the parametrized pair in
+    # tests/test_money_sentences.py, which drives the worlds where the tail must
+    # NOT appear. This assertion is the positive half of that pair.
 
 
 def test_down_all_keeps_going_when_one_refuses(cli):
@@ -761,9 +796,22 @@ def test_disconnect_leaves_the_machine_running_and_says_so(cli):
     #
     # So pin the rendering, not the words in it. `  <command>   # <why>` is this
     # tool's own shape for an offered command and is host.py's; `<why>:
-    # <command>` is lifecycle's per-host prose. Nothing else can satisfy this.
+    # <command>` was lifecycle's per-host prose. Nothing else can satisfy this.
     assert "comfy-qat down comfy-win   # when the work is finished" in result.output, (
-        "disconnect's own stop-paying line, in its own shape — not put_away's"
+        "disconnect's own stop-paying line, in its own shape"
+    )
+    # And the count, which is the half a live run showed was missing. Both lines
+    # were unconditional, so this block ended with one instruction in two
+    # phrasings — the duplication was deliberate, written down as the price of
+    # covering the branch where the state cannot be read, and paid on every run.
+    # lifecycle's prose is gone; the offer above is the only one, on every path.
+    #
+    # Making HOST.PY's line conditional was the obvious alternative and is the
+    # wrong one: on this path it leaves stdout empty, and `test_say`'s stream
+    # rule fails — `comfy-qat disconnect 1>/dev/null` would lose the command
+    # whole. That is why the survivor is this one and not lifecycle's.
+    assert result.output.count("comfy-qat down comfy-win") == 1, (
+        f"one instruction, once — the block is read or it is not:\n{result.output}"
     )
     assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
 

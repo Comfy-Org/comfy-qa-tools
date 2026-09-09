@@ -435,7 +435,9 @@ def test_a_cloud_box_with_no_tunnel_says_so_rather_than_a_bare_dash(cli):
 
     assert "not tunnelled" in rows["comfy-win"]
     assert rows["local"].split()[-1] == "-", "a local install has no tunnel to have"
-    assert "--live to ask Google" in result.output, "name the question not asked"
+    # The footnote was one 168-character sentence and is now two lines; the
+    # claim is unchanged — it still names the flag and the question not asked.
+    assert "--live asks Google" in result.output, "name the question not asked"
 
 
 # --- and the same cell once somebody DID ask ---------------------------------

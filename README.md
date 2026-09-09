@@ -159,6 +159,12 @@ The forward is an `ssh -L` over Identity-Aware Proxy: it reaches the box's own
 loopback, so nothing is exposed on any interface and no firewall rule is
 involved.
 
+On a box you have just created, `go` waits for it to finish starting. Google
+reports a machine as RUNNING the moment it is powered on, which is some minutes
+before it accepts SSH — and on Linux the driver install reboots it once or twice
+on top of that. A box that is genuinely ready is not delayed by this; a box that
+is still coming up says so while it waits, rather than failing on the tunnel.
+
 **ComfyUI stays running there and you get your prompt back.** It used to be
 launched in the foreground with its log streamed onto your terminal, which meant
 one machine per terminal and a Ctrl-C that killed ComfyUI. Now `logs <host>`
@@ -191,17 +197,17 @@ becomes something you do on purpose.
 | `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` |
 | `comfy-qat init` | write a starter host list you can edit |
 | `comfy-qat list` | every declared machine and what is up — `--live` asks Google |
-| `comfy-qat discover` | find cloud boxes and add them — `--prune` drops ones that are gone |
+| `comfy-qat discover` | find cloud boxes and add them — `--prune` drops the entries Google confirms are gone |
 | `comfy-qat create` | make a GPU box; the zone is chosen, not typed |
 | `comfy-qat delete` | remove a box and its disk, permanently |
 | `comfy-qat go` | start it, make sure ComfyUI is on it, hand the prompt back |
-| `comfy-qat up` | start a machine and wait until ComfyUI answers |
+| `comfy-qat up` | start a machine, and succeed only if ComfyUI is already serving |
 | `comfy-qat open` | tunnel to a machine already running |
 | `comfy-qat disconnect` | close the tunnel, leave the machine running |
 | `comfy-qat down` | close the tunnel and stop the machine, so it stops costing |
 | `comfy-qat ssh` | a shell on a box, through the tunnel |
 | `comfy-qat rdp` | reset the Windows password and forward RDP |
-| `comfy-qat logs` | read the ComfyUI log on a box — `--tail N` to stop at the end |
+| `comfy-qat logs` | follow the ComfyUI log on a box — `--tail N` reads the end and stops |
 | `comfy-qat stamp` | ask a machine what it is, and print the line you paste |
 | `comfy-qat switch` | start the one you want, stop the one you were on |
 | `comfy-qat move` | move a box to a zone with capacity, keeping its ComfyUI |
@@ -216,7 +222,17 @@ becomes something you do on purpose.
 Lives at `~/.config/comfy-qa-tools/hosts.toml`. `comfy-qat setup` writes it and
 fills in your cloud boxes automatically — Google already knows each one's zone,
 card and operating system, so none of it needs typing. `comfy-qat discover`
-does the same on demand, and never touches entries you already have.
+does the same on demand, and never changes an entry you already have.
+
+`discover --prune` reconciles the other way, and it is the only thing here that
+removes one. Boxes disappear without this tool — deleted from the console, by a
+colleague, by raw gcloud — and a stale entry is not untidiness, because it holds
+a name and a port that nothing else can use. Removal takes two answers from
+Google that agree: the name is nowhere on the project, and then a direct
+`describe` of that one machine comes back not-found. Anything else is reported
+and kept, including the case that matters most — a box that turns up in a zone
+other than the one your entry gives is a wrong entry, not a missing machine, and
+deleting it would leave a running GPU with nothing naming it.
 
 ```toml
 [hosts.local]
@@ -262,6 +278,11 @@ per OS you never have to remember what you called it. Every field is documented 
 Everything lives under `~/.config/comfy-qa-tools/`:
 
 - `hosts.toml` — the host list, and the only file you would ever edit.
+- `hosts.toml.bak`, and `backups/` — anything that rewrites the host list copies
+  it first, reads the copy back, and refuses the rewrite if it could not be made.
+  `.bak` is the file as it was before the command you last ran; the copy it
+  supersedes is archived under a timestamp in `backups/` rather than overwritten,
+  and that directory is capped.
 - `zone-latency.json` — how long a TCP connect to each Google Cloud region took
   from this machine, measured by `create` and reused for a week. Delete it to
   re-measure; nothing else reads it.
@@ -270,8 +291,11 @@ Everything lives under `~/.config/comfy-qa-tools/`:
   what it is gets recorded rather than assumed: the pid, the moment that process
   started, and which instance, zone and port it goes to. Pids are recycled, so the
   number alone is not an identity and a record that no longer fits is treated as
-  stale rather than trusted. The log is what gcloud said while opening it. All
-  three are removed by `down`.
+  stale rather than trusted. The log is what gcloud said while opening it.
+  `down` and `disconnect` remove the `.pid` and the `.json` — the two that claim
+  a tunnel is there — and keep the `.log`, so you can still read why one died
+  after you have closed it. Each `open` starts that log fresh, so it holds the
+  most recent tunnel for that host and nothing older.
 
 Signing in is gcloud's job, so credentials live in gcloud's own store
 (`~/.config/gcloud/`) and are refreshed by it. **This tool never sees, stores or

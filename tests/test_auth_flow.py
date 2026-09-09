@@ -310,6 +310,92 @@ def test_quota_json_is_clean_on_stdout_with_the_slow_warning_on_stderr():
     assert "reading quota (about a minute)" in result.stderr
 
 
+# --- quota you hold and this tool cannot use ---------------------------------
+#
+# `ready` in this table has only ever meant "Google will let you start it". It
+# said nothing about whether the driver this tool installs can then bring the
+# card up, and for four of the cards in `create.CARDS` it cannot: the open NVIDIA
+# kernel module needs a GSP and Pascal, Volta and Kepler have none. So a project
+# holding P100 quota read `P100 1 ready` off this table, ran `create --gpu p100`,
+# and got a billing box whose GPU never initialised. Both halves belong here.
+
+
+P100 = quota("NVIDIA-P100-GPUS-per-project-region", 1, REGIONS)
+
+
+def test_a_card_this_tool_cannot_drive_is_never_shown_as_plainly_ready():
+    result = run(FakeCloud(quotas=[P100, L4]), "quota", "list")
+
+    assert result.exit_code == 0, result.output
+    p100 = next(line for line in result.output.splitlines() if line.startswith("P100"))
+    l4 = next(line for line in result.output.splitlines() if line.startswith("L4"))
+    assert "this tool cannot drive it" in p100
+    assert "this tool cannot drive it" not in l4, "the L4 is fine and must read so"
+
+
+def test_the_table_says_why_once_underneath_rather_than_in_every_row():
+    result = run(FakeCloud(quotas=[P100, L4]), "quota", "list")
+
+    assert "GPU System Processor (GSP)" in result.output
+    assert "Turing and newer" in result.output
+    assert result.output.count("GPU System Processor") == 1, "once, under the table"
+
+
+def test_the_same_mark_survives_by_region():
+    """`--by-region` is the same answer expanded, so it cannot be the view where
+    the card looks usable again."""
+    result = run(FakeCloud(quotas=[P100]), "quota", "list", "--by-region")
+
+    rows = [line for line in result.output.splitlines() if line.startswith("P100")]
+    assert rows, "the P100 rows are still shown — the quota is real"
+    assert all("this tool cannot drive it" in row for row in rows)
+
+
+def test_the_json_carries_the_same_fact_as_a_field():
+    """A script reading `--json` gets the answer too, not just a person reading
+    a table. `status` is about Google's grant; `drivable` is about this tool."""
+    payload = json.loads(run(FakeCloud(quotas=[P100, L4]), "quota", "list", "--json").stdout)
+
+    by_card = {card["gpu"]: card for card in payload["gpus"]}
+    assert by_card["P100"]["status"] == "ready", "Google's answer is unchanged"
+    assert by_card["P100"]["drivable"] is False
+    assert by_card["L4"]["drivable"] is True
+    assert all("drivable" in row for row in payload["by_region"])
+
+
+def test_requesting_a_card_this_tool_cannot_drive_is_refused_before_it_is_sent():
+    """Approval takes days, and at the end of it `create` would still refuse.
+    Nothing reaches Google."""
+    cloud = FakeCloud(quotas=[P100, L4])
+    result = run(cloud, "quota", "request", "--gpu", "p100", "--region", "us-central1")
+
+    assert result.exit_code == 2, result.output
+    assert "no point asking for P100 quota" in result.output
+    assert "GPU System Processor" in result.output
+    assert cloud.requests == [], "it asked Google for a card it cannot use"
+
+
+def test_a_drivable_card_is_still_requested_normally():
+    """The other half. A refusal that fired on everything would pass the test
+    above and break the command."""
+    cloud = FakeCloud(quotas=[P100, T4])
+    result = run(cloud, "quota", "request", "--gpu", "t4", "--region", "us-central1",
+                 "--no-wait")
+
+    assert result.exit_code == 0, result.output
+    assert len(cloud.requests) == 1
+
+
+def test_status_fails_when_every_granted_card_is_one_this_tool_cannot_drive():
+    """The project has GPU quota, Google would start the instance, and nothing
+    this tool can build with it will ever see a GPU. That is not a passing row."""
+    result = run(FakeCloud(quotas=[P100]), "status")
+
+    line = next(line for line in result.output.splitlines() if "gpu quota" in line)
+    assert "cards this tool cannot drive" in line
+    assert "comfy-qat quota request --gpu t4,l4" in result.output
+
+
 def test_nothing_usable_prints_the_command_that_fixes_it():
     result = run(FakeCloud(quotas=[T4, A100]), "quota", "list")
 
@@ -551,17 +637,31 @@ def test_the_status_quota_line_is_one_row_per_card_and_admits_truncation():
     it reads as the whole answer.
     """
     cloud = FakeCloud(quotas=[
-        K80_PER_REGION,
-        quota("NVIDIA-L4-GPUS-per-project-region", 1, REGIONS),
-        quota("NVIDIA-P100-GPUS-per-project-region", 1, REGIONS),
-        quota("NVIDIA-P4-GPUS-per-project-region", 1, REGIONS),
+        # Per-region metering, on a card that is actually usable. This case used
+        # to lean on the K80 for that, and the K80 is now filtered out of the
+        # count for having no GSP — so the repetition it was written to catch
+        # would have been hidden by the filter rather than caught by the test.
+        {
+            "quotaId": "NVIDIA-L4-GPUS-per-project-region",
+            "dimensionsInfos": [
+                {"dimensions": {"region": name}, "details": {"value": "1"},
+                 "applicableLocations": [name]}
+                for name in REGIONS
+            ],
+        },
         quota("NVIDIA-T4-GPUS-per-project-region", 1, REGIONS),
-        quota("NVIDIA-V100-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-A100-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-A100-80GB-GPUS-per-project-region", 1, REGIONS),
+        quota("NVIDIA-H100-GPUS-per-project-region", 8, REGIONS),
+        # And one the tool cannot drive, to prove it is named rather than
+        # silently dropped — and that it does not eat one of the four slots.
+        K80_PER_REGION,
     ])
     result = run(cloud, "status")
 
     line = next(line for line in result.output.splitlines() if "gpu quota" in line)
     assert result.exit_code == 0
-    assert line.count("K80") == 1, f"one row per card, not per region: {line}"
+    assert line.count("L4") == 1, f"one row per card, not per region: {line}"
     assert "L4=1" in line, "the card you would actually use must survive the cut"
-    assert "+2 more" in line and "6 cards ready" in line
+    assert "+1 more" in line and "5 cards ready" in line
+    assert "K80 granted but not drivable" in line

@@ -72,6 +72,7 @@ from typing import NamedTuple, Optional
 import pytest
 
 from comfy_qa.config import DEFAULT_CONFIG_PATH
+from pathnames import paths_named
 
 PACKAGE = Path(__file__).resolve().parent.parent / "comfy_qa"
 
@@ -274,12 +275,51 @@ def test_every_option_carries_help(site: Decl):
         assert site.text.strip(), f"{site.module}:{site.line} gives {site.name} empty help"
 
 
+def test_some_config_help_still_names_a_path_at_all():
+    """The anti-vacuity floor under the test below, and the same argument as the
+    two floors above: it clears a site by finding no path in it, so a detector
+    that had stopped seeing paths would clear every site and read as green.
+
+    Not a headcount. One of the two `--config` declarations quotes the default
+    and the hidden one points at the root's `--help` instead, which is correct;
+    what this asks is whether `paths_named` still finds the one that does.
+    """
+    quoting = [site for site in CONFIG_SITES if paths_named(site.text or "")]
+    assert quoting, (
+        "no `--config` help names a path at all. The root declaration is where "
+        "the default is written out, so this points at `tests/pathnames.py` "
+        "having stopped seeing paths — or at the sentence naming the default "
+        "having been deleted from the one place a reader finds it."
+    )
+
+
 @pytest.mark.parametrize("site", CONFIG_SITES, ids=CONFIG_IDS)
 def test_help_that_names_the_host_list_names_the_real_one(site: Decl):
-    """Only the sites that quote a path are held to this — see the module docstring."""
-    if not site.text or DEFAULT_CONFIG_PATH.name not in site.text:
-        pytest.skip("this help does not quote a path")
-    assert DEFAULT_AS_WRITTEN in site.text, (
-        f"{site.module}:{site.line} tells the reader the host list is somewhere other "
-        f"than {DEFAULT_AS_WRITTEN}, which is where DEFAULT_CONFIG_PATH actually points"
-    )
+    """Only the sites that quote a path are held to this — see the module docstring.
+
+    "Quotes a path" used to mean "contains `DEFAULT_CONFIG_PATH.name`", the bare
+    filename `hosts.toml` — the same substring the assertion below then looked
+    for. Help claiming the host list was at `~/.comfyqat/machines.toml` therefore
+    skipped rather than failed, because the only wrong paths that criterion could
+    see were the ones that kept the right filename. That is
+    `docs/tests-that-cannot-fail.md` section 7: the evidence of guilt accepted as
+    the alibi.
+
+    Inclusion is now by shape — `paths_named` does not know where the host list
+    is — and the assertion is by identity, so the two vocabularies are disjoint
+    and a wrong path is in scope precisely because it is a path. Help that names
+    no path is not skipped: there is nothing to check, and the floor above is
+    what notices if that becomes true everywhere at once.
+
+    Help that cannot be read as a literal is still outside this bar, unchanged
+    and for the reason in the module docstring: `text is None` means the sweep
+    never saw a string, not that it saw one making no claim.
+    """
+    for named in paths_named(site.text or ""):
+        assert named == DEFAULT_AS_WRITTEN, (
+            f"{site.module}:{site.line} tells the reader a file lives at {named}. "
+            f"The host list is at {DEFAULT_AS_WRITTEN}, which is where "
+            f"DEFAULT_CONFIG_PATH actually points. Every path this help names is "
+            f"held to that — if `--config` help ever has cause to name some other "
+            f"path, decide that here rather than by narrowing the detector."
+        )

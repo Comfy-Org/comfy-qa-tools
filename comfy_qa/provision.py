@@ -355,6 +355,59 @@ def verify_command(host: Host) -> str:
 # What `port_holder_command` prints when nothing is listening on ComfyUI's port.
 PORT_FREE = "PORT_FREE"
 
+# What `listening_command` prints. Three properties, each of which was a bug
+# first:
+#
+#   * neither is empty — an empty answer means the box would not say, which is a
+#     third outcome and never a "no";
+#   * NEITHER IS A SUBSTRING OF THE OTHER. The obvious pair, `LISTENING` and
+#     `NOT_LISTENING`, reads perfectly and is a trap: `"LISTENING" in
+#     "NOT_LISTENING"` is True, so a caller testing membership sees a closed port
+#     as an open one. Written that way, caught within the minute by the test for
+#     the very failure it would have reintroduced — `rdp` resetting a Windows
+#     password on a box that was not accepting Remote Desktop;
+#   * both say what they mean without the caller's question, so a line of either
+#     in a log is readable on its own.
+LISTENING = "PORT_OPEN"
+NOT_LISTENING = "PORT_CLOSED"
+
+# What Remote Desktop listens on, on the box. `RDP_PORT` above is the LOCAL end
+# of the forward; these are not the same number and reading one for the other
+# asks the box about a port nothing on it has ever used.
+RDP_REMOTE_PORT = 3389
+
+
+def listening_command(host: Host, port: int) -> str:
+    """Ask whether anything is listening on a port of the box. One word back.
+
+    `port_holder_command` asks a neighbouring question — WHO holds ComfyUI's port
+    — and is fixed to that one port because the answer it wants is a pid to stop.
+    This one takes the port and answers yes or no, because the caller is not
+    going to stop anything; it is deciding whether to do something irreversible.
+
+    Written for `rdp`. A freshly created Windows box reaches RUNNING minutes
+    before Remote Desktop is accepting connections, and `rdp` reset the password
+    — which cannot be undone, and which invalidates the one anybody else on that
+    box is using — before finding that out. Asking first costs one SSH round
+    trip; not asking cost a live tester their password and left them with a box
+    they still could not open.
+
+    Both branches exit 0. "Nothing is listening" is an answer, not a failure, and
+    a non-zero exit here would be read by the caller as "the box would not say".
+    """
+    if is_windows(host):
+        return (
+            "powershell -NoProfile -NonInteractive -Command \""
+            f"$c = Get-NetTCPConnection -LocalPort {port} -State Listen "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1; "
+            f"if ($c) {{ Write-Output '{LISTENING}' }} "
+            f"else {{ Write-Output '{NOT_LISTENING}' }}\""
+        )
+    return (
+        f"if ss -lntH 'sport = :{port}' 2>/dev/null | grep -q .; "
+        f"then echo {LISTENING}; else echo {NOT_LISTENING}; fi"
+    )
+
 
 def firewall_command(host: Host) -> str:
     """Let ComfyUI's port through the operating system's own firewall.
@@ -636,7 +689,7 @@ def launch_detached_command(host: Host) -> str:
       * **Its output goes to a file on the box**, not down the SSH channel. A
         detached launch whose log went nowhere would trade a blocked terminal for
         a ComfyUI you cannot debug, which is the worse of the two.
-      * **The file is truncated, not appended to.** `host logs` is asked about
+      * **The file is truncated, not appended to.** `comfy-qat logs` is asked about
         *this* ComfyUI, and yesterday's traceback sitting above today's startup is
         how you spend twenty minutes fixing something that is already fixed.
 
@@ -721,7 +774,15 @@ def logs_command(host: Host, *, tail: int = 200, follow: bool = False) -> str:
     nothing. Ending it stops reading and stops nothing else — which is the whole
     difference between this and `go --follow`, where Ctrl-C reaches ComfyUI.
     """
-    lines = max(1, int(tail))
+    # `max(0, ...)`, not `max(1, ...)`. Folding everything below one up to 1 made
+    # `--tail 0` print a line the caller asked not to see, and made `--tail -5`
+    # look like it had worked. Zero is a real answer here — `tail -n 0 -f` and
+    # `Get-Content -Tail 0 -Wait` are both "no backlog, stream from now", which is
+    # what you want while watching a generation start — so it is passed through
+    # rather than rounded away. The floor stays at 0 because neither shell takes a
+    # negative count; `logs_cmd` refuses those at the boundary with a message, so
+    # nothing reaches here that this floor has to silently correct.
+    lines = max(0, int(tail))
     if is_windows(host):
         wait = " -Wait" if follow else ""
         return (

@@ -3,10 +3,16 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
-## 1.1.0 — the deprecation window closes
+## 1.1.0 — the deprecation window closes, and the first real hardware
 
-One release of notice, and the second spellings are gone. Nothing here adds a
-capability; it removes ways of typing the ones that were already there.
+Two things, and the second is the larger one. One release of notice, and the
+second spellings are gone — nothing there adds a capability, it removes ways of
+typing the ones that were already there. Alongside it, this tool was driven end
+to end against real GCE hardware for the first time: a box created from nothing,
+a move between zones, a prune against a live project, a Windows password reset.
+Almost every fix below comes from those runs. A fake cloud answers instantly,
+always has capacity, and never sends a bill, so the failures collected here are
+the ones that could only be found by paying for them.
 
 ### Removed
 
@@ -41,6 +47,174 @@ capability; it removes ways of typing the ones that were already there.
   checks the first-run text where the root callback prints it; `B4` checks the
   bare `comfy-qat` listing that the bare `host` one became; `A3` lists 20
   commands rather than 21.
+
+- **`NO_COLOR` is honoured.** Nothing this tool writes itself has ever been
+  coloured, and a test holds it to that — but `comfy-qat --help` is rendered by
+  Typer through Rich, and came out in 348 escape sequences on a terminal that had
+  set the variable. Rich reads it; Typer builds its own console and did not pass
+  it on. The help keeps its layout and loses the colour.
+
+- Advice blocks are readable rather than merely present. A `to fix:` offering
+  more than one thing used to run four commands and two sentences together at one
+  indent, all reading as things to paste; the sentences now open their groups,
+  and `#` notes on a run of commands line up in one column instead of being
+  spaced by eye. `warning:` stays welded to its own sentence rather than being
+  stranded a line above it when a caller asks for air.
+
+### Fixed — the ones that cost money
+
+- **`discover --prune` removed the entry for a machine that was running.**
+  Absence was inferred from a bulk `instances list` keyed on `(name, zone)`, so
+  an entry whose declared zone was wrong — a hand-typed field, a box recreated
+  from the console, a `move` that did not finish — read as "not on the project
+  any more", was removed, and exited 0. The L4 it named went on billing with
+  nothing left in the host list to reach it, so neither `down` nor `list` could
+  see it again. Absence is now decided on the **name across the whole project**;
+  a name found in another zone is reported as a zone mismatch and **kept**,
+  because the entry is wrong and the box is not gone.
+- **And an inference is no longer enough to remove anything.** Every candidate is
+  now put to `gcloud compute instances describe`, by name, in its own zone, and
+  pruned only on a flat not-found — Google saying so about that machine, rather
+  than a listing it failed to appear in. That is one gcloud call per candidate:
+  a prune with five stale entries makes five, and says how many entries it is
+  about to check before it checks them; a host list with nothing stale in it pays
+  nothing. Three details carry the weight. `DENIED` is classified before
+  `NOT_FOUND`, so a credential that may not see an instance raises rather than
+  confirming an absence. A not-found about the **zone** or the **project** raises
+  too, because one mistyped `gce_project` would otherwise answer "not found" for
+  every entry naming it and a single `y` would delete the lot. And `instances
+  list` printing nothing at all is now an error instead of an empty project — it
+  used to read as "you have no machines", which pruned every entry in a
+  hand-maintained file that has no other copy on the machine.
+- **`move --clean` deleted the previous run's work before deciding it would
+  refuse.** The cleanup ran at the top of the command and the guards fifteen
+  lines below it, so a move refused by the GPU ceiling had already destroyed the
+  snapshot and the 200-300 GB disk that make a resumed move cheap. Every refusal
+  that a delete cannot change is now computed first. Verified on hardware: a
+  refused `--clean` leaves a 14.3 GB snapshot and a 200 GB disk intact.
+- **`move` now rehearses the host-list rewrite before it creates anything.** That
+  rewrite is the move's seventh action, and nothing checked it: a host list that
+  parses and loads but is spelled in a way the rewrite does not recognise
+  (`[hosts."comfy-win"]` and `[ hosts.comfy-win ]` are both valid TOML) failed at
+  the end, with a snapshot, a disk and a running GPU already paid for and
+  `comfy-qat down comfy-win` still pointing at the old box. The rehearsal is the
+  real write minus the write, through the same code, so the two cannot drift.
+- **The snapshot ran under a clock written for starting an instance.** Copying a
+  disk is not that operation: 200 GB is the default boot disk this tool creates,
+  a first snapshot of one is a full copy at Google's pace, and a real move went
+  past the 300-second limit — gcloud killed, Google still holding the snapshot in
+  `UPLOADING`, and the tool reporting a failure about a resource that was being
+  created and would bill. The snapshot has its own hour-long timeout now, clear
+  above the whole range rather than at the edge of it.
+- **The move's GPU-ceiling guard failed open.** It counted the source's cards out
+  of a bulk listing, so a source the listing did not carry, or a row without
+  `guestAccelerators`, both read as "no cards needed" — and zero skipped the quota
+  read and the check with it, leaving Google to refuse the create after the
+  snapshot and the disk existed. The requirement now comes off the `describe`
+  payload `move` already holds, and a host declared with a card whose payload
+  shows none counts as one rather than none. The quota read is also no longer
+  skipped whenever nothing currently holds a card: `held + needed > ceiling` is
+  true at `held == 0` when the ceiling is 0, which is a lapsed quota under an
+  existing box, and the check that would have caught it could not be reached.
+- **`move` started a box you had deliberately stopped, and left it running.**
+  Finding out whether a zone has capacity means trying to start the machine, and
+  on the path where the answer is "there is capacity here, no move needed" the
+  probe was never put back. Proven on hardware: `down comfy-linux`, then `move
+  comfy-linux --clean --yes`, and the box came back RUNNING and billing on the
+  strength of a question. The state is read before the probe and a box found
+  stopped is stopped again; a box found running is left alone and told so.
+- **`move --clean` on that same path cleaned nothing at all.** It decided there
+  was nothing to move and returned before looking at a single resource, so a user
+  running it to tidy up was told everything was fine while the same snapshot and
+  disk went on billing. What earlier moves of that box left behind is now found
+  from the resources themselves — in whatever zone they are — reported whether or
+  not `--clean` was passed, and deleted on `--clean` or an answered prompt.
+- **`create` billed a box against a host list it could not read.** The failure was
+  swallowed, the instance was created, and the entry that would have made it
+  reachable could not be written. It refuses now, before anything exists.
+
+### Fixed — getting onto the box
+
+- **`go` straight after `create` could not open a tunnel, and blamed your
+  credentials.** RUNNING is Google's word for "powered on"; it is not "sshd is
+  listening", and on a box created moments ago it is not even "this machine will
+  stay up", because the startup script installs the NVIDIA driver and reboots it.
+  `create` says so in its closing line and promises `go` waits it out — and `go`
+  reported a tunnel that closed for unknown reasons, with `gcloud auth login` as
+  the fix, on a session that was fine. The same command four minutes later
+  installed ComfyUI and served it. A still-booting machine is now a shape the
+  tunnel recognises and waits on, for up to five minutes; a box that is genuinely
+  ready never enters the wait; and only that shape is retried, because an expired
+  credential, a taken port and a tunnel pointing at another machine do not get
+  better by being asked again and every retry is GPU time.
+- **`up` spent three minutes to say something that named two states and committed
+  to neither.** "ComfyUI is not installed or not started", followed by advice to
+  get onto the box by hand — on a machine that has been through `down`, which is
+  every machine that has ever been stopped. It now asks the box what is on it and
+  says which one it is, and hands over `comfy-qat go` either way. Measured on
+  hardware: `go` had ComfyUI answering in 52 seconds, immediately after `up` had
+  spent 180 concluding the opposite. `up` is the machine-level verb and does not
+  start ComfyUI; `go` is the one that serves.
+- **A tunnel bound IPv4 only**, so a browser that prefers IPv6 for `localhost` got
+  an error page for a tunnel that was working — `curl http://127.0.0.1:8190/`
+  returned 200 while `curl -6 'http://[::1]:8190/'` could not connect. Both
+  families are forwarded now, and `ExitOnForwardFailure=no` is pinned rather than
+  left to the default, so that a user's own `~/.ssh/config` cannot let a failed
+  IPv6 bind take the working IPv4 forward down with it.
+- **A dead tunnel was explained with the previous session's error.** The log is
+  written fresh for each tunnel rather than appended to, so it holds one tunnel's
+  output; `down` and `disconnect` remove the `.pid` and the `.json` — the two
+  records that claim a tunnel is there — and keep the `.log`, which is the only
+  place the reason exists and is exactly what somebody goes looking for after a
+  tunnel dies. The diagnosis also reads the whole of that log rather than its last
+  six lines: gcloud's final line is its own exit status restated, and the line
+  saying why had scrolled off the top of the tail.
+- **`rdp` announced a password reset on a machine it had not reached.** It now
+  checks the box is running first, says the password in use is unchanged, and
+  hands over `comfy-qat up`. A Ctrl-C during the reset is reported the way every
+  other mutating call reports one — the password may already have changed.
+
+### Fixed — what it tells you
+
+- **`logs` exited 0 when the read failed.** A read that came back non-zero now
+  says that what is above it is not the whole log. Ctrl-C on a follow exits 130
+  rather than 0 — it is "ended by SIGINT", not a failure, and it is what stops a
+  script reading `$?` from taking an interrupted follow for a log that ended by
+  itself. `--tail 0` means zero lines instead of one, and a negative `--tail` is
+  refused with the two spellings that do what was probably meant.
+- **`.bak` held a state that existed for milliseconds.** `discover --prune` writes
+  twice — an append for what it adopted, a rewrite for what it removed — and each
+  write kept its own copy, so after a run that both added and pruned,
+  `hosts.toml.bak` held the file with the additions already in it. One copy per
+  command now: `.bak` answers "what did this look like before I ran that".
+- **A `--clean` that could not write a backup found out at the end.** Whether the
+  copy `apply` insists on can be made at all is knowable from the local file, so
+  it is decided before the move rather than after the snapshot.
+- `discover` reports what it did not do as carefully as what it did: entries whose
+  box is on the project in another zone, and entries whose absence could not be
+  confirmed, are each named with the reason and left alone.
+- `disconnect` says whether the machine it left behind is still running and
+  billing, and hands over `down`. Killing the ssh yourself frees the port in
+  silence, and silence after unplugging from a GPU box reads as "finished".
+- `create`'s stockout advice printed `--os Ubuntu 22.04`, which is the image's
+  name and not something the flag accepts; it offers `--os linux`, which runs.
+  The commands it prints are shell-quoted, so a value with a space in it is still
+  one argument.
+- `quota request` reported a failure without the fix line it had been given.
+- `delete` and `rdp` lost their interrupt report when the call they were making
+  raised something other than an ordinary error; a Ctrl-C at the wrong moment said
+  nothing about a machine that may already have been destroyed.
+- `down --all` no longer says "Nothing is now" when something it could not account
+  for is still there.
+
+### The suite
+
+- **8,159 passing with 29 skipped, to 8,414 passing with 11.** The skips that went
+  away were turned into assertions rather than deleted: a test that skipped itself
+  when a docstring quoted no path now fails if none of them quotes one, and checks
+  the path it finds. Real hardware wrote most of the new cases — a prune against a
+  live project, a move that was refused, a create followed by a `go` — and each of
+  the fixes above arrived with the test that would have caught it.
 
 ## 1.0.0 — release 1: `host` and `auth`
 

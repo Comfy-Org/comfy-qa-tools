@@ -404,6 +404,139 @@ def test_a_read_that_was_attempted_and_failed_still_exits_1(world):
     assert "could not read the ComfyUI log" in result.output
 
 
+@pytest.mark.parametrize("code", [255, 1, 2, 127])
+def test_a_read_that_came_back_failed_does_not_report_success(world, code):
+    """`logs` exited 0 on a read that failed, AND DEFEATED ITS OWN CHECK.
+
+    The other half of the exit-code story, and the half that had nothing at all.
+    The two branches above are the ones that RAISE — a refusal reaching `_act` as
+    a 2, an SSH that would not start reaching it as a 1. This is the branch that
+    returned: `read_logs` hands back gcloud's exit code, `_act` passes it
+    through, and `logs_cmd` dropped it on the floor. Only `NO_LOG_EXIT` was ever
+    read, so every other non-zero — 255, which is ssh saying it never got
+    through, most of all — arrived as `exit 0` with nothing on the screen.
+
+    255 is the value that makes this expensive rather than untidy. It is what a
+    box that has stopped accepting connections looks like, so the answer "the
+    machine is unreachable" and the answer "the log is empty" were the same
+    answer, on a command people run precisely because they cannot see the box.
+
+    And it defeated the check written to catch it. Phase L2 of the criteria pack
+    is `qat logs $BOX --tail 50; echo "exit $?"` — a check whose whole content is
+    the exit code, grading a command that returned the same code either way.
+
+    Parametrized over four codes rather than pinned to 255, because the defect
+    was never about a particular number: it was that the number was not looked
+    at. A fix that special-cased 255 would pass a single-value test and leave
+    every other failure silent.
+    """
+    world.cloud(statuses=["RUNNING"], log_exit=code)
+
+    result = run(world, "logs", BOX, "--tail", "50")
+
+    no_traceback(result)
+    assert result.exit_code != 0, (
+        f"the read came back {code} and `logs` reported success. Phase L2 reads "
+        f"$? and cannot tell a log from an unreachable box."
+    )
+    # 1, not 2: the read was attempted and did not finish. A 2 here would claim
+    # the command never started, which is the opposite of what happened.
+    assert result.exit_code == 1
+    # It has to say WHAT failed, not merely fail. The code is in the message
+    # because it is the only thing that separates "no route to the box" from
+    # "the command on the box died", and neither is visible any other way.
+    assert f"did not finish (exit {code})" in result.output
+    assert "not the whole log" in result.output
+    # Still the friendly answer for the one code that has a meaning, so the fix
+    # did not flatten a good message into a generic one.
+    assert "there is no ComfyUI log at" not in result.output
+
+
+@pytest.mark.parametrize("bad", ["-1", "-50"])
+def test_a_negative_tail_is_refused_rather_than_quietly_read_as_one(world, bad):
+    """A typo answered with a plausible answer is how nobody finds out.
+
+    `logs_command` folded anything below one up to a single line, so `--tail -5`
+    printed one line and looked like it had worked — the same shape as the
+    swallowed exit code above, one argument earlier. Nothing has been contacted
+    when this fires, which is what makes it a 2.
+
+    `--tail 0` is deliberately NOT here: zero means zero, and the test underneath
+    holds that open, because refusing it would take away `--tail 0 --follow`.
+    """
+    world.cloud(statuses=["RUNNING"])
+
+    result = run(world, "logs", BOX, "--tail", bad)
+
+    no_traceback(result)
+    assert result.exit_code == 2
+    assert f"--tail {bad} is not a number of lines to read" in result.output
+    assert world.gc.calls == [], "nothing may be contacted to reject an argument"
+
+
+def test_tail_zero_reaches_the_box_and_is_not_refused(world):
+    """The guard on the refusal above: 0 is a real request, not a bad one."""
+    world.cloud(statuses=["RUNNING"])
+
+    result = run(world, "logs", BOX, "--tail", "0")
+
+    no_traceback(result)
+    assert result.exit_code == 0
+    assert "is not a number of lines" not in result.output
+    assert any("Tail 0" in remote or "-n 0" in remote for remote in world.gc.remote), (
+        f"--tail 0 did not reach the box asking for zero lines: {world.gc.remote}"
+    )
+
+
+def test_ctrl_c_while_reading_the_log_exits_130_like_every_other_interrupt(world):
+    """`logs` was the one interrupt in the tool that reported success.
+
+    `logs_cmd` catches the KeyboardInterrupt, prints its reassurance and falls
+    off the end, which Typer renders as 0 — against the rule `inflight.INTERRUPTED`
+    states for every other command, and against the fix above it: without both,
+    `logs` still exits 0 in a case where the read did not finish.
+
+    The message is unchanged and must stay so, because it is right. Ctrl-C on a
+    follow is the ordinary way to leave, and the thing to know at that moment is
+    that the box is still billing. 130 is not a claim that anything failed — it
+    is "ended by SIGINT" — and it is what stops a script reading `$?` from a
+    follow as "the log ended by itself".
+    """
+    cloud = world.cloud(statuses=["RUNNING"])
+
+    def interrupted(instance, zone, project, remote, *, stream: bool = True):
+        raise KeyboardInterrupt
+
+    cloud.ssh = interrupted
+
+    result = run(world, "logs", BOX)
+
+    no_traceback(result)
+    assert result.exit_code == 130, "an interrupt is 130 everywhere else in this tool"
+    # The reassurance is the reason this path exists, and the exit code must not
+    # have cost it.
+    assert "ComfyUI is still running" in result.output
+    assert "and so is the machine" in result.output
+    assert f"down {BOX}" in result.output
+
+
+def test_the_missing_log_still_gets_its_own_message(world):
+    """The guard on the fix above: `NO_LOG_EXIT` must not fall into the generic
+    branch. 4 is the box saying "the file is not there", which is a fact about
+    ComfyUI never having started — a different sentence and a different code
+    from a read that failed."""
+    from comfy_qa.provision import NO_LOG_EXIT
+
+    world.cloud(statuses=["RUNNING"], log_exit=NO_LOG_EXIT)
+
+    result = run(world, "logs", BOX, "--tail", "50")
+
+    no_traceback(result)
+    assert result.exit_code == 2, "a precondition unmet is a refusal, not a failure"
+    assert "nothing has started ComfyUI there" in result.output
+    assert "did not finish" not in result.output
+
+
 # ----------------------------------------------------------- --new-window
 
 

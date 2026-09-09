@@ -213,6 +213,41 @@ def test_a_tunnel_that_stays_up_is_handed_back(tmp_path, real_spawn):
         os.kill(pid, signal.SIGTERM)
 
 
+def test_each_open_starts_the_log_fresh_rather_than_appending(tmp_path, real_spawn):
+    """The log was opened `"ab"`, and the append made the file LIE.
+
+    `last_words` reads the whole log and returns its last six lines, and it is
+    what fills in "gcloud said: ..." when a tunnel dies on startup. Appending
+    meant a tunnel that died having written nothing of its own — or one line —
+    had the PREVIOUS session's error quoted back as the explanation for this one.
+    A confident wrong diagnosis, worse than the silence it was built to replace,
+    and it needed no `disconnect` in between: two `open`s in a row are enough.
+
+    It was also the only thing that made the file grow without bound, which is
+    what makes keeping the log on `disconnect` affordable — the two halves of
+    that decision are this test and the one in test_lifecycle_e2e.py.
+    """
+    log = tmp_path / "comfy-win.log"
+
+    first = [sys.executable, "-c",
+             "import sys; sys.stderr.write('ERROR: Reauthentication failed.\\n'); "
+             "sys.exit(1)"]
+    with pytest.raises(TunnelError) as caught:
+        real_spawn(first, log, grace=5)
+    assert "Reauthentication failed" in str(caught.value)
+
+    # The second one dies saying nothing at all — the shape that used to inherit
+    # the first one's words.
+    silent = [sys.executable, "-c", "import sys; sys.exit(1)"]
+    with pytest.raises(TunnelError) as second:
+        real_spawn(silent, log, grace=5)
+
+    assert "Reauthentication failed" not in str(second.value), (
+        "this tunnel's failure was explained with the previous tunnel's error"
+    )
+    assert "Reauthentication failed" not in log.read_text(errors="replace")
+
+
 def test_a_missing_gcloud_is_a_message_not_a_traceback(tmp_path, monkeypatch, real_spawn):
     """Popen against a binary that is not there raises FileNotFoundError, which
     reached the user as a traceback from `host open`."""
@@ -362,4 +397,93 @@ def test_the_interrupt_guard_covers_the_ps_call_that_dominates_the_window(
 
     assert inflight.pending() == [], (
         "the process was killed, so there is no leftover to report"
+    )
+
+
+# --- the claim `disconnect --help` is not allowed to make again ---------------
+#
+# `test_a_dead_pid_is_not_mistaken_for_a_tunnel` above is the behaviour; this is
+# the sentence about it. Typer prints a command's docstring verbatim as its
+# `--help` body, and `disconnect_cmd`'s used to justify itself with "killing the
+# ssh process by hand leaves the records behind, after which `list` reports a
+# tunnel that is not there". It does not, and has not since the pid-identity work
+# that the test above pins: a pid file naming a dead pid reads as stale and
+# `list` says `not tunnelled`. The docstring outlived the defect it described.
+#
+# That was corrected in prose and NOTHING GRADED IT. Re-inserting the sentence as
+# its own paragraph — a false claim shipped to every reader of `comfy-qat
+# disconnect --help` — left all 8508 tests passing. A fix whose only evidence is
+# that somebody edited the file is a fix that comes back.
+#
+# WHAT THIS CHECKS AND WHAT IT DOES NOT. The claim survives on the page once, on
+# purpose, inside the sentence that refutes it — you cannot say what replaced a
+# reason without saying the reason. So the rule is arithmetic rather than
+# semantic: the phrase appears exactly once, and that occurrence sits inside the
+# known refuting run. Re-asserting it anywhere else makes two. A light reword of
+# the claim is not caught, which is the same limit `test_docs.py` records for its
+# own message matching; what is caught is the thing that actually happened, which
+# is the sentence coming back as it was.
+
+THE_OLD_CLAIM = "reports a tunnel that is not there"
+
+# The claim in the only setting that is not an assertion of it. Quoted in full so
+# that trimming the refutation to the point where it stops refuting is a failure
+# here rather than a change nobody sees.
+REFUTED_AS = (
+    'It said killing the ssh process by hand leaves the records behind, "after '
+    'which `list` reports a tunnel that is not there". It does not:'
+)
+
+
+def _help_body_of(command) -> str:
+    """A command's `--help` body, whitespace-flattened.
+
+    Flattened because the docstring is wrapped for the source file and Typer
+    re-wraps it for the terminal, so line breaks are not part of what anybody
+    reads. Everything below is about the words.
+    """
+    import re
+
+    return re.sub(r"\s+", " ", command.__doc__ or "").strip()
+
+
+def test_disconnect_help_does_not_restate_the_reason_that_stopped_being_true():
+    """The reason for the command, not a defect the tool no longer has."""
+    from comfy_qa.host import disconnect_cmd
+
+    body = _help_body_of(disconnect_cmd)
+    said = body.count(THE_OLD_CLAIM)
+    assert said == 1, (
+        f"`disconnect --help` makes the claim {THE_OLD_CLAIM!r} {said} times. It "
+        f"belongs there exactly once, inside the sentence that says it is no "
+        f"longer true — a pid file naming a dead pid reads as stale and `list` "
+        f"says `not tunnelled`, which `test_a_dead_pid_is_not_mistaken_for_a_"
+        f"tunnel` in this file pins. Any other occurrence is the tool telling a "
+        f"reader about a defect it does not have."
+    )
+    assert REFUTED_AS in body, (
+        "the one permitted occurrence is no longer inside the sentence that "
+        "refutes it, so `--help` now states it rather than retiring it."
+    )
+
+
+def test_that_check_would_have_caught_the_sentence_coming_back():
+    """The guard on the guard: the mutation that survived, run through it here.
+
+    A check with nothing left to find reads exactly like one that can no longer
+    find anything. This is the paragraph that was re-inserted, and if it stops
+    being counted the check above has stopped meaning anything.
+    """
+    from comfy_qa.host import disconnect_cmd
+
+    came_back = (
+        "Killing the ssh process by hand leaves the records behind, after which "
+        "`list` reports a tunnel that is not there."
+    )
+    assert THE_OLD_CLAIM in came_back, "the mutation no longer contains the claim"
+
+    body = _help_body_of(disconnect_cmd)
+    assert (body + " " + came_back).count(THE_OLD_CLAIM) == 2, (
+        "re-inserting the retired sentence no longer changes the count, so the "
+        "check above would pass on the docstring it was written to reject"
     )

@@ -529,6 +529,14 @@ def test_the_probe_start_inside_move_is_registered_like_any_other(
         encoding="utf-8")
 
     class Interrupted:
+        def instance_status(self, instance, zone, project):
+            # Read before the probe, because the probe is a start and a box that
+            # was found stopped is stopped again afterwards. Answered here rather
+            # than left to raise: the interrupt under test is the one inside the
+            # start, and a fake that fell over one call earlier would never reach
+            # it.
+            return "TERMINATED"
+
         def start_instance(self, instance, zone, project):
             raise KeyboardInterrupt
 

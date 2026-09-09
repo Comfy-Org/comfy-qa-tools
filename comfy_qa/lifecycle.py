@@ -46,6 +46,7 @@ from .stamp import ProbeError, Stamp, fetch, mismatch
 from .tunnel import (
     BACKEND_NOT_LISTENING,
     COMFYUI_PORT,
+    SSH_NOT_READY,
     TunnelError,
     close_tunnel,
     log_file,
@@ -62,6 +63,33 @@ STREAM_TICK_SECONDS = 60
 BOOT_TIMEOUT = 300      # Windows is slower than Linux; both fit inside this.
 COMFY_TIMEOUT = 180     # after the box is up, how long ComfyUI gets to answer
 POLL_SECONDS = 5
+
+# How long a tunnel waits out a machine Google calls RUNNING whose sshd has not
+# answered yet. The same 300s `wait_for_ssh` allows, for the same boot — and it
+# is a real measurement, not a guess: on the first live `create` this tool ever
+# had, `go` run immediately afterwards failed, and the identical command about
+# four minutes later succeeded. A box created a moment ago installs its NVIDIA
+# driver from a startup script and reboots once or twice on the way, which is
+# exactly what `create` prints and exactly what `go` did not wait for.
+SSH_READY_TIMEOUT = 300
+
+# The ceiling on one whole `go`, however its phases divide the time up.
+#
+# Every wait in this file was bounded before this existed, and the command still
+# ran for a quarter of an hour on a box that was never going to work — because
+# each phase starts a FRESH clock, and the phases stack. Measured, on the ones
+# that can stack in a single run: boot 300 + tunnel 300 + probe 180 +
+# `wait_for_ssh` 300 + driver 900 = 1980s, and then the install streams with no
+# timeout at all. So "every wait is bounded" and "the command is bounded" are
+# different claims and only the first was true.
+#
+# 1800 is deliberately BELOW that 1980, and that is the point rather than an
+# oversight. Each of those maxima means "this phase alone has gone wrong"; a run
+# that reaches two of them has already failed and is spending GPU money to find
+# out. Against real measurements it is enormous: the live cold `go` that
+# installed ComfyUI end to end took 3m11s, and a warm one 52s. Half an hour is
+# the number a person can hold in their head while a box bills.
+GO_BUDGET = 1800
 
 RUNNING = "RUNNING"
 
@@ -161,6 +189,78 @@ class Ready:
     stamp: Stamp | None
     started: bool
     tunnelled: bool
+
+
+class Budget:
+    """One clock for a whole command, so its phases cannot each start a fresh one.
+
+    Passed down rather than consulted globally, because two `go`s in one process
+    — a test suite, a future `--all` — must not share a deadline.
+
+    `None` is a legitimate value everywhere this is accepted, and means "no
+    ceiling, each phase keeps its own bound". That is what every existing caller
+    and every test gets by default, so adding this changed no behaviour until a
+    caller asked for it.
+    """
+
+    def __init__(self, seconds: float, *, now=None) -> None:
+        self._now = now or _clock
+        self.total = seconds
+        self.started = self._now()
+
+    @property
+    def spent(self) -> float:
+        return self._now() - self.started
+
+    @property
+    def left(self) -> float:
+        return self.total - self.spent
+
+    @property
+    def gone(self) -> bool:
+        return self.left <= 0
+
+    def allow(self, timeout: int) -> int:
+        """What this phase may have: its own bound, or what is left of the whole.
+
+        Never negative — a phase handed a negative timeout would compute a
+        deadline in the past and read as "already expired", which is true but
+        arrives as that phase's own message about its own clock rather than as
+        the one below about the command's.
+        """
+        return max(0, int(min(timeout, self.left)))
+
+
+def out_of_time(host: Host, budget: "Budget", doing: str, tunnel_dir,
+                say: Callable[[str], None]) -> LifecycleError:
+    """The whole command ran out of clock, whichever phase was holding it.
+
+    `doing` is a whole clause and reads straight on from "and" — "the GPU driver
+    has still not come up". It was a noun phrase first and the sentence came out
+    as "the GPU driver has not come up has still not finished", which is what
+    happens when the template and its call sites each assume the other supplies
+    the verb.
+
+    One message rather than a variant of each phase's own, because the fact worth
+    reporting is not "the driver took too long" — it is that everything together
+    took longer than a person agreed to pay for, and the phase name is a detail
+    inside that. It also means one troubleshooting entry instead of six.
+
+    Stands the box down on the way out for the same reason every other failure
+    past the start does: the machine is on and the reader has to know.
+    """
+    stand_down(host, tunnel_dir, say)
+    return LifecycleError(
+        f"this has been working on {host.name} for "
+        f"{output.elapsed(budget.spent)} and {doing}, so it stopped rather than "
+        f"going on. The machine is up and billing.",
+        kind=COMFYUI_ABSENT,
+        fix=_with_the_bill(
+            host,
+            "run it again to carry on where it got to, or look at the box first:",
+            f"comfy-qat logs {host.name}",
+        ),
+    )
 
 
 # The clock, behind one name each. Bound at call time rather than as a default
@@ -369,7 +469,7 @@ def wrong_machine_fix(host: Host) -> str:
     has to refuse in exactly these words rather than inventing a second wording
     for the same contradiction.
 
-    **Refused, not warned**, which is the treatment `host stamp` already gives
+    **Refused, not warned**, which is the treatment `comfy-qat stamp` already gives
     this exact contradiction. Its argument is that the evidence line exists to be
     copied into a bug report and a warning on stderr does not survive being
     copied — so printing the line at all is what creates the false evidence.
@@ -442,8 +542,26 @@ def bring_up(
     launcher=None,
     boot_timeout: int = BOOT_TIMEOUT,
     comfy_timeout: int = COMFY_TIMEOUT,
+    # The whole command's clock, or None for "each phase keeps its own bound".
+    budget: Budget | None = None,
+    # Whether this caller stops at a silent tunnel or has somewhere to go next.
+    # Defaults to True — the safe direction, since a caller that has a plan B
+    # knows it and can say so, while one that does not would otherwise spend the
+    # whole timeout to reach a sentence it could have had in seconds.
+    explain_silence: bool = True,
 ) -> Ready:
-    """Start the machine, tunnel to it, and wait until ComfyUI answers."""
+    """Start the machine, tunnel to it, and wait until ComfyUI answers.
+
+    **This does not start ComfyUI, and deliberately does not.** `up` is the
+    machine-level verb; `go` and `switch` call this and then go on to install and
+    launch through `_serve`. Making this launch too would leave the tool with two
+    commands that both start ComfyUI, differing only in whether they open a
+    browser — and the tool argues elsewhere for one way to do each thing.
+
+    What it does owe a caller that stops here is the truth about why nothing
+    answered, quickly, and the name of the command that fixes it. See
+    `_not_answering`.
+    """
     # Resolved here rather than bound as defaults, so a test can replace the
     # HTTP probe or the clock without replacing this function. Binding at import
     # made the quota wait untestable without really sleeping, which cost two
@@ -451,6 +569,9 @@ def bring_up(
     probe_fn = probe_fn or probe
     sleep = sleep or _pause
     now = now or _clock
+    if budget is not None:
+        boot_timeout = budget.allow(boot_timeout)
+        comfy_timeout = budget.allow(comfy_timeout)
 
 
     if host.kind == "local":
@@ -602,7 +723,14 @@ def bring_up(
         # Only when this run started it. A box that was already RUNNING has had
         # its chance to finish booting, and paying an SSH round trip on every `go`
         # to re-establish that is a cost with no failure behind it.
-        wait_for_ssh(gc, host, say, sleep=sleep, now=now, tunnel_dir=tunnel_dir)
+        #
+        # And "has had its chance" turned out to be an assumption rather than a
+        # fact — the one this branch cannot see is the box somebody ELSE started
+        # a moment ago, which is every box that `create` has just made. That is
+        # the first-run path and it failed on it; the wait that covers it is in
+        # `_open_when_reachable`, at the tunnel, where the failure actually is.
+        wait_for_ssh(gc, host, say, sleep=sleep, now=now, tunnel_dir=tunnel_dir,
+                     budget=budget)
     else:
         say(f"{host.name} is running")
 
@@ -613,7 +741,8 @@ def bring_up(
         if existing.stale:
             say("clearing a tunnel record whose process is gone")
         try:
-            open_tunnel(host, tunnel_dir, launcher=launcher)
+            _open_when_reachable(host, tunnel_dir, launcher=launcher, say=say,
+                                 sleep=sleep, now=now, budget=budget)
         except TunnelError as exc:
             if getattr(exc, "kind", "") == BACKEND_NOT_LISTENING:
                 # Not a failure to report — an order-of-operations fact. gcloud
@@ -635,6 +764,24 @@ def bring_up(
                     kind=COMFYUI_ABSENT,
                     fix=_with_the_bill(host, f"comfy-qat go {host.name}"),
                 ) from exc
+            if getattr(exc, "kind", "") == SSH_NOT_READY:
+                # The wait above ran out. The cause is named here rather than
+                # left to the generic branch, because the generic branch's advice
+                # is `gcloud auth login` and this is the one failure where the
+                # credential is demonstrably fine — the tunnel got as far as
+                # Google and was refused by a machine, repeatedly, for minutes.
+                raise LifecycleError(
+                    f"{host.name} is RUNNING but never started accepting SSH "
+                    f"connections, so no tunnel could be opened to it. The "
+                    f"machine is up and billing.",
+                    kind=TUNNEL_DOWN,
+                    fix=_with_the_bill(
+                        host,
+                        "look at the boot output on the box's serial console, or "
+                        "stop it and start again:",
+                        f"comfy-qat down {host.name} && comfy-qat go {host.name}",
+                    ),
+                ) from exc
             raise LifecycleError(
                 f"could not open the tunnel to {host.name}: {exc}",
                 kind=TUNNEL_DOWN,
@@ -643,6 +790,7 @@ def bring_up(
         say(f"tunnel open: {host.url}")
 
     stamp = None
+    running: bool | None = None
     deadline = now() + comfy_timeout
     answering = output.slow(f"waiting for ComfyUI on {host.url}",
                             expect=f"up to {comfy_timeout}s",
@@ -666,6 +814,29 @@ def bring_up(
                 kind=TUNNEL_DOWN,
                 fix=_tunnel_fix(host, tunnel_dir),
             )
+        # AFTER the tunnel check, never before it. A dead tunnel and a stopped
+        # ComfyUI are both silence on this port, and asking the box first turns
+        # every dead tunnel into "ComfyUI is not answering" — which is the exact
+        # confusion the check above exists to prevent, and it sends somebody onto
+        # a box to fix something that was never broken.
+        #
+        # Asked once, on the first silence, and only by a caller that will STOP
+        # here. Nothing on the box starts ComfyUI at boot, so on a machine that
+        # has been through `down` this wait can only ever end one way — and it
+        # was ending that way three minutes and one wrong sentence later, on a
+        # box billing throughout. A definite "no process" is the one answer that
+        # makes waiting pointless rather than merely slow; ALIVE means it is
+        # still coming up, and "would not say" is not an answer at all.
+        #
+        # `go` and `switch` pass `explain_silence=False`: they do not stop here,
+        # they go on to install and launch, and the question they would be
+        # asking is one `ensure_installed` asks properly a moment later. Paying
+        # an SSH round trip to be told what the next step was going to do anyway
+        # is a cost on the ordinary path with no failure behind it.
+        if explain_silence and running is None:
+            running = _still_alive(gc, host)
+            if running is False:
+                break
         if now() >= deadline:
             break
         answering.tick()
@@ -673,17 +844,10 @@ def bring_up(
 
     if stamp is None:
         answering.give_up()
-        raise LifecycleError(
-            f"{host.name} is running and tunnelled, but ComfyUI is not answering "
-            f"on {host.url}. The machine is up and billing; ComfyUI is not "
-            "installed or not started.",
-            kind=COMFYUI_ABSENT,
-            fix=_with_the_bill(
-                host,
-                "get onto the machine and install or start ComfyUI:",
-                how_to_get_in(host),
-            ),
-        )
+        if budget is not None and budget.gone:
+            raise out_of_time(host, budget, "ComfyUI has still not answered",
+                              tunnel_dir, say)
+        raise _not_answering(gc, host, running=running)
 
     # `give_up`, not `done`: the next line *is* the completion, and a separate
     # "answered in 2m10s" above it would be the same fact twice.
@@ -699,6 +863,73 @@ def bring_up(
     return Ready(host=host, stamp=stamp, started=started, tunnelled=True)
 
 
+def _open_when_reachable(
+    host: Host,
+    tunnel_dir: Path | None,
+    *,
+    launcher=None,
+    say: Callable[[str], None],
+    sleep=None,
+    now=None,
+    timeout: int = SSH_READY_TIMEOUT,
+    budget: Budget | None = None,
+) -> None:
+    """Open the tunnel, waiting out a machine that has not finished starting.
+
+    RUNNING is Google's word for "the VM is powered on". It is not "sshd is
+    listening", and on a box created moments ago it is not even "this machine
+    will stay up" — its startup script installs the NVIDIA driver and reboots it
+    once or twice. `create` says so in its closing line, and promises `comfy-qat
+    go` waits it out.
+
+    It did not. The first live `create` + `go` this tool ever ran hit exactly the
+    gap `create` describes: `go` printed "comfy-linux is running", opened a
+    tunnel into a machine whose sshd was not up, and reported it as a tunnel that
+    closed for unknown reasons with `gcloud auth login` as the fix. The session
+    was fine. The same command four minutes later installed ComfyUI and served
+    it, unchanged.
+
+    Two things were wrong and both are fixed here. `bring_up` only waits for sshd
+    when THIS run started the box — reasonable, and blind to the box someone else
+    started thirty seconds ago — so waiting is moved to where the failure
+    actually happens, and costs nothing on a box that is genuinely ready: a
+    tunnel that opens first time never enters the loop. And a still-booting
+    machine is now a shape the tunnel recognises (`SSH_NOT_READY`) rather than a
+    hard failure, so this can wait on it and everything else still fails fast.
+
+    Only that shape is retried. An expired credential, a port already taken and a
+    tunnel pointing at another machine are all raised on the first try, because
+    none of them gets better by being asked again and every retry is GPU time.
+    """
+    sleep = sleep or _pause
+    now = now or _clock
+    if budget is not None:
+        timeout = budget.allow(timeout)
+    deadline = now() + timeout
+    waiting = None
+    while True:
+        try:
+            open_tunnel(host, tunnel_dir, launcher=launcher)
+        except TunnelError as exc:
+            if getattr(exc, "kind", "") != SSH_NOT_READY or now() >= deadline:
+                if waiting is not None:
+                    waiting.give_up()
+                raise
+            if waiting is None:
+                waiting = output.slow(
+                    f"{host.name} is powered on but not accepting SSH "
+                    f"connections yet — waiting for it to finish starting",
+                    expect=f"up to {timeout}s", emit=say, clock=now,
+                    background=False,
+                ).start()
+            waiting.tick()
+            sleep(POLL_SECONDS)
+            continue
+        if waiting is not None:
+            waiting.done("reachable")
+        return
+
+
 def wait_for_ssh(
     gc: Gcloud,
     host: Host,
@@ -708,6 +939,7 @@ def wait_for_ssh(
     sleep=None,
     now=None,
     tunnel_dir: Path | None = None,
+    budget: Budget | None = None,
 ) -> None:
     """Wait until the box will actually run a command.
 
@@ -719,10 +951,16 @@ def wait_for_ssh(
     Waiting is only right for a machine that is still waking up. A credential
     that has expired will not come back on its own, and retrying it for five
     minutes is five minutes of GPU time spent on something that cannot succeed.
+
+    `budget` is the whole command's clock. Without one this keeps its own bound,
+    which is what every phase used to do and is exactly how `go` ran for fifteen
+    minutes with every individual wait correctly bounded.
     """
     sleep = sleep or _pause
     now = now or _clock
-    said_waiting = False
+    if budget is not None:
+        timeout = budget.allow(timeout)
+    said_waiting = None
     deadline = now() + timeout
     while True:
         try:
@@ -740,12 +978,15 @@ def wait_for_ssh(
                     fix=_with_the_bill(host, exc.fix or "gcloud auth login"),
                 ) from exc
             if now() >= deadline:
+                if budget is not None and budget.gone:
+                    raise out_of_time(host, budget, "the machine is still not "
+                                      "accepting commands", tunnel_dir, say) from exc
                 stand_down(host, tunnel_dir, say)
                 raise LifecycleError(
                     f"{host.name} is running but not accepting commands after {timeout}s: {exc}",
                     fix=_with_the_bill(host, how_to_get_in(host)),
                 ) from exc
-            if not said_waiting:
+            if said_waiting is None:
                 # Said on every OS, including a Linux box that takes seconds —
                 # observed on a real run, where an Ubuntu box printed "Windows
                 # takes a few minutes". A sentence about a different operating
@@ -753,9 +994,108 @@ def wait_for_ssh(
                 # it is talking to, in the one command whose job is being certain
                 # of that.
                 slow = " — Windows takes a few minutes" if is_windows(host) else ""
-                say(f"waiting for the machine to accept commands{slow}")
-                said_waiting = True
+                # A ticker rather than one line and then silence. This was the
+                # milder sibling of `wait_for_driver`'s defect: a single sentence
+                # and then up to five minutes of nothing, on a machine that
+                # bills. It also never said how long it was prepared to wait,
+                # which is the fact that decides whether somebody keeps waiting.
+                said_waiting = output.slow(
+                    f"waiting for the machine to accept commands{slow}",
+                    expect=f"up to {timeout}s", emit=say, clock=now,
+                    background=False,
+                ).start()
+            said_waiting.tick()
             sleep(POLL_SECONDS)
+
+
+# How long Remote Desktop gets to start answering on a box that is RUNNING.
+# Measured on a freshly created Windows Server box: RUNNING came minutes before
+# 3389 accepted anything, and a retry "a few minutes later" got through. Five
+# minutes is the same allowance `wait_for_ssh` gives the same boot.
+RDP_READY_TIMEOUT = 300
+
+
+def wait_for_port(
+    gc: Gcloud,
+    host: Host,
+    port: int,
+    say: Callable[[str], None],
+    *,
+    what: str,
+    timeout: int = RDP_READY_TIMEOUT,
+    sleep=None,
+    now=None,
+) -> None:
+    """Wait until something is listening on a port of the box.
+
+    Written for the gap between "Google says RUNNING" and "Remote Desktop will
+    accept a connection", which on a freshly created Windows box is minutes wide.
+    It is the same shape as every other readiness gap in this file — RUNNING was
+    not sshd listening, and "the VM booted" was not "ComfyUI is serving" — and it
+    is the one that had something irreversible on the other side of it.
+
+    Raises rather than returning False. Every caller is about to do something it
+    cannot take back, so "could not confirm" and "not ready" have to end the
+    command the same way, and a bool invites a caller to carry on past the first.
+
+    A box that will not answer at all is NOT treated as "not listening": that
+    would refuse a command over a bad minute on the SSH path. It is retried like
+    any other not-yet, and it fails at the deadline with the reason it was given.
+    """
+    from .provision import LISTENING, listening_command
+
+    sleep = sleep or _pause
+    now = now or _clock
+    deadline = now() + timeout
+    waiting = None
+    reason = ""
+    while True:
+        try:
+            answer = gc.ssh_output(host.gce_instance, host.gce_zone,
+                                   host.gce_project, listening_command(host, port))
+        except GcloudError as exc:
+            # The one answer that will not come good on its own. Retrying an
+            # expired credential for five minutes is five minutes of a GPU box
+            # billing for something that cannot succeed.
+            if is_auth_failure(exc):
+                raise LifecycleError(
+                    f"gcloud is not signed in, so {host.name} cannot be reached: "
+                    f"{exc}. The machine is running and billing.",
+                    fix=_with_the_bill(host, exc.fix or "gcloud auth login"),
+                ) from exc
+            answer, reason = "", f": {exc}"
+        else:
+            reason = ""
+            # Exact, not membership. The two answers are chosen so that neither
+            # contains the other, and comparing them properly as well means a
+            # future rename cannot quietly reintroduce the substring trap.
+            if str(answer or "").strip() == LISTENING:
+                if waiting is not None:
+                    waiting.done("ready")
+                return
+
+        if now() >= deadline:
+            if waiting is not None:
+                waiting.give_up()
+            raise LifecycleError(
+                f"{what} is not answering on {host.name} after {timeout}s, so "
+                f"nothing was changed on the machine{reason}. It is running and "
+                "billing.",
+                fix=_with_the_bill(
+                    host,
+                    "give it longer and try again — a freshly created Windows "
+                    "box takes several minutes to finish its first boot",
+                ),
+            )
+        if waiting is None:
+            waiting = output.slow(
+                f"{host.name} is running but {what} is not answering yet — "
+                f"waiting for it to finish starting",
+                expect=f"up to {timeout}s", emit=say, clock=now,
+                background=False,
+            ).start()
+        waiting.tick()
+        sleep(POLL_SECONDS)
 
 
 DRIVER_TIMEOUT = 900
@@ -770,6 +1110,7 @@ def wait_for_driver(
     sleep=None,
     now=None,
     tunnel_dir: Path | None = None,
+    budget: Budget | None = None,
 ) -> None:
     """Wait until a freshly created box has finished installing its GPU driver.
 
@@ -792,8 +1133,44 @@ def wait_for_driver(
     if is_windows(host) or not host.gpu or host.kind == "local":
         return
 
+    # A card no driver this tool installs can bring up, answered in a second
+    # rather than in fifteen minutes of billing.
+    #
+    # `create` refuses these outright (see `create.GSP_ARCHITECTURES`), so this
+    # is not the create path — it is the box that came from somewhere else and
+    # was picked up by `comfy-qat discover`. On one of those the loop below is
+    # guaranteed to run its full 900s and then blame the installer's log, and the
+    # log is the one place that looks FINE: measured on a P4 on 2026-09-09, the
+    # startup script exited 0 with the packages installed while the kernel had
+    # already refused the device 15 times. Sending a tester to read a successful
+    # log for a failure that is not in it is worse than saying nothing.
+    from .create import card_named
+
+    card = card_named(host.gpu)
+    if card is not None and not card.has_gsp:
+        stand_down(host, tunnel_dir, say)
+        raise LifecycleError(
+            f"{host.name} has a {card.name}, and nothing this tool installs can "
+            f"drive it: the open NVIDIA kernel module needs a GPU System "
+            f"Processor, and only Turing and newer cards have one. The machine is "
+            f"running and billing. Waiting will not change it — the driver install "
+            f"reports success and the kernel refuses the device.",
+            fix=_with_the_bill(
+                host,
+                "this tool did not create this box and cannot use it. Confirm on "
+                "the box itself:",
+                f"comfy-qat ssh {host.name}",
+                "then: dmesg | grep 'not supported by open'",
+            ),
+        )
+
     sleep = sleep or _pause
     now = now or _clock
+    # The longest wait in the tool, and therefore the one most likely to be what
+    # the whole command's clock is actually spent on. 900s of its own, or what is
+    # left of the half-hour, whichever is less.
+    if budget is not None:
+        timeout = budget.allow(timeout)
     deadline = now() + timeout
     waiting = None
     while True:
@@ -815,6 +1192,9 @@ def wait_for_driver(
                     fix=_with_the_bill(host, exc.fix or "gcloud auth login"),
                 ) from exc
             if now() >= deadline:
+                if budget is not None and budget.gone:
+                    raise out_of_time(host, budget, "the GPU driver has still not "
+                                      "come up", tunnel_dir, say) from exc
                 stand_down(host, tunnel_dir, say)
                 raise LifecycleError(
                     f"{host.name} still has no working GPU driver after {timeout}s. "
@@ -833,11 +1213,25 @@ def wait_for_driver(
                     expect=f"up to {timeout}s", emit=say, clock=now,
                     background=False,
                 ).start()
+            # THE LINE THAT WAS MISSING, and the whole of what fifteen minutes on
+            # a real box looked like. `background=False` means this ticker prints
+            # only when it is told to, and nothing told it — so the headline went
+            # out once and the command then said NOTHING for the entire 900s.
+            # Measured against this exact function: elapsed 900s, lines printed
+            # 1. A tester watching that has no way to tell a long wait from a
+            # hung one, and killed it at the fifteen-minute mark on a box that
+            # was billing — which is the correct thing to do when a tool has
+            # stopped speaking, and it should not have been necessary.
+            #
+            # Every other wait in this file already ticks. This one, the longest
+            # of them by a factor of three, was the one that did not.
+            waiting.tick()
             sleep(POLL_SECONDS)
 
 
 def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
-                     *, tunnel_dir: Path | None = None) -> None:
+                     *, tunnel_dir: Path | None = None,
+                     budget: Budget | None = None) -> None:
     """Make sure ComfyUI exists on the box, installing it if it does not."""
     from .provision import (
         check_command, cuda_command, install_command, root_for, torch_index_for,
@@ -846,7 +1240,7 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     # Before anything is asked of the box. An install started during the driver's
     # reboot dies half-done, and what it leaves behind is a clone with no venv —
     # which is the state that then reported "ComfyUI is already installed".
-    wait_for_driver(gc, host, say, tunnel_dir=tunnel_dir)
+    wait_for_driver(gc, host, say, tunnel_dir=tunnel_dir, budget=budget)
 
     def give_up(message: str, *, egress: bool = False) -> LifecycleError:
         return _give_up(host, tunnel_dir, say, message, egress=egress)
@@ -863,6 +1257,17 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         say("ComfyUI is already installed")
         _verify(gc, host, say, give_up)
         return
+
+    # Checked HERE, on the way in, because this is the one step the budget cannot
+    # cut short once it is running: the install streams through `gc.ssh`, which
+    # has no timeout of its own, so the clock is only readable on either side of
+    # it. Starting a job that takes minutes with seconds left on the command's
+    # clock is the shape the budget exists to refuse — and refusing it before it
+    # starts is also the only point at which nothing has been half-written to the
+    # box.
+    if budget is not None and budget.gone:
+        raise out_of_time(host, budget, "ComfyUI is still not installed",
+                          tunnel_dir, say)
 
     # The install streams its own log, so this ticks rarely: the log is the
     # evidence it is alive, and the tick is there for the minutes when pip has
@@ -1154,7 +1559,7 @@ def _arrive(host: Host, stamp: Stamp, say: Callable[[str], None],
     """Hand a machine over: name it beside its url, then open it.
 
     The single place a browser is pointed at a host, so it is the single place
-    that can decline to. `mismatch` had exactly one caller — `host stamp` — which
+    that can decline to. `mismatch` had exactly one caller — `comfy-qat stamp` — which
     left `go` printing "ComfyUI answering: …" and then opening a tab onto a
     machine that had just contradicted the one it was asked for.
 
@@ -1420,6 +1825,92 @@ def _still_alive(gc: Gcloud, host: Host) -> bool | None:
     return GONE not in answer
 
 
+def _installed(gc: Gcloud, host: Host) -> bool | None:
+    """Is ComfyUI on the box at all? None means the box would not say.
+
+    The sibling of `_still_alive`, and the pair of them is the difference between
+    "ComfyUI is not installed or not started" — which names two states and
+    commits to neither — and a sentence that says which one this is. `go` reads
+    the same answer, from the same command, in a couple of seconds; there was
+    never a reason for the message to guess.
+
+    `None` is not `False` here either. A box that would not answer has said
+    nothing, and "not installed" is the one claim that would send somebody to
+    reinstall over the top of a working install.
+    """
+    from .provision import check_command
+
+    try:
+        answer = gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                               check_command(host))
+    except (GcloudError, OSError):
+        return None
+    answer = str(answer or "").strip()
+    if not answer:
+        return None
+    return "INSTALLED" in answer
+
+
+def _not_answering(gc: Gcloud, host: Host, *, running: bool | None) -> LifecycleError:
+    """Nothing is on the tunnel. Say which of the reasons it is, and name `go`.
+
+    Every branch is COMFYUI_ABSENT and every branch says the machine is billing,
+    because both of those are true in all of them. What differs is the sentence a
+    person reads and the command they are handed, and that used to be one
+    sentence covering two states with an `or` — "ComfyUI is not installed or not
+    started" — followed by advice to get onto the box by hand.
+
+    That advice named the long way round. On a box that has ComfyUI installed and
+    stopped, which is EVERY box that has been through `down`, `comfy-qat go` sees
+    the install, skips it, launches ComfyUI and has it answering in under a
+    minute. Measured on real hardware at 52 seconds, immediately after `up` had
+    spent 180 seconds to conclude the opposite.
+    """
+    installed = _installed(gc, host) if running is False else None
+
+    if installed is True:
+        # "nothing has started it", not "it is not running". The money-agreement
+        # walk reads "is not running" as a claim about the MACHINE, and this
+        # paragraph says two sentences later that the machine is up and billing —
+        # so the shorter phrasing made the message contradict itself about the
+        # bill. It reads better as well: the subject of the sentence is ComfyUI
+        # and the subject of the contradiction was the box.
+        # All three branches lead with `ComfyUI is not answering on <url>`. That
+        # is the sentence people paste and the one the page is indexed on, and
+        # keeping it means telling somebody WHICH state this is costs them no
+        # relearning. The diagnosis follows the colon.
+        return LifecycleError(
+            f"ComfyUI is not answering on {host.url}: it is installed on "
+            f"{host.name} but nothing has started it. The machine is up and "
+            "billing.",
+            kind=COMFYUI_ABSENT,
+            fix=_with_the_bill(host, "start it:", f"comfy-qat go {host.name}"),
+        )
+    if installed is False:
+        return LifecycleError(
+            f"ComfyUI is not answering on {host.url}: it is not installed on "
+            f"{host.name}. The machine is up and billing.",
+            kind=COMFYUI_ABSENT,
+            fix=_with_the_bill(host, "install it and start it, in one command:",
+                               f"comfy-qat go {host.name}"),
+        )
+    # The box would not say, or was never asked. The `or` is honest here and only
+    # here — and `go` is still the answer to both halves of it, so it leads.
+    return LifecycleError(
+        f"{host.name} is running and tunnelled, but ComfyUI is not answering "
+        f"on {host.url}. The machine is up and billing; ComfyUI is not "
+        "installed or not started.",
+        kind=COMFYUI_ABSENT,
+        fix=_with_the_bill(
+            host,
+            "install it if it is missing, and start it either way:",
+            f"comfy-qat go {host.name}",
+            "or get onto the machine and look:",
+            how_to_get_in(host),
+        ),
+    )
+
+
 def _log_tail(gc: Gcloud, host: Host, lines: int = 20) -> str:
     """The end of the detached ComfyUI's log, read off the box.
 
@@ -1487,7 +1978,7 @@ def start_detached(
     occupied only because its log was streamed back over SSH, and that one
     convenience made two machines at once impossible — Windows in one browser tab
     and Linux in another is the ordinary case, not an exotic one. So the log goes
-    to a file on the box and `host logs` reads it.
+    to a file on the box and `comfy-qat logs` reads it.
 
     What does **not** change is when this returns. "Started" is not "serving":
     a launch that came back on the box's say-so would leave a GPU machine billing
@@ -1550,7 +2041,7 @@ def start_detached(
     if host.is_remote:
         # ComfyUI announces its own address — "To see the GUI go to
         # http://127.0.0.1:8188" — which is true on the box and wrong here, where
-        # 8188 is the local install. It is the first line of the log `host logs`
+        # 8188 is the local install. It is the first line of the log `comfy-qat logs`
         # will show, so say the right one alongside it.
         say(f"when it says 127.0.0.1:{COMFYUI_PORT}, on this machine that is "
             f"{host.url}")
@@ -1774,6 +2265,32 @@ def read_logs(
                 "something to read",
             ),
             refusal=True,
+        )
+    if code:
+        # EVERY OTHER NON-ZERO CODE, and until now every one of them was thrown
+        # away. `NO_LOG_EXIT` was the only value this function looked at, so a
+        # read that never reached the box — gcloud exits 255 when the connection
+        # is refused — returned 255 to a caller that discarded it, and `logs`
+        # exited 0. The phase L2 check in the criteria pack is literally
+        # `qat logs $BOX --tail 50; echo "exit $?"`, so the check graded nothing:
+        # it printed `exit 0` whether the log was read or the box was
+        # unreachable, which is the one shape this suite exists to catch.
+        #
+        # Raised here rather than judged at the call site, for `_act`'s own
+        # reason: the caller has a command and a name, and this frame has the
+        # box, the bill and how to get onto it. NOT a refusal — the read was
+        # attempted and did not finish, which is what 1 means and what
+        # `test_a_read_that_was_attempted_and_failed_still_exits_1` pins for the
+        # neighbouring branch.
+        #
+        # A Ctrl-C during a follow does not arrive here: `relay_output` re-raises
+        # KeyboardInterrupt rather than returning the child's code, and `logs`
+        # catches it and says ComfyUI is still running. So a code that does reach
+        # this line is a failure and not somebody ending a follow.
+        raise LifecycleError(
+            f"reading the ComfyUI log on {host.name} did not finish (exit {code}), "
+            f"so what is above this — if anything — is not the whole log.",
+            fix=_with_the_bill(host, how_to_get_in(host)),
         )
     return code
 
@@ -2037,11 +2554,27 @@ def put_away(
             return "idle"
         say(f"{host.name} left running — it is still billing")
         say(f"any ComfyUI on it is still running too: comfy-qat logs {host.name}")
-        # And how to stop, which this did not say. The --all branch summarises it
-        # for the whole set; the single-host form offered `logs` and left the bill
-        # hanging — the half of the rule that six commands hand-wrote and two
-        # forgot.
-        say(f"when the work is finished: {stop_paying(host)}")
+        # How to stop is said by the CALLER, and this is the one branch where it
+        # can be. `keep_running` is reached from `disconnect` and from nowhere
+        # else, and `disconnect` writes the offer in this tool's own shape for an
+        # offered command — `  <command>   # <why>`, on stdout, where somebody
+        # copies it from.
+        #
+        # It used to be said here as well, four words earlier, in prose. Two
+        # phrasings of one instruction closing the most safety-critical block the
+        # tool prints:
+        #
+        #     comfy-linux left running — it is still billing
+        #     any ComfyUI on it is still running too: comfy-qat logs comfy-linux
+        #     when the work is finished: comfy-qat down comfy-linux
+        #     comfy-qat down comfy-linux   # when the work is finished
+        #
+        # The duplication was deliberate and written down as such — the caller's
+        # line covers the branches above, where the state could not be read and
+        # this says nothing about money at all, so one of the two had to be
+        # unconditional. Both were. Keeping the caller's is what leaves each
+        # stream with something to carry: this block is the story on stderr, and
+        # the command to run is the answer on stdout.
         return "billing"
 
     # Read before stopping, so the line afterwards is news rather than grammar.

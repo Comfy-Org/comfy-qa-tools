@@ -173,17 +173,26 @@ def test_disconnect_says_the_comfyui_on_the_box_is_still_running_too(cli):
 def test_disconnect_says_how_to_stop_paying_when_the_work_is_finished(cli):
     """The bill, on the command that leaves it running.
 
-    Not the closing line `disconnect` prints itself — that one reads
-    `comfy-qat down comfy-win   # when the work is finished`, and lives in
-    host.py. This is lifecycle's own, the story on stderr next to the sentence
-    that says the box is still billing, and it went missing for six commands
-    before it was written in one place.
+    This used to assert lifecycle's own prose — `when the work is finished:
+    comfy-qat down comfy-win`, on stderr beside the sentence that says the box is
+    still billing — as distinct from the closing line `disconnect` prints itself.
+    Both were unconditional, and a live run showed the result: the tool's most
+    safety-critical block ended with one instruction in two phrasings, which is
+    how a block stops being read.
+
+    lifecycle's prose is gone and `disconnect`'s own line is the survivor, for
+    the reason `test_host_costs` records: it is on stdout, and making it
+    conditional instead left that stream empty on this path.
+
+    So what this test defends is unchanged and is the thing that actually
+    matters — the command that deliberately leaves a machine billing says how to
+    stop it — while no longer pinning WHICH of two lines carries it.
     """
     result = cli("disconnect", "comfy-win", cloud=Cloud(status="RUNNING"))
 
     assert result.exit_code == 0
-    assert ("when the work is finished: comfy-qat down comfy-win"
-            in result.output), result.output
+    assert "still billing" in result.output, result.output
+    assert "comfy-qat down comfy-win" in result.output, result.output
 
 
 # --- `down`: what it FOUND, which is the question the command exists for -----
@@ -378,3 +387,187 @@ def test_ssh_that_cannot_read_the_state_claims_nothing_about_it(cli):
     assert "could not tell whether" in out, out
     assert "is not running" not in out, "an unread state is not a stopped box"
     assert "list --live" in out, "it must say how to find out"
+
+
+def test_the_all_clear_is_not_given_while_a_box_on_the_project_is_running(cli):
+    """"Nothing is now." is the sentence someone reads before closing the laptop.
+
+    It used to be printed unconditionally by the branch that had stopped
+    something, while the paragraph two lines below it named a machine on the
+    project that is running and was NOT stopped. An all-clear exists to be the
+    last thing read, so the contradiction is not a tie — the reader stops at the
+    all-clear and the undeclared box bills all night.
+
+    The guard was already on the sibling branch, where nothing had been stopped.
+    This holds it on the branch that can also be wrong.
+    """
+    class HasAStranger(Cloud):
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            return [{"name": "orphan-box",
+                     "zone": "https://x/zones/us-central1-f",
+                     "status": "RUNNING"}]
+
+    result = cli("down", "--all", cloud=HasAStranger())
+
+    out = result.output
+    assert "was billing: comfy-win, comfy-linux. Stopped." in out, out
+    assert "Nothing is now" not in out, (
+        "an all-clear was given while orphan-box was running on the project"
+    )
+    assert "orphan-box" in out, "and the box it is not clear about is named"
+
+
+def test_the_all_clear_is_still_given_when_there_is_nothing_left(cli):
+    """The guard above must not swallow the case it exists to protect."""
+    class Clean(Cloud):
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            return []
+
+    result = cli("down", "--all", cloud=Clean())
+
+    assert ("was billing: comfy-win, comfy-linux. Stopped. Nothing is now."
+            in result.output)
+
+
+# THE OTHER THREE WAYS THE ALL-CLEAR CAN BE UNEARNED, and none of them had a
+# test. The pair above covers one shape — something was stopped, an undeclared
+# box is running — and the guard it pins is a single expression covering four
+# facts: `all_clear = not unknown and strangers == []`. Three of those four were
+# held by nothing, and each fails to a different one-word edit.
+#
+# Written as the general property rather than three unrelated cases, because the
+# defect was never about strangers in particular. It was that the sentence which
+# ends the command claimed more than the paragraphs under it knew.
+
+
+def _worlds():
+    """Four `down --all` runs, each with something the tool cannot call clear."""
+
+    class Stranger(Cloud):
+        """Something was stopped, and a box nobody declared is still running."""
+
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            return [{"name": "orphan-box", "zone": "https://x/zones/us-central1-f",
+                     "status": "RUNNING"}]
+
+    class Unreadable(Cloud):
+        """Something was stopped, and the project would not list.
+
+        The one that would come back from a plausible tidy-up. `strangers` is
+        `None` here and `None` is FALSY, so rewriting the guard as `not
+        strangers` — which reads identically and is what anybody would shorten it
+        to — turns an unread project back into an all-clear. `== []` is load-
+        bearing and this is what says so.
+        """
+
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            raise GcloudError("credentials expired")
+
+    class HalfRead(Cloud):
+        """One box stopped, one whose state could not be read before stopping.
+
+        `put_away` returns "unknown" for that one, and an unknown is not an idle:
+        it may have been billing all night and nothing looked. This is the
+        `not unknown` half of the guard.
+        """
+
+        def __init__(self):
+            super().__init__()
+            self._asked = 0
+
+        def instance_status(self, instance, zone, project):
+            self.calls.append("instance_status")
+            self._asked += 1
+            if self._asked == 1:
+                return "RUNNING"
+            raise GcloudError("no answer from the project")
+
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            return []
+
+    class NothingCaughtStranger(Cloud):
+        """Nothing to stop here, and an undeclared box running there.
+
+        The branch the original defect was NOT in, and the one that only stays
+        right while `elif all_clear` keeps its condition. Shortened to a bare
+        `else`, this prints "nothing was running, so nothing was billing" over a
+        live orphan — the same lie from the opposite side.
+        """
+
+        def __init__(self):
+            super().__init__(status="TERMINATED")
+
+        def current_project(self):
+            return "proj"
+
+        def list_instances(self, project):
+            return [{"name": "orphan-box", "zone": "https://x/zones/us-central1-f",
+                     "status": "RUNNING"}]
+
+    return {"an undeclared box is running": Stranger,
+            "the project could not be listed": Unreadable,
+            "one box's state was never read": HalfRead,
+            "nothing was stopped and an orphan runs": NothingCaughtStranger}
+
+
+@pytest.mark.parametrize("why", sorted(_worlds()))
+def test_no_all_clear_is_given_while_anything_is_unaccounted_for(cli, why):
+    """The sentence that ends `down --all` may not claim more than it knows.
+
+    It is read last and it is read alone: someone closing the laptop at 2am
+    reads the all-clear and stops, which is what an all-clear is for. So it has
+    to be false in every world where a machine may still be billing — whether the
+    machine is undeclared, unreadable, or simply never looked at.
+
+    Both wordings are checked, because there are two of them for two branches and
+    only one was ever wrong. Pinning the branch that broke would leave the other
+    free to break the same way, which is exactly how this arrived: the guard
+    already existed one line down and was never applied upward.
+    """
+    result = cli("down", "--all", cloud=_worlds()[why]())
+
+    out = result.output
+    assert "Nothing is now" not in out, (
+        f"an all-clear was given while {why}:\n{out}"
+    )
+    assert "nothing was running, so nothing was billing" not in out, (
+        f"the other all-clear was given while {why}:\n{out}"
+    )
+    # And it must still be a successful `down`. These are reports about what is
+    # left, not failures of the stopping — turning them into a non-zero exit
+    # would make the honest answer look like a broken command.
+    assert result.exit_code == 0, out
+
+
+@pytest.mark.parametrize("why", sorted(_worlds()))
+def test_what_is_unaccounted_for_is_named_and_not_merely_withheld(cli, why):
+    """Withholding the all-clear is half the job. The other half is saying why.
+
+    A summary that simply goes quiet is read as a rough all-clear anyway — the
+    reader assumes nothing was worth mentioning. Each of these four has to leave
+    a sentence naming what it could not settle, and a command to settle it.
+    """
+    out = cli("down", "--all", cloud=_worlds()[why]()).output
+
+    named = ("orphan-box" in out
+             or "not an all-clear" in out
+             or "could not be checked before stopping" in out)
+    assert named, f"nothing in the summary says what is unresolved:\n{out}"
+    assert "comfy-qat" in out or "gcloud compute instances stop" in out, (
+        f"it withheld the all-clear and offered no way to settle it:\n{out}"
+    )

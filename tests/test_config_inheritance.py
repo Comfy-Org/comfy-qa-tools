@@ -75,6 +75,7 @@ from typer.testing import CliRunner
 import comfy_qa.cli
 from comfy_qa.config import DEFAULT_CONFIG_PATH
 from fakes import hosts_toml
+from pathnames import paths_named
 
 PACKAGE = Path(__file__).resolve().parent.parent / "comfy_qa"
 
@@ -782,20 +783,59 @@ def test_the_commands_that_write_the_host_list_say_so(name):
     )
 
 
+def test_a_command_docstring_still_names_a_path_at_all():
+    """The anti-vacuity floor under the test below.
+
+    That test clears a docstring by finding no path in it, which is the right
+    answer for most commands and the only answer if `paths_named` ever stops
+    working — a changed regex, a moved module — at which point twenty-one cases
+    would pass on an empty list and nothing would say so. Not a headcount: it
+    asks whether the detector still finds anything.
+    """
+    quoting = sorted(
+        name for name in COMMANDS
+        if paths_named(ast.get_docstring(COMMANDS[name]) or "")
+    )
+    assert quoting, (
+        "no command docstring names a path at all, which points at "
+        "`tests/pathnames.py` having stopped seeing them rather than at the "
+        "documentation having stopped making claims. Check the detector against "
+        "`tests/test_pathnames.py` before believing this."
+    )
+
+
 @pytest.mark.parametrize("name", sorted(COMMANDS))
 def test_a_docstring_that_names_the_host_list_names_the_real_one(name):
     """The same bar `test_option_help.py` holds help text to, applied where the
     sentences moved to. A path in a docstring is a promise about where the tool
     looks, and a promise nothing checks is how it comes to name a directory the
     tool stopped using two refactors ago.
+
+    This used to be in scope only when the docstring contained
+    `DEFAULT_CONFIG_PATH.name` — the bare filename `hosts.toml`, which is also a
+    substring of the answer it then asserted. So the only wrong paths it could
+    catch were the ones that kept the right filename: a docstring pointing at
+    `~/.comfyqat/machines.toml` SKIPPED, and fifteen of the twenty-one commands
+    resolved that way. `docs/tests-that-cannot-fail.md` section 7, with section
+    3's symptom.
+
+    Inclusion is now by shape and the assertion is by identity, which is that
+    section's remedy: `paths_named` knows nothing about where the host list is,
+    so a wrong path is in scope on being a path and is then simply wrong. A
+    command that names no path is not skipped either — there is nothing to check,
+    the loop runs zero times, and the floor above is what notices if that ever
+    becomes true of all of them at once.
     """
     doc = ast.get_docstring(COMMANDS[name]) or ""
-    if DEFAULT_CONFIG_PATH.name not in doc:
-        pytest.skip("this docstring does not quote a path")
-    assert DEFAULT_AS_WRITTEN in doc, (
-        f"`comfy-qat {name}` tells the reader the host list is somewhere other "
-        f"than {DEFAULT_AS_WRITTEN}, which is where DEFAULT_CONFIG_PATH points"
-    )
+    for named in paths_named(doc):
+        assert named == DEFAULT_AS_WRITTEN, (
+            f"`comfy-qat {name}` tells the reader a file lives at {named}. The "
+            f"host list is at {DEFAULT_AS_WRITTEN}, which is where "
+            f"DEFAULT_CONFIG_PATH points. Every path a command docstring names is "
+            f"held to that, deliberately — if this command genuinely needs to "
+            f"document some OTHER path, that is a decision to make here, in the "
+            f"open, rather than by loosening the detector until this goes quiet."
+        )
 
 
 # --- and that it works, in every position it gets typed in -------------------

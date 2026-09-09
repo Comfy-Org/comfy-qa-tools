@@ -662,6 +662,23 @@ def test_following_and_not_following_are_different_commands(host):
         assert logs_command(host, tail=7, follow=follow).count(" 7") >= 1
 
 
+@pytest.mark.parametrize("host", [WIN, LINUX], ids=["windows", "linux"])
+def test_tail_zero_asks_for_no_lines_rather_than_one(host):
+    """`max(1, int(tail))` rounded a request for nothing up to a line.
+
+    Zero is a real answer and not a degenerate one: `tail -n 0 -f` and
+    `Get-Content -Tail 0 -Wait` are both "no backlog, start from now", which is
+    what you want while watching a generation begin. Rounding it to 1 printed a
+    line of history the reader had asked not to see, and — because the same
+    clamp covered negatives — made `--tail -5` look like it had worked.
+    """
+    reading = logs_command(host, tail=0, follow=True)
+    assert " 0" in reading, reading
+    assert " 1" not in reading.replace("127.0.0.1", ""), (
+        f"a request for no lines was answered with one:\n{reading}"
+    )
+
+
 def test_the_linux_liveness_check_does_not_match_the_command_carrying_it():
     """`pgrep -f 'main.py --listen'` matches the shell running that very command,
     so a dead ComfyUI reads as alive forever. The bracket is what stops it."""

@@ -27,6 +27,50 @@ who did not write the tool. Rather than repeat it, this is what it covered:
 | **never had a criterion** | phase S (`ssh`, `rdp`, `disconnect`) and phase N (`delete`). Four commands, added here because the pack could not see them — one of which destroys a machine |
 | **never run at all, by anyone** | phase R (`move`). A real move end to end on hardware has never happened; everything believed about the command comes from tests. It is the largest untested surface in the tool |
 
+**All of that was true until 2026-09-09. Read the next section before you use this
+table** — K, E, L, S, R, G and N have now been run on live GCE hardware, phase R
+included, and four of the six cards this tool offered turn out never to have been
+able to work at all.
+
+## What the 2026-09-09 hardware run established
+
+A run against live GCE boxes covered, for the first time, **K (`create`), E/F
+(`go`, `up`), L (`logs`), S (`ssh`, `rdp`, `disconnect`), R (`move`), G (`down`)
+and N (`delete`)**. Several statements elsewhere on this page that say a thing has
+never been run are older than that and are corrected at each phase. What it found,
+in the order it matters:
+
+**The finding that changes what the tool offers.** Four of the six cards a tester
+could reach for — **V100, P100, P4 and K80** — could never have worked. Provisioning
+installs the open NVIDIA kernel module, which needs a **GSP**, and only Turing and
+newer cards have one; on Kepler, Pascal and Volta no module loads at all, so the
+box boots, bills, and never sees its own GPU. `create` now refuses all four before
+creating anything (**K2b**) and `quota list` marks them (**C4d**). **Only L4 and
+T4 were proved to work**, and both ran real ComfyUI generations — 6.3s and 8.6s.
+Nothing on this page had a check that could have caught it, which is why K2b and
+C4d are written as a pair: the refusal and the advertisement have to agree.
+
+**Passed on hardware.** `create`, including the stockout fallback — three zones had
+no L4 free and it fell through to a fourth and succeeded — and the `untried`
+refusal printing a runnable `--os linux`, watched during a real T4 stockout.
+`logs --tail` against a running box, and its exit-2 refusal against a stopped one.
+`ssh`. `disconnect`, leaving the box billing and saying so. `down` and `delete`:
+`delete` refuses a running box outright, **refuses a piped confirmation** — `this
+needs a terminal to confirm in` — and removes instance, disk and host-list entry
+together. The first real `move` ever run: its ceiling refusal is free and creates
+nothing, and a move that hit a stockout part way **named exactly what it left
+billing and printed the exact delete commands**.
+
+**Failed on hardware, which is the more valuable half.** Three defects, each
+against a criterion that should have caught it and now does:
+
+| what failed | the criterion |
+|---|---|
+| `go` after `create` failed on the tunnel; it now waits the driver reboot out | E3 |
+| `up` **cannot get ComfyUI serving** on a previously-stopped box — nothing restarts it at boot. The pack implied otherwise | **F1c**, new |
+| `rdp` resets the password and then fails if RDP is not yet listening — **fixed the same night**; the reachability check now runs first | **S3d**, new |
+| `move` **starts a stopped box** on the "no move needed" path, and `--clean` does not clean there | **R2d**, new |
+
 Two things to hold on to. **Everything about `create` and `logs` is unverified**,
 which makes phases K and L the point of the next run rather than a formality. And
 **E3 and E7 have been rewritten**: they described a `go` that streamed ComfyUI's
@@ -63,9 +107,12 @@ three of them sat in the phases that cost money.
 ## The nine commands nothing has ever run, sorted by what they cost
 
 `move`, `create`, `logs`, `ssh`, `rdp`, `disconnect`, `delete`, `discover` and
-`quota request` have never been run against real hardware. They do not all need
-it. Sorting them is the difference between a nine-command backlog and a
-forty-minute evening:
+`quota request` had never been run against real hardware when this section was
+written. **Eight of the nine have been run since — on 2026-09-09 — and `discover`
+was run offline in phase P.** The sorting below is what made that evening
+possible and it is kept for the next one: it is the difference between a
+nine-command backlog and a forty-minute evening, and the free tables are still
+the cheapest ticks in the pack.
 
 **Offline. No gcloud, no project, no money — run these tonight.** Each is refused
 from the host list alone, before a `Gcloud` object is built, so a throwaway
@@ -86,7 +133,7 @@ nothing.** No box required, so these can be run straight after phase C:
 
 | command | checks | what it reads |
 |---|---|---|
-| `discover` | E1 | one `instances list` on the project. Nothing written under `--dry-run` |
+| `discover` | E1, **P1–P6c** | one `instances list` on the project, plus one `describe` per stale entry under `--prune`. Nothing written under `--dry-run` |
 | `create` | K1, K2, K4b, K4c | the project, the instance list, and about a minute of quota |
 | `quota request` | C9, C9b, C9d | C9 reads only; C9b files a real request, which costs no money and cannot be withdrawn |
 
@@ -173,7 +220,10 @@ echo "=== A4 quota surface"; qat quota --help 2>&1 | sed -n '/Commands/,$p'
 echo "=== A5a the old spellings are gone"; qat host up; echo "exit $? (2 = gone)"
 echo "=== A5b and so is the other one"; qat auth status; echo "exit $? (2 = gone)"
 echo "=== A5c and env, which is hidden, is NOT gone"; qat env --help >/dev/null 2>&1; echo "exit $? (0 = reachable)"
-echo "=== A6 the first-run text, where the question is actually asked"; qat --config $HOME/no-such-dir/hosts.toml 2>&1 | tail -14
+echo "=== A6 the first-run text, where the question is actually asked"
+A6=$(mktemp); qat --config $HOME/no-such-dir/hosts.toml > "$A6" 2>&1; echo "A6 exit $? (0 expected)"
+grep -q "Usage:" "$A6" && grep -q "Commands" "$A6" && echo "help: printed" || echo "help: MISSING"
+A6T=$(sed -n '/No machines yet/,$p' "$A6"); [ -n "$A6T" ] && printf '%s\n' "$A6T" || { echo "A6 no first-run text — the whole output follows:"; cat "$A6"; }
 cd "$REPO"; echo "=== A7 tests"; "$PY" -m pytest tests/ -q 2>&1 | tail -3
 echo "=== A8 no message offers the old spelling"
 grep -rn "comfy-qat host \|comfy-qat auth " comfy_qa/; echo "exit $? (1 = clean)"
@@ -212,6 +262,16 @@ grep -rc "comfy-qat down " comfy_qa/ | grep -v ":0$"; echo "exit $? (0 = the gre
       removed at 1.1.0 — a first-run text you have to know a command name to reach
       is not serving first runs. If it names `host list` or `auth status` that is
       a fail; those do not run any more.
+      **The block prints `A6 exit`, and the whole first-run text rather than its
+      last fourteen lines.** It used to be `… 2>&1 | tail -14`, and that
+      instrument could not show you either half of what this criterion asks.
+      `tail -14` cut the output at the docs footer, so `comfy-qat setup` — the
+      one line the criterion is about, and the first thing the text names — was
+      never on screen; and a pipeline reports the exit status of `tail`, so the
+      `exiting 0` clause graded nothing at all. Both halves are printed now: the
+      status comes from the command itself, and `sed` prints from `No machines
+      yet` to the end. If the first-run text is missing entirely the block says
+      so and dumps everything, rather than printing an empty tail.
 - [ ] **A7** — every test passes.
 - [ ] **A8** — **no message the tool prints offers the old spelling.** The grep
       prints nothing and **exits 1**. It is a grep and not a judgement call
@@ -268,6 +328,16 @@ echo "=== B8 missing kind is refused"; qat list --config $T/b8.toml; echo "exit 
 { echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; printf '[hosts.noport]\nkind = "gce"\nos = "Ubuntu 22.04"\ngpu = "L4"\ngce_instance = "noport"\ngce_zone = "us-central1-a"\ngce_project = "%s"\n' "$P"; } > $T/b9.toml
 echo "=== B9 cloud host with no port is refused"; qat list --config $T/b9.toml; echo "exit $?"
 echo "=== B10 missing file"; qat list --config $T/nope.toml; echo "exit $?"
+echo "=== B11 is every message above quoted in troubleshooting.md"
+PAGE=$REPO/docs/troubleshooting.md; HEADINGS=$(grep -c '^\*\*' "$PAGE" 2>/dev/null); HEADINGS=${HEADINGS:-0}
+if [ "$HEADINGS" -lt 200 ]; then echo "B11 STOP - not reading the page: $PAGE ($HEADINGS entry headings). Every line below would be a false MISSING, so this is neither a pass nor a fail. Fix the path and re-run."; else
+tr '\n' ' ' < "$PAGE" | tr -s ' ' > $T/page.flat; echo "page $PAGE - $HEADINGS entry headings, readable"; miss=0
+for pair in B5:b5.toml B6:b6.toml B7:b7.toml B8:b8.toml B9:b9.toml B10:nope.toml; do
+  msg=$(qat list --config $T/${pair#*:} 2>&1 | head -1)
+  pat=$(printf '%s' "$msg" | sed -e 's/[[:space:]][[:space:]]*/ /g' -e 's/[][\\.*^$(){}?+|]/\\&/g' -e "s/'[^']*'/'[^']*'/g" -e 's|[~/][^ ]*|[^ ]*|g')
+  if grep -Eq "$pat" $T/page.flat; then echo "  FOUND   ${pair%%:*}  $msg"; else miss=$((miss+1)); echo "  MISSING ${pair%%:*}  $msg"; fi
+done
+[ "$miss" -eq 0 ] && echo "B11 pass - all 6 quoted in troubleshooting.md" || echo "B11 FAIL - $miss of 6 are not on the page; each MISSING line above is the wording that needs an entry"; fi
 ```
 
 - [ ] **B0b** — **no fixture on this page invents a project id.** Nothing in phase
@@ -283,7 +353,14 @@ echo "=== B10 missing file"; qat list --config $T/nope.toml; echo "exit $?"
       refusal and ticked the claim about the file, which the refusal is not
       evidence for. It is free, offline, and it is the difference between
       believing `init` and checking it.
-- [ ] **B3** — a table with NAME KIND OS GPU URL.
+- [ ] **B3** — a table with NAME KIND OS GPU URL **STATE**, and under it the one
+      line that says what STATE is: what this machine knows without asking
+      anything — whether a tunnel is open — and that `--live` is how you ask the
+      box itself. The starter list is one row, `local`, with `-` under OS, GPU
+      and STATE. **STATE and that line are newer than this criterion was**, which
+      named five columns and would have failed a correct build on the sixth: a
+      column the binary prints and this line does not is not a pass, it is this
+      criterion going stale, which A3 has already done once here.
 - [ ] **B4** — bare `comfy-qat` prints the same table as B3, and accepts
       `--config`. It used to be bare `host` that was checked here; the noun went
       at 1.1.0 and the behaviour did not — reading is still the safe default for
@@ -295,10 +372,45 @@ echo "=== B10 missing file"; qat list --config $T/nope.toml; echo "exit $?"
 - [ ] **B8** — says `kind` must be `local` or `gce`. Exit 2.
 - [ ] **B9** — says a `gce` host needs an explicit port. Exit 2.
 - [ ] **B10** — says there is no host list and how to make one. Exit 2.
-- [ ] **B11** — every message in B5–B10 is findable in
-      [troubleshooting.md](troubleshooting.md) by pasting it in.
+- [ ] **B11** — every message in B5–B10 is quoted at the head of an entry in
+      [troubleshooting.md](troubleshooting.md). The block prints `FOUND` or
+      `MISSING` against each of the six, with the message it actually re-ran the
+      tool to get, and ends in one of three lines. `B11 pass - all 6 quoted` is
+      the tick. `B11 FAIL - N of 6` names each missing wording, which is the text
+      to add as an entry. `B11 STOP` means the grep never reached the page at
+      `$REPO/docs/troubleshooting.md` — and that is neither a pass nor a fail,
+      because a grep pointed at nothing reports every message as missing just as
+      loudly as a page that has lost them. The guard is the page's own entry
+      headings: fewer than 200 of them and the block refuses to grade rather than
+      printing six false MISSINGs.
+      **Until this block existed B11 was a criterion with no step.** Nothing in
+      the phase looked at the page, so the box was ticked on the tester's memory
+      of having read it — the same shape as a criterion whose expected result is
+      printed on both branches. The host names and the temp path differ every run,
+      so the block wildcards the single-quoted names and the paths and matches the
+      rest of the wording verbatim against the page with its line wrapping
+      flattened; the entries quote `comfy-win`, `a` and `b` where your run says
+      `bad`, `one` and `two`.
+      **Whitespace is collapsed on both sides before matching, and that is not
+      cosmetic.** The page wraps long entry headings across lines — B10's is
+      written as `**no host list at ~/.config/comfy-qa-tools/hosts.toml. Run
+      \`comfy-qat init\`` on one line and `to write a starter one.**` on the next
+      — so a line-oriented grep for the message finds nothing and reports a
+      documented entry as MISSING. That has already happened once and B10 was
+      briefly written up as a gap in the page. The block flattens the whole file
+      to one line and squeezes runs of spaces in the message, so a wrap cannot
+      look like an absence.
+      **All six are on the page today** — verified by hand on 2026-09-09 and by
+      running this block. That makes 6/6 the positive control as well as the
+      tick: a run that reports fewer has either found a real regression in the
+      page or is being graded by a broken instrument, and the instrument is the
+      first thing to suspect. Check the message against the page by eye before
+      writing up a documentation gap.
 
-*Ran 2026-08-27 — **all of phase B passed**.*
+*Ran 2026-08-27 — **all of phase B passed**, but **B3 and B11 are not the boxes
+that were ticked**. B3 named five columns and the table prints six; B11 was a
+criterion with no step in the block at all, so the tick was a tester's memory of
+having read the page. Both need running again.*
 
 ## Phase C — sign-in, billing, quota *(cloud reads only, no cost)*
 
@@ -317,14 +429,18 @@ are four of them. That is expected, not a hang.
 
 
 ```sh
+CQ=$(mktemp -d)
 echo "=== C1 status"; qat status
 echo "=== C2 status json"; qat status --json | head -30
 echo "=== C3 login prints, never signs in"; qat login
 echo "=== C4 quota (about a minute)"; time qat quota list
-echo "=== C5 one region"; qat quota list --region us-central1
+echo "=== C5 one region"; qat quota list --region us-central1 > $CQ/before.txt; cat $CQ/before.txt
 echo "=== C6 by region"; qat quota list --by-region 2>&1 | head -15
 echo "=== C7 quota json"; qat quota list --json 2>&1 | head -20
 echo "=== C9 asking for a card, without asking"; qat quota request --gpu l4 --region us-central1 --dry-run; echo "exit $?"
+echo "=== C9a and it filed nothing - the same region, read again (about a minute)"
+qat quota list --region us-central1 > $CQ/after.txt
+if grep -q '^GPU ' $CQ/before.txt && grep -q '^GPU ' $CQ/after.txt; then diff $CQ/before.txt $CQ/after.txt && echo "C9a unchanged - nothing was filed"; else echo "C9a STOP - one of the two reads came back with no quota table, so this diff proves nothing"; fi
 ```
 
 `--dry-run` is not this command's default. **`--wait` is, and it is on**, so the
@@ -340,7 +456,13 @@ time qat quota request --gpu l4 --region us-central1; echo "exit $?"
 echo "=== C9d what it left"; qat quota list --region us-central1
 ```
 
-- [ ] **C1** — one line per check: gcloud, account, project, billing, GPU quota.
+- [ ] **C1** — one line per check, **six of them**: gcloud, account, project,
+      billing, gpu quota, numpy. The last reads `gcloud's tunnel is on the fast
+      path` and is easy to miss because it is the only row that is about this
+      machine rather than about the project. **This criterion named five** and
+      would have failed a correct build on the sixth — the same staleness as B3
+      and A3, and the third time in this pack that a criterion has counted a
+      surface and then not been recounted when the surface grew.
       Stops at the first failure rather than printing five. **If this fails, stop:
       nothing else in phases C to G can pass.**
 - [ ] **C2** — valid JSON, same facts, **no credential or token anywhere in it**.
@@ -355,17 +477,45 @@ echo "=== C9d what it left"; qat quota list --region us-central1
       — `status` counted 25 grants of which 18 could not start anything.
 - [ ] **C4c** — if the line is cut short it says so (`+2 more — 6 card(s) ready`).
       A silent truncation reads as the whole answer.
+- [ ] **C4d** — **a card this tool cannot drive is never presented as usable.**
+      Four of the cards a project can hold quota for — **K80, P100, P4 and
+      V100** — cannot be brought up by this tool at all, and `quota list` says so
+      on every one of their rows: `ready — this tool cannot drive it`, followed by
+      a note naming all four and the reason. The reason is worth reading once
+      because it is not a policy choice: provisioning installs the **open NVIDIA
+      kernel module**, which needs a **GPU System Processor (GSP)**, and only
+      Turing and newer cards have one. Kepler, Pascal and Volta have none, so the
+      driver installs, no module ever loads, and `nvidia-smi` never works — the
+      box boots, bills, and cannot see its own GPU. **`ready` on its own for these
+      four is the failure**: the quota is genuinely held and genuinely useless, and
+      a table that says only `ready` invites a tester to spend a night finding
+      that out. Verified 2026-09-09; the refusal that backs it is K2b.
 - [ ] **C5/C6** — narrowing works and the numbers agree with C4.
 - [ ] **C7** — valid JSON with `project`, `gpus`, `by_region`.
 - [ ] **C8** — if nothing is usable, it prints the exact `quota request` command
       to fix that. *(Only reachable on a project with no approved card. If C4 found
       one, record C8 as not run — it cannot be forced from here.)*
-- [ ] **C9** — `quota request --dry-run` prints the `gcloud` call it would make —
-      the card, the region, the value and the justification — and **submits
-      nothing**: it returns before `gc.run` and before the wait, so it is the one
-      path here that reaches no branch of the default. Confirm it submitted
-      nothing rather than reading it off the word "dry": `qat quota list --region
-      us-central1` shows no new pending request. Exit 0.
+- [ ] **C9** — `quota request --dry-run` prints the one `gcloud quotas preferences
+      create` call it would make — the service, the project, the **quota id**
+      (`NVIDIA-L4-GPUS-per-project-region`), the **preferred value** and the
+      **region dimension** — and **submits nothing**: it returns before `gc.run`
+      and before the wait, so it is the one path here that reaches no branch of
+      the default. Exit 0. **A justification appears only if you passed
+      `--justification`** — left off, nothing is sent, so its absence here is
+      correct and is not a missing field.
+- [ ] **C9a** — **and you watched it submit nothing, rather than reading it off
+      the word "dry".** C5 captured the region's quota table before the dry-run,
+      C9a reads it again afterwards, and the two must `diff` clean —
+      `C9a unchanged - nothing was filed`. Until this step existed the confirming
+      clause was written into C9 with **no step in the block that could observe
+      it**, which is the shape B11 had: a criterion asking the tester to check
+      something the block never did. The comparison is stdout only and
+      deliberately so — the progress lines carry a **measured duration** (`done in
+      51s`, then `done in 43s`) that differs every run and would make an honest
+      diff look like a change. `C9a STOP` means a quota read came back with no
+      table at all, and two empty files also `diff` clean: that is neither a pass
+      nor a fail. **Costs about a minute**, which is the price of the only check
+      here that can tell a dry run from a submission.
 - [ ] **C9b** — **a real submission, with the waiting turned off.** It prints
       `requested l4 = 1 in us-central1` and then `track them: <console URL>`, and
       **returns immediately** — seconds, not minutes. This is the first half of
@@ -397,6 +547,186 @@ echo "=== C9d what it left"; qat quota list --region us-central1
 *Ran 2026-08-27 — **all of phase C passed**, C4b included. That check exists
 because it caught a real defect: `status` counted 25 grants of which 18 could not
 start anything.*
+
+## Phase P — `discover --prune`, the other command that destroys something *(cloud reads only, no cost)*
+
+**Nothing in this pack has ever had a criterion for `--prune`.** The word does not
+appear anywhere else on this page. `discover` is covered by E1, which is
+`--dry-run` idempotence and adds nothing, so the pack audits `delete` across
+fifteen checks in phase N and leaves the *other* destructive path unexercised —
+and it is the less guarded of the two. `delete` destroys one machine and makes you
+type its name back. `--prune` removes **N host-list entries on a single `[y/N]`**,
+which is the reflex-answered prompt `remove.py` opens by arguing against, and
+`--yes` skips even that. The host list is hand-maintained and has no other copy on
+this machine.
+
+**All of P1–P6 are free.** They need `gcloud auth login` and a project, like phase
+C, and they create nothing, start nothing and bill nothing — the fixtures are
+throwaway host lists naming boxes the project does not have. Run them straight
+after phase C. **P7 and P8 need a real box** and are written to be run during
+phase E or K, when one exists.
+
+```sh
+PT=$(mktemp -d); echo "=== P0 scratch $PT"
+PJ=$(gcloud config get-value project 2>/dev/null); echo "=== P0b project $PJ - read, never invented"
+echo "=== P0c what the project really holds, which is what prune reconciles against"; gcloud compute instances list --project=$PJ
+echo "=== P1 the three flags exist"; qat discover --help 2>&1 | sed -n '/Options/,$p'
+pentry() { printf '[hosts.%s]\nkind = "gce"\nos = "Ubuntu 22.04"\ngpu = "L4"\ngce_instance = "%s"\ngce_zone = "%s"\ngce_project = "%s"\nport = %s\n\n' "$1" "$1" "$4" "$3" "$2"; }
+{ echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry ghostone 8190 "$PJ" us-central1-a; pentry ghosttwo 8191 "$PJ" us-central1-a; } > $PT/ghosts.toml
+cp $PT/ghosts.toml $PT/ghosts.before
+echo "=== P2 --dry-run names the ghosts"; qat discover --prune --dry-run --config $PT/ghosts.toml; echo "exit $?"
+echo "=== P2b and wrote nothing"; diff $PT/ghosts.before $PT/ghosts.toml && echo "unchanged"
+echo "=== P2c and left no .bak behind"; ls $PT | grep bak || echo "no backup written, which is right - nothing was written to back up"
+echo "=== P3 the prompt, answered no"; printf 'n\n' | qat discover --prune --config $PT/ghosts.toml; echo "exit $?"
+echo "=== P3b nothing removed"; diff $PT/ghosts.before $PT/ghosts.toml && echo "unchanged"
+echo "=== P4 the prompt, answered yes - ONE answer, BOTH entries"; printf 'y\n' | qat discover --prune --config $PT/ghosts.toml; echo "exit $?"
+echo "=== P4b what is left"; cat $PT/ghosts.toml
+echo "=== P4c .bak is the file as it was BEFORE the run"; diff $PT/ghosts.before $PT/ghosts.toml.bak && echo "bak == pre-run file"
+{ echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry yesbox 8190 "$PJ" us-central1-a; } > $PT/yes.toml
+echo "=== P5 --yes removes it with no prompt at all, on closed stdin"; qat discover --prune --yes --config $PT/yes.toml < /dev/null; echo "exit $?"; cat $PT/yes.toml
+{ echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry denied 8190 bigquery-public-data us-central1-a; } > $PT/denied.toml
+echo "=== P6 a project this account may not read - refuting is not confirming"; qat discover --prune --dry-run --config $PT/denied.toml; echo "exit $?"
+{ echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry unread 8190 no-such-project-comfy-qa-9271 us-central1-a; } > $PT/noproj.toml
+echo "=== P6b a project id that does not exist - the same question one level up"; qat discover --prune --dry-run --config $PT/noproj.toml; echo "exit $?"
+echo "=== P6c the three sentences Google actually answers with, side by side"
+gcloud compute instances describe denied --zone=us-central1-a --project=bigquery-public-data 2>&1 | head -3
+gcloud compute instances describe unread --zone=us-central1-a --project=no-such-project-comfy-qa-9271 2>&1 | head -3
+gcloud compute instances describe ghostone --zone=us-central1-a --project=$PJ 2>&1 | head -3
+```
+
+**P7 and P8 need a box.** Run them while phase E or K has one up, with `BOX` set
+to a machine `qat list` shows as running.
+
+```sh
+BOX=comfy-linux    # a RUNNING box, from qat list
+BZ=$(gcloud compute instances list --project=$PJ --filter="name=$BOX" --format="value(zone)"); echo "=== P7 $BOX is really in $BZ"
+{ echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry $BOX 8190 "$PJ" us-central1-f; } > $PT/zone.toml
+cp $PT/zone.toml $PT/zone.before
+echo "=== P7 the entry claims us-central1-f and the box is not there"; printf 'n\n' | qat discover --prune --config $PT/zone.toml; echo "exit $?"
+echo "=== P7b the entry survived"; diff $PT/zone.before $PT/zone.toml && echo "unchanged"
+{ echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry ghostone 8190 "$PJ" us-central1-a; } > $PT/both.toml
+cp $PT/both.toml $PT/both.before
+echo "=== P8 one run that both adds $BOX and prunes ghostone"; printf 'y\n' | qat discover --prune --config $PT/both.toml; echo "exit $?"
+echo "=== P8b what the file holds now"; cat $PT/both.toml
+echo "=== P8c and .bak is still the PRE-RUN file, not the state between the two writes"; diff $PT/both.before $PT/both.toml.bak && echo "bak == pre-run file"
+```
+
+- [ ] **P0c** — **read the project's real inventory before you grade anything
+      below.** Every P check is about the difference between what the host list
+      claims and what the project holds, so a run where you did not look at the
+      second half is a run where `GONE` cannot be checked. `Listed 0 items.` is a
+      perfectly good starting point and makes every declared cloud box a ghost,
+      which is what P2–P5 want.
+- [ ] **P1** — `--dry-run`, `--prune` and `--yes` are all on `discover --help`,
+      with `--prune` described as removing entries for boxes the project no
+      longer has.
+- [ ] **P2** — the ghosts are named **one per line, with the instance, the zone
+      and the project that was asked**, under `not on the project any more — the
+      box is gone, the entry is not:`. A count would not be checkable; the point
+      of the line is that you can read it and disagree with it before anything is
+      removed.
+- [ ] **P2b/P2c** — `--dry-run` ends `--dry-run: nothing written`, the file
+      `diff`s clean, **and no `.bak` appeared**. P2c is the one that is easy to
+      leave out and it is the one that catches a dry run which took the write
+      path and then put the file back.
+- [ ] **P3/P3b** — the prompt is `Take N entries out of <path>? [y/N]`, `n`
+      answers it, it prints `nothing removed`, exits **0**, and the file is
+      unchanged. **Exit 0, not 2** — declining is not an error.
+- [ ] **P4** — `y` removes them and it says `removed 2 entries from <path>`.
+      **Count the prompts: there is one, and it removed two entries.** That is the
+      criterion, not a detail — `delete` makes you type a machine's name back for
+      one machine, and this takes an entire block of the host list on a single
+      keystroke. If you think that is wrong, this is the check that gives you
+      something to point at.
+- [ ] **P4b** — the two `[hosts.*]` blocks are gone and **`local` is still
+      there, intact**. A rewrite that removed the wrong block is what
+      `_forget`'s `expect` exists to catch, and reading the remaining file is how
+      you check it caught it.
+- [ ] **P4c** — **`hosts.toml.bak` is the file as it was before the command ran.**
+      This was a live defect: `add` and `_forget` each went through `hostfile.apply`
+      and each took its own copy, so after a run that adopted one box and pruned
+      another, `.bak` held the state *between* the two writes — additions already
+      in, ghosts still there — a file that existed for milliseconds, that nobody
+      asked for, sitting exactly where a person reaches when a prune removed
+      something they wanted. P4c pins it for a prune-only run; **P8c is the one
+      that would have caught the bug**, because it takes both writes.
+- [ ] **P5** — `--yes` removes the entry with **no prompt printed at all**, on
+      closed stdin, exit 0. Run it with `< /dev/null` deliberately: a flag that
+      merely pre-answers a prompt would hang or abort there, and this must not.
+- [ ] **P6** — **an entry on a project this account may not read is left alone,
+      and said so.** The command's docstring is the specification: *"a check that
+      refutes is not a check that confirms, and an entry deleted because the
+      network was down is the one mistake this file cannot recover from."*
+      Expected, and **observed passing on 2026-09-09**: the entry appears under
+      `the project listing did not have these and a direct check did not confirm
+      they are gone, so nothing here was removed`, carrying Google's own words
+      (`Required 'compute.instances.get' permission for ...`), and **not** under
+      `the box is gone`.
+      **P6 is also this phase's positive control.** `--prune` now confirms in two
+      passes — a bulk listing narrows the host list to candidates, then one
+      `describe` per candidate has to positively say the instance is not there —
+      and P6 is the check that the second pass exists and refuses. If P6 fails,
+      the confirmation step is gone and every other P check is grading a command
+      that removes entries on a bulk listing alone, so fix that before reading
+      P6b as anything.
+- [ ] **P6b** — **and neither is an entry whose project id does not exist.** It is
+      the same question one level up: an entry can be wrong about the project the
+      way P7's is wrong about the zone, and `gce_project` is hand-typed into a
+      hand-maintained file — B7 exists because `gce_zoen` gets typed too. Expected:
+      not confirmed, not removed, same refusal as P6.
+      **Observed on 2026-09-09 against `47fce1b` plus this session's working tree:
+      it IS confirmed, announced as `not on the project any more — the box is
+      gone`, and offered for removal. This check FAILS.** The cause is visible in
+      P6c: `confirms_absent` accepts an error whose kind is `NOT_FOUND` as Google
+      positively saying the instance is absent, and a project that does not exist
+      answers `The resource 'projects/<project>' was not found` — a not-found
+      about the **project**, which says nothing whatever about the instance. The
+      classifier reads it as though it had said `The resource
+      'projects/<project>/zones/<zone>/instances/<name>' was not found`. So the
+      consequence is the one the zone fix was written to prevent, one level up: a
+      typo'd or deleted `gce_project` makes **every entry naming it** a confirmed
+      ghost, and the operator is one `y` from deleting the only record of machines
+      that may be running and billing on the project they meant to type. Report it
+      against the commit A0 recorded, and note that P6 passes — the defect is the
+      `NOT_FOUND` classification, not the confirmation pass.
+- [ ] **P6c** — **you looked at what Google said, not only at what the tool said.**
+      Three `describe` calls print three sentences: `Required
+      'compute.instances.get' permission for ...`, `The resource
+      'projects/<project>' was not found`, and `The resource
+      'projects/<project>/zones/<zone>/instances/<name>' was not found`. Only the
+      third is a statement about an instance, and only the third may remove an
+      entry. This is the step that makes P6b a defect you can point at rather than
+      an opinion, in the same way B11 needed a block before it could be ticked —
+      and it is also what stops P6b going stale: if the tool changes, these three
+      sentences are still what it has to tell apart.
+- [ ] **P7/P7b** *(needs a running box)* — an entry whose `gce_zone` is wrong for
+      a box that **is** on the project is reported as a **zone mismatch and kept**:
+      one warning saying the entry is wrong, the box is not gone, nothing was
+      removed, and to correct `gce_zone` by hand — then the entry listed under it.
+      It must **not** appear under `the box is gone`, and the file must `diff`
+      clean. **This was a live defect found on 2026-09-09 and fixed the same
+      session**: absence was decided on `(name, zone)` rather than on the name, so
+      an entry declaring a box in `us-central1-a` against a listing that
+      positively held it RUNNING in `us-central1-b` was announced as gone,
+      removed, and exited 0 — and the L4 went on billing with nothing left in the
+      host list naming it, so neither `down` nor `list` could reach it. A
+      hand-typed zone does that; so does a box recreated from the console, and so
+      does a `move` that did not finish.
+- [ ] **P8/P8b/P8c** *(needs a running box)* — one run adds the real box and
+      prunes the ghost, and afterwards **`.bak` is the pre-run file** — the ghost
+      still in it and the addition not yet. P4c checks this for a single write;
+      only P8 takes both, which is the shape the bug had.
+
+*Never run before 2026-09-09. **The whole phase was run on that date**, against a
+working tree in which `--prune` was being rewritten as the run happened. P1, P2,
+P2b, P2c, P3, P3b, P4, P4b, P4c, P5, P6, P6c, **P7, P7b, P8, P8b and P8c passed**;
+**P6b failed**. P7 and P8 were run late in the evening, once boxes existed on the
+project again — the zone mismatch was checked against a real instance in
+`us-central1-b` declared as `us-central1-a`, and P8 took one run that adopted two
+real boxes and pruned a ghost, after which `.bak` was still the pre-run file. Both
+are the checks this phase was written after and both now have a real result.
+Re-run the whole phase against the commit you are signing off: the two-pass
+confirmation P6 turns on did not exist that morning.*
 
 ## Phase D — the local machine *(no cost)*
 
@@ -473,10 +803,14 @@ wc -l ~/qa-before/*.txt; cat ~/qa-before/instances.txt
 
 ## Phase K — making the box *(K1–K4 free; K5 creates one and bills)*
 
-**Nothing in this phase has ever been run.** `create` landed after the 2026-08-27
-pass, so every check below is new. It comes before E because E needs a box; if you
-already have one, K1–K4 are still worth running, since they cost nothing and
-create nothing.
+**Run for the first time on 2026-09-09, on hardware, and it passed** — including
+the part nobody expected to reach: three zones had no L4 free and `create` fell
+through to a fourth and succeeded, which is K5c exercised for real rather than
+reasoned about. The `untried` refusal printing a runnable `--os linux` was also
+watched during a genuine T4 stockout. `create` landed after the 2026-08-27 pass,
+so every check here was new until that run. It comes before E because E needs a
+box; if you already have one, K1–K4 and **K2b** are still worth running, since
+they cost nothing and create nothing.
 
 The claim under test: **a tester never opens the Google Cloud console.** The card
 is the only real decision, and the machine type, the zone and the driver are the
@@ -485,6 +819,8 @@ tool's problem.
 ```sh
 echo "=== K1 the plan, and nothing else"; qat create --os linux --gpu t4 --dry-run; echo "exit $?"
 echo "=== K2 a card you have no quota for"; qat create --os linux --gpu a100 --dry-run; echo "exit $?"
+echo "=== K2b the four cards this tool cannot drive, whatever your quota says"
+for G in v100 p100 p4 k80; do printf -- "--- --gpu %s\n" "$G"; qat create --os linux --gpu $G --dry-run; echo "exit $? (2 = refused)"; done
 echo "=== K3 a card that does not exist"; qat create --os linux --gpu rtx4090 --dry-run; echo "exit $?"
 echo "=== K4 an OS that does not exist"; qat create --os plan9 --gpu t4 --dry-run; echo "exit $?"
 echo "=== K4d two flags that cannot both be right"; qat create --os linux --gpu t4 --zone us-central1-a --region europe-west2 --dry-run; echo "exit $?"
@@ -501,6 +837,29 @@ echo "=== K4c and nothing was CREATED"; diff ~/qa-before/instances.txt <(gcloud 
       allowance actually is. Exit non-zero. This is the check that matters most in
       the phase: a quota refusal after the instance exists costs money and a
       cleanup, and refusing costs nothing.
+- [ ] **K2b** — **V100, P100, P4 and K80 are refused before anything is created,
+      even with quota for them.** Each exits **2**, says `this tool cannot bring
+      up a <CARD>, so nothing was created`, names the architecture that lacks the
+      GSP (**Volta**, **Pascal**, **Pascal**, **Kepler** respectively), lists the
+      cards that do work, and ends in a **runnable** fix — `comfy-qat create --os
+      linux --gpu t4`, described as the same `n1-standard-8` machine and the
+      cheapest card that works. All four refuse; a fifth outcome is a fail.
+      **This is free and it is the cheapest check in the phase**: the refusal lands
+      before the project read and before the minute of quota, so it comes back in
+      about the time `qat --version` takes, and it needs no credentials. Time it
+      against K1 the way K3/K4 are timed — a refusal that takes a minute has been
+      made *after* the quota read and is one step from having been made after the
+      instance.
+      **Why it matters more than it looks.** The project genuinely holds quota for
+      all four, and `quota list` genuinely reports it as `ready` (C4d). Without
+      this refusal the tool would happily create a box on a card whose driver can
+      never load: it boots, it bills, `nvidia-smi` fails, and the only symptom is
+      a ComfyUI that will not start — a night of debugging for something no amount
+      of debugging on the box can fix. **Four of the six cards a tester would have
+      reached for were in that state.** The pair to check together is K2b and C4d:
+      the refusal and the advertisement have to agree, and a card that `quota
+      list` calls simply `ready` while `create` refuses it is the same
+      two-commands-disagreeing defect C4b was written for.
 - [ ] **K3/K4** — names what there is rather than failing obscurely. Exit 2, no
       traceback. **These two are offline** — `plan()` runs before the project
       read, the instance list and the minute of quota, so they need no cloud
@@ -635,7 +994,7 @@ curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:$PORT/system_stats
       It ends `--dry-run: nothing written` — and that sentence prints after the
       decision either way, so the check is that `qat list` still matches
       `~/qa-before/list.txt` from `Q0`, plus whatever `create` added and nothing
-      else. **This needs no box.** `discover` has never been run, and it is one
+      else. **This needs no box.** `discover` is one
       `instances list` on the project, so it can also be run straight after phase
       C, before anything exists — where "no cloud boxes on `<project>`", or a list
       of boxes you did not declare, is itself the answer. It is the only
@@ -717,8 +1076,10 @@ early return, which does not call `open_tunnel`. E6d is that run.*
 
 ## Phase L — the log, and the ways of watching it *(this bills)*
 
-**Nothing in this phase has ever been run.** `logs` exists because `go` stopped
-streaming: the question "what is it doing right now" needed somewhere to go.
+**Run for the first time on 2026-09-09 and it passed**: `--tail` against a running
+box, and the refusal against a stopped one — exit 2 with a message that says which
+of the two you are looking at. `logs` exists because `go` stopped streaming: the
+question "what is it doing right now" needed somewhere to go.
 
 ```sh
 echo "=== L1 follow it"; qat logs $BOX     # Ctrl-C after a few lines
@@ -866,6 +1227,36 @@ echo "=== F5 unknown host, lifecycle"; qat down not-a-machine; echo "exit $?"
       paths and are evidence of nothing. **The box is billing again from here
       until phase G stops it** — if you stop the run at F1, run `qat down $BOX`
       and check `gcloud compute instances list` before you leave.
+- [ ] **F1c** — **`up` gets the BOX up. It does not get ComfyUI serving, and this
+      pack used to imply that it did.** On a box that has been stopped and started
+      again, `up` ends with the instance RUNNING and the tunnel open — and nothing
+      is answering on the other end of it, because **nothing restarts ComfyUI at
+      boot**. There is no service, no unit, no launch-at-startup: the process that
+      was serving before the stop is simply gone. So the sequence back to a serving
+      box after a stop is `up` **then** `go`. Record what you observe and say
+      which sequence you ran; whether a command that brings a machine up and
+      leaves nothing serving on it is the right design is a judgement for the
+      report, and not one this page settles for you in advance.
+      Check it explicitly — `qat list --live` reads `running, tunnelled` while the
+      URL does not answer — because the two facts look contradictory and the
+      contradiction is the criterion. That pair still holds exactly as written:
+      `up` opens and records the tunnel before it probes.
+      **Found on hardware on 2026-09-09**, against a pack that described `up` as
+      the way back to a working box. `up` not serving is a **decision**, not an
+      omission — `go` already handles install-versus-start, and two commands that
+      both serve is one too many — so if this ever changes so that `up` does
+      serve, it is F1c that has to be rewritten first.
+      **Two things about how it says so changed later the same night, and the
+      criterion expects the new ones.** It no longer spends **180 seconds**
+      reaching this conclusion: it asks the box whether ComfyUI is running and
+      stops in seconds on a definite no, so a three-minute silence here is now
+      itself the finding. And it no longer says `ComfyUI is not installed or not
+      started`, which named two states and committed to neither — it says which,
+      leading with `ComfyUI is not answering on <url>` and then, for an installed
+      box, `it is installed on <name> but nothing has started it. The machine is
+      up and billing.`, offering `comfy-qat go <name>`. **The old two-state wording
+      surviving is a fail unless the box would not answer the question** — that is
+      the one branch entitled to it.
 - [ ] **F1b** — the already-up path: `<name> is running`, `tunnel already open`,
       nothing restarted, back in seconds. **This is the only `up` the 2026-08-27
       pass ran**, and on its own it exercises no start at all — it is here as the
@@ -918,9 +1309,14 @@ write it up with the sentence you saw and the command that printed it.
 
 ## Phase S — onto the box, and off it again *(needs the box from E; S4 leaves it billing)*
 
-**Nothing in this phase has ever been run, and none of it has ever had a
-criterion.** `ssh`, `rdp` and `disconnect` are three of the four commands the pack
-could not see; `delete` is the fourth and is phase N.
+**Run for the first time on 2026-09-09.** Until that date nothing here had ever
+been run and none of it had ever had a criterion. `ssh` passed. `disconnect`
+passed and did the thing it exists for — left the box billing and said so, which
+is S4/S4b. **`rdp` failed and was fixed the same night**: it used to reset the
+Windows password and then fall over if RDP was not yet listening, so the reset had
+happened and the connection had not. The reachability check now runs before the
+reset — see **S3d**, which expects the refusal rather than the failure. `ssh`, `rdp` and `disconnect` are three of
+the four commands the pack could not see; `delete` is the fourth and is phase N.
 
 `ssh` and `rdp` **replace this terminal** — they `execvp` gcloud, so nothing after
 them in a pasted block runs. Run S1 as a block; run S2 and S3 one at a time.
@@ -1006,6 +1402,25 @@ echo "=== S7b and the other two"; qat down --os windows; echo "exit $?"
       you already had; Google documents no way around that, and a tester who
       thinks otherwise will not understand why a colleague's saved credential
       stopped working.
+- [ ] **S3d** — **the reset and the connection stand or fall together.** Run `rdp`
+      against a Windows box that is RUNNING but **not yet listening on 3389** — a
+      box that has just booted is the easy way to be in that state. Expect a
+      **refusal at exit 2**, saying Remote Desktop is not answering and then
+      `its password was not reset — the one in use on it is unchanged`, with
+      nothing altered on the box.
+      **This failed on hardware on 2026-09-09 and was fixed the same night.** It
+      used to reset the password and *then* fall over when the forward could not
+      connect: the credential a colleague was signed in with was already
+      invalidated, the new one had scrolled past inside a failure, and the box was
+      no more reachable than before — the worst ordering available, because S3c is
+      the criterion saying this command changes state before it connects. The fix
+      is the first of the two ways out this criterion named: the reachability
+      check now runs **before** the reset, so the irreversible half is reached
+      only once there is something on the other side of it. **So a failure here is
+      now a regression, not the known state** — and specifically a regression that
+      costs somebody their session, which is why it is worth re-running rather
+      than carrying forward. Pair it with S3: S3 is about the order things are
+      *printed*, S3d about the order things are *done*.
 - [ ] **S4** — `disconnect` closes the tunnel, leaves the machine running, and
       **says the machine keeps billing**. That is the point of the command, so it
       has to be in the output.
@@ -1021,8 +1436,22 @@ echo "=== S7b and the other two"; qat down --os windows; echo "exit $?"
       `.json`. Killing the ssh process by hand is what leaves them behind, after
       which `list` reports a tunnel that is not there — which is the reason this
       command exists rather than "just Ctrl-C it".
-- [ ] **S6** — `list` shows the box as **not tunnelled**, and `gcloud` shows it
-      **RUNNING**. A stopped box and a disconnected one must not read the same.
+- [ ] **S6** — `list --live` shows the box as **running, not tunnelled**, and
+      `gcloud` shows it **RUNNING**. A stopped box and a disconnected one must not
+      read the same **under `--live`** — that is where the distinction lives, and
+      after phase G's `down` the same command reads `stopped`.
+      **Bare `list` cannot tell them apart and is not supposed to.** This
+      criterion used to ask it to, and it was asking for a regression. After
+      `down` and after `disconnect` the local filesystem is byte-identical: the
+      same `close_tunnel`, the same records removed, and nothing written down
+      about what was left running. The only way to make bare `list` answer would
+      be for `disconnect` to persist a claim about a remote machine — a claim
+      that goes stale the moment anyone stops that box from a console, from raw
+      gcloud, or from another laptop, and a stale claim about a machine that
+      bills is worse than no claim. Bare `list`'s contract is what this machine
+      knows **without asking**, which is tunnels and nothing else; `--live` is
+      the asking version. Both cells read `not tunnelled` without `--live` and
+      that is the correct answer to the question that was asked.
 - [ ] **S7** — `down --keep-running` is **refused by the parser**: `No such
       option: --keep-running`, exit 2, and **nothing is stopped and nothing is
       contacted**. The flag was the negation of its own command — `down --all
@@ -1045,8 +1474,16 @@ echo "=== S7b and the other two"; qat down --os windows; echo "exit $?"
 
 ## Phase R — moving a box *(this bills, and it is the one nothing has ever proved)*
 
-**A real `move` end to end on hardware has never been run, by anyone.** Everything
-believed about this command comes from tests. It renames a host, reassigns its
+**The first real `move` on hardware was run on 2026-09-09.** Until that date
+everything believed about this command came from tests, and this section said so.
+What the run established: **the ceiling refusal is free and creates nothing**, and
+a move that hit a stockout part way **named exactly what it left billing and
+printed the exact delete commands to remove it** — which is the behaviour phase I
+was written after, working. It also found two defects on the path nobody expects
+to be dangerous, the one where the box is already where you asked for it: see
+**R2d**. The rest of this phase is still unproved, and R4–R9 — the snapshot, the
+300 GB disk, the second instance and the accounting — remain the largest untested
+surface in the tool. It renames a host, reassigns its
 port, rewrites your hand-maintained host list, takes a snapshot, creates a disk,
 creates an instance, and — when you do not name a zone — starts a GPU box to read
 a zone out of Google's refusal. Six things that cost money and one that edits the
@@ -1175,6 +1612,25 @@ finished phase R as "move works".
       this command anybody can run tonight.
 - [ ] **R2b** — the instance list is byte-identical to R0's. `--dry-run` created
       nothing, and you checked rather than believed the word "dry".
+- [ ] **R2d** — **the "no move needed" path must not start the box, and `--clean`
+      must clean on it.** Ask to move a box to the zone it is already in. The
+      right answer is a statement that there is nothing to do, with the machine
+      left exactly as it was found — **stopped, if it was stopped**. Run it on a
+      **stopped** box and check `gcloud compute instances list` before and after:
+      the STATUS must not change. Then run it again with `--clean` and check the
+      leftovers named in R8 are actually gone.
+      **Both halves failed on hardware on 2026-09-09.** `move` **starts a stopped
+      box** on this path, and `--clean` **does not clean** on it. The first is the
+      one that costs money and it costs it in the least expected place: the
+      operator asked for the cheapest possible outcome — a move that turns out to
+      be unnecessary — and got a GPU box powered on and billing, from a command
+      whose whole answer was "there is nothing to do". The second is quieter and
+      is the same shape as the three commands in "passed on the path that does
+      nothing": `--clean` is documented as *clean up first, then move*, and on the
+      one path where the move is skipped the cleaning is skipped with it, so the
+      flag reports success having done neither. Both are defects in the tool; do
+      not tick R2d until the box's STATUS is unchanged and `--clean` has removed
+      something.
 
 ### R3 — the refusal that has to be free
 
@@ -1503,8 +1959,12 @@ the kind of leak this phase was written for.*
 
 ## Phase N — deleting a box *(this destroys a machine; run it after H and J)*
 
-**Nothing in this phase has ever been run, and until now nothing in this pack
-mentioned `delete` at all.** It is the only command here that cannot be undone:
+**Run for the first time on 2026-09-09, and it passed.** `delete` refuses a
+running box outright, **refuses a piped confirmation** — `this needs a terminal to
+confirm in`, which is the typed-name friction working rather than being worked
+around — and removes the instance, its disk and the host-list entry together.
+Until that date nothing here had ever been run and nothing in this pack mentioned
+`delete` at all. It is the only command here that cannot be undone:
 it removes the instance *and* its boot disk, and the ComfyUI on it, the models on
 it and whatever a test run left behind go with them. Nothing brings any of it
 back.
@@ -1877,10 +2337,17 @@ the other way — a stale criterion grades a correct build as broken, and a test
 who trusts the page writes up a defect that is not there. If A8 does hit, treat it
 as a regression against the commit A0 recorded.
 
-**What the next run is actually for.** `create` and `logs` have never been run at
-all, and the detached `go` has never been run in the form E3 now describes. Those
-are phases K, L and E, and they are the point. **If time runs out, run those and
-record the rest as carried forward.**
+**What the next run is actually for.** This used to say `create` and `logs` had
+never been run at all. **Both were run on 2026-09-09 and both passed**, along with
+S, R's free half, G and N — see *What the 2026-09-09 hardware run established* near
+the top of this page, which is the section to read before planning a night.
+What is left is where the money and the unknowns still are: **R4–R9**, the
+snapshot and the 300 GB disk and the second instance, which remain the largest
+untested surface in the tool; **phase M** and **J10/J11**, which need two GPU
+boxes at once; and the four defects that run found — **F1c**, **R2d**, **S3d** and
+**P6b** — each of which is a criterion that must go from failing to passing before
+it can be signed off. **If time runs out, run those and record the rest as carried
+forward.**
 
 **What can no longer be carried forward, and why.** The 2026-08-27 pass covered
 A–D, G, H, I, E4, F1, F2, J1–J9 and J12–J14, and that used to be the list you
@@ -1892,6 +2359,7 @@ words:
 |---|---|
 | **A3, A5a, A5b, A6, A8, B4** | A3 listed 17 commands where the binary has 21; A6 quoted guide text that no longer exists — both failed a correct build. **A8 did the same in reverse**: it told the tester "this fails today" about three sites that had been fixed. It passes as of `442f867`, and A8b is the new check that the grep can see anything at all. **Rewritten again at 1.1.0**, when `host`, `auth` and `guide` were removed: A5a/A5b now check that those spellings are GONE rather than reachable, A6 checks the first-run text where the root callback prints it, B4 checks the bare `comfy-qat` listing that the bare `host` one became, and A3 is 20 commands rather than 21 |
 | **B2, B2b, B0b** | "Nothing overwritten" had no step that could notice; B0b stops the page teaching invented project ids |
+| **B3, B11** | Two ways for a criterion to grade nothing, both in a phase recorded as fully passed. B3 named NAME KIND OS GPU URL and the table has gained STATE and a line explaining it — the A3 failure exactly, a correct build failed on a column the page had not caught up with. **B11 had no step**: nothing in the block ever opened troubleshooting.md, so the box could only be ticked on memory. It has one now, and it re-runs the tool for the six wordings rather than trusting this page's copy of them. A6 keeps its wording and gets a new instrument for the same reason — `tail -14` cut off the `comfy-qat setup` line the criterion is about, and a pipeline's exit status is `tail`'s |
 | **C8, C9** | C8 says when it is unreachable; C9 covers `quota request`, which the pack never ran |
 | **G1, G2, G4, G5, G6a–G6d** | G4 checked one instance and phase R makes two; G5 passed on a `down` that did nothing; G6 required behaviour no block ran |
 | **I1, I2, I3, I3b, I5** | **the whole phase.** It said "compare" and never captured a before. Q0 is now that before, and it must be run before phase K |

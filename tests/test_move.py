@@ -117,10 +117,11 @@ class Cloud:
     """
 
     def __init__(self, *, disks=(), snapshots=(), instances=(), fail=None,
-                 machine_types=("g2-standard-8",), region=None):
+                 machine_types=("g2-standard-8",), region=None, quotas=()):
         self.disks = [dict(d) for d in disks]
         self.snapshots = [dict(s) for s in snapshots]
         self.instances = [dict(i) for i in instances]
+        self.quotas = list(quotas)
         self.machine_types = list(machine_types)
         self.region = region
         self.fail = dict(fail or {})
@@ -156,6 +157,15 @@ class Cloud:
             zone = self._flag(args, "--zones")
             return ([{"name": wanted, "zone": zone}]
                     if wanted in self.machine_types else [])
+        if key.startswith("quotas info list"):
+            # The project-wide GPU ceiling, which `move` now reads whenever the
+            # box it would create wants a card — every move in this file. What
+            # comes back here is a project that reports no GPUS-ALL-REGIONS
+            # record, which is a real shape and the one that refuses nothing:
+            # these tests are about what a move creates and leaves behind, and a
+            # ceiling that refused them would be testing something else. The
+            # arithmetic itself is held up in tests/test_relocate.py.
+            return list(self.quotas)
         if key.startswith("compute regions describe"):
             # The SSD allowance, read before the plan is printed. `None` here
             # means "could not tell", which must leave the plan alone.
@@ -166,6 +176,14 @@ class Cloud:
             return self._create_disk(args)
         if key.startswith("compute instances create"):
             return self._create_instance(args)
+        if key.startswith("compute instances start"):
+            # `move` with no `--to` starts the box to read a zone out of the
+            # refusal, so the status has to MOVE — a fake that answers TERMINATED
+            # either side of a start cannot tell a box that was put back from one
+            # that was never touched, which is the whole of what is under test.
+            return self._set_status(args[3], "RUNNING")
+        if key.startswith("compute instances stop"):
+            return self._set_status(args[3], "TERMINATED")
         if key.startswith("compute snapshots delete"):
             self.snapshots = [s for s in self.snapshots if s["name"] != args[3]]
             return ""
@@ -213,6 +231,12 @@ class Cloud:
             from_snapshot=source,
             created="2026-08-26T09:05:00.000-07:00",
         ))
+        return ""
+
+    def _set_status(self, name, status):
+        there = self.find_instance(name)
+        assert there is not None, f"no such instance: {name}"
+        there["status"] = status
         return ""
 
     def _create_instance(self, args):
@@ -1482,3 +1506,275 @@ def test_the_closing_report_names_a_billing_snapshot_that_is_not_this_moves(
     # delete` under a heading, with nothing saying what it would delete.
     named = result.output.index("comfy-win-snap")
     assert "snapshots delete comfy-win-snap" in result.output[named:], result.output
+
+
+# --- refusing before deleting, driven through the command ---------------------
+#
+# `--clean` deleted first and refused second. `remove_leftovers` ran at the top
+# of `move_cmd` and the guards sat fifteen lines below it, so a move that was
+# going to be refused destroyed the earlier run's snapshot and its 200-300 GB
+# disk on the way to refusing — the two artifacts that make a stalled move cheap
+# to resume, deleted in service of a move that never started.
+#
+# The refusal used here is the GPU ceiling, because it is the one that actually
+# happens: a project whose GPUS_ALL_REGIONS is 1 refuses the move of a box while
+# anything else holds the card, and that is the ordinary state of the project
+# this tool was written against. Nothing in the suite had ever paired `--clean`
+# with a refusal of any kind.
+
+CEILING_OF_ONE = [{"quotaId": "GPUS-ALL-REGIONS-per-project",
+                   "dimensionsInfos": [{"details": {"value": "1"},
+                                        "applicableLocations": ["global"]}]}]
+
+# A GPU box on the project that is not this move's, holding the only card there
+# is. `_over_the_ceiling` names it and hands over raw gcloud for it.
+CONSOLE_BOX = {
+    "name": "console-box",
+    "status": "RUNNING",
+    "zone": f"{URL}/zones/us-west4-b",
+    "guestAccelerators": [{"acceleratorType": f"{URL}/nvidia-l4",
+                           "acceleratorCount": 1}],
+}
+
+
+def test_a_clean_that_is_going_to_be_refused_deletes_nothing(tmp_path, monkeypatch):
+    """The whole finding, in one command: nothing is deleted before every
+    refusal has been computed."""
+    cloud = Cloud(disks=[SOURCE, ORPHAN_DISK],
+                  snapshots=[ORPHAN_SNAPSHOT],
+                  instances=[INSTANCE, CONSOLE_BOX],
+                  quotas=CEILING_OF_ONE)
+
+    result = _cli_move(tmp_path, monkeypatch, cloud,
+                       "comfy-win", "--to", "us-central1-b", "--clean", "--yes")
+
+    assert result.exit_code == 2, result.output
+    assert "GPUS_ALL_REGIONS is 1" in result.output
+
+    # The point of the test. Both of these were deleted, for nothing.
+    assert cloud.find_disk("comfy-win-a-b", "us-central1-b"), (
+        "the 300 GB disk an earlier run paid for was deleted by a move that "
+        "then refused to happen"
+    )
+    assert cloud.find_snapshot("comfy-win-a-move-b"), (
+        "the snapshot a resumed move would have reused was deleted by a move "
+        "that then refused to happen"
+    )
+    assert not cloud.ran("compute disks delete"), cloud.calls
+    assert not cloud.ran("compute snapshots delete"), cloud.calls
+    # And nothing was created either, which is what exit 2 asserts.
+    assert not cloud.ran("compute disks snapshot")
+    assert not cloud.ran("compute instances create")
+
+
+def test_a_clean_still_clears_the_leftover_it_exists_to_clear(tmp_path, monkeypatch):
+    """The other half of the same rule, and the reason `unclearable` is not
+    simply `blocked`.
+
+    A disk sitting in the target zone that this move cannot reuse IS a refusal —
+    and it is the one a `--clean` removes. Refusing on it before the delete would
+    turn the supported recovery, clean and move in one run, into a wall.
+    """
+    # Made from a snapshot of something else entirely, so `judge_disk` refuses to
+    # reuse it and `blocked` would refuse the move.
+    stranger = disk("comfy-win-a-b", "us-central1-b", from_snapshot="somebody-else",
+                    created="2026-08-25T07:38:24.167-07:00")
+    cloud = Cloud(disks=[SOURCE, stranger], instances=[INSTANCE])
+
+    _, _, plan, found = prepared(Cloud(disks=[SOURCE, stranger], instances=[INSTANCE]))
+    assert blocked(plan, found) is not None, "the fixture has to start refused"
+
+    result = _cli_move(tmp_path, monkeypatch, cloud,
+                       "comfy-win", "--to", "us-central1-b", "--clean", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.find_instance("comfy-win"), "the move went ahead after cleaning"
+
+
+def test_a_host_list_the_rewrite_cannot_edit_is_refused_before_anything_is_made(
+        tmp_path, monkeypatch):
+    """`register` is the SEVENTH action of a move and nothing rehearsed it.
+
+    `[hosts."comfy-win"]` is valid TOML, `config.parse` accepts it, and every
+    command that reads the host list works. `rename_and_add` matches
+    `[hosts.<name>]` as text and does not recognise the quoted spelling, so it
+    raised "comfy-win is not in the host list" — at the step after the snapshot,
+    the disk and the instance, with the box running and billing and
+    `comfy-qat down comfy-win` still pointing at the box in the OLD zone.
+
+    Every one of those refusals reads the local file and nothing else, so the
+    whole rewrite is now rehearsed before the first gcloud call that spends
+    anything.
+    """
+    quoted = CLI_HOSTS.replace("[hosts.comfy-win]", '[hosts."comfy-win"]')
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win",
+                       "--to", "us-central1-b", "--yes", hosts=quoted)
+
+    assert result.exit_code == 2, result.output
+    assert "Nothing was created" in result.output
+    assert not cloud.ran("compute disks snapshot"), "not even the cheap half"
+    assert not cloud.ran("compute disks create")
+    assert not cloud.ran("compute instances create")
+    # The file is named, because the fix is an edit to it and nothing else.
+    assert "hosts.toml" in result.output
+
+
+def test_the_rehearsal_does_not_write_the_host_list(tmp_path, monkeypatch):
+    """It runs on every move, including a dry run, so it has to be a rehearsal
+    and not a rewrite happening early."""
+    path = tmp_path / "hosts.toml"
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud,
+                       "comfy-win", "--to", "us-central1-b", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert path.read_text(encoding="utf-8") == CLI_HOSTS, "the file was rewritten"
+    assert not path.with_name("hosts.toml.bak").exists(), "not even a backup"
+
+
+# --- the clock the snapshot runs under ----------------------------------------
+
+def test_the_snapshot_is_not_run_under_the_clock_written_for_starting_a_box(
+        monkeypatch):
+    """A 200 GB snapshot exceeded 300s on a real move, and 200 GB is the DEFAULT
+    boot disk this tool creates.
+
+    `snapshot_disk` passed `INSTANCE_TIMEOUT` — the number written for how long
+    Windows takes to boot — to a call that copies a disk. gcloud was killed at
+    five minutes while Google went on holding the snapshot in UPLOADING, so the
+    tool reported a failure about a resource that was being created and would
+    bill. `relocate._stopped` was taught to report that doubt honestly, which is
+    the right answer to a call whose outcome is unknown and no answer at all to a
+    clock set below the work: on the ordinary case it fires every time.
+
+    Pinned as a number rather than as an inequality against `INSTANCE_TIMEOUT`,
+    which could be raised for its own reasons and quietly satisfy this.
+    """
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.gcloud import INSTANCE_TIMEOUT, SNAPSHOT_TIMEOUT
+
+    assert SNAPSHOT_TIMEOUT >= 1800, (
+        f"tens of minutes is normal for a full copy of a 200-300 GB disk; "
+        f"{SNAPSHOT_TIMEOUT}s does not clear that"
+    )
+    assert SNAPSHOT_TIMEOUT > INSTANCE_TIMEOUT
+
+    class Finished:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    seen: list[tuple[str, object]] = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append((" ".join(cmd), kwargs.get("timeout")))
+        return Finished()
+
+    monkeypatch.setattr(gcloud_module.subprocess, "run", fake_run)
+    gc = gcloud_module.Gcloud()
+    gc.proven = True                      # skip the credential preflight
+    monkeypatch.setattr(gc, "require", lambda: "gcloud")
+
+    gc.snapshot_disk("comfy-win-a", "us-central1-a", PROJECT, "comfy-win-a-move")
+
+    took = [timeout for command, timeout in seen if "disks snapshot" in command]
+    assert took == [SNAPSHOT_TIMEOUT], seen
+
+
+# --- the path that moves nothing ----------------------------------------------
+#
+# `move` with no `--to` starts the box to ask Google where there is capacity,
+# because nothing answers that question any other way. When the start is NOT
+# refused there is no stockout and nothing to move — and that path used to leave
+# the box running and skip everything else the command was asked to do.
+#
+# Both findings below were reproduced on real hardware, twice, with the state
+# confirmed either side.
+
+
+def test_a_box_the_probe_started_is_stopped_again(tmp_path, monkeypatch):
+    """`down comfy-linux`, then `move comfy-linux --clean --yes`, and the box was
+    RUNNING again — started by a command that moved nothing.
+
+    The user stopped it deliberately to stop paying, and the pack tells them to
+    stop the source before a move precisely because a TERMINATED box holds no GPU
+    allowance. So the tool asked for that state and then took it away behind
+    them, on the one path where it had nothing to show for it.
+    """
+    cloud = Cloud(disks=[SOURCE], instances=[dict(INSTANCE)])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.find_instance("comfy-win")["status"] == "TERMINATED", (
+        "a box the user had stopped was left running by a move that moved nothing"
+    )
+    assert cloud.ran("compute instances start"), "the probe is still a start"
+    assert cloud.ran("compute instances stop"), "and it is put back"
+    assert "has been stopped again" in result.output
+    assert not cloud.ran("compute disks snapshot"), "nothing was moved"
+
+
+def test_a_box_found_running_is_left_running_by_the_same_path(tmp_path, monkeypatch):
+    """Only a state that was positively read is restored. Someone is using this
+    box; stopping it on the way past would be the same defect with the sign
+    reversed."""
+    cloud = Cloud(disks=[SOURCE], instances=[dict(INSTANCE, status="RUNNING")])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.find_instance("comfy-win")["status"] == "RUNNING"
+    assert not cloud.ran("compute instances stop"), "not this command's to stop"
+    assert "is already running" in result.output
+    assert "changed nothing" in result.output
+
+
+def test_clean_cleans_on_the_path_where_there_is_nothing_to_move(
+        tmp_path, monkeypatch):
+    """`--clean` is "delete what an earlier, half-finished move left behind, then
+    move", and on this path it did neither.
+
+    The run that found this went in with a 14.3 GB snapshot and a 200 GB disk
+    from a failed move, both billing, and came out with both still there and a
+    message saying everything was fine. There is no target zone here, so the
+    leftovers are identified by what they were made FROM rather than by the names
+    a move would build — see `relocate.stranded`.
+    """
+    cloud = Cloud(disks=[SOURCE, ORPHAN_DISK],
+                  snapshots=[ORPHAN_SNAPSHOT, ANCESTOR_SNAPSHOT],
+                  instances=[dict(INSTANCE)])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--clean", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "an earlier run left this behind, and it is billing" in result.output
+    assert cloud.find_disk("comfy-win-a-b", "us-central1-b") is None, (
+        "the 200 GB disk a failed move left was still billing after --clean"
+    )
+    assert cloud.find_snapshot("comfy-win-a-move-b") is None
+
+    # Narrow, exactly as `--clean` is on the move path. The boot disk of the box
+    # itself and a snapshot of something else are not this command's to delete.
+    assert cloud.find_disk("comfy-win-a", "us-central1-a"), "the live boot disk"
+    assert cloud.find_snapshot("comfy-win-snap"), "not from a move of this box"
+
+
+def test_the_same_path_reports_the_leftovers_without_clean_and_deletes_none(
+        tmp_path, monkeypatch):
+    """A part-finished move bills in silence, so the report is not conditional on
+    the flag. The deleting is."""
+    cloud = Cloud(disks=[SOURCE, ORPHAN_DISK], snapshots=[ORPHAN_SNAPSHOT],
+                  instances=[dict(INSTANCE)])
+
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "comfy-win-a-b" in result.output, "the disk is named"
+    assert "us-central1-b" in result.output, "and the zone it is in"
+    assert "disks delete comfy-win-a-b" in result.output, "with its delete line"
+    assert cloud.find_disk("comfy-win-a-b", "us-central1-b"), "and nothing deleted"
+    assert cloud.find_snapshot("comfy-win-a-move-b")

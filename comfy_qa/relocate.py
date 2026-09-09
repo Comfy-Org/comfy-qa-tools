@@ -236,9 +236,9 @@ def network_of(instance: dict) -> dict:
     A moved box with no external address and no Cloud NAT has no route to the
     internet at all. IAP covers getting *in*, which is what the no-address rule
     was reasoning about; nothing covered getting *out*. So the box could not pip
-    install, could not download ComfyUI, could not fetch a model — `host go`
-    could never provision a box `host move` had made. It only looked fine
-    because the disk already carried an install.
+    install, could not download ComfyUI, could not fetch a model —
+    `comfy-qat go` could never provision a box `comfy-qat move` had made. It
+    only looked fine because the disk already carried an install.
 
     A move is supposed to produce the same machine somewhere else, so the answer
     is to copy what the source has rather than to impose a policy on the copy.
@@ -349,6 +349,12 @@ class Plan:
     # Why the disk type is not the source's, when it is not. Set before the plan
     # is printed so the user consents to the disk they will actually get.
     disk_note: str | None = None
+    # How much of the project-wide GPU allowance the box this move creates will
+    # hold, read from the source's own describe payload at planning time. See
+    # `_cards_wanted`: the guard used to work this out by finding the source
+    # again inside the instance LIST, which fails open in two ways that cost the
+    # same money.
+    cards: int = 0
     # Whether the box being moved is on right now. A move does not touch it
     # either way, so this exists only so the plan and the summary can say what is
     # true rather than what is convenient.
@@ -473,6 +479,40 @@ class Plan:
         return [action.line for action in self.actions(found)]
 
 
+def _cards_wanted(host: Host, instance: dict) -> int:
+    """How much of the GPU ceiling the box this move creates will hold.
+
+    Read from `describe_instance`'s payload for the source — which `move` has
+    fetched before it plans anything, and which is the authority on what the copy
+    will need, because the copy IS this box in another zone.
+
+    The ceiling guard used to find the source again inside `gcloud compute
+    instances list` and count that row instead. That fails OPEN in two ways, both
+    of which cost the same money: a source the list does not carry, and a list
+    row without `guestAccelerators`, are each read as "no cards needed" — and
+    zero skips the quota read and the whole check with it. Snapshot taken, disk
+    built, refused by Google at the create.
+
+    **A host declared with a card whose payload shows none is a contradiction,
+    not an answer**, so it counts as one card rather than none: the check then
+    runs on an estimate instead of not running at all. Wrong in that direction
+    costs a refusal that shows its arithmetic; wrong in the other costs a
+    snapshot, a 200-300 GB disk and a move that has to start over. `gpu = "none"`
+    is the declared CPU box — `config` uses that spelling everywhere — and it is
+    an answer, so it is honoured.
+
+    The status is overridden to RUNNING because a stopped source still says how
+    many cards its copy will need; the copy is created running.
+    """
+    from .create import _cards_running
+
+    cards = _cards_running([{**instance, "status": "RUNNING"}]) if instance else 0
+    if cards:
+        return cards
+    declared = (host.gpu or "").strip().lower()
+    return 1 if declared and declared != "none" else 0
+
+
 def plan_move(host: Host, instance: dict, to_zone: str,
               source_disk: dict | None = None) -> Plan:
     """Name everything the move will create, from what the instance actually is.
@@ -503,6 +543,7 @@ def plan_move(host: Host, instance: dict, to_zone: str,
         snapshot=f"{disk}-move",
         machine_type=machine_type(instance),
         accelerator=accelerator_of(instance),
+        cards=_cards_wanted(host, instance),
         # Anything not TERMINATED is running or on its way there, and the line
         # this feeds says whether the box left behind is still billing.
         source_running=bool(status) and status != "TERMINATED",
@@ -535,6 +576,12 @@ class Found:
     unrelated_snapshots: tuple[dict, ...] = ()
     reuse_disk: bool = False
     blocker: str | None = None
+    # Whether `blocker` is the target zone refusing the machine type, which is
+    # the one blocker that is not about a resource at all. `move` deletes
+    # leftovers before it refuses, so it has to know which refusals a `--clean`
+    # could clear and which stand however much is deleted first — and both
+    # blockers arrive in one string field, the zone's overwriting the disk's.
+    blocker_is_the_zone: bool = False
     notes: tuple[str, ...] = ()
     # The GPU ceiling, read only when something could actually be holding it.
     # `ceiling` is None when it was not read or the project does not report one,
@@ -689,7 +736,7 @@ def survey(gc: Gcloud, plan: Plan) -> Found:
     if instance is None:
         missing = zone_lacks_machine_type(gc, plan)
         if missing:
-            found = replace(found, blocker=missing)
+            found = replace(found, blocker=missing, blocker_is_the_zone=True)
     return _with_the_ceiling(gc, plan, found, instances)
 
 
@@ -712,29 +759,31 @@ def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
     reading the live list rather than being a special case: `_cards_running`
     skips TERMINATED, so the source is in `held` exactly when it is spending.
 
-    **The expensive read is not always paid.** `gpu_quotas` is the ~58-second
-    call and `move` is slow enough already. Nothing can be over the ceiling
-    while nothing holds any of it, so the free half — counting cards in the
-    instance list `survey` has already fetched — is done first, and the quota is
-    asked for only when the answer could be "no".
+    **The expensive read is paid whenever a card is wanted, and not otherwise.**
+    `gpu_quotas` is the ~58-second call, so it used to be skipped whenever
+    nothing already held a card — "nothing can be over the ceiling while nothing
+    holds any of it". That sentence is false, and in the direction that costs
+    money: `held + needed > ceiling` is over it at `held == 0` whenever the
+    ceiling is below what this box needs. A GPUS_ALL_REGIONS of 0 — a quota that
+    lapsed under a box that already exists — refuses every move on the project,
+    and `_over_the_ceiling` said so correctly while nothing could reach it. So
+    the read is skipped only when this move wants no card at all, which is the
+    one case where the answer cannot matter. A minute in front of an operation
+    that copies 200 GB is a proportionate price for the check `create` and
+    `switch` both pay.
+
+    **What the new box needs is not guessed from the list.** It comes off the
+    source's own describe payload at planning time — see `_cards_wanted`, which
+    is also where the fail-closed rule lives.
     """
     # `create` owns the arithmetic for "how much of the ceiling is that", cards
     # and not boxes, with the reasoning in its own docstring. One implementation
     # rather than a second that drifts from it.
     from .create import _cards_running
 
-    source = next(
-        (i for i in instances
-         if i.get("name") == plan.host.gce_instance
-         and _in_zone(i, plan.host.gce_zone)),
-        None,
-    )
-    # What the NEW box will hold, which is what the source holds when it runs —
-    # asked of the source with its status overridden, because a stopped source
-    # still tells you how many cards its copy will need.
-    needed = _cards_running([{**source, "status": "RUNNING"}]) if source else 0
+    needed = plan.cards
     held = _cards_running(instances)
-    if not needed or not held:
+    if not needed:
         return found
 
     holders = tuple(
@@ -859,6 +908,46 @@ def _over_the_ceiling(plan: Plan, found: Found) -> MoveError | None:
         f"this move creates cannot start. Nothing was created.",
         fix=output.fix(*advice),
     )
+
+
+def _clean_targets_disk(found: Found) -> bool:
+    """Whether a `--clean` would delete the disk sitting in the target zone.
+
+    One statement of the rule, asked by the three places that have to agree
+    about it: `leftovers` lists it, `remove_leftovers` deletes it, and
+    `unclearable` decides whether a refusal about it is a refusal at all. A disk
+    something is booting from is not a leftover whatever it is called, and a disk
+    the target instance already exists on is the finished state.
+    """
+    return (found.disk is not None and found.instance is None
+            and not found.disk.get("users"))
+
+
+def unclearable(plan: Plan, found: Found) -> MoveError | None:
+    """The refusals that stand however much is deleted first. Nothing has happened yet.
+
+    `move --clean` used to delete before it refused. `remove_leftovers` ran at
+    the top of the command and the guards were fifteen lines below it, so
+    `move <box> --to <zone> --clean` on a project whose GPU ceiling is 1 — with
+    the source running, which is the ordinary case — deleted the previous run's
+    snapshot and its 200-300 GB disk, then exited 2 having moved nothing. It
+    destroyed precisely the expensive artifacts that make a resumed move cheap,
+    to carry out a move it had already decided to refuse.
+
+    So every refusal is computed before anything is deleted, and this is the half
+    of `blocked` that a delete cannot change. The ceiling is arithmetic about a
+    box that does not exist yet; the zone either offers the machine type or does
+    not; a disk in use belongs to a running machine and `remove_leftovers` skips
+    it. The one refusal left out is the leftover disk in the target zone —
+    deleting that is what `--clean` is FOR, and refusing on it here would break
+    the resume this command exists to make cheap.
+    """
+    over = _over_the_ceiling(plan, found)
+    if over is not None:
+        return over
+    if found.blocker and not found.blocker_is_the_zone and _clean_targets_disk(found):
+        return None
+    return blocked(plan, found)
 
 
 def blocked(plan: Plan, found: Found) -> MoveError | None:
@@ -991,9 +1080,26 @@ def zone_lacks_machine_type(gc: Gcloud, plan: Plan) -> str | None:
 
 # --- leftovers ------------------------------------------------------------
 
+def disk_delete_command(project: str, name: str, zone: str) -> str:
+    """The line that removes one disk, from names rather than from a plan.
+
+    A plan knows exactly one disk — the one this move is about to create, in the
+    zone it is moving to — and that is the wrong shape for the leftovers of an
+    EARLIER move, which sit in whatever zone that move was going to. Written
+    once here so the command a report prints and the command `--clean` runs are
+    the same sentence wherever they are built from.
+    """
+    return (f"gcloud compute disks delete {name} --zone={zone} "
+            f"--project={project} --quiet")
+
+
+def snapshot_delete_command(project: str, name: str) -> str:
+    """The line that removes one snapshot. Snapshots are global; no zone."""
+    return f"gcloud compute snapshots delete {name} --project={project} --quiet"
+
+
 def delete_disk_command(plan: Plan) -> str:
-    return (f"gcloud compute disks delete {plan.new_disk} --zone={plan.to_zone} "
-            f"--project={plan.project} --quiet")
+    return disk_delete_command(plan.project, plan.new_disk, plan.to_zone)
 
 
 def delete_instance_command(plan: Plan) -> str:
@@ -1023,8 +1129,7 @@ def stop_instance_command(plan: Plan) -> str:
 
 
 def delete_snapshot_command(plan: Plan, name: str | None = None) -> str:
-    return (f"gcloud compute snapshots delete {name or plan.snapshot} "
-            f"--project={plan.project} --quiet")
+    return snapshot_delete_command(plan.project, name or plan.snapshot)
 
 
 def split_leftovers(plan: Plan, found: Found) -> tuple[list[str], list[str]]:
@@ -1073,8 +1178,7 @@ def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
     machine, so there is nothing to add and a delete line to withhold.
     """
     lines: list[str] = []
-    attached = bool((found.disk or {}).get("users"))
-    if found.disk is not None and found.instance is None and not attached:
+    if _clean_targets_disk(found):
         note = describe_disk(found.disk)
         lines.append(
             f"disk {plan.new_disk} in {plan.to_zone}"
@@ -1099,7 +1203,7 @@ def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
     # print a delete command for a different box three lines above "Move X? [y/N]".
     #
     # Last, so that `unrelated=False` is a strict prefix of `unrelated=True`.
-    # `host move` prints both lists and separates them by counting — `stray =
+    # `comfy-qat move` prints both lists and separates them by counting — `stray =
     # leftovers(..., unrelated=True)[len(mine):]` — and with these lines emitted
     # ahead of "already exists" that arithmetic was wrong by exactly one line
     # whenever the target instance existed, which is the half-finished move this
@@ -1114,6 +1218,127 @@ def leftovers(plan: Plan, found: Found, *, unrelated: bool = True) -> list[str]:
         )
         lines.append(f"  {delete_snapshot_command(plan, snap.get('name'))}")
     return lines
+
+
+def stranded(gc: Gcloud, host: Host, instance: dict) -> tuple[tuple[dict, ...], tuple[dict, ...]]:
+    """What earlier moves of THIS box left behind, in whatever zone they left it.
+
+    `survey` answers the same question about one target zone, because a move
+    knows where it is going and the names it will use are built from that. `move`
+    has one path with no target zone at all — "there is capacity where you are,
+    no move needed" — and there it asked nothing, so `--clean` on that path
+    cleaned nothing and said everything was fine. Proven on real hardware: a
+    14.3 GB snapshot and a 200 GB disk from a failed move were both still there
+    afterwards, both billing, with `--clean` on the command line.
+
+    **Both halves are identified by evidence, not by a name convention.** A
+    snapshot counts when it is in this box's move family AND was taken of this
+    box's boot disk. A disk counts when it was made FROM one of those snapshots
+    and nothing is using it — which is a fact recorded on the disk itself,
+    zone-independent, and true only of a move of this box that never reached the
+    instance. A finished move attaches its disk to the instance it creates, and
+    a stopped box still holds its own boot disk, so `users` being empty is what
+    separates a leftover from a machine somebody owns.
+
+    Returns (disks, snapshots), newest first. Read-only.
+    """
+    boot = boot_disk(instance) or host.gce_instance or ""
+    project = host.gce_project or ""
+    if not boot or not project:
+        return (), ()
+
+    family = f"{boot}-move"
+    snapshots = [
+        s for s in (gc.run(["compute", "snapshots", "list", f"--project={project}"]) or [])
+        if (s.get("name") or "").startswith(family)
+        and _tail(s.get("sourceDisk")) == boot
+    ]
+    disks = [
+        d for d in (gc.run(["compute", "disks", "list", f"--project={project}"]) or [])
+        if _tail(d.get("sourceSnapshot")).startswith(family)
+        and not d.get("users")
+    ]
+    newest = lambda r: r.get("creationTimestamp") or ""    # noqa: E731
+    snapshots.sort(key=newest, reverse=True)
+    disks.sort(key=newest, reverse=True)
+    return tuple(disks), tuple(snapshots)
+
+
+def stranded_lines(project: str, disks: tuple[dict, ...],
+                   snapshots: tuple[dict, ...]) -> list[str]:
+    """The same two-line shape `leftovers` prints: what it is, then what removes it.
+
+    One vocabulary, because these are the same resources seen from a command that
+    happens not to be moving anywhere — somebody who has read one report should
+    not have to learn a second.
+    """
+    lines: list[str] = []
+    for disk in disks:
+        zone = _tail(disk.get("zone"))
+        note = describe_disk(disk)
+        lines.append(
+            f"disk {disk.get('name')} in {zone}" + (f" ({note})" if note else "")
+            + " — from an earlier move of this box, attached to nothing, billing"
+        )
+        lines.append(f"  {disk_delete_command(project, disk.get('name'), zone)}")
+    for snap in snapshots:
+        note = describe_snapshot(snap)
+        lines.append(
+            f"snapshot {snap.get('name')}" + (f" ({note})" if note else "")
+            + " — from an earlier move of this box, billing"
+        )
+        lines.append(f"  {snapshot_delete_command(project, snap.get('name'))}")
+    return lines
+
+
+def remove_stranded(gc: Gcloud, project: str, disks: tuple[dict, ...],
+                    snapshots: tuple[dict, ...],
+                    say: Callable[[str], None]) -> list[str]:
+    """Delete what `stranded` found. Only ever because someone said so.
+
+    The disk goes before the snapshot it was made from, which is the order
+    `remove_leftovers` uses and for the same reason: an interrupt between the two
+    leaves the cheap resource, not the expensive one.
+    """
+    targets: list[tuple[str, str, str, Callable[[], None]]] = []
+    for disk in disks:
+        name, zone = disk.get("name"), _tail(disk.get("zone"))
+        targets.append((
+            name, f"the disk {name} in {zone}",
+            disk_delete_command(project, name, zone),
+            lambda name=name, zone=zone: gc.run([
+                "compute", "disks", "delete", name, f"--zone={zone}",
+                f"--project={project}", "--quiet",
+            ], parse_json=False),
+        ))
+    for snap in snapshots:
+        name = snap.get("name")
+        targets.append((
+            name, f"the snapshot {name}",
+            snapshot_delete_command(project, name),
+            lambda name=name: gc.delete_snapshot(name, project),
+        ))
+
+    removed: list[str] = []
+    for index, (name, described, command, delete) in enumerate(targets):
+        say(f"deleting {name}")
+        queued = targets[index + 1:]
+        with ExitStack() as registered:
+            # Two registrations and not one, for `remove_leftovers`' reason: the
+            # item in flight and the items nothing has touched are in different
+            # states, and one entry can only carry one sentence.
+            if queued:
+                registered.enter_context(inflight.may_leave(
+                    "\n".join(item[1] for item in queued),
+                    undo=["and these, which nothing has touched:",
+                          *(item[2] for item in queued)],
+                    heading="and these were never reached, so they are still there:",
+                ))
+            registered.enter_context(inflight.may_leave(
+                described, undo=["take it off the bill:", command]))
+            delete()
+        removed.append(name)
+    return removed
 
 
 def remove_leftovers(gc: Gcloud, plan: Plan, found: Found,
@@ -1149,8 +1374,7 @@ def remove_leftovers(gc: Gcloud, plan: Plan, found: Found,
     that may exist cannot misdescribe it.
     """
     targets: list[tuple[str, str, str, Callable[[], None], str]] = []
-    if (found.disk is not None and found.instance is None
-            and not found.disk.get("users")):
+    if _clean_targets_disk(found):
         targets.append((
             plan.new_disk,
             f"the disk {plan.new_disk} in {plan.to_zone}",

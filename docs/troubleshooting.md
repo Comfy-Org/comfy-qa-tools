@@ -192,6 +192,69 @@ question for scripts, and `--dry-run` shows what would go without writing.
 comfy-qat discover --prune
 ```
 
+**Nothing is removed on one read.** A name failing to appear in the project's
+instance listing is an inference, and it is only ever as complete as that listing
+was. So every entry the listing calls absent is then put to a
+`gcloud compute instances describe` of its own, by name and in its own zone, and
+removed only if Google answers that there is no such instance — a statement about
+that machine rather than about a set it did not turn up in. You will see the
+count before the checks start:
+
+```
+checking 2 entries against the project one at a time, to be sure before removing anything
+```
+
+That is one `gcloud` process per stale entry, so a `--prune` that finds five
+takes a few seconds longer than one that finds none. A host list with nothing
+stale in it pays nothing — no candidates, no extra calls.
+
+**`the project listing did not have these and a direct check did not confirm they are gone, so nothing here was removed`**
+The two reads disagreed, so the entry stays. There are two ways to get here and
+the line under the message says which.
+
+*Google described it after all.* The listing did not carry the machine and a
+direct read does, which means the listing came back short of what the project
+holds. The machine is there, it may well be billing, and this entry is the only
+thing in your host list naming it — so removing it would be the worst available
+outcome. Nothing needs fixing in the file; run `comfy-qat discover --prune` again
+and the listing will usually be complete.
+
+*The check could not be made.* The message carries `gcloud`'s own refusal — a
+denied permission, a timeout, no network. Nobody established anything, so nothing
+was removed. Note that a resource you may not see is refused with a *permission*
+error rather than a "not found", which is why a narrowed role or a
+service-account credential lands here and never in the removed list. Fix the
+access and run it again.
+
+**`does not exist, which is not a statement about the instance inside it`**
+A special case of the one above, and the one that matters most, so it says which
+resource Google actually answered about.
+
+`describe` reports not-found about whatever it could not reach, and only one of
+those three answers is about the machine:
+
+```
+'projects/p/zones/z/instances/n' was not found   <- the instance. This one prunes.
+'projects/p/zones/z'             was not found   <- the zone
+'projects/p'                     was not found   <- the project
+```
+
+An entry is removed only on the first. If you see this message, the `gce_project`
+or the `gce_zone` on that entry names something Google does not have — almost
+always a typo, since both are typed by hand into a hand-maintained file. The
+machine itself has not been ruled out and may be running perfectly well on the
+project you meant.
+
+Nothing was removed, and that restraint is the point: read the other way, one
+mistyped `gce_project` turns *every* entry naming it into a confirmed ghost in a
+single pass, and one `y` then deletes the only record of machines that are still
+billing. Fix the field and run it again.
+
+```sh
+comfy-qat list          # what your host list says
+gcloud projects list    # what you actually have
+```
+
 **`could not be listed, so nothing was checked on it — any entry naming it was left alone`**
 One of the projects your host list names could not be listed, so nothing on it
 was compared and nothing on it was removed. A listing that fails is not a listing
@@ -199,6 +262,38 @@ that came back empty: an entry taken out on that basis would be an entry
 destroyed because the network was down. Fix the access — usually
 `gcloud auth login`, or a project you no longer have rights on — and run it
 again. The other projects were still checked.
+
+**`on the project, and not in the zone the entry gives — the entry is wrong, the box is not gone, so nothing here was removed. Find where each one really is with gcloud compute instances list, then correct gce_zone by hand`**
+The project has a machine of that name, in a zone your entry does not name. That
+is a wrong entry, not a missing box, and the two are worlds apart: the machine
+exists, is very likely running and billing, and this entry is the only thing in
+your host list that names it — so removing it would leave a GPU running that
+`comfy-qat down` can no longer reach. Nothing here is removed for that reason.
+
+It happens when the zone was typed by hand, when the box was recreated somewhere
+else from the console, or when a `move` did not finish. The repair is one field:
+find the zone the box is really in, then edit `gce_zone` in `hosts.toml`.
+
+```sh
+gcloud compute instances list --filter="name=comfy-win"
+```
+
+Ghosts are still pruned in the same run; these are listed separately because they
+are a different fact.
+
+**`gcloud listed the instances on <project> and printed nothing at all, so what that project holds was not established`**
+`gcloud` exited successfully and wrote no output, which is not the same as a
+project with no instances — an empty project prints `[]`. Nothing prints nothing,
+so what that project holds is unknown, and unknown is not "empty". Every entry
+naming that project is left exactly where it is.
+
+Run the listing yourself and see what it does. If it prints instances when you
+run it, it was a transient failure and `comfy-qat discover --prune` will work on
+the next attempt.
+
+```sh
+gcloud compute instances list --project=<project>
+```
 
 **`the entries could not be removed`** / **`take them out of the host list by hand — while they are there, `create` refuses those names, their ports stay reserved, and a description that matches several of them refuses as ambiguous`**
 The boxes really are gone and the host list could not be rewritten. The message
@@ -284,10 +379,37 @@ most common way a create by hand fails. You never pass a machine type here.
 
 ### Before anything exists
 
-**`no card called 'rtx4090'. This tool can create: a100, a100-80gb, h100, k80, l4, p100, p4, t4, v100.`**
+**`no card called 'rtx4090'. This tool can create: a100, a100-80gb, h100, l4, t4.`**
 A card this tool has no machine-type mapping for. The list is what it can order,
 not what your project is allowed — `comfy-qat quota list` is the second half
-of the answer.
+of the answer. It is also shorter than the table inside the tool: four more cards
+are known and deliberately not offered, for the reason in the next entry.
+
+**`this tool cannot bring up a P100, so nothing was created. The driver it installs is the open NVIDIA kernel module, and that needs a GPU System Processor — a GSP — which only Turing and newer cards have. Pascal has none, so no module loads at all: the box would boot, bill, and never see its own GPU. Cards that do work: a100, a100-80gb, h100, l4, t4.`**
+P4, P100, V100 and K80 are real cards, your project may hold real quota for them,
+and this tool will not order one. Every Linux box it creates installs its driver
+through Google's `cuda_installer.pyz`, which lays down the **open** NVIDIA kernel
+module, and the open module needs a GPU System Processor — the on-board
+microcontroller NVIDIA introduced with Turing. Kepler, Pascal and Volta do not
+have one and cannot grow one.
+
+Nothing about the failure looks like a failure, which is why this is refused
+rather than warned about. Measured on a V100 box on 2026-09-09: `create` returned
+0, the startup script finished with exit status 0 and the packages installed
+(`nvidia-open set on hold`), the machine booted, and `lspci` showed the card.
+No kernel module loaded, `nvidia-smi` failed, and a clean reboot did not change
+it. `dmesg` is the only place it says so:
+
+```
+NVRM: The NVIDIA GPU 0000:00:04.0 (PCI ID: 10de:1db1)
+NVRM: installed in this system is not supported by open
+NVRM: nvidia.ko because it does not include the required GPU
+NVRM: System Processor (GSP).
+NVRM: The NVIDIA probe routine failed for 1 device(s).
+```
+
+A T4 is the same `n1-standard-8` machine as a P4, P100 or V100, costs less than
+most of them, and works — `comfy-qat create --os linux --gpu t4`.
 
 **`no operating system called 'freebsd'. Say --os linux or --os windows.`**
 Two images, one per operating system: Ubuntu 22.04 and Windows Server 2022.
@@ -297,6 +419,23 @@ Two images, one per operating system: Ubuntu 22.04 and Windows Server 2022.
 Names are checked against your host list *and* against the instances on the
 project, because either collision ends the same way: two machines you cannot tell
 apart. Without `--name` a free one is chosen for you.
+
+**`could not read your host list (...), so nothing was created`**
+Your `hosts.toml` exists and will not parse, so nothing was created — and that
+refusal is the point, because this is the command that spends money. `create`
+reads the host list twice: once to check the name is free, and once to pick a
+port. Treating an unreadable file as an empty one made both of those answers
+meaningless, and the run went ahead anyway: the box was created and billed, its
+block was appended to a file that still would not load, and the run signed off by
+offering `comfy-qat go <name>` and `comfy-qat down <name>` — both of which read
+the host list and exit 2. A GPU billing, no way to stop it with this tool, and
+nothing in the run saying the file was broken.
+
+Every way in is ordinary: a duplicate port, two entries naming one instance, two
+names differing only in case, a typo in the TOML, a stray non-UTF-8 byte. The
+message carries the loader's own refusal, which names both sides of the problem.
+Fix the file, then run `create` again — nothing was created, so there is nothing
+to clean up.
 
 **`could not find an unused name starting comfy-linux. Give one with --name.`**
 Ninety-eight boxes named `comfy-linux-2` through `comfy-linux-99` already exist,
@@ -604,6 +743,22 @@ command at the end of a paragraph out of sight. Adopting it with
 `comfy-qat discover` is the other way out, and is second because it leaves
 the box running.
 
+**`your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before comfy-qat go or comfy-qat down`**
+The host list loaded when this command started — it refuses outright otherwise —
+and does not load now, so something edited it while the create was running. That
+is minutes, and another terminal or an editor is all it takes.
+
+This one is a warning rather than a refusal, and the reason is that by now the box
+is real and billing. Refusing here would leave a GPU running with nothing in the
+host list naming it, which is worse than the problem being reported — so the entry
+still goes in, on the best port this run could work out, taken from the file as it
+read at the start.
+
+Two things need checking. The port may collide with one in the part of the file
+that no longer parses, and `comfy-qat go` and `comfy-qat down` both read the host
+list, so they will exit 2 until it loads again. Fix the file first; the message
+carries the loader's own refusal, which names what it objected to.
+
 ### The NVIDIA driver
 
 **The driver is not in either base image**, and a GPU box without it looks
@@ -618,6 +773,17 @@ which is what
 points at for automating the install. It reboots the box once or twice and
 carries on across the reboots; `comfy-qat go` waits that out. Google notes it does not
 work on instances with Secure Boot enabled — nothing here turns Secure Boot on.
+
+**That installer lays down the open kernel module, and that is why four cards are
+refused.** The open NVIDIA modules work only on a GPU with a GPU System Processor
+— NVIDIA's own README says "can be used on any Turing or later GPU" — so T4
+(Turing), L4 (Ada), A100 (Ampere) and H100 (Hopper) work, and P4, P100 (Pascal),
+V100 (Volta) and K80 (Kepler) cannot. On those the install still succeeds and the
+box still boots; no module ever loads. `comfy-qat create` refuses them before
+anything is billed rather than letting you find out. `cuda_installer.pyz` offers
+`--installation-branch` and no way at all to ask for the proprietary module, so
+driving an older card would mean replacing Google's installer with a hand-rolled
+one — the same guess this tool declines to make on Windows, below.
 
 **Windows boxes do not**, and this tool does not pretend otherwise. Google
 documents exactly one way to install the driver on Windows Server, and it is a
@@ -636,6 +802,38 @@ seam rather than a guess: run the two commands once, by hand, and
 `comfy-qat stamp <name>` will show a `cuda:0` device instead of a CPU one.
 
 ## Starting and stopping
+
+**`this has been working on comfy-linux for 30m00s and the GPU driver has still
+not come up, so it stopped rather than going on. The machine is up and billing.`**
+The ceiling on one whole `comfy-qat go`, `up` or `switch`. The clause in the
+middle names whichever phase was holding the clock when it ran out — the driver,
+the machine not accepting commands, ComfyUI not installed, ComfyUI not answering.
+
+**Every wait in this tool was already bounded when this was added, and the
+command still ran for a quarter of an hour and concluded nothing.** Each phase
+starts a FRESH clock and the phases stack: boot 300s + tunnel 300s + probe 180s +
+SSH 300s + driver 900s is 33 minutes before the install has begun, and the install
+streams with no timeout of its own. "Every wait is bounded" and "the command is
+bounded" turn out to be different claims, and only the first was true. `GO_BUDGET`
+is the second one.
+
+It is 1800s — deliberately less than the sum of those maxima. Each of them means
+"this phase alone has gone wrong", so a run that reaches two has already failed
+and is spending GPU money to discover it. For scale, a real cold `go` that
+installed ComfyUI from nothing took 3m11s and a warm one 52s.
+
+Running the same command again picks up where it left off — an install that
+finished is found and skipped — so this is a stop, not a rollback. If you keep
+hitting it, the box is the problem rather than the clock: read `comfy-qat logs
+<name>`, and note the machine bills the whole time either way.
+
+**`comfy-linux still has no working GPU driver after 900s`**
+The phase, rather than the whole command. Fifteen minutes is a long time to watch,
+so this step now prints `still going, …` while it waits — it used to print its
+opening line and then nothing at all, which is indistinguishable from a hung
+command and was killed by hand on a real run at exactly the fifteen-minute mark.
+On a card older than Turing this cannot succeed at all and `comfy-qat` refuses
+before it starts waiting; see the GPU entries above.
 
 **`ComfyUI is not answering on http://127.0.0.1:8188`**
 The local host in your list is not serving. Nothing on your machine is stopped or
@@ -668,9 +866,37 @@ the error prints the command to try by hand.
 The install script exited non-zero. Its output is on your terminal above the error —
 read that first. Get onto the box with the printed command to finish by hand.
 
+**`ComfyUI is not answering on http://127.0.0.1:8190: it is installed on comfy-win
+but nothing has started it. The machine is up and billing.`**
+The everyday one, and what you get from `comfy-qat up` on **any box that has been
+through `comfy-qat down`**. Nothing on the box starts ComfyUI at boot, so stopping
+the machine stops ComfyUI and starting the machine does not bring it back. The
+install is still there and still good.
+
+The fix is one command: **`comfy-qat go comfy-win`**. It finds the existing install,
+skips installing, launches ComfyUI and waits until it answers — measured at 52
+seconds on a real L4, against the three minutes `up` used to spend before saying
+something less useful.
+
+`up` does not do this for you on purpose. `up` is the machine-level verb; `go` is
+the one that puts ComfyUI on the machine and starts it, and two commands that both
+start ComfyUI would be one more than this tool wants. What `up` owes you is a
+truthful answer fast, which is what this is.
+
+**`ComfyUI is not answering on http://127.0.0.1:8190: it is not installed on
+comfy-win. The machine is up and billing.`**
+The same place, the other reason: this box has never had ComfyUI on it, or the
+install did not survive. `comfy-qat go comfy-win` installs it and starts it in one
+command. Expect minutes rather than seconds — torch is the slow part.
+
 **`comfy-win is running and tunnelled, but ComfyUI is not answering on
 http://127.0.0.1:8190. The machine is up and billing; ComfyUI is not installed or
 not started.`**
+The two entries above are what you normally get, because the tool asks the box
+which of them it is. This one is what is left when the box **would not say** — the
+`or` is honest here and only here. `comfy-qat go comfy-win` is still the answer to
+both halves of it.
+
 The machine and the tunnel are both fine — ComfyUI itself is not serving. **The box
 is billing while this is true**, which is why the fix line ends with
 `or stop paying for it: comfy-qat down comfy-win`. The error prints how to get
@@ -705,9 +931,15 @@ fix line ends with the command that stops it.
 **`gcloud is not installed or not on PATH, so no tunnel can be opened.`**
 The tunnel is gcloud and nothing else, so there is no fallback. The exact
 invocation is `gcloud compute ssh <instance> --zone=<zone> --project=<project>
---tunnel-through-iap --quiet -- -N -L 127.0.0.1:<your port>:127.0.0.1:8188`, and
+--tunnel-through-iap --quiet -- -N -o ExitOnForwardFailure=no -L 127.0.0.1:<your port>:127.0.0.1:8188
+-L [::1]:<your port>:127.0.0.1:8188`, and
 `comfy-qat open <host> --dry-run` prints it for you — **that is what to look for
-in `ps` when you are hunting your own tunnel.** It is not `start-iap-tunnel`;
+in `ps` when you are hunting your own tunnel.** There are two forwards, one per
+loopback family, so `http://localhost:<port>` reaches the box on a machine that
+prefers IPv6 for that name as well as `http://127.0.0.1:<port>`. The IPv4 one is
+the promise and the IPv6 one is a convenience: `ExitOnForwardFailure=no` is set
+explicitly so that a box with IPv6 disabled loses the `::1` bind and keeps the
+tunnel. It is not `start-iap-tunnel`;
 searching for that finds nothing and reads as "the tunnel is gone". Install the
 SDK from the link in the fix line. Note `gcloud` may be on
 your interactive `PATH` and not on the one a script or a launchd job runs with.
@@ -725,9 +957,40 @@ because its output is captured it cannot prompt, so it exits rather than asking.
 pid file written over that turns a credential failure into "the box is up but
 ComfyUI is not answering", with the machine left running and billing. So a fresh
 tunnel is watched for a second and a half, and a dead one is reported with the end
-of gcloud's own log instead of being written down. If it mentions credentials or
-reauthentication, `gcloud auth login` and try again; the full log is in
-`~/.config/comfy-qa-tools/tunnels/<host>.log`.
+of gcloud's own log instead of being written down. The line that named the cause is
+lifted to the front of the message, ahead of the tail it came from; the full log is
+in `~/.config/comfy-qa-tools/tunnels/<host>.log`.
+
+The fix line offers `gcloud auth login` **only when the log actually asks for
+reauthentication.** It used to offer it for every dead tunnel, which is how the
+first live run of this tool sent somebody to repair a session that was working
+perfectly — see the entry below.
+
+**`the machine is not accepting SSH connections yet, so there is nothing for the tunnel to travel over. It is still starting up.`**
+**`<name> is RUNNING but never started accepting SSH connections, so no tunnel could be opened to it. The machine is up and billing.`**
+The machine is powered on and its SSH server is not answering yet. `comfy-qat go`
+waits this out with a ticker and retries; the second wording is what you get if it
+is still not answering after five minutes, and only then.
+
+In the tunnel log this reads `Error while connecting [4003: 'failed to connect to
+backend']. (Failed to connect to port 22)`. That is IAP saying it reached Google
+and Google could not reach the far port — and the port it dials is **22**, so it is
+a statement about sshd, never about ComfyUI. Google reports the instance `RUNNING`
+throughout: RUNNING means the VM is powered on, not that anything on it is
+listening. A box created a minute ago is worse again, because its startup script
+installs the NVIDIA driver and reboots it once or twice, which `comfy-qat create`
+prints as it finishes.
+
+This is the shape of the first live `create` + `go` this tool ever ran. `go`
+followed `create`'s own closing instruction, failed immediately, and reported the
+tunnel as closed for unknown reasons with `gcloud auth login` as the advice. The
+credential was fine; the identical command four minutes later installed ComfyUI and
+served it. Both halves of that are fixed: the wait exists now, and reauthentication
+is no longer suggested for a log that never mentioned it.
+
+If the second wording does appear, the box really is not coming up. Read its serial
+console in the Google Cloud console, or stop it and start it again — and note the
+machine is billing the whole time either way.
 
 **`something is already listening on 127.0.0.1:8190, and it is not a tunnel this
 tool opened. A tunnel started now could not bind that port, so
@@ -1013,6 +1276,17 @@ The box would not run the command that reads the log. Usually the same causes as
 any other SSH failure here: an expired session, a missing IAP permission, or a
 box that has stopped accepting commands. The fix line prints the way onto the
 machine, and the way to stop paying for it.
+
+**`reading the ComfyUI log on comfy-win did not finish (exit 255), so what is above this — if anything — is not the whole log.`**
+The connection to the box was made, or attempted, and came back with a failure
+code rather than a log. 255 is the usual one and means ssh never got through —
+the box stopped accepting connections, the session expired mid-read, the network
+went. **Until this message existed, `logs` exited 0 in this case**, so a script
+that read `$?` could not tell a log it had read from a box it never reached, and
+neither could a person who had scrolled past the empty output. Anything printed
+above the message is a partial read, not the log. The fix line prints the way
+onto the machine and the way to stop paying for it. Ending a `--follow` with
+Ctrl-C is not this: that says `stopped reading` and leaves ComfyUI running.
 
 **`local is this machine, and this tool did not start its ComfyUI, so there is no log of its own to follow.`**
 `comfy-qat logs local` has nothing to show. Your local ComfyUI was started by you, in
@@ -1330,8 +1604,9 @@ tester usually gives up and opens the console. These lines are the tool trying t
 keep you testing instead.
 
 **`comfy-linux is untouched — you still have the machine you were on`**
-(or `comfy-linux, comfy-win are untouched — you still have the machines you were on`)
-Reassurance, printed when a `switch` fails: the target is brought up *before*
+**`comfy-linux, comfy-win are untouched — you still have the machines you were on`**
+Reassurance, printed when a `switch` fails — the singular when one machine was
+left running, the plural when more than one. The target is brought up *before*
 anything is stopped, so a failed switch leaves you exactly where you started. You
 have lost nothing but the time.
 
@@ -1870,6 +2145,26 @@ job is to start a machine.
 
 ## A new box and its GPU driver
 
+**`comfy-p4 has a P4, and nothing this tool installs can drive it: the open NVIDIA kernel module needs a GPU System Processor, and only Turing and newer cards have one. The machine is running and billing. Waiting will not change it — the driver install reports success and the kernel refuses the device.`**
+
+A box with a pre-Turing card — P4, P100, V100, K80 — that this tool did not
+create. `comfy-qat create` refuses those cards outright, so the machine came from
+the console or from somewhere else and `comfy-qat discover` picked it up.
+
+`go` says this in a second instead of waiting the full fifteen minutes and then
+pointing at the installer's log, because on these cards the log is the one place
+that looks healthy. Measured on a P4 on 2026-09-09: `google-startup-scripts`
+finished, exit status 0, packages installed — and `dmesg | grep -c 'not supported
+by open'` returned 15. Confirm it on the box yourself:
+
+```sh
+comfy-qat ssh <name>
+dmesg | grep 'not supported by open'
+```
+
+A reboot does not help; the card has no GSP and never will. Stop the box and use
+a T4 — same `n1-standard-8` machine, and it works.
+
 **`<name> still has no working GPU driver after 900s. The machine is running and billing.`**
 
 A box created by `comfy-qat create` installs its NVIDIA driver from a startup
@@ -1965,6 +2260,64 @@ Windows Server boxes are reached over Remote Desktop, not SSH. `comfy-qat rdp
 
 `rdp` is only for Windows. For a Linux box use `comfy-qat ssh <name>`; for the
 local install, open a terminal.
+
+**`<name> is not running, so its password was not reset and there is nothing to
+forward RDP to. The password in use on it is unchanged.`**
+
+`rdp` asks whether the box is up before it announces anything, and this is the
+answer when it is not. The last sentence is the point of the message: `rdp` used
+to print "resetting the Windows password on `<name>` — the one in use now stops
+working", plus gcloud's warning about losing data encrypted with the old
+password, *before* it checked, and then fail. Anyone reading that had been told a
+destructive change was under way when nothing had been touched — and the recovery
+it invites, resetting again and warning whoever else signs in to that box, is
+work created out of a sentence. Exit 2: nothing was changed. `comfy-qat up
+<name>`, then `rdp` again.
+
+**`Remote Desktop is not answering on comfy-win after 300s, so nothing was changed
+on the machine. It is running and billing.`**
+**`its password was not reset — the one in use on it is unchanged.`**
+RUNNING is not "Remote Desktop is listening", exactly as it is not "sshd is
+listening" and as "the VM booted" is not "ComfyUI is serving". A freshly created
+Windows box reaches RUNNING **minutes** before 3389 accepts anything, and `rdp`
+waits that gap out rather than walking into it. Exit 2: nothing was changed.
+
+This is what the wait exists to prevent, from a real run on a fresh box:
+
+    password reset in 8s
+    user     ali_ranjah
+    password <redacted>
+    address  localhost:33389
+      forwarding RDP — Ctrl-C closes it
+    ERROR: ... [4003: 'failed to connect to backend']. (Failed to connect to port 3389)
+
+exit 1 — with the password already changed. **The reset does not undo**, and it
+invalidates the password anyone else signed in to that box is holding, so that run
+cost a session and bought nothing: the box was not ready, and a retry minutes later
+got straight through. The check above the reset used to be "is the box RUNNING",
+which that box was.
+
+If you see the 300s form, the box really is not coming up into Remote Desktop.
+Give it longer; a Windows first boot is slow, and the machine bills throughout.
+
+**`could not tell whether <name> is running, so its password was not reset — this
+will not claim to have changed one it could not reach.`**
+
+The same check, with the third answer. `instance_status` can succeed and say
+nothing — a box in another project, a read that came back empty — and neither of
+the other two answers may be assumed from it. Guessing RUNNING announces a
+destructive change against a machine nobody reached; guessing stopped tells you
+to start a box that may already be billing. Exit 2. `comfy-qat list --live`
+settles it.
+
+**`--tail <n> is not a number of lines to read.`**
+
+`comfy-qat logs --tail` used to fold anything below one up to a single line, so
+`--tail -5` quietly printed one line and looked like it had worked. A negative
+count is a typo, not a smaller number of lines, and answering a typo with a
+plausible answer is how nobody finds out. `--tail 0` is *not* refused: zero means
+zero, and `--tail 0 --follow` is the ordinary "skip the backlog, show me what
+happens next" reading. Exit 2; nothing is contacted.
 
 **`gcloud reset the Windows password on <instance> and exited without an error,
 but the answer carried no credentials: <shape>. There is no password to hand over,
@@ -2216,6 +2569,22 @@ in `us-central1` does nothing for a box in `europe-west4`. Either build in the
 region that has it, or request it where you want it. The older wording said
 `no quota for 'l4' … Available: L4`, which read as a contradiction; the region is
 the missing half.
+
+**`there is no point asking for P100 quota: this tool cannot bring that card up. The driver it installs is the open NVIDIA kernel module, which needs a GPU System Processor, and only Turing and newer cards have one.`**
+`quota request` refuses P4, P100, V100 and K80 before submitting anything.
+Approval takes days, and at the end of it `create --gpu p100` would still refuse —
+see the entry for that message under [Creating a box](#before-anything-exists).
+Ask for a T4 or an L4 instead.
+
+**`only P100, V100 — cards this tool cannot drive, because the open NVIDIA kernel module it installs needs a GPU System Processor and only Turing and newer have one`**
+`comfy-qat status` reads this as a failing row rather than a passing one. The
+project holds GPU quota, Google will let you start an instance with it, and every
+card granted is one whose GPU cannot initialise under the driver this tool
+installs — so nothing it can build will generate anything. Request a card it can
+drive:
+```sh
+comfy-qat quota request --gpu t4,l4 --region us-central1
+```
 
 **`this project reports no quota for 'h100'`**
 You asked for a card Google does not offer this project, or not in that region.

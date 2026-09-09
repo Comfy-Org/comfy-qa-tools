@@ -339,9 +339,22 @@ EXCUSED = frozenset({
     # a start and a move. `cli.main` prints that, and `report`'s own wording is
     # documented in troubleshooting.md like any other message.
     "Interrupted", "SystemExit",
+    # The same shape as the three below: `create.undrivable` builds the refusal
+    # for a card with no GSP and hands it back, and its literals are collected at
+    # the `LifecycleError(...)` inside it. It is a function rather than a raise at
+    # the call site so the wording lives beside the card table it is about.
+    "undrivable",
     "_stopped", "_unregistered", "give_up",  # helpers that BUILD an exception;
                                           # their literals are caught at the
                                           # constructor call inside them
+    # The same shape: `_not_answering` picks which of three sentences fits what
+    # the box said and hands back the error, and all three `LifecycleError(...)`
+    # constructors inside it are collected in the ordinary way.
+    "_not_answering",
+    # And again: `out_of_time` is the one message for "the whole command ran out
+    # of clock", built in one place so five phases do not each word their own.
+    # Its literal is collected at the constructor inside it.
+    "out_of_time",
 })
 
 
@@ -603,9 +616,26 @@ MESSAGE_FLOOR = {
     # 48 until `rdp` was given words for a reset that runs out of clock. One
     # message, two identifying runs, counted as two — raised here in the commit
     # that added it, so the floor keeps meaning what it says.
-    "host.py": 50,
+    # 50 until `rdp` grew its two precondition refusals and `logs` its `--tail`
+    # one. Raised to 58 rather than to today's 63, for the reason the paragraph
+    # under WORDING_FLOOR gives: the count is shared, and a floor pinned to an
+    # exact number turns somebody else's honest deletion into a failure here.
+    "host.py": 58,
     "hostfile.py": 13,
-    "lifecycle.py": 65,
+    # 65 until the tunnel learned to tell a box that is still booting from one
+    # that is broken, and `up` learned to say WHICH of "not installed or not
+    # started" it is looking at. Four messages arrived — the still-booting
+    # refusal, the wait that ran out, and the two halves of that `or` — and the
+    # module is at 77, one short of the slack. Raised to 71, half the distance,
+    # for the reason under WORDING_FLOOR: this count is shared, and a floor
+    # pinned to tonight's exact number turns somebody else's honest deletion
+    # into a failure in a file they never opened.
+    #
+    # 71 until `rdp` stopped resetting a Windows password before checking that
+    # Remote Desktop was reachable. `wait_for_port` is the new wait and carries
+    # the refusal for a box whose 3389 never answers. Raised to 78 on the same
+    # half-the-distance rule; the module reads 84.
+    "lifecycle.py": 78,
     "relocate.py": 12,
     "remove.py": 11,
     "setup.py": 19,
@@ -631,8 +661,23 @@ MESSAGE_FLOOR = {
 # somebody else's honest deletion into a failure in a file they never opened. That
 # is what `FLOOR_SLACK` is for. The per-module floor above is the one this commit
 # owns, and it is raised there.
-ENTRY_FLOOR = 230
-WORDING_FLOOR = 267
+# 267 until the page passed 279 and the slack ran out. Raised to 274 rather than
+# to tonight's 283 for the reason the paragraph above gives: the count is shared
+# with every other change landing on this page, and a floor set to today's exact
+# number turns the next honest deletion into a failure in a file nobody opened.
+# 288 leaves room to fall as well as to rise.
+# 236 until the page passed 248 and the entry slack ran out. Three entries landed
+# in this commit — a still-booting box, an install that is present and stopped,
+# and one that is absent — and the rest is other people's work tonight. Raised to
+# 244 rather than to today's 250, for the reason above: half the distance, so the
+# number leaves room in both directions instead of pinning tonight's exact count.
+# 244 until the driver wait, the RDP readiness gate and the whole-command budget
+# each arrived with an entry. Raised to 251, half the distance to today's 258, on
+# the same rule: this count is shared with everything else landing on the page.
+ENTRY_FLOOR = 251
+# 288 until the RDP readiness entry landed. Raised to 295, half the distance to
+# today's 301, for the reason the paragraph above gives.
+WORDING_FLOOR = 295
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -800,28 +845,29 @@ def _quoted_wordings() -> list[str]:
 
 QUOTED_WORDINGS = _quoted_wordings()
 
-# Messages documented in prose rather than at the head of an entry. One only, and
-# it is a gap in the PAGE rather than in the tool: `host.py` reports a move it
-# refused in a singular and a plural form, the singular has its own heading, and
-# the plural is quoted in parentheses on the line underneath it —
+# There was a `DOCUMENTED_IN_PROSE` exemption here, and it is worth one paragraph
+# because of how it left. `host.py` reports a refused move in a singular and a
+# plural form; the page gave the singular a heading and quoted the plural in a
+# parenthesis on the line underneath, so the plural was documented to a reader
+# and invisible to this check. It was excused here, unguarded, and the excuse
+# reported as SKIPPED — which is to say the message's assertion was not running
+# and nothing said so.
 #
-#     **`comfy-linux is untouched — you still have the machine you were on`**
-#     (or `comfy-linux, comfy-win are untouched — you still have the machines...`)
+# Guarding it is what removed it. The moment `docs/troubleshooting.md` promoted
+# the plural to a heading of its own, the guard that asks whether an exemption is
+# still needed went red and named it, and the exemption, the skip and the three
+# guards around it all came out together. The message is now checked below like
+# every other one.
 #
-# The fix is to promote the second wording to a heading of its own, in `docs/`,
-# which this commit deliberately does not touch. Until then it is written down
-# here so that it is a known exception rather than a silent pass.
-DOCUMENTED_IN_PROSE = {
-    "are untouched — you still have the machines you were on":
-        "the plural of an entry that exists; the page quotes it in a "
-        "parenthesis rather than as a heading of its own",
-}
+# The general point, since the next exemption will look just as reasonable: an
+# allowlist entry is a claim about the world, and the guard's job is to notice
+# when the world stops agreeing. This one lasted exactly as long as its reason
+# did, which is the whole of what section 2 of docs/tests-that-cannot-fail.md
+# asks for.
 
 
 @pytest.mark.parametrize("message", MESSAGES, ids=lambda m: f"{m.where} {m.phrase[:40]}")
 def test_every_error_has_a_troubleshooting_entry(message):
-    if message.phrase in DOCUMENTED_IN_PROSE:
-        pytest.skip("see DOCUMENTED_IN_PROSE")
     assert any(message.phrase in wording for wording in QUOTED_WORDINGS), (
         f"{message.where} can print {message.phrase!r}, and no troubleshooting "
         f"entry quotes it. Quote it at the head of one, verbatim, with what it "
@@ -829,6 +875,28 @@ def test_every_error_has_a_troubleshooting_entry(message):
         f"NOT_AN_ENTRY. Appearing somewhere in the page's prose is not the same "
         f"thing and no longer counts."
     )
+
+
+# Both wordings of the refused move now have headings of their own, and a
+# heading is the only thing that documents a message here. That pair is worth one
+# assertion rather than none: it is the one place on the page where two messages
+# differ by a plural, and quoting one of them is the easy mistake to make again.
+def test_both_wordings_of_a_refused_move_are_quoted():
+    """The singular and the plural each need a heading, not one between them.
+
+    This is what replaced the `DOCUMENTED_IN_PROSE` exemption, and it is
+    deliberately an assertion about the page rather than a note about it: the
+    plural spent its time here excused because a parenthesis is not a heading,
+    and nothing but this would notice it sliding back into one.
+    """
+    for wording in ("you still have the machine you were on",
+                    "you still have the machines you were on"):
+        assert any(wording in quoted for quoted in QUOTED_WORDINGS), (
+            f"troubleshooting.md no longer quotes {wording!r} at the head of an "
+            f"entry. `host.py` prints the singular and the plural, so the page "
+            f"needs a heading for each — a wording mentioned only in the body of "
+            f"another entry does not document it."
+        )
 
 
 # The two runs in the package too short to identify a message on their own, and
@@ -1064,6 +1132,16 @@ TOO_SHORT_TO_MATCH = {
 
 EXEMPTED = {**NOT_OUR_MESSAGE, **TOO_SHORT_TO_MATCH}
 
+# The messages the walk found with NOTHING in them long enough to identify them.
+# Derived, never typed — which is the point. `TOO_SHORT_TO_MATCH` claims exactly
+# this about the two entries it excuses, and until now nothing compared the claim
+# to the package. It could therefore be false in the one way that matters: a
+# message deleted outright ALSO stops matching, so its entry would go on being
+# excused "for being short" for ever, which is precisely the defect this guard
+# exists to catch, hiding inside the guard's own escape hatch. The same sentence
+# is written above about `NOT_OUR_MESSAGE`; it was true of this list too.
+UNIDENTIFIABLE = {message.phrase for message in MESSAGES if not message.identifying}
+
 
 def _message_runs() -> set[str]:
     """Every literal run of every string the package builds, ENTRY_RUN or longer.
@@ -1108,8 +1186,14 @@ def test_the_entry_list_was_actually_found():
 
 @pytest.mark.parametrize("entry", ENTRIES, ids=lambda e: e[:40])
 def test_every_troubleshooting_entry_still_describes_something_real(entry):
-    if any(key in entry for key in EXEMPTED):
-        pytest.skip("see NOT_OUR_MESSAGE / TOO_SHORT_TO_MATCH")
+    excused = [key for key in EXEMPTED if key in entry]
+    if excused:
+        # Name the key. "see NOT_OUR_MESSAGE / TOO_SHORT_TO_MATCH" told a reader
+        # of the summary that nine entries were excused by one of two lists and
+        # nothing about which, so an exemption doing more work than it was
+        # written for read exactly like one doing its job.
+        which = "TOO_SHORT_TO_MATCH" if excused[0] in TOO_SHORT_TO_MATCH else "NOT_OUR_MESSAGE"
+        pytest.skip(f"{which}: {excused[0]!r}")
     assert any(run in entry for run in MESSAGE_RUNS), (
         f"troubleshooting.md documents {entry!r}, and nothing in comfy_qa/ can "
         f"still say it. Either it was reworded — quote the new wording verbatim "
@@ -1138,6 +1222,76 @@ def test_no_exempted_entry_has_left_the_page():
                     if not any(key in entry for entry in ENTRIES))
     assert not absent, (
         f"{', '.join(absent)} is exempted but is not in troubleshooting.md."
+    )
+
+
+def test_no_exemption_excuses_more_than_the_entry_it_was_written_for():
+    """An exemption is an argument about one entry, and it should reach one entry.
+
+    The two guards above are about a key that stops matching. This is the other
+    way an allowlist grows without anyone adding to it: a key SHORT enough to
+    match a second entry waves that one through on an argument made about a
+    different message. `No such option` is the live risk — fourteen characters,
+    written about `No such option: --os`, and it would silently excuse every
+    future entry for a flag this tool removes. That is an exclusion doing work it
+    was not meant to do, and nothing said so, because a skip looks the same
+    whichever key produced it.
+
+    Split the key if two entries really do need the same argument; the cost is
+    one line and the reason then sits beside the entry it is about.
+    """
+    broad = sorted(
+        f"{key!r} excuses {len(hits)} entries ({', '.join(repr(h) for h in hits)})"
+        for key, hits in ((key, [e for e in ENTRIES if key in e]) for key in EXEMPTED)
+        if len(hits) > 1)
+    assert not broad, (
+        "; ".join(broad) + " — an exemption is an argument about one entry. "
+        "Lengthen the key until it names only the entry it was written for, or "
+        "add a separate entry with its own reason."
+    )
+
+
+def test_the_two_exemption_lists_stay_disjoint():
+    """They are merged into one dict, so a key in both loses one of its reasons.
+
+    Worse, it loses it in the direction that matters: the two lists have opposite
+    futures — `NOT_OUR_MESSAGE` is permanent, `TOO_SHORT_TO_MATCH` is a shrinking
+    known limit — and a key that drifts into both is a permanent exemption
+    wearing a temporary one's name.
+    """
+    both = sorted(set(NOT_OUR_MESSAGE) & set(TOO_SHORT_TO_MATCH))
+    assert not both, (
+        f"{', '.join(repr(k) for k in both)} is in NOT_OUR_MESSAGE and in "
+        f"TOO_SHORT_TO_MATCH. Decide which it is; they do not mean the same "
+        f"thing and only one of the two reasons survives into EXEMPTED."
+    )
+
+
+def test_every_too_short_entry_is_still_short_and_still_said():
+    """The claim `TOO_SHORT_TO_MATCH` makes, checked against the package.
+
+    Its entries are excused because the MATCHER cannot see the message, not
+    because the tool has stopped saying it — and those two look identical from
+    here, which is what made this list a permanent hiding place. A message that
+    is deleted stops matching exactly as thoroughly as one that is short.
+
+    `UNIDENTIFIABLE` is derived from the same AST walk that produces the
+    messages, so it separates them: a message whose longest run reaches
+    `IDENTIFYING` leaves the set, and so does one that no module says any more.
+    Either way the entry stops being covered here and has to be re-argued.
+    """
+    unbacked = []
+    for key in TOO_SHORT_TO_MATCH:
+        for entry in (e for e in ENTRIES if key in e):
+            if not any(phrase in entry for phrase in UNIDENTIFIABLE):
+                unbacked.append(f"{key!r} (entry {entry!r})")
+    assert not sorted(unbacked), (
+        f"{'; '.join(sorted(unbacked))} is excused in TOO_SHORT_TO_MATCH as a "
+        f"message with no run long enough to match, and no such message exists "
+        f"any more — every message that cannot identify itself is "
+        f"{sorted(UNIDENTIFIABLE)}. Either the message grew words of its own, in "
+        f"which case quote them at the head of the entry and drop the exemption, "
+        f"or it is gone and the entry describes a defect that no longer exists."
     )
 
 
@@ -1597,6 +1751,209 @@ def test_commands_we_tell_people_to_run_exist(where, words):
         walked.append(word)
         node = node[word]
 
+
+# --- the same question, asked of the spellings that name no binary -----------
+#
+# The walk above sees a command only when the binary is spelled out in front of
+# it, and that is the whole of its reach. This is what went through the gap:
+# the starter host list that `init` and `setup` write explained its last rule as
+#
+#     #     `host down` would leave a real instance running and billing
+#
+# `host` was a group until 1.1.0 and is not one now, so `comfy-qat host down`
+# exits 2 with click's own "No such command 'host'." — and that sentence was
+# line 13 of the first file every new user owns, the first explanation they read
+# of why the rule exists. `_INVOCATION` matched nothing on it, because there is
+# no `comfy-qat ` to match; A8 in the acceptance pack missed it for the same
+# reason, being that literal prefix typed out as a grep.
+#
+# So this is the bare form — `host <verb>`, `auth <verb>`, no binary in front —
+# which is how a person writes a command in prose, and how that line was
+# written.
+#
+# THE VERBS ARE DERIVED, NOT TYPED. `host` and `auth` were second spellings of
+# the root, not commands of their own: `host go` and `go` were one command
+# reached two ways. So every name registered on the root today is a verb one of
+# those nouns used to prefix, which makes the live command tree the list — and a
+# command added next month is guarded the day it lands. A hand-typed set here
+# would be the shape this file spends three hundred lines catching elsewhere.
+#
+# `list` IS THE ONE EXCLUSION, AND IT IS NOT A SMALL ONE. `host list` is the
+# noun this package is about — the file of machines — and it is written some 150
+# times, in prose, in docstrings, and in messages the tool really prints:
+# `setup.py` says `host list at {path}`. `gcloud auth list` is a real command
+# somebody should really run, and `setup.py` discusses it by name. Both would be
+# caught, both are correct English, and a guard that fires on the package's own
+# vocabulary is a guard that gets deleted. What is given up is narrow: the
+# spelling `host list` offered AS A COMMAND. Exactly two lines did that —
+# `create.py`'s `Card` docstring and the field comment under it, both reading
+# "what `host list` shows" — and both were corrected with the rest; nine
+# occurrences that survive in command position are the noun, wrapped onto the
+# start of a line or printed as `setup.py`'s "host list at {path}". So the
+# exclusion costs nothing today, and the moment the command form comes back with
+# the binary in front of it the walk above has it.
+RETIRED_NOUNS = ("host", "auth")
+
+
+def _retired_verbs() -> list[str]:
+    from comfy_qa.cli import app
+
+    names = ({command.name or command.callback.__name__
+              for command in app.registered_commands}
+             | {group.name for group in app.registered_groups})
+    return sorted(names - {"list"})
+
+
+def _retired_phrase() -> re.Pattern:
+    return re.compile(r"\b(?:%s)[ \t]+(?:%s)\b"
+                      % ("|".join(RETIRED_NOUNS), "|".join(_retired_verbs())))
+
+
+# EVERY LINE OF THE PACKAGE, not only the strings it prints — comments and
+# docstrings included, and the walk is over source text for exactly that reason.
+#
+# Drawing the line at "what a user can be shown" was tried first and does not
+# survive contact with this package. Typer prints a command's docstring verbatim
+# as its `--help` body: `go_cmd`'s said "`host logs` reads its log" and
+# `comfy-qat go --help` printed it, which is the starter file's defect in a
+# string nobody would have called user-facing. Half a dozen more sat in comments
+# and in class docstrings — `host stamp`, `host discover`, `auth status` — and
+# they are read by the next person to change the code, who then writes the
+# spelling they read. There is nothing left in the package that needs the
+# narrower rule, so the guard does not carry one.
+def _package_lines() -> list[tuple[str, str]]:
+    return [(f"{path.name}:{number}", line)
+            for path in sorted(PACKAGE.glob("*.py"))
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), 1)]
+
+
+# The one place a bare retired spelling is the right thing to write: a comment
+# whose subject IS the retirement. "`go`, not `host go`" cannot be corrected —
+# correcting it inverts the sentence — and "`host go` no longer parses" is a true
+# statement that becomes false if the noun is taken out of it. The same licence
+# `NOT_OUR_MESSAGE` gives the page for quoting click's "No such command 'host'".
+#
+# Written down rather than pattern-matched, because "a line that is about the
+# retirement" is not something a regex can tell from a line that has not been
+# fixed yet — which is the whole failure this guard exists for. Two hygiene tests
+# below eject an entry that stops matching, so it cannot rot into a hole.
+NAMING_THE_RETIREMENT = {
+    "host.py": (
+        "`go`, not `host go`",
+        "`host go` no longer parses",
+    ),
+}
+
+
+def _exempt(where: str, line: str) -> bool:
+    name = where.split(":")[0]
+    return any(quoted in line for quoted in NAMING_THE_RETIREMENT.get(name, ()))
+
+
+def _retired_offers(lines: list[tuple[str, str]]) -> list[str]:
+    """Every bare retired spelling written as a command, with where it is.
+
+    In command position, for the reason `_invocations` gives: an ordinary word in
+    front means the words are prose rather than an offer. "Look a host up by
+    name" is the phrasal verb this buys — a real docstring in `config.py`, and
+    the only thing between the two halves of the rule.
+    """
+    pattern = _retired_phrase()
+    offers = []
+    for where, line in lines:
+        if _exempt(where, line):
+            continue
+        for match in pattern.finditer(line):
+            if _in_command_position(line, match.start()):
+                offers.append(f"{where}: `{match.group()}`")
+    return offers
+
+
+def test_nothing_in_the_package_writes_a_retired_spelling():
+    """`host <verb>` and `auth <verb>` do not run. Nothing here may write them.
+
+    Not "lags the docs" — does not run. Since 1.1.0 both nouns exit 2, so a
+    starter file or a `--help` body carrying one hands the reader a command that
+    cannot work, in the one place they have nothing else to go on; and a comment
+    carrying one hands it to whoever changes the code next.
+    """
+    offers = _retired_offers(_package_lines())
+    assert not offers, (
+        "a spelling removed at 1.1.0 is written here — drop the noun and name "
+        "the binary, `comfy-qat down`:\n  " + "\n  ".join(sorted(offers))
+    )
+
+
+def test_the_widened_guard_catches_the_line_it_was_written_for():
+    """The guard on the guard: A8b's question, asked of this check.
+
+    A check that has nothing left to find reads exactly like a check that can no
+    longer find anything — which is how the prefix version passed for a release
+    with the starter file saying `host down` the whole time. So the line as it
+    was is run through the matcher here, in this file, where it cannot go quietly
+    green: if this stops failing, the check above has stopped meaning anything.
+    """
+    was = "#     `host down` would leave a real instance running and billing"
+    assert _retired_offers([("host.py:STARTER", was)]) == [
+        "host.py:STARTER: `host down`"], (
+        "the starter file's old line is no longer caught, so this check has "
+        "stopped guarding the removal it was written for")
+
+    from comfy_qa.host import STARTER
+    assert not _retired_offers([("host.py:STARTER", STARTER)])
+
+
+def test_the_host_list_noun_is_not_caught():
+    """The `list` exclusion, held by a test so it reads as a decision.
+
+    Both of these are lines the package really has, both are correct English,
+    and both are what a guard keyed on the bare word `host` — or on a verb set
+    with `list` left in it — would fail on. `setup.py` prints the first at the
+    end of a successful setup; the second is the sign-in check explaining why
+    gcloud's own listing is not proof of a live session.
+    """
+    assert not _retired_offers([
+        ("setup.py:409", '    p.say(f"host list at {path}")'),
+        ("setup.py:46", "    An expired session still lists an account, so "
+                        "asking `gcloud auth list` is not"),
+    ])
+
+
+def test_the_walk_reads_comments_and_help_bodies_too():
+    """A8b's question about the corpus: does it reach the lines that had the bug?
+
+    Narrowing this back to string constants — which is what it was, and what the
+    check it replaces still is — would drop every comment and every docstring
+    silently, and this check would stay green with nothing left to look at. So
+    one line of each kind is looked for by name: a comment, and a line of the
+    `--help` body typer prints for `comfy-qat go`.
+    """
+    lines = {line.strip() for _, line in _package_lines()}
+    assert "# `go`, not `host go`. This line was the last caller inside the tool" \
+        in lines, "the walk is not reading comments"
+    assert "this same terminal. `comfy-qat logs` reads its log; `--follow` " \
+        "streams it here" in lines, "the walk is not reading --help bodies"
+
+
+def test_every_retirement_exemption_still_names_a_line_that_needs_one():
+    """The hygiene guard on `NAMING_THE_RETIREMENT`, both ways.
+
+    An exemption that no longer matches anything is an unclaimed seat a real
+    regression can take, and one that matches a line the pattern would not have
+    caught anyway is excusing nothing while looking like it excuses something.
+    Both are how a list like this rots, so neither is allowed to sit here.
+    """
+    pattern = _retired_phrase()
+    for name, quotations in NAMING_THE_RETIREMENT.items():
+        text = (PACKAGE / name).read_text(encoding="utf-8")
+        for quoted in quotations:
+            assert quoted in text, (
+                f"{name} no longer contains {quoted!r}. It has been reworded or "
+                f"removed — delete the exemption with it.")
+            assert pattern.search(quoted), (
+                f"{quoted!r} is exempted from a check that would not catch it. "
+                f"Either the verb set changed or the entry was never needed.")
 
 
 @pytest.mark.parametrize(

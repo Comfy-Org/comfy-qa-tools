@@ -57,6 +57,14 @@ def gcloud(statuses, **extra):
             # A box this run started is asked whether sshd is listening before a
             # tunnel is opened into it. RUNNING is the VM powered on, not sshd up.
             return "ok"
+        # A tunnel that stays open and answers nothing is asked what is on the
+        # box, rather than waited out for the full timeout. The default is the
+        # state a real box is in after `comfy-qat down`: the install is there and
+        # nothing is running it. `comfyui=` and `installed=` override it.
+        if "pgrep -f" in key or "Get-Process -Name python" in key:
+            return extra.get("comfyui", "GONE")
+        if "INSTALLED" in key:
+            return extra.get("installed", "INSTALLED")
         raise AssertionError(f"unexpected: {key}")
 
     gc = Gcloud(runner=runner)
@@ -119,7 +127,13 @@ def test_a_booted_box_with_no_comfyui_is_a_failure_not_a_success(tmp_path):
     message = str(caught.value)
     assert "ComfyUI is not answering" in message
     assert "billing" in message, "say that it is costing money right now"
-    assert "comfy-qat rdp" in caught.value.fix
+    # `comfy-qat go`, not `comfy-qat rdp`. This asked for the by-hand route back
+    # when the message could not tell which of two states the box was in; it can
+    # now, and on a box that has an install and no process the answer is a
+    # sibling command rather than a session on the machine. `rdp` and `ssh` are
+    # still what the message offers when the box will not say which state it is
+    # in, and `test_the_way_in_matches_the_operating_system` still holds that.
+    assert "comfy-qat go comfy-win" in caught.value.fix
 
 
 def test_the_way_in_matches_the_operating_system():
@@ -1365,6 +1379,43 @@ def test_windows_is_not_waited_on_because_its_driver_is_manual(tmp_path):
     lines, say = said()
     wait_for_driver(Gcloud(runner=refuses), WIN, say, tunnel_dir=tmp_path)
     assert lines == []
+
+
+def test_a_pre_turing_box_is_refused_at_once_instead_of_waited_on(tmp_path):
+    """`create` will not build one of these, so it came in through `discover`.
+
+    The 900s wait below would run in full and then send a tester to
+    `installer.log` — which on these cards reports success. Measured on a P4 on
+    2026-09-09: the startup script exited 0 with the packages installed while the
+    kernel had refused the device 15 times. The right answer is available before
+    the first probe, from the card's name alone.
+    """
+    from comfy_qa.lifecycle import wait_for_driver
+
+    p4 = Host(name="comfy-p4", kind="gce", port=8195, os="Ubuntu 22.04", gpu="P4",
+              gce_instance="comfy-p4", gce_zone="us-central1-a", gce_project="proj")
+
+    def refuses(args, mode):
+        raise AssertionError("a card with no GSP must not be probed at all")
+
+    lines, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        wait_for_driver(Gcloud(runner=refuses), p4, say, tunnel_dir=tmp_path)
+
+    assert "GPU System Processor" in str(caught.value)
+    assert "running and billing" in str(caught.value), "it is on, and it is costing"
+    assert "comfy-qat down comfy-p4" in caught.value.fix, "say how to stop paying"
+    assert "not supported by open" in caught.value.fix, "and how to confirm it"
+
+
+def test_a_turing_or_newer_box_is_still_waited_on(tmp_path):
+    """The pair. A refusal keyed on the wrong thing would skip the real wait and
+    put the ComfyUI install back inside the driver's reboot."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    gc = _driver(["GPU 0: NVIDIA L4"])
+    lines, say = said()
+    wait_for_driver(gc, LINUX_GPU, say, sleep=lambda _: None, tunnel_dir=tmp_path)
 
 
 def test_giving_up_on_the_driver_says_the_box_is_billing(tmp_path):

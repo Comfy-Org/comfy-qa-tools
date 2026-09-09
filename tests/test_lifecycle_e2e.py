@@ -452,6 +452,16 @@ def test_disconnect_closes_the_tunnel_and_says_it_still_costs(world):
     world.cloud(statuses=["RUNNING"])
     run(world, "up", BOX)
 
+    # Put the log there by hand, and say why rather than leaving it looking like
+    # setup. The stand-in launcher does not write one — it starts a harmless
+    # sleep and sends its output to DEVNULL — so asserting on a log this suite
+    # never created would assert a property of the fake and pass whatever
+    # `close_tunnel` did. A real byte on disk, with content, is the only version
+    # of this assertion that can fail.
+    log = tunnel.log_file(BOX, world.tunnel_dir)
+    log.write_text("WARNING: something gcloud said while this tunnel ran\n",
+                   encoding="utf-8")
+
     result = run(world, "disconnect", BOX)
 
     no_traceback(result)
@@ -459,7 +469,36 @@ def test_disconnect_closes_the_tunnel_and_says_it_still_costs(world):
     assert "tunnel closed" in result.output
     assert "still billing" in result.output
     assert not world.gc.did("stop_instance")
+
+    # WHICH RECORDS GO, said out loud, because this used to assert the `.pid` and
+    # nothing else — and a one-file assertion cannot tell "the other two were
+    # deliberately kept" from "nobody looked". Three files are written and the
+    # rule is not the same for all three.
+    #
+    # The two that CLAIM a tunnel is there must go. `.pid` names a process and
+    # `.json` names the machine it went to; either one left behind is a closed
+    # tunnel that a later command can read as open.
     assert not world.pid_file().exists()
+    assert not tunnel.record_file(BOX, world.tunnel_dir).exists()
+
+    # The `.log` is KEPT, and that is a decision rather than an omission. It is
+    # not a claim about now — it is what gcloud said while that tunnel ran, and
+    # it is the only place that exists. A tunnel that dies on its own leaves
+    # nothing to signal; `disconnect` is what you type to tidy up after one, and
+    # the question straight afterwards is why it went. Every message this tool
+    # prints about a dead tunnel names this file and says to read it, so deleting
+    # it here would clear the evidence at the exact moment somebody goes looking.
+    #
+    # What keeping it costs is bounded at the other end, by `_spawn` opening it
+    # with `"wb"` — see the next test. That is the half that has to exist for
+    # this half to be defensible.
+    assert log.exists(), (
+        "the tunnel log is kept on purpose — it is the only record of why a "
+        "tunnel died, and disconnect is when people go looking for it"
+    )
+    assert "something gcloud said" in log.read_text(encoding="utf-8"), (
+        "kept means kept, not recreated empty"
+    )
 
 
 def test_open_dry_run_shows_the_command_and_starts_nothing(world):
@@ -553,20 +592,62 @@ def test_move_dry_run_shows_the_plan_and_changes_nothing(world):
 
 def test_move_does_nothing_when_the_box_simply_starts(world):
     """`move` with no zone asks Google by trying. If it works, there is no
-    stockout and nothing to move."""
-    world.cloud(statuses=["TERMINATED"])
+    stockout and nothing to move — and the box goes back the way it was found.
+
+    Proven on real hardware, twice: `down comfy-linux` left it TERMINATED, then
+    `move comfy-linux --clean --yes` reported "no move needed" and left it
+    RUNNING and billing. The user had stopped that box deliberately, and the pack
+    tells them to stop it precisely because a stopped source holds no GPU
+    allowance — so the tool asked for that state and then took it away behind
+    them. `move` is a relocation verb: the path where it relocates nothing must
+    change nothing.
+
+    The two statuses are the two reads on this path and they differ on purpose:
+    TERMINATED is what the box was before the probe, RUNNING is what the probe
+    made it, and the second is what `put_away` acts on.
+    """
+    world.cloud(statuses=["TERMINATED", "RUNNING"])
 
     result = run(world, "move", BOX)
 
     no_traceback(result)
     assert result.exit_code == 0
     assert "no move needed" in result.output
-    assert f"comfy-qat go {BOX}" in result.output
     assert not world.gc.did("snapshot_disk")
-    # The probe is a start, so this box is on and costing money — and this was
-    # the only billable start in the tool that named no way to stop paying.
-    assert "is billing" in result.output
-    assert f"comfy-qat down {BOX}" in result.output
+
+    # The whole finding: the probe started it, so the probe stops it again.
+    assert world.gc.did("stop_instance"), (
+        f"a box the user had stopped was left running by a command that moved "
+        f"nothing: {result.output}"
+    )
+    # And it says which it did, unmistakably. "started in <zone> and is billing"
+    # read as a statement about where the box started OUT — an origin — when it
+    # was announcing an action.
+    assert "started to ask Google and has been stopped again" in result.output
+    assert "is billing" not in result.output, (
+        f"nothing is billing — it was stopped again: {result.output}"
+    )
+
+
+def test_move_leaves_a_box_it_found_running_exactly_where_it_was(world):
+    """The other half of the rule, and the reason the state is READ rather than
+    assumed: only a state that was positively read is restored.
+
+    A box that was already up is not this command's to stop — someone is using
+    it — so nothing is changed and the sentence says so rather than claiming a
+    start it did not make.
+    """
+    world.cloud(statuses=["RUNNING"])
+
+    result = run(world, "move", BOX)
+
+    no_traceback(result)
+    assert result.exit_code == 0
+    assert "no move needed" in result.output
+    assert "is already running" in result.output
+    assert "this command changed nothing" in result.output
+    assert not world.gc.did("stop_instance"), "it was not this command's to stop"
+    assert f"comfy-qat down {BOX}" in result.output, "the bill it did not start"
 
 
 def test_move_that_fails_partway_says_nothing_was_removed(world):
@@ -589,29 +670,35 @@ def test_move_that_fails_partway_says_nothing_was_removed(world):
     assert not world.gc.did("create_instance_from_disk")
 
 
-def test_a_move_whose_host_list_cannot_be_rewritten_still_names_the_bill(world):
-    """The last step of a move is a text rewrite, and it can fail.
-
-    `run_move` caught `GcloudError`, `move_cmd` caught `MoveError`, and anything
-    the rewrite raised — a `HostFileError`, or the raw `PermissionError` a
-    read-only config directory gives — went through both and reached the user as
-    a Python traceback. By then the instance is created, running and billing, so
-    the one command that is careful about exactly that said nothing about it.
+def test_a_move_whose_host_list_cannot_be_rewritten_never_starts(world):
+    """The last step of a move is a text rewrite, and it can fail — so it is
+    rehearsed before the first gcloud call rather than met at the end.
 
     The trigger is a config DIRECTORY that cannot be written: `apply` copies the
     original to `hosts.toml.bak` and writes a temp file beside it before the
     atomic replace, and both need to create a file in that directory. The host
-    list itself loads perfectly, which is the point — the failure has to arrive
-    at the last step, after the instance exists and is billing, or it is testing
-    something else.
+    list itself loads perfectly, which is the point — nothing before this rewrite
+    has any reason to object.
 
-    This used to be triggered with an inline comment on a port line, which was a
-    real defect (`port = 8190  # the QA port` did not match the port pattern, so
-    a move refused with "has no port line" about a line that was right there).
-    That defect is fixed, so the trigger stopped triggering. Worth stating,
-    because a test whose premise is somebody else's open bug expires the day it
-    is closed — and this one asserts a rule that has nothing to do with commenting
-    style. A directory nobody can write cannot be fixed out from under it.
+    That used to make it a test about the SEVENTH action failing: the snapshot,
+    the disk and the instance were all made and billing, and what was asserted
+    was that the wreckage got named. It is now a test about the move not
+    starting. `move` rehearses the whole rewrite against the local file first —
+    same `rename_and_add`, same checks `apply` makes — so a rewrite that cannot
+    work costs nothing, which is what it was always worth.
+
+    The reporting the old assertions covered is not lost, and it is not this
+    test's job: `apply` still makes every one of these checks for real, and a
+    register that fails for a reason no rehearsal can foresee — the file changed
+    underneath, a full disk — is still caught by `_unregistered` and pinned in
+    tests/test_move.py.
+
+    This has now had its trigger fixed out from under it twice. Before the
+    read-only directory it was an inline comment on a port line, which was a real
+    defect (`port = 8190  # the QA port` did not match the port pattern, so a
+    move refused with "has no port line" about a line that was right there). A
+    test whose premise is an open bug expires the day it is closed; the rule
+    asserted here outlives both triggers.
     """
     world.cloud(describe=INSTANCE)
     directory = world.config.parent
@@ -623,14 +710,14 @@ def test_a_move_whose_host_list_cannot_be_rewritten_still_names_the_bill(world):
         directory.chmod(original_mode)
 
     no_traceback(result)
-    assert result.exit_code == 1
-    assert world.gc.did("create_instance_from_disk"), "the expensive half happened"
+    # 2, this tool's code for "nothing was changed" — and here it is the whole
+    # claim. 1 would say the work started.
+    assert result.exit_code == 2, result.output
+    assert not world.gc.did("snapshot_disk"), "not even the cheap half ran"
+    assert not world.gc.did("create_disk_from_snapshot")
+    assert not world.gc.did("create_instance_from_disk"), "nothing is billing"
 
-    assert "running and billing" in result.output, "the bill cannot wait"
-    # `comfy-qat down` reads the host list, and the host list is what failed to be
-    # written — so the entry it would read still names the zone the box just left.
-    assert (f"gcloud compute instances stop {BOX} --zone=us-central1-b"
-            in result.output), "the stop that works without a host list"
+    assert "Nothing was created" in result.output
     assert world.config.name in result.output, "the file's own complaint survives"
 
 

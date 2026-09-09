@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 
 import pytest
@@ -36,7 +37,7 @@ from typer.testing import CliRunner
 from comfy_qa import gcloud as gcloud_module
 from comfy_qa import zones as zones_module
 from comfy_qa.cli import app
-from comfy_qa.create import CARDS
+from comfy_qa.create import CARDS, image_for
 from comfy_qa.gcloud import GcloudError
 
 PROJECT = "stately-timing-504610-p1"
@@ -249,9 +250,12 @@ def order_of(result) -> str:
 
 
 def test_a_card_with_no_grant_at_all_never_reaches_a_zone_lookup(cli):
-    result = cli("--os", "linux", "--gpu", "v100", "--dry-run")
+    # A T4, not the V100 this used to ask for. The V100 no longer reaches the
+    # quota gate at all — it is refused offline for having no GSP, which is a
+    # different refusal — so asking for one here stopped testing the quota gate.
+    result = cli("--os", "linux", "--gpu", "t4", "--dry-run")
     assert result.exit_code == 2
-    assert "this project has no V100 quota" in result.output
+    assert "this project has no T4 quota" in result.output
     assert "Nothing was created" in result.output
     assert "accelerator_types" not in result.gc.calls
     assert billable(result) == []
@@ -685,10 +689,17 @@ def test_a_built_in_card_is_ordered_with_no_accelerator_flag(cli, key):
     assert "--accelerator" not in result.stdout
 
 
-@pytest.mark.parametrize("key", ["t4", "p4", "p100", "v100", "k80"])
-def test_an_attached_card_is_an_n1_plus_exactly_one(cli, key):
-    card = CARDS[key]
-    result = cli("--os", "linux", "--gpu", key, "--yes", gc=card_cloud(key))
+def test_an_attached_card_is_an_n1_plus_exactly_one(cli):
+    """The T4 alone, because it is the only N1 card this tool will now order.
+
+    This used to run over `t4, p4, p100, v100, k80` and assert exit 0 for each —
+    which is to say it asserted, five times, the defect below: a create that
+    succeeds and hands back a box whose GPU cannot initialise. The other four
+    are Pascal, Volta and Kepler, they have no GSP, and
+    `test_gpu_driver.py` is where they are held now.
+    """
+    card = CARDS["t4"]
+    result = cli("--os", "linux", "--gpu", "t4", "--yes", gc=card_cloud("t4"))
     assert result.exit_code == 0, result.output
     _name, _zone, kwargs = result.gc.created[0]
     assert kwargs["machine_type"] == "n1-standard-8"
@@ -961,3 +972,169 @@ def test_the_cache_never_reaches_the_create_decision_on_its_own(cli, tmp_path):
     order = order_of(result)
     assert "europe-west9" not in order
     assert order.index("us-east1-a") < order.index("europe-west4-a")
+
+
+# --- every command a refusal prints has to be one you can run ---------------
+#
+# `create`'s refusals end in a command to paste, and one of them could not be
+# pasted. The untried-regions stockout built its fix as
+# `--os {blueprint.image.os}` — the DISPLAY name, `Ubuntu 22.04` — where `--os`
+# takes `image.key`, `linux` or `windows`. Run unquoted, Typer exits 2 on the
+# stray `22.04`; run quoted, `image_for` refuses it. Its two siblings in `plan`
+# had `image.key` all along, so this was one line that drifted.
+#
+# It is also not a corner. `zones.choose` returns at most `MAX_ATTEMPTS` zones and
+# `build`'s cap is the same number, so the queue drains before the cap is reached,
+# `capped` stays False, and this branch is what an ordinary shortage lands on.
+#
+# So the assertion is about the SHAPE of every fix line rather than about that one
+# line: split it like a shell would and require flag/value pairs. That is what
+# catches an unquoted value with a space in it, which is the failure this was —
+# `image_for` would have accepted `Ubuntu`, the first half of the broken value,
+# and a check that only validated `--os` would have passed.
+
+MANY_REGIONS = ["europe-west4", "europe-west1", "us-east1", "us-central1",
+                "asia-northeast1", "us-west1", "europe-north1", "asia-south1"]
+MANY_ZONES = [f"{region}-{letter}" for region in MANY_REGIONS for letter in "ab"]
+
+
+def _invocations(text: str) -> list[list[str]]:
+    """Every `comfy-qat ...` command in the output, split the way a shell would.
+
+    A command ends where the prose around it resumes, and in this tool's fix
+    lines that is a `;`, a `,` or the end of the line — `comfy-qat quota request
+    --gpu v100 --region us-central1, then wait for Google` is one command and
+    four words of advice.
+    """
+    import shlex
+
+    return [shlex.split(run.strip().rstrip("."))
+            for run in re.findall(r"comfy-qat [^,;\n]*", text)]
+
+
+def _flag_pairs_only(parts: list[str]) -> None:
+    """Every token past the verb is a flag or the value of the one before it.
+
+    The verb is however many leading words there are before the first flag —
+    `create` is one, `quota request` is two — so this makes no assumption about
+    the shape of a command, only about what follows the flags.
+    """
+    first_flag = next((n for n, part in enumerate(parts) if part.startswith("-")),
+                      len(parts))
+    rest = parts[first_flag:]
+    index = 0
+    while index < len(rest):
+        assert rest[index].startswith("-"), (
+            f"{' '.join(parts)!r} has {rest[index]!r} sitting where no flag "
+            f"introduced it. An interpolated value with a space in it looks "
+            f"exactly like this, and Typer exits 2 on it."
+        )
+        index += 2 if index + 1 < len(rest) and not rest[index + 1].startswith("-") else 1
+
+
+def test_the_command_an_untried_region_stockout_prints_can_be_run(cli, monkeypatch):
+    """The branch itself, with more regions offering the card than the cap reaches."""
+    latency = {region: 200.0 + 10 * n for n, region in enumerate(MANY_REGIONS)}
+    monkeypatch.setattr(zones_module, "_connect",
+                        lambda region, timeout=None: latency.get(region, 500.0))
+    result = cli("--os", "linux", "--gpu", "l4", "--yes",
+                 gc=card_cloud("l4", zones=MANY_ZONES,
+                               quotas=[quota("NVIDIA-L4-GPUS-per-project-region", 8,
+                                             MANY_REGIONS), ceiling(8)],
+                               refuse={zone: STOCKOUT.format(zone=zone)
+                                       for zone in MANY_ZONES}))
+
+    assert "Not tried, and possibly free" in result.output, "not this branch"
+    offered = [parts for parts in _invocations(result.output)
+               if parts[1:2] == ["create"]]
+    assert offered, "a stockout with somewhere left to try has to say where"
+    for parts in offered:
+        _flag_pairs_only(parts)
+        assert "--os" in parts
+        # Raises if the value is not one `--os` takes, which is the other half:
+        # a single token is not enough, it has to be a token this tool accepts.
+        image_for(parts[parts.index("--os") + 1])
+
+
+@pytest.mark.parametrize("args,gc_for", [
+    (("--os", "linux", "--gpu", "v100", "--dry-run"), lambda: FakeGcloud()),
+    (("--os", "freebsd", "--gpu", "l4", "--dry-run"), lambda: FakeGcloud()),
+    (("--os", "linux", "--gpu", "l4", "--disk", "10", "--dry-run"), lambda: FakeGcloud()),
+    (("--os", "linux", "--gpu", "l4", "--zone", "us-central1-a",
+      "--region", "us-central1", "--dry-run"), lambda: FakeGcloud()),
+    (("--os", "Ubuntu 22.04", "--gpu", "l4", "--zone", "us-central1-a",
+      "--region", "us-central1", "--dry-run"), lambda: FakeGcloud()),
+])
+def test_every_command_a_create_refusal_prints_is_shaped_like_one(cli, args, gc_for):
+    """The same check across the refusals `create` reaches before it builds.
+
+    The last case is the one that reads as paranoid and is not: `--os` is echoed
+    back verbatim by the two-flags refusal, which runs BEFORE anything has judged
+    it, so an unquoted value with a space in it turns a refusal about `--zone` and
+    `--region` into a parse error about a third flag.
+    """
+    result = cli(*args, gc=gc_for())
+
+    assert result.exit_code != 0, "this case is supposed to be a refusal"
+    for parts in _invocations(result.output):
+        _flag_pairs_only(parts)
+
+
+# --- the host list `create` could not read ----------------------------------
+
+
+BROKEN = """\
+[hosts.local]
+kind = "local"
+port = 8188
+
+[hosts.spare]
+kind = "local"
+port = 8188
+"""
+
+
+def test_a_host_list_that_will_not_load_stops_create_before_it_spends(cli):
+    """The one command that spends money used to treat an unreadable host list as
+    an empty one, and everything downstream of that was decided on nothing.
+
+    The name check ran against no names, so a name the file already holds passed.
+    The port came out of no ports, so it could collide with one in the file. The
+    box was created and billed. The block was appended to a file that still would
+    not load. And the run signed off with `comfy-qat go <name>` and
+    `comfy-qat down <name>`, both of which call `load` and exit 2 — so the GPU was
+    billing, the tool's own stop command could not reach it, and nothing anywhere
+    in the run had said the host list was broken.
+
+    `discover` has refused this since it hit it. This is the same refusal about
+    the same file, and it matters more here because the alternative is a bill.
+    """
+    result = cli("--os", "linux", "--gpu", "l4", "--yes",
+                 declared=BROKEN, gc=card_cloud("l4"))
+
+    assert result.exit_code == 2
+    assert "could not read your host list" in result.output
+    assert "nothing was created" in result.output
+    assert billable(result) == [], "it spent money against a file it had not read"
+    assert result.hosts == BROKEN, "it appended to a file it could not read"
+
+
+def test_the_refusal_names_what_the_loader_objected_to(cli):
+    """A refusal that does not say what is wrong sends somebody to a file with
+    fifty lines in it and no idea which one."""
+    result = cli("--os", "linux", "--gpu", "l4", "--yes",
+                 declared=BROKEN, gc=card_cloud("l4"))
+
+    assert "port 8188" in result.output
+    assert "fix the file" in result.output
+
+
+def test_no_host_list_at_all_is_still_fine(cli):
+    """A file that does not exist is genuinely an empty host list, and this is
+    the ordinary first-run path — the refusal above must not swallow it."""
+    result = cli("--os", "linux", "--gpu", "l4", "--yes",
+                 declared=None, gc=card_cloud("l4"))
+
+    assert result.exit_code == 0
+    assert "is up in" in result.output
+    assert "[hosts.comfy-linux]" in result.hosts

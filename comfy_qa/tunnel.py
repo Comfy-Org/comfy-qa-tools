@@ -100,6 +100,12 @@ SPAWN_GRACE = 8.0
 # starting ComfyUI and asking again.
 BACKEND_NOT_LISTENING = "backend-not-listening"
 
+# The same refusal from IAP, about a different port, meaning the opposite thing:
+# the box has not finished booting and its sshd is not answering yet. Waiting
+# fixes it, and nothing else does — which is why it is a kind of its own rather
+# than one more way for a tunnel to be broken.
+SSH_NOT_READY = "ssh-not-ready"
+
 # How long a claim on a host may be held before it is assumed abandoned — long
 # enough for gcloud to start, short enough that a killed command does not lock a
 # host out for the rest of the day.
@@ -391,6 +397,25 @@ def command(host: Host) -> list[str]:
     every probe of `http://127.0.0.1:<port>` was refused while the forward sat
     there working perfectly over IPv6. Verified both ways on a real box.
 
+    **Both families are bound, and the IPv4 one is the promise.** Pinning
+    `127.0.0.1` fixed the probe and left the other half of the same problem
+    standing: the tunnel then listened on IPv4 ONLY, `lsof` showed one
+    `127.0.0.1:8190 (LISTEN)`, and a browser that prefers IPv6 for `localhost`
+    got an error page for a tunnel that was working. Measured on a real box:
+    `curl http://127.0.0.1:8190/` returned 200 and 20059 bytes while
+    `curl -6 'http://[::1]:8190/'` could not connect. Every URL this tool prints
+    is the `127.0.0.1` form, so nothing here was broken — but people type
+    `localhost`, and the tunnel log fills with `channel N: open failed` while
+    they work out why.
+
+    So there are two `-L`s, one per family, and `ExitOnForwardFailure=no` is
+    pinned rather than left to the default. It IS the default, and that is the
+    point: a user's own `~/.ssh/config` may set `yes` globally, and under that
+    setting a box with IPv6 disabled would have the `::1` bind fail and take the
+    whole working IPv4 tunnel down with it. The IPv6 forward is a convenience
+    for people typing `localhost`; it is never allowed to cost the forward the
+    tool actually hands out.
+
     `--quiet` because this is the worst place in the tool to be asked a question.
     The first `gcloud compute ssh` on a machine generates
     `~/.ssh/google_compute_engine` and prompts for a passphrase, and this one is
@@ -413,7 +438,10 @@ def command(host: Host) -> list[str]:
         "--tunnel-through-iap",
         "--quiet",
         "--", "-N",
+        # Never let the second forward fail the first. See the docstring.
+        "-o", "ExitOnForwardFailure=no",
         "-L", f"127.0.0.1:{host.port}:127.0.0.1:{COMFYUI_PORT}",
+        "-L", f"[::1]:{host.port}:127.0.0.1:{COMFYUI_PORT}",
     ]
 
 
@@ -430,16 +458,37 @@ def last_words(log: Path, lines: int = 6) -> str:
     IAP forward. Four lines of it in a six-line tail pushes the sentence that
     names the cause off the top of the message meant to carry it.
     """
+    return "\n        ".join(kept_lines(log)[-lines:])
+
+
+def kept_lines(log: Path) -> list[str]:
+    """The WHOLE of gcloud's own output for this tunnel, cleaned, in order.
+
+    Split out from `last_words` because the tail and the diagnosis are two
+    different questions and answering both from six lines got the diagnosis
+    wrong on the first real run this tool ever had. gcloud's last line on an ssh
+    failure is `[/usr/bin/ssh] exited with return code [255]` — the exit status
+    restated — and it prints its retries and its NumPy advisory above that, so
+    the line that says WHY had scrolled off the top of the tail by the time
+    anything looked at it. The tunnel was refused with `4003: failed to connect
+    to backend ... Failed to connect to port 22`, the tail did not carry those
+    words, and the run was reported as a tunnel that closed for unknown reasons
+    with "your session has expired" as the advice. The session was fine.
+    Classifying reads all of it; only the quote is trimmed.
+
+    `_spawn` writes this file with `"wb"`, so "the whole log" is one tunnel's
+    output and never last week's.
+    """
     try:
         text = log.read_text(errors="replace").strip()
     except OSError:
-        return ""
+        return []
     if not text:
-        return ""
+        return []
     relay = Relay()
     kept = [line for raw in text.splitlines() for line in relay.line(raw)]
     kept += relay.rest()
-    return "\n        ".join(kept[-lines:])
+    return kept
 
 
 def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
@@ -462,8 +511,28 @@ def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
             "gcloud is not installed or not on PATH, so no tunnel can be opened.",
             fix="https://cloud.google.com/sdk/docs/install",
         )
+    # `"wb"`, NOT `"ab"`, and the append it replaces was quietly wrong in two
+    # directions at once.
+    #
+    # It grew without bound: nothing truncates this file and `close_tunnel`
+    # deliberately keeps it (see there), so it accumulated every open ever made
+    # for that host.
+    #
+    # And the growth made the file LIE. `last_words` reads the whole log and
+    # returns its last six lines, and it is called immediately below to say what
+    # gcloud said about the tunnel that just died. A tunnel that dies having
+    # written nothing of its own — or one line — therefore had the PREVIOUS
+    # session's error quoted back under "gcloud said:", as the explanation for
+    # this one. That is a wrong diagnosis presented with full confidence, which
+    # is worse than the silence it was meant to fix, and it needed no
+    # `disconnect` in between: two `open`s in one session are enough.
+    #
+    # One tunnel's output per file is also exactly what every reader wants. The
+    # only readers are `last_words`, which takes the tail, and a person following
+    # "read <log>" out of an error message — and neither is asking about a tunnel
+    # that closed last week.
     try:
-        with log.open("ab") as handle:
+        with log.open("wb") as handle:
             process = subprocess.Popen(
                 cmd, stdout=handle, stderr=handle,
                 # Detach: the tunnel has to outlive this command.
@@ -477,8 +546,26 @@ def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
     except subprocess.TimeoutExpired:
         return process.pid  # still there, which is as much as can be known here
 
+    # Classified on the WHOLE log, quoted from its end. Those were one thing
+    # until a real run showed what it costs: the sentence naming the cause was
+    # six lines up, so nothing recognised it, and the message that reached a
+    # person named a cause that was not the cause. See `kept_lines`.
+    kept = kept_lines(log)
+    whole = "\n".join(kept)
     said = last_words(log)
-    if _nothing_listening(said):
+    if still_booting(whole):
+        # Not a failure yet — a box that is still starting. `create` tells people
+        # `go` waits this out, so failing here made the tool contradict its own
+        # last line on the very first command a new user runs. The caller waits
+        # and asks again; only when it has waited long enough does this become
+        # something to report.
+        raise TunnelError(
+            "the machine is not accepting SSH connections yet, so there is "
+            "nothing for the tunnel to travel over. It is still starting up.",
+            kind=SSH_NOT_READY,
+            fix="wait for it to finish starting, then open the tunnel again.",
+        )
+    if _nothing_listening(whole):
         # Not a broken tunnel: gcloud tests the connection before it will serve,
         # and refuses when the far port has no listener. So a tunnel cannot be
         # opened to a box before ComfyUI is started on it — which is the order
@@ -490,18 +577,121 @@ def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
             kind=BACKEND_NOT_LISTENING,
             fix="start ComfyUI on the machine first, then open the tunnel.",
         )
+    # The cause first, then the tail it was lifted out of. `reason` is empty when
+    # gcloud said nothing this module recognises, and then the tail is all there
+    # is — which is the old behaviour, kept for exactly that case.
+    reason = _cause(kept)
+    quoted = said or f"(nothing in {log})"
     raise TunnelError(
         f"the tunnel closed as soon as it was opened (gcloud exited "
-        f"{process.returncode}). gcloud said:\n        {said or '(nothing in ' + str(log) + ')'}",
-        fix=(f"read {log}. If it mentions credentials or reauthentication, your "
-             f"session has expired:\n        gcloud auth login"),
+        f"{process.returncode}). {reason + ' — ' if reason else ''}gcloud "
+        f"said:\n        {quoted}",
+        # Reauthentication is offered only when the log actually asks for it.
+        # Offering it unconditionally is what sent a person to `gcloud auth
+        # login` for a session that was working, on a box that was merely still
+        # booting — an hour spent on the wrong end of a working credential.
+        fix=("your gcloud session has expired:\n        gcloud auth login"
+             if _credentials_expired(whole)
+             else f"read {log} for the rest of what gcloud said"),
     )
 
 
-def _nothing_listening(said: str) -> bool:
-    """Did gcloud refuse because the far end has no listener on that port?"""
+def _iap_refused(said: str) -> bool:
+    """Did IAP reach Google and fail to reach the far port?
+
+    One error code, 4003, for "the tunnel could not be joined to anything at the
+    other end". It says nothing at all about which end is at fault; the port it
+    names is what does.
+    """
     lowered = (said or "").lower()
     return "failed to connect to backend" in lowered or "4003" in lowered
+
+
+# What a box that has not finished starting says, in the three shapes it says it.
+#
+# The first is IAP's: with `gcloud compute ssh --tunnel-through-iap` the port IAP
+# dials is **22**, so a 4003 naming 22 is a machine whose sshd is not up, and
+# never a machine with no ComfyUI on it. The other two come from sshd itself in
+# the seconds after it starts listening and before it will complete a handshake.
+#
+# All three are cured by waiting and by nothing else, which is the property that
+# earns them a kind of their own.
+_STILL_BOOTING = (
+    "failed to connect to port 22",
+    "kex_exchange_identification",
+    "system is booting up",
+)
+
+
+def still_booting(said: str) -> bool:
+    """Is this a machine still coming up, rather than a tunnel that is broken?
+
+    The distinction `create` promised and `go` did not keep. A box created a
+    moment ago is RUNNING as far as Google is concerned while its sshd has not
+    started and its NVIDIA driver is still rebooting it, and every one of those
+    seconds looked here like a hard failure with `gcloud auth login` as the
+    advice — for a session that had not expired. Retrying the identical command
+    four minutes later worked, unchanged.
+    """
+    lowered = (said or "").lower()
+    if any(mark in lowered for mark in _STILL_BOOTING):
+        return True
+    # A bare 4003 with no port named. `gcloud compute ssh` only ever dials 22, so
+    # the unqualified form is the same fact with less detail — but the older
+    # `start-iap-tunnel` wording named the far ComfyUI port instead, and a log
+    # that names any port other than 22 is taken at its word below.
+    return _iap_refused(lowered) and "failed to connect to port" not in lowered
+
+
+def _nothing_listening(said: str) -> bool:
+    """Did gcloud refuse because the far end has no listener on that port?
+
+    Now asked only after `still_booting` has said no, so "IAP could not reach
+    sshd" stops being reported as "start ComfyUI first" — advice that cannot be
+    followed, on a box you cannot yet get onto.
+    """
+    return _iap_refused(said) and not still_booting(said)
+
+
+# Words that mean the answer really is `gcloud auth login`. Checked rather than
+# assumed: the fix line used to offer reauthentication for every dead tunnel, so
+# the one run where it mattered — a box still booting — sent a person to fix a
+# session that was working.
+_CREDENTIAL_TROUBLE = (
+    "reauth", "credential", "invalid_grant", "gcloud auth login",
+    "not logged in", "have expired", "has expired", "was not authenticated",
+)
+
+
+def _credentials_expired(said: str) -> bool:
+    lowered = (said or "").lower()
+    return any(mark in lowered for mark in _CREDENTIAL_TROUBLE)
+
+
+# Lines that carry a cause, in the order gcloud tends to bury them under retries
+# and its NumPy advisory. Used to lift one line to the front of the message
+# rather than to filter anything out — the tail is still quoted underneath.
+_DIAGNOSTIC = (
+    "error while connecting",
+    "permission denied",
+    "connection refused",
+    "connection timed out",
+    "connection closed",
+    "kex_exchange_identification",
+    "could not resolve",
+    "does not have permission",
+    "was not found",
+    "reauth",
+    "invalid_grant",
+)
+
+
+def _cause(kept: list[str]) -> str:
+    """The line worth reading first, or nothing if none of them says anything."""
+    for line in kept:
+        if any(mark in line.lower() for mark in _DIAGNOSTIC):
+            return " ".join(line.split())
+    return ""
 
 
 def _destination(host: Host) -> dict:
@@ -694,6 +884,22 @@ def close_tunnel(host: str, directory: Path | None = None, killer=os.kill, *,
     tunnel is never signalled — only forgotten — because `down` used to be able
     to kill whatever process had inherited the number, and SIGTERM is not a
     question you can take back.
+
+    **Two records go and one stays, deliberately.** `.pid` and `.json` are claims
+    about a process that no longer exists, so leaving either behind is how a
+    closed tunnel gets reported as open. The `.log` is not a claim about now — it
+    is what gcloud said while that tunnel ran, and it is the only place that
+    exists. Deleting it here would clear the evidence at precisely the moment
+    somebody goes looking for it: a tunnel that died on its own leaves nothing to
+    signal, `disconnect` is what they type to tidy up after it, and the question
+    immediately after that is "why did it go". Every message this module writes
+    about a dead tunnel names this file and tells them to read it, so it has to
+    still be there when they do.
+
+    What that costs is bounded at the other end rather than here: `_spawn` opens
+    the log with `"wb"`, so it holds one tunnel's output and is replaced by the
+    next `open` rather than grown. Keeping it is therefore a fixed handful of
+    lines per host, not a file that only ever gets longer.
     """
     identify = identify or _identity
     state = status(host, directory, identify=identify)

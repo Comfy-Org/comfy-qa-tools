@@ -8,11 +8,41 @@ because the one thing worse than a tool with no version is a tool with two.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _installed_version
 from pathlib import Path
+
+#: The private Typer switch that turns its Rich rendering off. Private, and set
+#: here anyway, for the reason `say.py` gives for not reaching into Typer
+#: elsewhere: there is no public seam. `rich_markup_mode=None` on every
+#: `typer.Typer()` in the package takes the help LAYOUT with it and the next
+#: sub-app added silently opts back in; this leaves the layout alone and removes
+#: only the colour. Measured on a pty: 348 escapes to 0, and the help is the same
+#: shape either way.
+_TYPER_OFF = "_TYPER_FORCE_DISABLE_TERMINAL"
+
+# NO_COLOR, honoured. https://no-color.org — any non-empty value, set by anyone
+# who cannot read low-contrast text, and by nearly every CI runner.
+#
+# `say` never colours anything and `tests/test_no_colour.py` holds it to that,
+# so this is about the one part of the output that does: `comfy-qat --help`,
+# rendered by Typer through Rich, which came out in 348 SGR escapes on a
+# terminal WITH NO_COLOR SET. Rich honours the variable; Typer builds its own
+# Console and does not pass it on.
+#
+# Here, and not in `cli.py`, because `typer.rich_utils` reads its environment
+# once at import into module-level constants. `cli.py` imports typer at the top
+# of the file, so anything it sets afterwards is already too late — and this
+# module is imported before any of its submodules, which makes it the only place
+# early enough.
+#
+# Set rather than overwritten: someone who has already disabled Typer's terminal
+# deliberately keeps that, and `NO_COLOR=` empty means unset per the standard.
+if os.environ.get("NO_COLOR") and _TYPER_OFF not in os.environ:
+    os.environ[_TYPER_OFF] = "1"
 
 #: The distribution on PyPI/`pip list`.
 DIST_NAME = "comfy-qa-tools"

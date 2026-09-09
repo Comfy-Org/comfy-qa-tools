@@ -15,6 +15,7 @@ resolved to is printed rather than assumed.
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -110,7 +111,7 @@ STARTER = f"""\
 #   - no two hosts may be the same cloud box, or differ only in case
 #   - 'local' is this machine, so a cloud box may not take the name
 #   - a local host may not carry gce_instance / gce_zone / gce_project, or
-#     `host down` would leave a real instance running and billing
+#     `comfy-qat down` would leave a real instance running and billing
 
 [hosts.local]
 kind = "local"
@@ -262,12 +263,12 @@ def list_cmd(
         say.fail(exc, code=2, blank_line=False)
 
     state = _states(hosts, live=live)
-    rows = [("NAME", "KIND", "OS", "GPU", "URL", "STATE")] + [
+    # The padding used to be written out here, which is why `discover` — listing
+    # the same machines two commands later — did not have any.
+    for line in say.rows([("NAME", "KIND", "OS", "GPU", "URL", "STATE")] + [
         (h.name, h.kind, h.os or "-", h.gpu or "-", h.url, state[h.name]) for h in hosts
-    ]
-    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
-    for row in rows:
-        say.result("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+    ]):
+        say.result(line)
 
     # Without --live the STATE column knows about tunnels and nothing else, so a
     # cloud box that is running looks the same as one that is off, and a local
@@ -280,12 +281,28 @@ def list_cmd(
     if hosts and not live:
         asks = []
         if any(host.is_remote for host in hosts):
-            asks.append("Google what each cloud box is doing")
+            asks.append("Google what each box is doing")
         if any(not host.is_remote for host in hosts):
             asks.append("this machine whether ComfyUI is answering")
-        say.result("\nSTATE is what this machine knows without asking anything: "
-                   "whether a tunnel is open. Add --live to ask "
-                   f"{' and '.join(asks)}.")
+        # TWO LINES, BROKEN WHERE THE SENSE BREAKS. This was one sentence of 168
+        # characters — what STATE is, and what --live would add — printed under
+        # every `list` a person ever runs. A terminal soft-wraps it at whatever
+        # width the window happens to be, so the break lands mid-clause and in a
+        # different place every time; a pipe does not wrap it at all and a log or
+        # a Slack paste carries the whole 168 on one line, past the edge of the
+        # code block.
+        #
+        # Authored breaks rather than a wrapper: `say` has one rendering per
+        # kind, and a width read from COLUMNS would make the same command
+        # produce different text in a terminal and in a pipe. The break is a
+        # property of the sentence, so it belongs in the sentence.
+        #
+        # The second line is indented under the first because it is about
+        # --live rather than about STATE, and the indent is what says so without
+        # a word.
+        say.result("\nSTATE is only what this machine already knows — "
+                   "whether a tunnel is open.")
+        say.result(f"  --live asks {' and '.join(asks)}.")
 
 
 @app.command("init")
@@ -356,15 +373,50 @@ def init_cmd(
     say.result("add your cloud boxes to it, then: comfy-qat list")
 
 
-def _ghosts(gc, hosts: list[Host]) -> tuple[list[tuple[Host, str]], list[str]]:
+def _ghosts(
+    gc, hosts: list[Host],
+) -> tuple[list[tuple[Host, str]], list[tuple[Host, str]],
+           list[tuple[Host, str]], list[str]]:
     """Declared cloud boxes that their own project says it does not have.
 
-    Returns the ghosts, and the projects that could not be read — because those
-    two must never be confused. A listing that SUCCEEDED and does not contain the
-    instance is Google saying it is gone; a listing that FAILED is nobody having
-    asked, and an entry removed on that basis is an entry destroyed because the
-    network was down. `instance_statuses` draws exactly this line and returns
-    `GONE` for the first, which is what makes pruning safe to write at all.
+    Returns FOUR lists, and the whole safety of `--prune` is that they are four
+    rather than one: the ghosts, the entries whose box is on the project under a
+    DIFFERENT ZONE, the entries whose absence could not be confirmed, and the
+    projects that could not be read. Only the first may be removed.
+
+    TWO READS AGREE BEFORE ANYTHING GOES, and the second is the one that makes
+    this command's promise true rather than likely. A name failing to appear in a
+    bulk `instances list` is an INFERENCE from a listing, and it is exactly as
+    complete as that listing was; the docstring on `discover` promises removal of
+    only what Google POSITIVELY says is absent, and a non-appearance is not
+    Google saying anything at all. So every candidate is put to
+    `gcloud compute instances describe` by name, in its own zone, and pruned only
+    on a flat not-found — a statement about that machine rather than about a set
+    it did not turn up in.
+
+    That costs one gcloud process per candidate, and only per candidate: a host
+    list with nothing stale in it makes none of these calls, and the price of
+    removing five entries is five `describe`s. It is the right trade on the one
+    command that destroys entries for machines that may exist, and it does not
+    depend on any particular theory of how a listing could come back short — it
+    removes the class.
+
+    A listing that SUCCEEDED and does not contain the name is Google saying it is
+    gone; a listing that FAILED is nobody having asked, and an entry removed on
+    that basis is an entry destroyed because the network was down.
+    `instance_statuses` draws exactly this line and returns `GONE` for the first,
+    which is what makes pruning safe to write at all.
+
+    AND A NAME IN THE WRONG ZONE IS NEITHER. It used to be read as the first one,
+    because absence was decided on a `(name, zone)` lookup rather than on the
+    name: an entry declaring `comfy-win` in us-central1-a, against a listing that
+    positively held `comfy-win` RUNNING in us-central1-b, was announced as "not
+    on the project any more — the box is gone", removed, and exited 0. The L4
+    went on billing with nothing left in the host list naming it, so `down` and
+    `list` could no longer reach it. A hand-typed zone does that, and so does a
+    box recreated in another zone from the console, and so does a `move` that did
+    not finish. The entry is wrong and saying so is worth doing; deleting it is
+    not, because the entry is the only record of a machine that exists.
 
     ONE READ PER DECLARED PROJECT, and not `current_project()`. A host list may
     name several — `hosts.toml` carries the project per host precisely because
@@ -376,10 +428,17 @@ def _ghosts(gc, hosts: list[Host]) -> tuple[list[tuple[Host, str]], list[str]]:
     ghosts on the others: they are separate questions and they get separate
     answers.
     """
-    from .gcloud import GONE, GcloudError
+    from .gcloud import ELSEWHERE, GONE, GcloudError
 
     ghosts: list[tuple[Host, str]] = []
+    misplaced: list[tuple[Host, str]] = []
+    unconfirmed: list[tuple[Host, str]] = []
     unreadable: list[str] = []
+
+    # Pass one is the listings, one per declared project, and it decides nothing
+    # on its own — it only narrows the whole host list down to the entries worth
+    # asking about individually.
+    candidates: list[tuple[Host, str]] = []
     declared = [host for host in hosts if host.is_remote]
     for project in dict.fromkeys(host.gce_project for host in declared):
         mine = [host for host in declared if host.gce_project == project]
@@ -389,10 +448,46 @@ def _ghosts(gc, hosts: list[Host]) -> tuple[list[tuple[Host, str]], list[str]]:
         except GcloudError:
             unreadable.append(project)
             continue
-        ghosts.extend(
-            (host, project) for host in mine
-            if states.get((host.gce_instance, host.gce_zone, host.gce_project)) == GONE)
-    return ghosts, unreadable
+        for host in mine:
+            state = states.get(
+                (host.gce_instance, host.gce_zone, host.gce_project))
+            if state == ELSEWHERE:
+                misplaced.append((host, project))
+            elif state == GONE:
+                candidates.append((host, project))
+
+    if not candidates:
+        return ghosts, misplaced, unconfirmed, unreadable
+
+    # Counted across every project before the first one is asked, so the number
+    # in this line is the number of calls that are about to happen rather than
+    # the number remaining on whichever project came first. Said out loud because
+    # it is a process each: five stale entries is five `describe`s, and several
+    # silent seconds in a command that has printed nothing yet reads as a hang.
+    say.result(f"\nchecking {say.count(len(candidates), 'entry', 'entries')} "
+               f"against the project one at a time, to be sure before removing "
+               f"anything")
+
+    # Pass two is the confirmation, and it is what lets anything be removed at
+    # all. Three outcomes, kept three: Google says there is no such instance,
+    # Google describes one, or nobody established either.
+    for host, project in candidates:
+        try:
+            confirmed = gc.confirms_absent(
+                host.gce_instance, host.gce_zone, host.gce_project)
+        except GcloudError as exc:
+            unconfirmed.append((host, f"the check could not be made ({exc})"))
+            continue
+        if confirmed:
+            ghosts.append((host, project))
+        else:
+            # The bulk listing did not carry it and a direct read describes it.
+            # Whatever produced that gap, the machine is there and this entry is
+            # the only thing naming it.
+            unconfirmed.append(
+                (host, f"{project} answered about it directly, so the listing "
+                       f"that did not carry it was incomplete"))
+    return ghosts, misplaced, unconfirmed, unreadable
 
 
 def _say_unreadable(projects: list[str]) -> None:
@@ -475,7 +570,11 @@ def discover_cmd(
     out from the same list, and `go linux` refuses as ambiguous once several of
     the machines it matches do not exist.
 
-    ONLY what Google positively says is absent. A box on a project that could not
+    ONLY what Google positively says is absent, and absent means the project has
+    no machine of that NAME — not that it has none in the zone the entry
+    declares. An entry whose box turns up in another zone is named as a zone
+    mismatch and kept, because the entry is wrong about where the box is and the
+    box is still running. A box on a project that could not
     be read is left exactly where it is and said so — a check that refutes is not
     a check that confirms, and an entry deleted because the network was down is
     the one mistake this file cannot recover from.
@@ -489,7 +588,7 @@ def discover_cmd(
     from .discover import (
         clash_note, label_clashes, new_hosts, parse as parse_instance, to_toml,
     )
-    from .hostfile import HostFileError, add
+    from .hostfile import HostFileError, add, one_backup
 
     path = config or DEFAULT_CONFIG_PATH
     gc = Gcloud()
@@ -521,24 +620,40 @@ def discover_cmd(
     # Read before the early returns below, because "the project has no boxes at
     # all" is not a reason to stay quiet under --prune — it is the strongest
     # possible statement that every entry naming that project is a ghost.
-    ghosts, unreadable = _ghosts(gc, existing) if prune else ([], [])
+    ghosts, misplaced, unconfirmed, unreadable = (
+        _ghosts(gc, existing) if prune else ([], [], [], []))
 
-    if not found and not ghosts:
+    if not found and not ghosts and not misplaced and not unconfirmed:
         say.result(f"no cloud boxes on {project}")
         _say_unreadable(unreadable)
         return
 
     additions = new_hosts(found, existing)
     clashes = label_clashes(found, existing)
-    if not additions and not clashes and not ghosts:
+    if (not additions and not clashes and not ghosts and not misplaced
+            and not unconfirmed):
         say.result(f"{say.count(len(found), 'cloud box', 'cloud boxes')}, "
                    f"all already in {path}")
         _say_unreadable(unreadable)
         return
 
-    for box, port in additions:
-        state = "running" if box.running else "stopped"
-        say.result(f"{box.name}  {box.os}  {box.gpu or 'no GPU'}  {state}  port {port}")
+    if additions:
+        # A HEADING AND A TABLE, where there were bare ragged lines. The rows
+        # went out as a plain join, so the columns moved with the length of each
+        # machine's OS string and nothing could be read down the page; and they
+        # arrived under no heading at all, so the first thing a new user saw
+        # from `discover` was an unlabelled line of five facts.
+        #
+        # Present tense, and true in both modes: under `--dry-run` these are
+        # what is not in the list yet and stays that way, and the closing
+        # `--dry-run: nothing written` is what says which run this was.
+        say.result("\nnot in your host list yet:")
+        for line in say.rows([
+            (box.name, box.os, box.gpu or "no GPU",
+             "running" if box.running else "stopped", f"port {port}")
+            for box, port in additions
+        ]):
+            say.result(f"  {line}")
     for box, label in clashes:
         say.result(clash_note(box, label))
 
@@ -551,6 +666,41 @@ def discover_cmd(
         for host, owner in ghosts:
             say.result(f"  {host.name}  ({host.gce_instance} in {host.gce_zone}, "
                        f"{owner})")
+    if misplaced:
+        # NOT removed, and named separately from the ghosts, because the two
+        # facts point opposite ways about money. A ghost's box does not exist and
+        # the entry is all that is left of it; one of these has a box that DOES
+        # exist, is very likely running, and this entry is the only thing in the
+        # host list that names it. Pruning it was the worst outcome available:
+        # the machine goes on billing and `down` can no longer reach it.
+        #
+        # One warning, then the entries under it as plain result lines — the
+        # shape the ghost block above already uses. The finding is the warning;
+        # the lines are the listing, and a `say.warn` per entry would put five
+        # copies of one fact on stderr.
+        #
+        # The zone the box is really in is one command away and this one did not
+        # read it, so it is asked for rather than guessed at. Correcting
+        # `gce_zone` by hand is the whole repair: nothing about the box is wrong.
+        say.warn("\non the project, and not in the zone the entry gives — the "
+                 "entry is wrong, the box is not gone, so nothing here was "
+                 "removed. Find where each one really is with gcloud compute "
+                 "instances list, then correct gce_zone by hand")
+        for host, owner in misplaced:
+            say.result(f"  {host.name}  ({host.gce_instance} is not in "
+                       f"{host.gce_zone} on {owner}, and {owner} has one by "
+                       f"that name)")
+    if unconfirmed:
+        # The listing said absent and the second read did not agree. Two ways in,
+        # and the message carries which: Google described the machine after all,
+        # so the listing was short of it — or the check itself did not get
+        # through. Neither is a positive statement of absence, so neither is
+        # removed, and both are said rather than counted.
+        say.warn("\nthe project listing did not have these and a direct check "
+                 "did not confirm they are gone, so nothing here was removed")
+        for host, why in unconfirmed:
+            say.result(f"  {host.name}  ({host.gce_instance} in "
+                       f"{host.gce_zone} — {why})")
     _say_unreadable(unreadable)
 
     if dry_run:
@@ -560,21 +710,33 @@ def discover_cmd(
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    if additions:
-        try:
-            # Not `path.open("a")`. An append lands in the same hand-maintained
-            # file a rewrite does, so it takes the same route: validated with the
-            # real loader before it is written, a verified copy kept, and refused
-            # rather than left unloadable. See `hostfile.add`.
-            add(path, [to_toml(box, port) for box, port in additions], initial=STARTER)
-        except HostFileError as exc:
-            # Documented where it is raised, in `hostfile`, and it already says
-            # that nothing was written.
-            say.fail(exc, code=2, blank_line=False)
-        say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
+    # Two writes, ONE `.bak`, and it is the file as it was before this command
+    # ran. `add` and `_forget` each go through `hostfile.apply`, so each took its
+    # own copy — and after a run that adopted one box and pruned another,
+    # `hosts.toml.bak` held the state BETWEEN them: the additions already in, the
+    # ghosts still there. That is a state that existed for milliseconds and that
+    # nobody asked for, sitting in the file a person reaches for when a prune
+    # removed something they wanted; the pre-run file survived only in
+    # `backups/` under a timestamp. Every other guarantee is untouched — the copy
+    # is still fsynced, still read back, and still refuses the write when it
+    # cannot be made — and the superseded copies still archive as before.
+    with one_backup():
+        if additions:
+            try:
+                # Not `path.open("a")`. An append lands in the same hand-maintained
+                # file a rewrite does, so it takes the same route: validated with the
+                # real loader before it is written, a verified copy kept, and refused
+                # rather than left unloadable. See `hostfile.add`.
+                add(path, [to_toml(box, port) for box, port in additions],
+                    initial=STARTER)
+            except HostFileError as exc:
+                # Documented where it is raised, in `hostfile`, and it already says
+                # that nothing was written.
+                say.fail(exc, code=2, blank_line=False)
+            say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
 
-    if ghosts:
-        _forget(path, [host for host, _owner in ghosts], yes=yes)
+        if ghosts:
+            _forget(path, [host for host, _owner in ghosts], yes=yes)
 
 
 @app.command("create")
@@ -582,7 +744,14 @@ def create_cmd(
     os_choice: Annotated[str, typer.Option(
         "--os", help="linux or windows. One box per OS is the pattern here.")],
     gpu: Annotated[str, typer.Option(
-        "--gpu", help="The card: l4, t4, a100... The machine type follows from it.")],
+        # The whole list, not "l4, t4, a100...". `--help` is one of the places
+        # this tool advertises cards, and the trailing dots used to cover four
+        # more it knows about and refuses — P4, P100, V100, K80 have no GSP and
+        # `create` will not order them (`create.GSP_ARCHITECTURES`). A reader
+        # completing the dots from `quota list` got a card that cannot work.
+        # `tests/test_gpu_driver.py` holds this line to `create.drivable_cards()`.
+        "--gpu", help="The card: l4, t4, a100, a100-80gb or h100. The machine "
+                      "type follows from it.")],
     name: Annotated[Optional[str], typer.Option(
         "--name", help="Name the box. Default: comfy-linux / comfy-win, numbered if taken.")] = None,
     zone: Annotated[Optional[str], typer.Option(
@@ -637,13 +806,19 @@ def create_cmd(
     # tool that picks for you is a tool that reads results from the wrong box.
     # Here the box costs money and can land on the wrong continent.
     if zone and region:
+        # Quoted, because these four are whatever the user typed and this frame
+        # runs BEFORE `plan` has judged any of them. `--os "Ubuntu 22.04"` echoed
+        # back bare is `--os Ubuntu 22.04`, on which Typer exits 2 over the stray
+        # positional — so a refusal about two flags answers about a third. A
+        # value that needs no quoting comes back unchanged.
+        said = [shlex.quote(value) for value in (os_choice, gpu, zone, region)]
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
             "pins one zone, --region asks for a choice within one region",
             fix=say.fix(
                 "one or the other:",
-                f"comfy-qat create --os {os_choice} --gpu {gpu} --zone {zone}",
-                f"comfy-qat create --os {os_choice} --gpu {gpu} --region {region}",
+                f"comfy-qat create --os {said[0]} --gpu {said[1]} --zone {said[2]}",
+                f"comfy-qat create --os {said[0]} --gpu {said[1]} --region {said[3]}",
             ),
             code=2,
         )
@@ -651,7 +826,27 @@ def create_cmd(
     path = config or DEFAULT_CONFIG_PATH
     try:
         hosts = load(path)
-    except ConfigError:
+    except ConfigError as exc:
+        if path.exists():
+            # A host list that EXISTS and will not load is not an empty one, and
+            # this is the command where the difference is money. Read as empty,
+            # the run proceeded on a file it had not read: the name check ran
+            # against nothing, so a name the file already holds passed; the port
+            # came out of nothing, so it could collide with one in there; the box
+            # was created and billed; the block was appended to a file that still
+            # does not load; and the run signed off with `comfy-qat go <name>`
+            # and `comfy-qat down <name>`, both of which call `load` and exit 2.
+            # A GPU billing, the tool's own stop command unable to reach it, and
+            # nothing anywhere in the run saying the host list was broken.
+            #
+            # Every way in is ordinary — a duplicate port, two entries for one
+            # instance, two names differing only in case, a typo in the TOML, a
+            # non-UTF-8 byte — and each is something `config.parse` refuses by
+            # design. `discover` has refused this since it hit it, in these
+            # words, because it is the same refusal about the same file; it is
+            # sharper here only because the alternative is a bill.
+            say.fail(f"could not read your host list ({exc}), so nothing was created",
+                     fix="fix the file, then run this again", code=2, blank_line=False)
         hosts = []
 
     # `plan` is offline and total — it decides everything before anything is
@@ -719,7 +914,22 @@ def create_cmd(
     if not ordering:
         _refused(nowhere(blueprint, ordering, project))
 
-    say.result("")
+    # A HEADING, because the two blocks either side of this one have had one all
+    # along and the block between them — the one that says what is about to be
+    # made — was introduced by a blank line and nothing else:
+    #
+    #     quota checked:
+    #       L4: 1, in 43 region(s)
+    #
+    #       - create comfy-linux in us-central1-a: Ubuntu 22.04, L4 (nvidia-l4)
+    #       - machine type g2-standard-8 — built into the machine type
+    #
+    #     zone order — 6 to try, quota first, then ...
+    #
+    # Five bullets with no name, sitting under the heading of the block above
+    # them, in the output of the command that spends money. Reading down the
+    # page, the plan looked like more quota.
+    say.result("\nwhat this makes:")
     for line in blueprint.steps(ordering.zones[0]):
         say.result(f"  - {line}")
     say.result("")
@@ -750,13 +960,26 @@ def create_cmd(
     # wrong precisely when it was most likely to fire.
 
     # Re-read rather than reusing the list from before the create: this command
-    # takes minutes, and a `host discover` in another terminal in the meantime
+    # takes minutes, and a `comfy-qat discover` in another terminal in the meantime
     # would have taken the port this was about to hand out. Two hosts on one port
     # is the failure you cannot diagnose from the outside.
     try:
         port = next_ports(load(path), 1)[0]
-    except ConfigError:
+    except ConfigError as exc:
+        # Said out loud, and NOT refused. The file loaded at the top of this
+        # command — that check is now a refusal — so reaching here means it broke
+        # while the create was running, and by now the box is real and billing.
+        # Refusing at this point would leave a GPU running with no entry naming
+        # it, which is the worse of the two, so the entry still goes in on the
+        # best port this run knows about. What it must not do is stay quiet: the
+        # port may collide with one in the part of the file that no longer
+        # parses, and the sign-off below offers `go` and `down`, which both call
+        # `load` and will exit 2 until the file is fixed.
         port = next_ports(hosts, 1)[0]
+        say.warn(f"your host list stopped loading while this ran ({exc}), so "
+                 f"port {port} was chosen from the file as it was before — check "
+                 f"it against the entries that no longer parse, and fix the file "
+                 f"before comfy-qat go or comfy-qat down")
 
     # Still a bare append, and deliberately, having been through `hostfile.add`
     # and taken back out.
@@ -877,8 +1100,8 @@ def _refused(exc, code: int = 2) -> None:
     One shape for the whole `host` group, because a tester reads exit codes across
     commands: **2 means nothing was changed** — a refusal, a precondition, a bad
     argument — and **1 means the work started and failed.** `move` used to exit 1
-    with no `to fix:` line where `auth quota list` and `host discover` exited 2
-    with one, on the same gcloud error.
+    with no `to fix:` line where `comfy-qat quota list` and `comfy-qat
+    discover` exited 2 with one, on the same gcloud error.
     """
     say.fail(exc, code=code, blank_line=False)
 
@@ -894,7 +1117,9 @@ def _act(action, *args, **kwargs):
     refusal in the tool exits 2.
 
     It was not one command's. Reading all three callees: `read_logs` raises five
-    refusals and one real failure, `in_a_new_window` raises a platform check
+    refusals and two real failures — the SSH that would not connect, and the one
+    that connected and came back non-zero, whose code this used to discard
+    entirely — `in_a_new_window` raises a platform check
     that says "Nothing was started" and two osascript failures, and `put_away`
     raises a host-list contradiction it refuses to act on, plus a stop that was
     attempted and failed. So `logs`, `go --new-window`, `disconnect`, `down` and
@@ -942,17 +1167,29 @@ def up_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine: a name, or what you want — windows, l4, windows/l4.")] = None,
     config: ConfigOption = None,
 ) -> None:
-    """Start a machine and wait until ComfyUI actually answers.
+    """Start a machine, and succeed only if ComfyUI is already serving on it.
 
     "Up" means ComfyUI is serving, not that the VM booted. A machine that has
-    booted and serves nothing looks like success and bills like success.
+    booted and serves nothing looks like success and bills like success, so this
+    refuses to call that up.
+
+    **It does not start ComfyUI — `comfy-qat go` does that.** Which matters
+    because nothing on a box starts ComfyUI at boot, so a machine that has been
+    through `comfy-qat down` has the install and no process, and `up` on it can
+    only ever end in a refusal. It ends in one quickly now, and one that names
+    `go`: it asks the box what is on it rather than waiting out the clock.
+
+    Two commands that both start ComfyUI would be one more than this tool wants;
+    `up` is the machine-level verb and `go` is the one that serves.
     """
     from .gcloud import Gcloud
-    from .lifecycle import bring_up
+    from .lifecycle import GO_BUDGET, Budget, bring_up
 
     hosts, host = _lookup(_selector(name), config)
     try:
-        bring_up(Gcloud(), host, say.step)
+        # `up` does less than `go` and is bounded by the same ceiling, which
+        # costs it nothing: it cannot reach the phases that make `go` long.
+        bring_up(Gcloud(), host, say.step, budget=Budget(GO_BUDGET))
     except _reportable() as exc:
         # A box that will not start ends the session unless you are told where
         # else you could work, and a GPU shortage is the usual reason.
@@ -1029,9 +1266,23 @@ def disconnect_cmd(
 
     For the case `down` cannot serve: a long generation or a model download is
     running on the box, ComfyUI is detached and will keep going, and you want the
-    local port back — or you are closing the laptop. Killing the ssh process by
-    hand leaves the tunnel records behind, after which `list` reports a tunnel
-    that is not there.
+    local port back — or you are closing the laptop.
+
+    THE REASON THIS USED TO GIVE IS NO LONGER TRUE, and it is worth saying what
+    replaced it, because the sentence is printed by `--help`. It said killing the
+    ssh process by hand leaves the records behind, "after which `list` reports a
+    tunnel that is not there". It does not: `TunnelState.running` requires the
+    process to be alive AND to still be the one recorded, so a pid file naming a
+    dead pid reads as stale and `list` says `not tunnelled`. The pid-identity
+    work fixed that failure; the docstring outlived it.
+
+    What is left is the part `kill` never did. This asks Google whether the
+    machine is still running and says so in as many words — `left running — it is
+    still billing`, or `was already stopped` — and hands over `comfy-qat down`.
+    Killing the ssh yourself frees the port in silence, and silence after
+    unplugging from a GPU box reads as "finished". This is the command that
+    leaves a machine running ON PURPOSE, so it is the one that has to say the
+    machine is still running.
 
     This was `down --keep-running`, which has been removed. The flag was the
     negation of its own command, one word from the command whose documented
@@ -1052,6 +1303,27 @@ def disconnect_cmd(
     # most needs to say how to stop it. It did not — and the test that states
     # the rule caught it on its first run, having been written for two other
     # commands.
+    #
+    # THE ONLY PLACE THAT SAYS IT NOW. `put_away`'s RUNNING branch used to say it
+    # too, four words earlier, in prose — so the tool's most safety-critical
+    # block ended with one instruction in two phrasings:
+    #
+    #     comfy-linux left running — it is still billing
+    #     any ComfyUI on it is still running too: comfy-qat logs comfy-linux
+    #     when the work is finished: comfy-qat down comfy-linux
+    #     comfy-qat down comfy-linux   # when the work is finished
+    #
+    # The duplication was deliberate and written down as such: `put_away` offers
+    # the bill only where it established RUNNING, so covering the branch where
+    # the state could not be read meant one of the two had to be unconditional,
+    # and both were. Making this one conditional instead was the obvious fix and
+    # the wrong one — on the RUNNING path it left stdout completely empty, so
+    # `comfy-qat disconnect 1>/dev/null` lost the whole command. `test_say`'s
+    # stream rule caught that within the minute.
+    #
+    # So the offer lives here, unconditionally, in this tool's shape for an
+    # offered command, and `put_away`'s block is the story on stderr. One
+    # instruction, once, and neither stream is empty on any path.
     say.result(f"  comfy-qat down {host.name}   # when the work is finished")
 
 
@@ -1177,10 +1449,31 @@ def down_cmd(
         # trivially. The one question this command exists to answer was the one
         # its output could not distinguish.
         caught = [h for h in hosts if h in stopped]
+        # "Nothing is now." IS THE ALL-CLEAR, and it was printed unconditionally
+        # while the two paragraphs below it were saying the opposite. A real run
+        # ended:
+        #
+        #     was billing: comfy-win. Stopped. Nothing is now.
+        #
+        #     1 machine on this project is running and not in your host list:
+        #     orphan-box.
+        #
+        # The sentence the whole command exists for, contradicted two lines
+        # later by the paragraph that is the actual news. Someone closing the
+        # laptop reads the all-clear and stops reading — that is what an
+        # all-clear is for — so the box nobody declared bills all night.
+        #
+        # The guard already existed on the sibling branch one line down, where
+        # nothing was stopped; it was simply never applied to the branch that
+        # can also be wrong. It is one condition now rather than two, so the two
+        # cannot drift apart again: `caught` says what this stopped, `all_clear`
+        # says whether anything is left, and they are separate claims.
+        all_clear = not unknown and strangers == []
         if caught:
             names = ", ".join(h.name for h in caught)
-            say.result(f"\nwas billing: {names}. Stopped. Nothing is now.")
-        elif not unknown and strangers == []:
+            say.result(f"\nwas billing: {names}. Stopped."
+                       + (" Nothing is now." if all_clear else ""))
+        elif all_clear:
             say.result("\nnothing was running, so nothing was billing.")
         # `unknown` was collected here and never reported, so a run where every
         # read failed and every stop succeeded printed the all-clear — an
@@ -1273,11 +1566,11 @@ def go_cmd(
     The everyday command. If ComfyUI is already serving you get the URL straight
     away; otherwise it is installed if needed and launched *on the box*, where it
     keeps running after this returns — so a second machine can be brought up in
-    this same terminal. `host logs` reads its log; `--follow` streams it here
+    this same terminal. `comfy-qat logs` reads its log; `--follow` streams it here
     instead, and Ctrl-C then stops ComfyUI, which is what this used to do always.
     """
     from .gcloud import Gcloud
-    from .lifecycle import in_a_new_window
+    from .lifecycle import GO_BUDGET, Budget, in_a_new_window
 
     hosts, host = _lookup(_selector(name), config)
     if new_window:
@@ -1311,12 +1604,19 @@ def go_cmd(
         _act(in_a_new_window, rest, say.step)
         return
     gc = Gcloud()
+    # ONE clock for the whole command, started before anything is done and
+    # carried through both halves of it. Every wait inside was already bounded
+    # and the command still ran for fifteen minutes on a box whose driver could
+    # not load, because each phase starts a fresh clock and the phases stack —
+    # "every wait is bounded" and "the command is bounded" are different claims,
+    # and only the first was true. See `lifecycle.GO_BUDGET`.
+    budget = Budget(GO_BUDGET)
     # Only `go` offers the rebuild. `up` and `switch` share _bring_up, and switch
     # stops the other boxes immediately afterwards — confirming a move there would
     # leave it half executed, old box not stopped and new box not up.
-    ready = _bring_up(gc, host, hosts, offer_move=config or True)
+    ready = _bring_up(gc, host, hosts, offer_move=config or True, budget=budget)
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
-           follow=follow)
+           follow=follow, budget=budget)
 
 
 @app.command("ssh")
@@ -1410,6 +1710,89 @@ def rdp_cmd(
                  fix=f"comfy-qat ssh {host.name}", code=2)
 
     gc = Gcloud()
+
+    # CHECKED BEFORE IT IS ANNOUNCED, and until now it was the other way round.
+    # The announcement below is not a progress line — it states that a
+    # destructive change is under way, in the present tense, and adds gcloud's
+    # own warning about losing data encrypted with the old password. `rdp` printed
+    # both of those before it knew gcloud existed and before it asked whether the
+    # box was even on, so `comfy-qat rdp comfy-win` after a `down` told somebody
+    # their working password had stopped working and then failed having touched
+    # nothing. A tool that reports a destructive change it did not make is worse
+    # than one that says nothing: the recovery it invites — reset it again, warn
+    # whoever else is signed in — is work created out of a sentence.
+    #
+    # `ssh_cmd` twenty lines up already pays for both reads, and its comment
+    # argues the second one on a weaker case than this: it buys a sentence in
+    # place of a 36-line gcloud traceback on a command that changes nothing.
+    # Here the same read is what stops a false claim about somebody's password,
+    # so the precedent is followed rather than re-argued.
+    #
+    # Both are 2. Nothing has been changed at either point, which is exactly what
+    # this group's 2 means, and it is what makes the announcement safe to print
+    # afterwards: past these checks, the reset is genuinely about to run.
+    from .lifecycle import RUNNING, wait_for_port
+    from .provision import RDP_REMOTE_PORT
+
+    try:
+        gc.require()
+    except GcloudError as exc:
+        _refused(exc)
+
+    try:
+        state = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        _refused(exc)
+    if not state:
+        say.fail(
+            f"could not tell whether {host.name} is running, so its password was "
+            f"not reset — this will not claim to have changed one it could not "
+            f"reach.",
+            fix=say.fix("ask Google again:", "comfy-qat list --live"),
+            code=2,
+        )
+    if state != RUNNING:
+        say.fail(
+            f"{host.name} is not running, so its password was not reset and there "
+            f"is nothing to forward RDP to. The password in use on it is "
+            f"unchanged.",
+            fix=f"comfy-qat up {host.name}   # start it, then rdp again",
+            code=2,
+        )
+
+    # AND RUNNING IS NOT "REMOTE DESKTOP IS ANSWERING", which is the same lesson
+    # this file has now learned three times: RUNNING was not sshd listening, and
+    # "the VM booted" was not "ComfyUI is serving". Here it had something
+    # irreversible behind it. Measured on a freshly created Windows box:
+    #
+    #     password reset in 8s
+    #     user     ali_ranjah
+    #     password <redacted>
+    #     address  localhost:33389
+    #       forwarding RDP — Ctrl-C closes it
+    #     ERROR: ... [4003: 'failed to connect to backend']. (Failed to connect
+    #     to port 3389)
+    #
+    # exit 1. The password had been changed — permanently, invalidating the one
+    # anybody else signed in to that box was holding — and then the command
+    # failed, because the box had not finished its first boot. A retry minutes
+    # later got as far as "Testing if tunnel connection works". So the reset paid
+    # for nothing and cost somebody their session.
+    #
+    # The check above already exists to make the announcement safe to print. This
+    # is the same argument carried one step further: past both of them, the reset
+    # is genuinely about to run AND there is something on the other side of it.
+    #
+    # Not `code=2` by accident — nothing has been changed here either, which is
+    # what this group's 2 means, and `wait_for_port` raises rather than returning
+    # so there is no branch in which a caller carries on past a maybe.
+    try:
+        wait_for_port(gc, host, RDP_REMOTE_PORT, say.step,
+                      what="Remote Desktop")
+    except _reportable() as exc:
+        say.fail(f"{exc}\nits password was not reset — the one in use on it is "
+                 f"unchanged.", code=2)
+
     # THE ONLY COMMAND IN THIS TOOL THAT WENT SILENT ON A LONG OPERATION, and it
     # went silent on the one that changes something. Measured on real hardware:
     # `rdp comfy-win` against a running Windows box printed NOT ONE LINE for ten
@@ -1458,8 +1841,34 @@ def rdp_cmd(
                   f"that may no longer work"),
             heading="this may already have happened, and it does not undo:",
         ):
-            credentials = gc.windows_password(host.gce_instance, host.gce_zone,
-                                              host.gce_project)
+            # INSIDE the registration, not outside it, and that is the whole
+            # point of this block. `may_leave` catches the KeyboardInterrupt,
+            # PRINTS the leftovers report, and only then raises `Interrupted` —
+            # so an `except inflight.Interrupted` further out runs after the
+            # report, not before it. The `give_up()` that used to live there
+            # therefore stopped a ticker that had already had the whole of the
+            # report to tick over: the comment on it said "close the step before
+            # the report prints" and the code did the opposite.
+            #
+            # `resetting` is a background `Slow`, so its thread wakes every
+            # second and writes `still going, …` through the same stream the
+            # report uses. What that can land on is the `to fix:` block naming
+            # the reset command — the only line telling somebody who just pressed
+            # Ctrl-C what may have happened to their password, on a command whose
+            # own comment forty lines up is that the silence is why they pressed
+            # it.
+            #
+            # Catching here closes the step first and re-raises the plain
+            # KeyboardInterrupt, so `may_leave` still reports exactly as before,
+            # with nothing left ticking while it does. `lifecycle.py`'s install
+            # step reaches the same place with a `finally`; this one has an
+            # ordinary success line to print afterwards, so it is spelled out.
+            try:
+                credentials = gc.windows_password(host.gce_instance, host.gce_zone,
+                                                  host.gce_project)
+            except BaseException:
+                resetting.give_up()
+                raise
     except GcloudError as exc:
         resetting.give_up()
         if exc.kind in UNRESOLVED:
@@ -1490,8 +1899,12 @@ def rdp_cmd(
             )
         _refused(exc)
     except inflight.Interrupted:
-        # Close the step before the report prints, so its ticker cannot land a
-        # "still going" line on top of the interrupt's own message.
+        # A no-op in the ordinary case — the step was closed inside the
+        # registration above, before the report printed, which is where it has to
+        # happen and where it now does. Kept because `Interrupted` can also reach
+        # here from a NESTED registration that reported and re-raised without
+        # this frame's ticker ever being touched, and `give_up()` twice costs
+        # nothing while a live ticker costs the message.
         resetting.give_up()
         raise
     resetting.done("password reset")
@@ -1550,6 +1963,22 @@ def logs_cmd(
     from .lifecycle import read_logs, stop_paying
 
     host = _host(_selector(name), config)
+
+    # REFUSED, not clamped. `logs_command` used to fold any `--tail N` where N
+    # was less than one up to 1, so `--tail -5` quietly read a line and `--tail 0`
+    # read one where the user asked for none. Zero now means zero and is honest —
+    # `--tail 0 --follow` is the ordinary "skip the backlog, show me what happens
+    # next" idiom and is worth having — but a negative count is not a smaller
+    # number of lines, it is a typo, and answering a typo with a plausible answer
+    # is how nobody finds out. Nothing has been contacted at this point, which is
+    # what makes it a 2.
+    if tail is not None and tail < 0:
+        say.fail(f"--tail {tail} is not a number of lines to read.",
+                 fix=say.fix("read the last 50:", f"comfy-qat logs {host.name} --tail 50",
+                             "or start from now and follow:",
+                             f"comfy-qat logs {host.name} --tail 0 --follow"),
+                 code=2)
+
     try:
         _act(read_logs, Gcloud(), host, say.step,
              tail=200 if tail is None else tail,
@@ -1558,6 +1987,21 @@ def logs_cmd(
         say.result(f"\nstopped reading. ComfyUI is still running on {host.name}, "
                    "and so is the machine.")
         say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        # 130, not 0, and this is the other half of the exit-code fix in
+        # `read_logs`. That one stopped a FAILED read reporting success; this one
+        # stops an INTERRUPTED read reporting it, and without both, `logs` still
+        # exits 0 in a case where it did not finish. Falling off the end here
+        # returned None, which Typer renders as 0 — so `logs` was the one
+        # interrupt in the tool that did not exit 130, against a rule
+        # `inflight.INTERRUPTED` states for every other command.
+        #
+        # The friendly message stays exactly as it was, because it is right: a
+        # Ctrl-C on a follow is the ordinary way to leave, not an error, and the
+        # thing a person needs to know at that moment is that the box is still
+        # billing. 130 is not a claim that something failed — it is "ended by
+        # SIGINT", which is precisely what happened — and it is what stops a
+        # script reading `$?` from a follow as "the log ended by itself".
+        raise inflight.Interrupted()
 
 
 def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
@@ -1647,7 +2091,7 @@ def _offer_move(host: Host, exc, config: Optional[Path]) -> bool:
 
 
 def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
-              *, offer_move: Optional[Path] | bool = False):
+              *, offer_move: Optional[Path] | bool = False, budget=None):
     """Get the machine up, with every failure turned into a next command.
 
     Returns None when the box is up but ComfyUI is absent — the one failure the
@@ -1660,7 +2104,14 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
     # `cli.main` reports it. Two frames asking the same question of the same
     # event is how a leftovers block came to be printed twice.
     try:
-        return bring_up(gc, host, say.step, comfy_timeout=15)
+        # `explain_silence=False` because this caller has somewhere to go. A
+        # silent tunnel here is the ordinary case, not a failure: `_serve` runs
+        # next and installs or launches ComfyUI, and `ensure_installed` asks the
+        # box the same question properly a few seconds later. Letting `bring_up`
+        # ask it too would put an SSH round trip on the everyday path of `go` to
+        # produce a sentence nobody would ever read.
+        return bring_up(gc, host, say.step, comfy_timeout=15,
+                        explain_silence=False, budget=budget)
     except _reportable() as exc:
         # Only "ComfyUI is not there yet" is worth continuing past. Anything else
         # (the box would not start, the tunnel failed) must be shown, not
@@ -1678,7 +2129,7 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
 
 
 def _serve(gc, host: Host, ready, *, no_browser: bool = False,
-           no_install: bool = False, follow: bool = False) -> None:
+           no_install: bool = False, follow: bool = False, budget=None) -> None:
     """The rest of `go` once the machine is up: install if needed, then run it.
 
     Detached unless `--follow`. Both prove the same thing before returning —
@@ -1739,8 +2190,13 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                  code=1, blank_line=False)
 
     try:
-        wait_for_ssh(gc, host, say.step)
-        ensure_installed(gc, host, say.step)
+        # The same clock `_bring_up` was started with, carried across the two
+        # halves of `go`. Started in the command rather than here because the
+        # minutes spent booting the box and tunnelling to it are part of how long
+        # this has been running, and a budget that began at the install would
+        # bound the wrong thing.
+        wait_for_ssh(gc, host, say.step, budget=budget)
+        ensure_installed(gc, host, say.step, budget=budget)
         if follow:
             # The last line of this tool's own voice before ComfyUI's output
             # takes the terminal, which makes it the last chance to say what
@@ -1818,10 +2274,15 @@ def switch_cmd(
     where you can work instead.
     """
     from .gcloud import Gcloud, GcloudError
-    from .lifecycle import put_away, running_elsewhere
+    from .lifecycle import GO_BUDGET, Budget, put_away, running_elsewhere
 
     hosts, host = _lookup(_selector(name), config)
     gc = Gcloud()
+    # `switch` brings a box up and serves it exactly as `go` does, so it is
+    # bounded exactly as `go` is. Started here, before the boxes it is switching
+    # away from are stopped, because that time is part of how long the command
+    # has been running.
+    budget = Budget(GO_BUDGET)
 
     try:
         others = [] if keep_others else running_elsewhere(gc, hosts, host)
@@ -1922,7 +2383,8 @@ def switch_cmd(
                 heading="and this had already happened when you stopped it:",
             ))
         try:
-            ready = _bring_up(gc, host, hosts, kept=[other for other, _why in others])
+            ready = _bring_up(gc, host, hosts, budget=budget,
+                              kept=[other for other, _why in others])
         except typer.Exit as exc:
             # Not on an interrupt. `inflight.Interrupted` IS a `typer.Exit` now —
             # that is what makes it survive `register()` — and the record has
@@ -1940,7 +2402,8 @@ def switch_cmd(
     for other, _why in others:
         _act(put_away, gc, other, say.step)
 
-    _serve(gc, host, ready, no_browser=no_browser, no_install=no_install)
+    _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
+           budget=budget)
 
 
 def _probe_failed(gc, host: Host, exc) -> None:
@@ -2066,11 +2529,28 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     change nothing was the one that could quietly cost the most. Anything that
     replaces this function inherits the guard with it.
 
-    Returns the zone to move to, or None when the machine started — in which case
-    there was never anything to move, and it has been reported.
+    **A probe that is not refused is put back.** `move` is a relocation verb, and
+    the path where it decides not to relocate anything used to leave a GPU box
+    RUNNING that the user had deliberately stopped — proven on real hardware:
+    `down comfy-linux` (TERMINATED), then `move comfy-linux --clean --yes`, and
+    the box came back RUNNING and billing on the strength of a question. The
+    pack tells you to stop the source first precisely because a TERMINATED box
+    holds no GPU allowance, so the tool asked for that and then undid it behind
+    the user. The state is read BEFORE the probe — there is no other way to know
+    what to put back — and a box found stopped is stopped again.
+
+    A box found running is left running and told so. Restoring only a state that
+    was positively read is the rule: stopping someone's live box on a guess is
+    not the safe direction, and "could not tell" is not "it was off".
+
+    Returns the zone to move to, or None when there was nothing to move — in
+    which case it has been reported, and the box is as it was found.
     """
     from .gcloud import GcloudError
-    from .lifecycle import is_capacity_failure, stop_paying, suggested_zones
+    from .lifecycle import (
+        LifecycleError, TERMINATED, is_capacity_failure, put_away, stop_paying,
+        suggested_zones,
+    )
 
     if dry_run:
         say.fail(
@@ -2080,6 +2560,16 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
                 "name the zone yourself and the plan prints without touching anything:",
                 f"comfy-qat move {host.name} --to us-central1-b --dry-run"),
             code=2, blank_line=False)
+
+    # Before the probe, because the probe is a start and afterwards there is
+    # nothing left to read: a box that was stopped and a box that was already
+    # running both say RUNNING once this has run. A failure here is a refusal —
+    # nothing has been started yet, so `_refused`'s "nothing was changed" is
+    # true, and it is the same read the probe would have failed on anyway.
+    try:
+        was = gc.instance_status(host.gce_instance, host.gce_zone, host.gce_project)
+    except GcloudError as exc:
+        _refused(exc)
 
     say.step("asking Google where there is capacity")
     try:
@@ -2145,11 +2635,101 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     # needed" was true and was also the whole message — the one billable start in
     # this tool that named no way to stop paying, where `create`, `move`'s own
     # finish and every lifecycle failure through `_with_the_bill` all do.
-    say.result(f"{host.name} started in {host.gce_zone} and is billing — "
-               f"no move needed.")
-    say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
-    say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+    if was != TERMINATED:
+        # Found running, left running, and nothing here changed that. The old
+        # sentence — "<name> started in <zone> and is billing" — read as a
+        # statement about where the box started out, which is exactly what it was
+        # not: it was announcing an action. It says so plainly now, in both
+        # branches, because the difference between "this command started your box"
+        # and "your box was already up" is the difference the user is paying for.
+        say.result(f"{host.name} is already running in {host.gce_zone}, which has "
+                   f"capacity — no move needed, and this command changed nothing.")
+        say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        return None
+
+    # Found stopped. It was started to ask a question, the answer is "stay where
+    # you are", so it goes back the way it was. `put_away` rather than a bare
+    # stop: it is what `down` runs, it reads the state back rather than asserting
+    # one, and it registers the stop with `inflight` so an interrupt in the
+    # middle says what may still be running.
+    say.step(f"{host.gce_zone} has capacity — stopping {host.gce_instance} again")
+    try:
+        put_away(gc, host, say.detail)
+    except LifecycleError as exc:
+        # 1, not 2: this command started a GPU box and has not managed to stop
+        # it. `put_away`'s own message names the state and the bill, and its fix
+        # carries the raw gcloud stop.
+        say.fail(exc, code=1, blank_line=False)
+
+    say.result(f"{host.name} already has capacity where it is, in "
+               f"{host.gce_zone} — no move needed. It was stopped, so it was "
+               f"started to ask Google and has been stopped again.")
+    say.result(f"  comfy-qat go {host.name}     # start it and serve, when you want it")
     return None
+
+
+def _nothing_to_move(gc, host: Host, *, clean: bool, yes: bool) -> None:
+    """What earlier moves of this box left lying about, on the path that moves nothing.
+
+    `--clean` is documented as "delete what an earlier, half-finished move left
+    behind, then move", and on this path it did neither: the command decided
+    there was nothing to move and returned before a single resource was looked
+    at. A user who ran `move --clean` to tidy up got nothing tidied and was told
+    everything was fine — with, on the run that found this, a 14.3 GB snapshot
+    and a 200 GB disk both still billing.
+
+    The rest of the command works from a target zone and the names a move builds
+    from it. There is no target zone here, so `stranded` asks the question the
+    other way round — what on this project was made by a move OF THIS BOX and is
+    attached to nothing — which is answerable from the resources themselves and
+    in any zone. See its docstring for why that evidence is safe to delete on.
+
+    Reported whether or not `--clean` was passed, because a part-finished move
+    bills in silence and this is the one path that never said so. Deleted only on
+    `--clean` or an answered prompt, which are the same rules as the move path.
+    """
+    from .gcloud import GcloudError, can_prompt
+    from .relocate import remove_stranded, stranded, stranded_lines
+
+    try:
+        instance = gc.describe_instance(host.gce_instance, host.gce_zone,
+                                        host.gce_project)
+        disks, snapshots = stranded(gc, host, instance)
+    except GcloudError as exc:
+        # The answer this command was run for is already printed and still true.
+        # A look at the rest of the project that did not come back does not make
+        # it false, so this says so and stops rather than failing the command —
+        # but it does not pass over it in silence either, because "nothing was
+        # reported" and "nothing is there" are the two readings that must not be
+        # confused on a path about money.
+        say.detail(f"the project could not be checked for what earlier moves of "
+                   f"{host.name} left behind ({exc})")
+        return
+
+    if not disks and not snapshots:
+        if clean:
+            # `--clean` doing nothing has to LOOK like a finding rather than like
+            # the flag being ignored, which is exactly how this path read before.
+            say.detail("--clean: nothing an earlier move of this box left is "
+                       "still on the project")
+        return
+
+    # The same wording the move path uses for the same resources, deliberately:
+    # somebody who has read one of these reports has read both.
+    say.warn("an earlier run left this behind, and it is billing:")
+    for line in stranded_lines(host.gce_project or "", disks, snapshots):
+        say.detail(line)
+
+    if not (clean or (not yes and can_prompt()
+                      and typer.confirm("\nDelete these?"))):
+        return
+    try:
+        removed = remove_stranded(gc, host.gce_project or "", disks, snapshots,
+                                  say.step)
+    except GcloudError as exc:
+        say.fail(f"could not clean up: {exc}", code=1)
+    say.result(f"\nremoved {len(removed)}.")
 
 
 @app.command("move")
@@ -2177,11 +2757,11 @@ def move_cmd(
     from .discover import Discovered, next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
     from .gcloud import can_prompt
-    from .hostfile import apply, read, rename_and_add
+    from .hostfile import apply, read, rename_and_add, would_apply
     from .lifecycle import stop_paying
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
-        remove_leftovers, run_move, split_leftovers, would_not_load,
+        remove_leftovers, run_move, split_leftovers, unclearable, would_not_load,
     )
 
     hosts, host = _lookup(_selector(name), config)
@@ -2196,6 +2776,10 @@ def move_cmd(
         # Everything a dry run must not do lives inside this call, guard included.
         target = _zone_with_capacity(gc, host, dry_run=dry_run)
         if target is None:
+            # Nothing to move — which is not the same as nothing to do. What an
+            # earlier, half-finished move left is still billing, and `--clean`
+            # was still asked for.
+            _nothing_to_move(gc, host, clean=clean, yes=yes)
             return
 
     try:
@@ -2203,6 +2787,85 @@ def move_cmd(
         plan, found = prepare(gc, host, instance, target)
     except GcloudError as exc:
         _refused(exc)
+
+    path = config or DEFAULT_CONFIG_PATH
+    ports: list[int] = []
+
+    def rewritten(done) -> tuple[str, set[str]]:
+        """The host list this move will write, and the names it must end up with.
+
+        The box keeps its name, its port and its URL. The one it is moved away
+        from is not dropped — it exists in GCE and bills until somebody deletes
+        it, so it stays reachable under a name that says where it is.
+
+        Separate from the write, because it is the half that can be REHEARSED:
+        everything here reads the local file and builds text from it, and every
+        refusal it can raise is therefore knowable before the first gcloud call.
+        Both halves still land in one atomic write or neither does.
+        """
+        declared = load(path)
+        retired = done.retired_name
+        freed = next_ports(declared, 1)[0]
+        moved = Discovered(
+            name=host.name, os=host.os or "unknown", gpu=host.gpu or "",
+            gce_instance=done.new_instance, gce_zone=done.to_zone,
+            gce_project=host.gce_project, running=True,
+        )
+        text = rename_and_add(
+            read(path),
+            name=host.name, renamed=retired, renamed_port=freed,
+            added=to_toml(moved, host.port),
+        )
+        return text, {h.name for h in declared} - {host.name} | {retired, host.name}
+
+    def register(done) -> None:
+        """Rewrite the host list. The seventh action of the move, and the one
+        that makes the moved box reachable under its own name.
+
+        This used to append a second entry under a new name and a new port, which
+        is why a successful move left `comfy-qat go <box>` still failing: the
+        original entry was untouched and still named the zone with no capacity.
+        """
+        text, expect = rewritten(done)
+        apply(path, text, expect=expect)
+        ports.append(host.port)
+
+    def would_not_rewrite() -> MoveError | None:
+        """Whatever the host-list rewrite would refuse, asked while it is free.
+
+        `register` runs after the snapshot, the disk and the instance, and
+        NOTHING rehearsed it: `would_not_load` checks the identity clashes and
+        stops there. So a host list that parses, loads, and is spelled in a way
+        the rewrite does not recognise — `[hosts."comfy-win"]` and
+        `[ hosts.comfy-win ]` are both valid TOML and both reach
+        `rename_and_add` as "not in the host list" — failed at the seventh step,
+        with the user already paying for a snapshot, a 200-300 GB disk and a
+        running GPU, and `comfy-qat down comfy-win` still reaching the OLD box.
+
+        Every one of those refusals is computable from the local file for free.
+        So it is computed here, where the answer costs nothing and the fix is a
+        one-line edit rather than a recovery.
+
+        The rehearsal is the real thing minus the write: same `rename_and_add`,
+        same checks `apply` makes, run through `would_apply` so the two cannot
+        drift. What it cannot prove is what only the write can — a disk that
+        fills, a file another process changes in between — and `apply` still
+        makes every one of these checks for real at the far end.
+        """
+        try:
+            text, expect = rewritten(plan)
+            would_apply(path, text, expect=expect)
+        except (ConfigError, OSError) as exc:
+            return MoveError(
+                f"{exc} Nothing was created.",
+                fix=say.fix(
+                    "that is your host list, read before the move started. Fix "
+                    "it and run the same move again:",
+                    str(path),
+                    f"comfy-qat move {host.name} --to {target}",
+                ),
+            )
+        return None
 
     # Whatever an earlier run left is billing right now, whether or not this one
     # goes ahead — and an unattached disk looks like nothing at all in a console.
@@ -2227,6 +2890,30 @@ def move_cmd(
         for line in mine:
             say.detail(line)
 
+    # BEFORE the deleting, and that is the whole point of where this sits.
+    #
+    # `remove_leftovers` ran twenty lines above the guards, so `move <box> --to
+    # <zone> --clean` on a project whose GPU ceiling is 1 — with the source
+    # running, which is the ordinary case there — deleted the earlier run's
+    # snapshot and its 200-300 GB disk, and THEN refused the move and exited 2
+    # having moved nothing. The one flag whose job is to make a stalled move
+    # cheap to resume destroyed exactly the two artifacts a resumed move reuses,
+    # in service of a move already decided against. Both refusals were free, both
+    # were computable from what `prepare` had already read, and both waited.
+    #
+    # `unclearable` and not `blocked`: the leftover disk in the target zone is a
+    # refusal that a `--clean` CLEARS, and refusing on it here would turn the
+    # supported recovery — clean, then move, in one run — into a wall. Everything
+    # else `blocked` can say stands however much is deleted first, so it is said
+    # now. `would_not_load` reads only the host list and the plan, so a delete
+    # cannot change its answer either, and neither can it change what
+    # `would_not_rewrite` reads: both are answers about the local file.
+    problem = (unclearable(plan, found) or would_not_load(hosts, plan)
+               or would_not_rewrite())
+    if problem is not None:
+        say.fail(problem, code=2)
+
+    if mine:
         # Reusing them is the default and usually right — that is what makes a
         # failed move cheap to retry. Deleting them starts the copy from scratch.
         #
@@ -2259,7 +2946,7 @@ def move_cmd(
         # `mine` is computed on the line above and is exactly "is there anything
         # here to act on". Both holes close by asking it instead of rebuilding it.
         if dry_run:
-            # The list is four lines above and unchanged; printing it a second
+            # The list is printed above and unchanged; printing it a second
             # time doubled the delete commands on screen and said nothing new.
             # What the flag adds is what happens to them, so that is all this
             # says.
@@ -2269,7 +2956,10 @@ def move_cmd(
             try:
                 removed = remove_leftovers(gc, plan, found, say.step)
             except GcloudError as exc:
-                say.fail(f"could not clean up: {exc}", code=1)
+                # As above: interpolated into the message, the exception's own
+                # fix is invisible to `say.fail`, which then goes looking for a
+                # `.fix` attribute on a string and finds none.
+                say.fail(f"could not clean up: {exc}", exc.fix, code=1)
             say.result(f"\nremoved {len(removed)}.")
             # The plan was built from resources that no longer exist. Carrying on
             # with it would REUSE a deleted disk, or skip a snapshot it now needs,
@@ -2282,6 +2972,12 @@ def move_cmd(
     # Both refuse before anything is created. `would_not_load` is the one that
     # can see the host list, so it is asked here rather than inside `run_move`,
     # which is handed a plan and no file.
+    #
+    # Asked a second time because `--clean` REPLACES `plan` and `found` above:
+    # this is the only guard that sees the state after the deleting, and the only
+    # refusal it can newly find is the one `unclearable` deliberately withheld.
+    # The host-list rehearsal is not repeated — nothing a delete does touches
+    # that file, and `apply` makes every one of its checks again for real.
     problem = blocked(plan, found) or would_not_load(hosts, plan)
     if problem is not None:
         # 2, not 1. Both of these refuse BEFORE anything is created — the line
@@ -2315,37 +3011,6 @@ def move_cmd(
     if not yes and not typer.confirm(f"\nMove {host.name} to {target}?"):
         say.result("nothing changed")
         return
-
-    path = config or DEFAULT_CONFIG_PATH
-    ports: list[int] = []
-
-    def register(done) -> None:
-        """Rewrite the host list so the box keeps its name, its port and its URL.
-
-        This used to append a second entry under a new name and a new port, which
-        is why a successful move left `comfy-qat go <box>` still failing: the
-        original entry was untouched and still named the zone with no capacity.
-
-        The box being moved away from is not dropped — it exists in GCE and bills
-        until somebody deletes it, so it stays reachable under a name that says
-        where it is. Both halves land in one atomic write or neither does.
-        """
-        hosts = load(path)
-        retired = done.retired_name
-        freed = next_ports(hosts, 1)[0]
-        moved = Discovered(
-            name=host.name, os=host.os or "unknown", gpu=host.gpu or "",
-            gce_instance=done.new_instance, gce_zone=done.to_zone,
-            gce_project=host.gce_project, running=True,
-        )
-        text = rename_and_add(
-            read(path),
-            name=host.name, renamed=retired, renamed_port=freed,
-            added=to_toml(moved, host.port),
-        )
-        apply(path, text,
-              expect={h.name for h in hosts} - {host.name} | {retired, host.name})
-        ports.append(host.port)
 
     say.result("")
     try:
