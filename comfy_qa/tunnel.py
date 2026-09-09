@@ -590,7 +590,7 @@ def _spawn(cmd: list[str], log: Path, grace: float = SPAWN_GRACE) -> int:
         # Offering it unconditionally is what sent a person to `gcloud auth
         # login` for a session that was working, on a box that was merely still
         # booting — an hour spent on the wrong end of a working credential.
-        fix=(f"your gcloud session has expired:\n        gcloud auth login"
+        fix=("your gcloud session has expired:\n        gcloud auth login"
              if _credentials_expired(whole)
              else f"read {log} for the rest of what gcloud said"),
     )

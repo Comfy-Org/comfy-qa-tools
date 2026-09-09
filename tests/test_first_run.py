@@ -40,7 +40,7 @@ import sys
 import pytest
 
 from comfy_qa.config import Host
-from comfy_qa.gcloud import Gcloud, GcloudError
+from comfy_qa.gcloud import GcloudError
 from comfy_qa.lifecycle import COMFYUI_ABSENT, LifecycleError, bring_up
 from comfy_qa.stamp import Stamp
 from comfy_qa.tunnel import (

@@ -484,7 +484,7 @@ def test_a_silent_gcloud_prunes_nothing_at_all(tmp_path, monkeypatch):
     gc = _silent_gcloud(monkeypatch)
     monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: gc)
 
-    result = CliRunner().invoke(
+    CliRunner().invoke(
         app, ["discover", "--prune", "--yes", "--config", str(path)])
 
     assert _names(path.read_text(encoding="utf-8")) == _names(HOSTS), (
