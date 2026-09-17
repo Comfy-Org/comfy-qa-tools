@@ -43,8 +43,10 @@ for the reason in its own row.
 already with Google and the quota the project **holds** — a card can hold quota
 with no request behind it, which on a QA project is usually the card that works.
 Going below the floor needs `--allow-lower`. `--value 0` is a release rather than
-a smaller ask, cannot be taken back by waiting, and needs `--release-quota` on top
-of `--allow-lower`; a negative is refused whatever you pass.
+a smaller ask and needs `--release-quota` on top of `--allow-lower`; a negative is
+refused whatever you pass. Nothing in this tool can undo a decrease —
+`gcloud quotas preferences` exposes create, describe, list and update, and no
+delete — which is the whole reason for the friction.
 
 Quota gates the **card**, never the operating system. Once a card is approved you
 can build either Windows or Linux on it.

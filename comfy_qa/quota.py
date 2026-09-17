@@ -190,12 +190,24 @@ def where_label(places) -> str:
     places = {region_of(place) for place in places if place}
     if not places or places == {"global"}:
         return "global"
+
+    # A SPAN AND ITS NAMED SIBLINGS ADD UP. This took `max()` over the spanning
+    # labels and discarded every individually named region with it, so a card
+    # with twenty-four named rows and a nineteen-location catch-all reported
+    # "19 regions" — a count that excluded us-central1, the tool's own default,
+    # while `create` said 43 about the same project in the same minute.
+    #
+    # The two kinds are disjoint by construction: a catch-all dimension row
+    # covers exactly the locations that have no row of their own, so adding them
+    # cannot double-count. Several spans likewise describe separate allowances.
     spanning = [p for p in places if spans_many(p)]
+    named = [p for p in places if not spans_many(p) and p != "global"]
     if spanning:
-        return max(spanning, key=lambda p: int(p.split()[0]))
-    if len(places) == 1:
-        return next(iter(places))
-    return f"{len(places)} regions"
+        total = sum(int(p.split()[0]) for p in spanning) + len(named)
+        return f"{total} regions"
+    if len(named) == 1:
+        return named[0]
+    return f"{len(named)} regions"
 
 
 def spans_many(where: str) -> bool:
@@ -1171,14 +1183,32 @@ def _pool_ids(gpu: str) -> list[tuple[str, str, bool, str]]:
 
     Mechanical from the card's own name, which is why a card the table has never
     heard of — RTX PRO 6000 — gets its pools read like any other.
+
+    AND THROUGH `quota_aliases`, WHICH IS THE SAME DEFECT THAT STARTED THIS. The
+    pool work exists because RTX PRO 6000 was reported denied while a granted
+    Spot allowance sat unread. Interpolating the DISPLAY name reproduces it one
+    card over: H100-80GB builds `PREEMPTIBLE-NVIDIA-H100-80GB-GPUS-...`, and
+    Google meters it as `...-NVIDIA-H100-GPUS-...`. Latent only because H100 Spot
+    is zero today, and it would surface the day any is granted — a pool held and
+    never read, which is where this began.
+
+    Every spelling the card answers to, so a name that resolves under either one
+    is found under both.
     """
-    stem = f"NVIDIA-{gpu.upper()}-GPUS-per-project-region"
-    return [
-        (SPOT, f"PREEMPTIBLE-{stem}", True, SPOT_COST),
-        (COMMITTED, f"COMMITTED-{stem}", False, _COMMITTED_COST),
-        (WORKSTATION, f"NVIDIA-{gpu.upper()}-VWS-GPUS-per-project-region",
-         False, _VWS_COST),
-    ]
+    from .create import card_named
+
+    card = card_named(gpu)
+    names = [gpu, *(card.quota_aliases if card is not None else ())]
+    pools: list[tuple[str, str, bool, str]] = []
+    for name in dict.fromkeys(n.upper() for n in names):
+        stem = f"NVIDIA-{name}-GPUS-per-project-region"
+        pools += [
+            (SPOT, f"PREEMPTIBLE-{stem}", True, SPOT_COST),
+            (COMMITTED, f"COMMITTED-{stem}", False, _COMMITTED_COST),
+            (WORKSTATION, f"NVIDIA-{name}-VWS-GPUS-per-project-region",
+             False, _VWS_COST),
+        ]
+    return pools
 
 
 def pools_for(
@@ -1534,11 +1564,42 @@ def known_regions(quotas: list[dict]) -> set[str]:
 
 
 def regions_with_quota(gpu: str, quotas: list[dict]) -> list[str]:
-    """Regions where this project could start `gpu` today, as far as quota knows."""
+    """Regions where this project could start `gpu` today, as far as quota knows.
+
+    GRANTED, not metered — `_region_names` drops a row whose limit is zero, which
+    is right for this question and wrong for the other one. See
+    `regions_metered`, which exists because the two were being read as the same
+    thing.
+    """
     granted: set[str] = set()
     for row in _for_card(gpu, quotas):
         granted |= _region_names(row)
     return sorted(granted)
+
+
+def regions_metered(gpu: str, quotas: list[dict]) -> list[str]:
+    """Every region this project has a quota row for `gpu` in, at any value.
+
+    METERED IS NOT GRANTED, and reading one as the other put a false sentence on
+    the irrevocable path and withheld the only remedy that worked:
+
+        h100: africa-south1 does not offer this card — Google sells it in 20
+              regions, none of them metered by this project
+
+    The project meters H100 in all forty-three. `regions_with_quota` answers
+    "where could a box start today", so it drops zero-limit rows — and the two
+    answers differ exactly when the limit is zero, which is every card anybody
+    would ever run `quota request` for. The card that most needed a region to ask
+    in was the one guaranteed not to be offered one.
+    """
+    metered: set[str] = set()
+    for row in _for_card(gpu, quotas):
+        places = list(row.locations) or (
+            [row.where] if not spans_many(row.where) and row.where != "global"
+            else [])
+        metered |= {_region_name(place) for place in places
+                    if place and place != "global"}
+    return sorted(metered)
 
 
 def allowance(gpu: str, quotas: list[dict], *, region: str | None = None) -> int | None:

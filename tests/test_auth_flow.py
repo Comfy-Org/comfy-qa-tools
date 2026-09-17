@@ -487,17 +487,50 @@ def test_several_cards_go_in_one_command():
     assert "track them:" in result.output
 
 
-def test_a_raw_quota_id_is_taken_as_given():
+def test_a_raw_region_scoped_id_needs_a_region():
+    """THIS TEST USED TO PIN THE DEFECT, and its reasoning was the appealing
+    half of a true statement:
+
+        assert not any(a.startswith("--dimensions") ...), (
+            "no region was named, so none is invented")
+
+    Inventing a region would indeed be wrong. Filing the request anyway is worse:
+    `-per-project-region` DEFINES a region dimension, the API requires every
+    defined dimension to be set, and a real submission came back
+    `INVALID_ARGUMENT: Dimension values must be set for all the dimensions`. The
+    third option — refuse and say which flag is missing — was the one nobody
+    wrote down.
+
+    `auth.py` read `if region and needs_region(id)`, so the guard could not fire
+    when the region was absent, which is the only case it was for.
+    """
     cloud = FakeCloud(quotas=[T4], approve=True)
     result = run(cloud, "quota", "request",
                  "--quota-id", "NVIDIA-T4-GPUS-per-project-region",
                  "--value", "4", clock=Clock())
 
+    assert result.exit_code == 2, result.output
+    assert cloud.requests == [], "filed a request with a dimension unset"
+    assert "--region" in result.output
+
+
+def test_an_id_that_defines_no_dimensions_still_carries_none():
+    """The other half, unchanged and still load-bearing:
+    `GPUS-ALL-REGIONS-per-project` defines no dimensions, so it must be sent with
+    none at all. "No region was named, so none is invented" is right HERE — the
+    old test applied it to an id where it was wrong."""
+    # The project must REPORT the id, or the command stops at "reports no quota
+    # called ..." and this asserts nothing about dimensions.
+    ceiling = {"quotaId": "GPUS-ALL-REGIONS-per-project",
+               "dimensionsInfos": [{"details": {"value": "1"},
+                                    "applicableLocations": ["global"]}]}
+    cloud = FakeCloud(quotas=[T4, ceiling], approve=True)
+    result = run(cloud, "quota", "request",
+                 "--quota-id", "GPUS-ALL-REGIONS-per-project",
+                 "--value", "4", clock=Clock())
+
     assert result.exit_code == 0, result.output
-    assert "--preferred-value=4" in cloud.requests[0]
-    assert not any(a.startswith("--dimensions") for a in cloud.requests[0]), (
-        "no region was named, so none is invented"
-    )
+    assert not any(a.startswith("--dimensions") for a in cloud.requests[0])
 
 
 def test_the_value_asked_for_is_the_value_waited_for():

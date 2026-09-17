@@ -781,8 +781,8 @@ def create_cmd(
     off — so the file is read and then rewritten. `--dry-run` writes nothing.
     """
     from .create import (
-        build, check_quota, host_entry, next_steps, nowhere, order_zones,
-        plan, summary, taken_names,
+        _refused_regions, build, check_quota, host_entry, next_steps, nowhere,
+        order_zones, plan, summary, taken_names,
     )
     from .discover import next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
@@ -882,15 +882,69 @@ def create_cmd(
         # completion one line above the refusal explaining that it had not
         # completed. `Slow.__exit__` already makes exactly this distinction:
         # `done()` when nothing was raised, `give_up()` when something was.
+        # U3: THE COMMAND THAT SPENDS WAS THE ONE WITHOUT THIS CHECK. An empty
+        # `--region` — from `--region "$REGION"` with the variable unset — built
+        # the box somewhere nobody chose; a zone read as an unknown region and
+        # the remedy printed for it exits 2. `quota list` and `setup` refuse all
+        # three, and this needs no API call, so it happens before the read.
+        from .auth import _stop_on_region_shape
+
+        _stop_on_region_shape(region)
         with say.slow("reading quota", expect="about a minute"):
             quotas = gc.gpu_quotas(project)
+        # AND THE HALF THAT NEEDS THE RECORDS, now that we have them — so this
+        # command asks the same question as `quota list` and `setup` rather than
+        # a cheaper version of it.
+        from .auth import region_problem
+
+        wrong = region_problem(gc, project, quotas, region, membership=False)
+        if wrong:
+            say.fail(wrong[0],
+                     fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
+                                   f"{gpu} {line}" for line in wrong[1]],
+                                 "comfy-qat quota list --by-region  # every "
+                                 "region this project meters"),
+                     code=2)
     except GcloudError as exc:
         _refused(exc)
 
     try:
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
                          taken=taken_names(hosts, instances))
-        check = check_quota(blueprint.card, quotas, instances, region or "")
+        # PREFERENCES TOO, so the refusal can say where NOT to ask. Failing to
+        # read them is not a reason to refuse a create, so it degrades to the
+        # plain remedy rather than stopping.
+        try:
+            preferences = gc.quota_preferences(project)
+        except GcloudError:
+            preferences = None
+        # ASKABLE, NOT MERELY METERED, and computed by the shared function rather
+        # than composed here. `create`'s remedy named `africa-south1` — zero
+        # NVIDIA accelerators, so the command it printed exits 2 — because it
+        # built the list from `regions_metered` alone. Twenty-first second-site,
+        # and the helper that answers this had existed for six rounds.
+        # ONLY WHEN THE REMEDY NEEDS IT. `elsewhere` is read by one branch — the
+        # card was refused somewhere — and fetching the catalogue unconditionally
+        # added an API call to a path whose whole point is refusing before any
+        # lookup, which a test caught immediately. `_refused_regions` is free: it
+        # reads preferences already in hand.
+        from .auth import Availability, _regions_stocking, askable_regions
+
+        refused = _refused_regions(blueprint.card, preferences)
+        askable: list[str] | None = None
+        if refused:
+            try:
+                sells = Availability(
+                    looked=True,
+                    where=_regions_stocking(gc, project,
+                                            set(blueprint.card.quota_names)))
+            except GcloudError:
+                sells = Availability.not_checked()
+            askable = sorted({r for name in blueprint.card.quota_names
+                              for r in askable_regions(name, quotas, sells,
+                                                       refused)})
+        check = check_quota(blueprint.card, quotas, instances, region or "",
+                            preferences=preferences, askable=askable)
         say.result("\nquota checked:")
         for line in check.lines():
             say.result(f"  {line}")

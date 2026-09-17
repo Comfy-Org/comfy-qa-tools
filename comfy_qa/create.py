@@ -359,6 +359,51 @@ def known_card(gpu: str) -> bool:
     return card_named(gpu) is not None or key in KNOWN_ELSEWHERE
 
 
+def _refused_regions(card: Card, preferences: list[dict] | None) -> list[str]:
+    """Where Google has already said no to this card. Empty when unknown."""
+    from .quota import asks, row_name
+
+    if not preferences:
+        return []
+    found = set()
+    for ask in asks(preferences):
+        if ask.state != "denied":
+            continue
+        named = row_name(ask.quota_id, ask.dimensions)
+        if named and named.upper() in {n.upper() for n in card.quota_names}:
+            found.add(ask.region or "")
+    return sorted(p for p in found if p)
+
+
+def _ask_elsewhere(card: Card, quotas: list[dict],
+                   preferences: list[dict] | None) -> list[str]:
+    """Regions this card is metered in, minus the ones Google already refused.
+
+    THE FALLBACK ONLY. Metered is where a request is POSSIBLE; the caller passes
+    `askable`, which is metered AND STOCKED — because a remedy naming a region
+    that sells nothing is a command that exits 2, and this function composing the
+    answer by itself is how `create` came to print `africa-south1`.
+    """
+    from .quota import regions_metered
+
+    refused = set(_refused_regions(card, preferences))
+    found: set[str] = set()
+    for name in card.quota_names:
+        found |= set(regions_metered(name, quotas))
+    return sorted(found - refused)
+
+
+def _article(name: str) -> str:
+    """`a` or `an`, by how the name is READ ALOUD rather than by its spelling.
+
+    Card names start with digits and letters that are said as their own words:
+    `A100` is "ay-hundred", `H100` is "aitch", `8` is "eight". So the rule is the
+    initial SOUND, and for this table that is a short list of letters rather than
+    a guess at English.
+    """
+    return "an" if name[:1].upper() in "AEFHILMNORSX8" else "a"
+
+
 def offered(gpu: str) -> bool:
     """Will `comfy-qat create --gpu` accept a box of this card?
 
@@ -815,6 +860,21 @@ class QuotaCheck:
     The H100 is shown as `H100-80GB` and metered as `H100`, so a refusal naming
     the display name sent readers to a table row that does not exist.
     """
+    elsewhere: tuple[str, ...] = ()
+    """Regions this card is metered in and has NOT been refused in.
+
+    Carried so the refusal can name somewhere to ask rather than `<one of them>`,
+    which pointed at a table whose whole content for this card was the refused
+    region and an unnamed bucket.
+    """
+    refused_in: tuple[str, ...] = ()
+    """Regions Google has already refused this card in, if that could be read.
+
+    `create` used to say "ask and wait" about a card `quota list` reported as
+    denied, and the remedy it printed derived the very region the refusal was
+    made in. Two surfaces, one card, opposite advice — and the one that spends
+    money gave the futile half.
+    """
     asked_region: str = ""
     """The region the USER named, for a fix line that sends them back to it.
 
@@ -864,6 +924,44 @@ class QuotaCheck:
     def typed(self) -> str:
         """The `--gpu` spelling to put in a fix line, never the display name."""
         return self.key or self.card.lower()
+
+    @property
+    def _ask_somewhere(self) -> str:
+        """The remedy, which must not be "ask again where you were refused".
+
+        `quota list` says "asking again will not help" about exactly this card
+        while this line said "then wait for Google", and the command it prints
+        derives the refused region when none is given. A refusal somewhere is not
+        a refusal everywhere — `quota list` reports the same card never asked in
+        forty-two other regions — so the useful remedy is a different region.
+
+        BOTH BRANCHES read this, because the last time one of them was corrected
+        the other was not, and that was the fourteenth instance of exactly that.
+        """
+        plain = (f"comfy-qat quota request --gpu {self.typed}"
+                 f"{self._where}, then wait for Google")
+        if not self.refused_in:
+            return plain
+        # NAME THEM. `<one of them>` sent the reader to `--by-region`, whose
+        # entire content for this card is the refused region plus a bucket row
+        # called `any of 42` — there is no "them" to pick one of. The regions
+        # were in hand all along: this object is built from the quota records.
+        refused = ", ".join(self.refused_in)
+        if not self.elsewhere:
+            # AND SOMETIMES THERE IS NOWHERE ELSE, which is worth saying outright
+            # rather than printing a placeholder that implies there is. This
+            # project meters the card only where it was refused.
+            return (f"Google already refused {self.card} in {refused}, and that "
+                    f"is the only region this project meters it in — so there is "
+                    f"nowhere else to ask.\n"
+                    f"comfy-qat quota list --by-region  # what this project does "
+                    f"hold")
+        picks = ", ".join(self.elsewhere[:3])
+        return (f"Google already refused {self.card} in {refused}, so asking "
+                f"there again will not help. Ask somewhere else:\n"
+                f"comfy-qat quota request --gpu {self.typed} --region "
+                f"{self.elsewhere[0]}  # or {picks}\n"
+                f"comfy-qat quota list --by-region  # every region it is metered in")
 
     @property
     def _where(self) -> str:
@@ -931,14 +1029,14 @@ class QuotaCheck:
             # prints, and asserting which one that is belongs in a test.
             metered = self.quota_name
             return LifecycleError(
-                f"this project has no {metered} quota, so a {metered} box cannot "
+                f"this project has no {metered} quota, so {_article(metered)} "
+                f"{metered} box cannot "
                 f"start anywhere. Nothing was created.",
                 # THE REGION THE USER ASKED FOR, not a literal. This said
                 # `--region us-central1` whatever was typed — which on a project
                 # that has already been refused there sends somebody to re-file
                 # the exact request Google denied, in a region they did not name.
-                fix=f"comfy-qat quota request --gpu {self.typed}"
-                    f"{self._where}, then wait for Google",
+                fix=self._ask_somewhere,
                 kind=NO_QUOTA,
             )
         if self.card_limit > 0 and self.card_limit < self.needed:
@@ -949,8 +1047,7 @@ class QuotaCheck:
                 # literal region and this one was not, so it went on sending
                 # people to us-central1 whatever they typed — the fourteenth time
                 # a fix landed on one site and missed the one beside it.
-                fix=f"comfy-qat quota request --gpu {self.typed}"
-                    f"{self._where}, then wait for Google",
+                fix=self._ask_somewhere,
                 kind=NO_QUOTA,
             )
         if self.global_limit is not None and 0 <= self.global_limit < self.needed:
@@ -1109,8 +1206,14 @@ def card_grant(card: Card, quotas: list[dict]) -> tuple[int | None, list[str]]:
 
 
 def check_quota(card: Card, quotas: list[dict], instances: list[dict],
-                asked_region: str = "") -> QuotaCheck:
-    """Read the allowance. Pure — the caller does the two gcloud reads."""
+                asked_region: str = "", *,
+                preferences: list[dict] | None = None,
+                askable: "list[str] | None" = None) -> QuotaCheck:
+    """Read the allowance. Pure — the caller does the gcloud reads.
+
+    `preferences` is OPTIONAL and `None` means "could not be read", which must
+    not block a create: it only ever removes advice, never adds a refusal.
+    """
     from .quota import global_allowance
 
     limit, regions = card_grant(card, quotas)
@@ -1127,6 +1230,9 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
         # `family_name` now returns the card table's name, so the two agree and
         # the alias is the spelling nothing shows any more.
         quota_name=card.name,
+        refused_in=tuple(_refused_regions(card, preferences)),
+        elsewhere=tuple(askable if askable is not None
+                        else _ask_elsewhere(card, quotas, preferences)),
         asked_region=asked_region or "",
         held=_cards_running(instances),
     )
@@ -1521,12 +1627,20 @@ def order_zones(
                 # --zones=<bogus>` makes gcloud refuse the argument outright, so
                 # moving them ahead of this would replace a clear refusal with a
                 # raw gcloud error for exactly the case this is about.
+                # NO `--region`, and the comment above is why. `region_of` on a
+                # mistyped zone yields a region string nobody has vetted — not
+                # metered, possibly not real — so the command this hands over
+                # exits 2. This path cannot vet it without another API call, and
+                # `quota request` with no region derives one AND checks it, which
+                # is strictly more than can be done here.
+                #
+                # Found by sweeping for suggestions composed rather than asked
+                # for, two lines below a comment about this exact trap.
                 fix=(f"check the zone name first — a typo reads as a region "
                      f"this project has no quota in: gcloud compute zones list "
                      f"--filter=name={zone}; then either drop --zone and let "
-                     f"this pick, or ask for the card there: comfy-qat quota "
-                     f"request --gpu {blueprint.card.key} "
-                     f"--region {region_of(zone)}"),
+                     f"this pick, or ask for the card: comfy-qat quota "
+                     f"request --gpu {blueprint.card.key}"),
                 kind=NO_QUOTA,
             )
         offered = zones_with_machine_type(

@@ -688,7 +688,11 @@ MESSAGE_FLOOR = {
 # 270 until the fourth pass's remaining findings — the region typo, the raw
 # family id, the absurd value, the card this tool has no machine type for and the
 # already-refused warning. Raised to 276, half the distance to today's 283.
-ENTRY_FLOOR = 276
+# 276 until the sixth and seventh passes — the two `setup` region checks, the raw
+# family id, the zone-as-region, the lower-case region, the empty region, the
+# refused-elsewhere remedy and the ceiling note. Raised to 283, half the distance
+# to today's 291, on the rule above.
+ENTRY_FLOOR = 283
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -707,7 +711,9 @@ ENTRY_FLOOR = 276
 # Raised to 316, half the distance to today's 323, on the rule above.
 # 316 until the rest of the fourth pass landed its entries. Raised to 322, half
 # the distance to today's 329, on the rule above.
-WORDING_FLOOR = 322
+# 322 until the sixth and seventh passes landed their entries. Raised to 330,
+# half the distance to today's 338, on the rule above.
+WORDING_FLOOR = 330
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

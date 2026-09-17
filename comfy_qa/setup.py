@@ -10,7 +10,7 @@ non-interactively — a prompt-only feature is an incomplete one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import subprocess
 from pathlib import Path
 from typing import Callable, NamedTuple
@@ -344,6 +344,19 @@ def ensure_gpu_quota(
         p.say(f"could not read GPU quota ({exc}). Check later: comfy-qat quota")
         return None
 
+    # VALIDATED THE MOMENT THERE IS ENOUGH TO VALIDATE IT, and before `region`
+    # is used for anything. Round nine hoisted this above every early return in
+    # `ensure_quota_requests` — true of that function, and this CALLER runs one
+    # frame earlier, so the live tool went on printing "a project-wide allowance
+    # only, no specific card granted" for a typo'd region on a project holding
+    # six granted cards. A fix that is real in the function and absent from the
+    # command.
+    #
+    # It cannot move any earlier: validating a region needs the quota records,
+    # and this is the call that fetches them. So it goes between the fetch and
+    # the first use, which is the earliest point at which it can be asked.
+    _require_real_region(gc, project, quotas, region)
+
     # Read through the same filter the rest of the tool uses. Reporting raw ids
     # here meant setup announced COMMITTED-NVIDIA-L4 as available quota — an
     # allowance that cannot start an ordinary box.
@@ -362,8 +375,8 @@ def ensure_gpu_quota(
         p.say(
             f"GPU quota is only {', '.join(dict.fromkeys(stranded))}, which this "
             f"tool cannot drive: the open NVIDIA kernel module it installs needs a "
-            f"GPU System Processor, and only Turing and newer cards have one. Ask "
-            f"ask for one that works: comfy-qat quota request --gpu "
+            f"GPU System Processor, and only Turing and newer cards have one. "
+            f"Ask for one that works: comfy-qat quota request --gpu "
             f"{','.join(drivable_cards())}"
         )
     elif rows:
@@ -427,6 +440,34 @@ class QuotaAsk:
     @property
     def submits(self) -> bool:
         return self.outcome == REQUEST
+
+
+def _too_big_for(plan: list[QuotaAsk], ceiling: int, *, raising: bool = False) -> str:
+    """The clause naming cards this ceiling cannot start, or "".
+
+    ONE FUNCTION because there are two branches and only one of them had the
+    sentence. Asking for a raise and being refused a raise need the same fact —
+    that an `a3-highgpu-8g` is eight GPUs and the ceiling is one — and the
+    refused branch is where it matters more, because nothing about it improves by
+    running `setup` again.
+    """
+    from .create import card_named
+
+    bigger = sorted({
+        card.name for ask in plan if ask.outcome == REQUEST and ask.card
+        for card in [card_named(ask.card)]
+        if card is not None and card.count > ceiling
+    })
+    if not bigger:
+        return ""
+    needs = max(card_named(name).count for name in bigger)
+    if raising:
+        return (f". If {' or '.join(bigger)} is granted, run setup again to "
+                f"raise this further — that card comes as more GPUs than one "
+                f"machine")
+    return (f". NOTE: {' and '.join(bigger)} needs {needs} of this ceiling and it "
+            f"is {ceiling}, so that request cannot start a machine even if "
+            f"Google grants it")
 
 
 def _ceiling_wanted(cards: list[QuotaAsk]) -> int:
@@ -767,10 +808,18 @@ def plan_quota(
         if target is None:
             # Requestability is a fact about the PROJECT, not about the card, so
             # it is read per run and reported per card rather than raised.
+            #
+            # AND THE SENTENCE SAYS WHAT IT KNOWS. `resolve_target` was called
+            # with `region=where`, so a miss means "no row matched THAT REGION" —
+            # and the line said "this project does not meter L4 quota", about a
+            # card granted at 1 across forty-three regions. Same conflation as
+            # reading a granted-regions list as a metered one, wearing different
+            # clothes: the narrower fact was in hand and the broader claim was
+            # printed. With the region named it degrades honestly instead.
             plan.append(QuotaAsk(
                 key, card.name, UNAVAILABLE,
-                f"this project does not meter {card.name} quota, so there is "
-                f"nothing to ask for"))
+                f"this project meters no {card.name} quota in {where}, so there "
+                f"is nothing to ask for there"))
             continue
 
         # ON-DEMAND FIRST, because it is the pool `create` actually spends.
@@ -880,8 +929,24 @@ def plan_quota(
     # a preference here" would read as "nothing to do" about the single limit
     # that makes two boxes at once impossible. `settled` only ever returns for
     # pending or answered-and-still-short, which is why this is safe.
+    # THE CARDS THAT WILL NOT FIT, computed BEFORE the early return rather than
+    # after it. This sentence was attached only to the branch that asks for a
+    # raise, so on a project whose ceiling is DENIED — the one case that will not
+    # fix itself on the next run — `settled` returned here and it was never
+    # built. `setup` would file an 8-GPU H100 request against a ceiling of 1 and
+    # print the two facts four lines apart with nothing joining them.
+    # `ceiling`, NOT `wanted`. "this ceiling" means the limit in force; `wanted`
+    # is what we would ASK for, floored at CEILING_REQUEST, so the sentence read
+    # "needs 8 of this ceiling and it is 2" about a ceiling granted at 1 — the 2
+    # being the refused request. The `raising=True` call below is right to pass
+    # `wanted`, because that sentence IS about the ask; only this one is about
+    # the limit. One argument, and the two calls want different ones.
+    stuck = _too_big_for(plan, ceiling if ceiling is not None else 0)
+
     blocked = settled(ceiling_target, GLOBAL_ALLOWANCE)
     if blocked is not None:
+        if stuck:
+            blocked = replace(blocked, detail=blocked.detail + stuck)
         plan.append(blocked)
         return plan
 
@@ -891,16 +956,7 @@ def plan_quota(
     # needs more ceiling than we are asking for is not a reason to inflate the
     # ask — see `_ceiling_wanted` — but it IS something the person reading this
     # needs, because the second run is what closes it.
-    from .create import card_named
-
-    bigger = sorted({
-        card.name for ask in plan if ask.outcome == REQUEST and ask.card
-        for card in [card_named(ask.card)]
-        if card is not None and card.count > wanted
-    })
-    later = (f". If {' or '.join(bigger)} is granted, run setup again to raise "
-             f"this further — that card comes as more GPUs than one machine"
-             if bigger else "")
+    later = _too_big_for(plan, wanted, raising=True)
     plan.append(QuotaAsk(
         "", GLOBAL_ALLOWANCE, REQUEST,
         f"will ask Google for {wanted} — it is "
@@ -943,6 +999,89 @@ def _missing_cards(
     # every one is granted or refused, so the advice was to file five requests
     # nobody needs.
     return ",".join(wanted) if wanted else ""
+
+
+def _prefs(gc: Gcloud, project: str) -> list[dict]:
+    """The preference list, or an empty one — never a reason to fail a summary."""
+    try:
+        return gc.quota_preferences(project)
+    except GcloudError:
+        return []
+
+
+def _held_and_stuck(plan: list[QuotaAsk]) -> tuple[list[str], list[str]]:
+    """(cards granted, cards at zero that cannot be asked for)."""
+    held = [ask.label for ask in plan if ask.outcome == GRANTED and ask.card]
+    stuck = [ask.label for ask in plan
+             if ask.outcome in (DENIED, BLOCKED, UNAVAILABLE) and ask.card]
+    return sorted(held), sorted(stuck)
+
+
+def _nothing_to_ask(held: list[str], stuck: list[str]) -> str:
+    """What is true when there is nothing left to request.
+
+    Three different situations shared one sentence — "Nothing was missing anyway"
+    — and only the first of them was that.
+    """
+    if stuck and held:
+        return (f"{', '.join(held)} granted; {', '.join(stuck)} at zero and "
+                f"already refused, so there is nothing left to ask for. "
+                f"Run comfy-qat quota to see where each card stands.")
+    if stuck:
+        return (f"{', '.join(stuck)} at zero and already refused, so there is "
+                f"nothing that can be asked for. Run comfy-qat quota to see "
+                f"where each card stands.")
+    if held:
+        return (f"nothing was missing — {', '.join(held)} granted. Run "
+                f"comfy-qat quota to see where each card stands.")
+    return "run comfy-qat quota to see where each card stands."
+
+
+def _unsold_here(gc, project: str, plan: list[QuotaAsk], region: str) -> list[str]:
+    """Cards this plan would ASK for that `region` does not sell.
+
+    Only the cards being asked for: a card already granted, refused or
+    unavailable is not about to have an irrevocable request filed for it, and
+    stopping the whole run over one of those would be refusing to do the job.
+
+    Reads `auth._regions_stocking`, so `setup` and `quota list` cannot diverge
+    about what a region offers — which is how this surface came to be the only
+    one without the check at all.
+    """
+    from .auth import _regions_stocking
+
+    asking = [ask.label for ask in plan if ask.submits and ask.card]
+    if not asking:
+        return []
+    sells = _regions_stocking(gc, project, set(asking))
+    # A FAILED LOOKUP IS NOT A FACT, for the seventh time in this feature: None
+    # means the catalogue could not be read, and refusing on it would invent an
+    # absence and block a legitimate run.
+    return [name for name in sorted(asking)
+            if sells.get(name) is not None and region not in sells[name]]
+
+
+def _require_real_region(gc, project: str, quotas: list[dict] | None,
+                         region: str | None) -> None:
+    """Stop unless `region` is a region. Called before anything can return early.
+
+    The same question `quota list` and `quota request` ask, through the same
+    function, so the three cannot drift — and hoisted out of
+    `ensure_quota_requests` because a flag that skipped the request step was
+    skipping the validation with it.
+    """
+    if region is None or quotas is None:
+        return
+    from .auth import region_problem
+
+    wrong = region_problem(gc, project, quotas, region)
+    if wrong:
+        raise SetupStopped(
+            wrong[0],
+            fix=("\n".join(f"comfy-qat setup {line}" for line in wrong[1])
+                 or "comfy-qat quota list --by-region  # every region this "
+                    "project meters"),
+        )
 
 
 def ensure_quota_requests(
@@ -989,6 +1128,14 @@ def ensure_quota_requests(
     from .gcloud import quota_request_command
     from .quota import request_plan, request_value
 
+    # FIRST STATEMENT, ABOVE EVERY RETURN IN THIS FUNCTION. `run_setup` also
+    # calls it, and that is not enough: this function is reachable directly, and
+    # a validation that only runs when you arrive through the front door is the
+    # very shape this round is about. `--no-quota-request` returned below, having
+    # already used the unvalidated region to report six granted cards as "a
+    # project-wide allowance only".
+    _require_real_region(gc, project, quotas, region)
+
     if not submit:
         # DERIVED, not a literal. This said `--gpu l4,t4` — both already granted
         # on the project it was read from, while the cards actually missing went
@@ -996,11 +1143,38 @@ def ensure_quota_requests(
         # holds. Its sibling eleven lines down derived the list correctly all
         # along, so one of a pair was fixed and the other left.
         missing = _missing_cards(gc, project, region, quotas)
+        # THE REGION THIS RUN WAS PLANNING FOR. Without it `quota request`
+        # derives one of its own — us-central1 on this project, where Google has
+        # already refused several cards — while the plan printed in the same run
+        # named somewhere else. The other remedies in this feature failed or were
+        # withheld; this one succeeds at filing the wrong thing, permanently.
+        # AND ONLY IF THAT REGION CAN WORK. `quota request` refuses a region
+        # selling no such card, so naming one here hands over a command that
+        # exits 2 — the eleventh printed remedy that cannot run, and the twin of
+        # the region check one function over: both sat below this early return.
+        #
+        # Not a reason to stop the run: with `--no-quota-request` nothing
+        # irrevocable happens, and refusing the whole setup over it would be
+        # refusing to do the job. The remedy stops naming a region that cannot
+        # work, and says why.
+        unsold = _unsold_here(gc, project, [
+            QuotaAsk(card, card.upper(), REQUEST, "")
+            for card in (missing or "").split(",") if card], region) if region else []
+        where = f" --region {region}" if region and not unsold else ""
+        no_good = (f" — note that {region} does not offer "
+                   f"{', '.join(unsold)}, so ask somewhere else"
+                   if unsold else "")
+        # "NOTHING WAS MISSING" WAS A CLAIM ABOUT THE PROJECT, and `missing` is a
+        # list of cards that could be ASKED FOR — a refused card does not submit,
+        # so three cards at zero came out as nothing missing. Different facts, on
+        # the command a new user runs first, in the one place this feature's whole
+        # premise is stated back to them.
+        held, stuck = _held_and_stuck(plan_quota(quotas, _prefs(gc, project),
+                                                 region=region))
         p.say("quota requests skipped (--no-quota-request). "
-              + (f"To ask later: comfy-qat quota request --gpu {missing}"
-                 if missing else
-                 "Nothing was missing anyway; run comfy-qat quota to see where "
-                 "each card stands."))
+              + (f"To ask later: comfy-qat quota request --gpu {missing}{where}"
+                 f"{no_good}"
+                 if missing else _nothing_to_ask(held, stuck)))
         return []
     if quotas is None:
         return []
@@ -1017,8 +1191,33 @@ def ensure_quota_requests(
               f"asked for — a second request cannot be ruled out without them")
         return []
 
+    # F1 AND F2 — THE TWO CHECKS EVERY OTHER SURFACE ALREADY HAD. `quota list
+    # --region` and `quota request --region` both refuse a region that does not
+    # exist, and `quota request` also refuses one that sells no such card. This
+    # command had neither, and it is the one a new user runs first, unattended,
+    # that files requests automatically.
+    #
+    # `setup --region us-centrall` planned an irrevocable request for eight
+    # H100s into a region that does not exist, and in the same breath reported
+    # L4, T4, A100 and A100-80GB as cards "this project does not meter" — four
+    # false sentences and a doomed request, from one typo, at exit 0.
+    #
+    # Seventeenth second-site, and the comment on the sibling guard already
+    # called itself the thirteenth. Raised rather than printed, because `setup`
+    # continues past a printed line and this must stop it.
     plan = plan_quota(quotas, preferences, region=region)
     where, why = request_region(quotas, preferences, region)
+
+    if region:
+        blind = _unsold_here(gc, project, plan, region)
+        if blind:
+            raise SetupStopped(
+                f"{region} does not offer {', '.join(blind)} — a granted "
+                f"request there buys a box that can never start, and a quota "
+                f"preference cannot be withdrawn",
+                fix=f"comfy-qat quota list --region {region}  # what this "
+                    f"region actually offers",
+            )
     asking = [ask for ask in plan if ask.submits]
 
     p.say(f"quota plan for {project} — region {where} ({why}) for cards metered "
@@ -1042,12 +1241,24 @@ def ensure_quota_requests(
               "To have Google check each request without creating anything: "
               "comfy-qat setup --validate-only")
         for ask in asking:
-            p.say(f"would ask for {ask.target.quota_id} = {ask.value}")
+            # THE CARD AND THE REGION, not the bare id. This printed
+            # `GPUS-PER-GPU-FAMILY-per-project-region = 8` — an id that meters
+            # five cards on this project, with nothing saying which — while
+            # `quota request` refuses that same id from a user on the grounds
+            # that "a raw id cannot say which you mean". The plan line two rows
+            # above already says it properly; this is the line somebody copies.
+            where = dict(ask.target.dimensions).get("region", "")
+            p.say(f"would ask for {ask.label or ask.target.quota_id} = "
+                  f"{ask.value}{f' in {where}' if where else ''}"
+                  f" ({ask.target.quota_id})")
         return plan
 
     if not validate_only and interactive and not p.confirm("Send them now?"):
+        # AND ITS SIBLING, for the same reason — `where` is the region the plan
+        # above was built for, not whatever a later run would derive.
         p.say("nothing was sent. To ask later: comfy-qat quota request --gpu "
-              + ",".join(ask.card for ask in asking if ask.card))
+              + ",".join(ask.card for ask in asking if ask.card)
+              + (f" --region {where}" if where else ""))
         return plan
 
     sent = 0
@@ -1232,6 +1443,17 @@ def run_setup(
     path = ensure_host_list(p, config_path)
     ensure_billing(gc, p, chosen)
     quotas = ensure_gpu_quota(gc, p, chosen, region=region)
+    # ABOVE EVERY EARLY RETURN, and above every consumer. This check lived inside
+    # `ensure_quota_requests`, BELOW its `if not submit:` return — so
+    # `--no-quota-request --region us-centrall` exited 0 having already used the
+    # unvalidated region to report six granted cards as "a project-wide allowance
+    # only". Third time an early return has skipped a check the ordinary path
+    # runs.
+    #
+    # A guard whose reachability depends on which flags were passed is a guard
+    # that will be missed again. What is validated must not depend on how the
+    # command was invoked, so validation happens before anything can return.
+    _require_real_region(gc, chosen, quotas, region)
     ensure_quota_requests(
         gc, p, chosen, quotas=quotas, interactive=interactive, region=region,
         submit=quota_requests, justification=justification,

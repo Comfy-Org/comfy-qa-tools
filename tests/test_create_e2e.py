@@ -138,6 +138,9 @@ class FakeGcloud:
                               if accelerators is None else list(accelerators))
         self._machines = ([{"name": "g2-standard-8", "zone": f"{URL}/zones/{zone}"}
                            for zone in ZONES] if machines is None else list(machines))
+        # `create` reads these to know where a card was already refused; the
+        # default is empty, which gives the plain remedy these tests assert.
+        self.preferences: list[dict] = []
         self.refuse = dict(refuse or {})
         self.calls: list[str] = []
         self.created: list[tuple[str, str, dict]] = []
@@ -155,9 +158,10 @@ class FakeGcloud:
         self.calls.append("gpu_quotas")
         return list(self._quotas)
 
-    def accelerator_types(self, project, name):
+    def accelerator_types(self, project, name=""):
         self.calls.append("accelerator_types")
-        return [entry for entry in self._accelerators if entry["name"] == name]
+        return [entry for entry in self._accelerators
+                if not name or entry["name"] == name]
 
     def machine_types(self, project, zone_list, name):
         self.calls.append("machine_types")
@@ -174,7 +178,23 @@ class FakeGcloud:
         if problem is not None:
             raise GcloudError("Could not fetch resource", raw=problem)
 
+    def quota_preferences(self, project):
+        """`create` reads these so its refusal can say where NOT to ask again —
+        `quota list` calls a card denied while `create` said "ask and wait" about
+        the same card. Empty here: these tests are about grants and zones, and an
+        empty list yields the plain remedy they already assert.
+
+        The guard below is why this is a decision rather than an accident."""
+        return list(self.preferences)
+
     def __getattr__(self, item):  # pragma: no cover - the guard, not the path
+        # PUBLIC NAMES ONLY. This guard is about `create` reaching for a gcloud
+        # METHOD nobody expected, and it earned its keep catching exactly that.
+        # It also caught `getattr(gc, "_accelerator_cache", None)` — an attribute
+        # PROBE with a default, which `__getattr__` sees and whose default a
+        # raised AssertionError defeats. Private names are bookkeeping, not API.
+        if item.startswith("_"):
+            raise AttributeError(item)
         raise AssertionError(f"host create asked the fake for {item!r}")
 
 
@@ -1163,3 +1183,90 @@ def test_no_host_list_at_all_is_still_fine(cli):
     assert result.exit_code == 0
     assert "is up in" in result.output
     assert "[hosts.comfy-linux]" in result.hosts
+
+
+@pytest.mark.parametrize("region, expect", [
+    ("", "unset"),
+    ("us-central1-a", "zone"),
+    ("US-CENTRAL1", "lower case"),
+])
+def test_create_validates_the_region_like_every_other_command(cli, region,
+                                                              expect):
+    """U3. `create` is the command that SPENDS, and it was the one surface with
+    no region check at all.
+
+    An empty `--region` — from `--region "$REGION"` with the variable unset —
+    silently built the box somewhere nobody chose. A zone was reported as an
+    unknown region, and the remedy printed for it exits 2 when pasted. `quota
+    list` and `setup` refuse all three.
+
+    THROUGH THE COMMAND. My first attempt called `region_problem` directly and
+    passed — the function has been right all along; `create` never called it.
+    That is the same function-versus-command mistake as the round's other
+    finding, made while writing the test for it.
+    """
+    result = cli("--os", "linux", "--gpu", "l4", "--region", region, "--dry-run")
+
+    assert result.exit_code == 2, result.output
+    assert expect in result.output, result.output
+    assert not billable(result), billable(result)
+    # AND WITHOUT THE MINUTE-LONG READ where the answer is decidable from the
+    # string. `create` also validates after reading quota, so the refusal alone
+    # cannot tell the cheap check from its absence — a sweep said so by
+    # surviving. Empty and zone-shaped need no API call at all.
+    if expect in {"unset", "zone"}:
+        assert "gpu_quotas" not in result.gc.calls, result.gc.calls
+
+
+def test_the_zone_typo_remedy_does_not_name_an_unvetted_region(cli):
+    """FOUND BY THE COMPOSE SWEEP, not by the report. The zone-typo refusal ends:
+
+        ... or ask for the card there:
+        comfy-qat quota request --gpu l4 --region us-central9
+
+    `region_of` turns the mistyped zone into a region string, and nothing checks
+    that the project meters the card there or that Google sells it there — so the
+    command it hands over exits 2. The comment two lines above this one is about
+    exactly that trap ("asking Google for a region that does not exist is a slow
+    way to learn you mistyped") and the line still names the region.
+
+    Dropping `--region` is the honest fix: `quota request` derives one AND vets
+    it, which is more than this path can do without another API call.
+    """
+    result = cli("--os", "linux", "--gpu", "l4", "--zone", "us-central9-a",
+                 "--dry-run")
+
+    assert result.exit_code == 2, result.output
+    assert "--region us-central9" not in result.output, result.output
+    assert "comfy-qat quota request --gpu l4" in result.output, result.output
+
+
+def test_a_refused_cards_remedy_names_only_stocked_regions(cli):
+    """Q1 THROUGH THE COMMAND. `check_quota` takes `askable` and the unit test
+    proves it is honoured — but a mutation sweep showed the CALLER could stop
+    computing it and nothing failed, because `check_quota` falls back to
+    metered-only. The fallback is correct for a direct caller and wrong for this
+    one, and only a test that drives `create` can tell them apart.
+
+    The card is refused in the nearest region and metered everywhere; only one of
+    the remaining regions stocks it. The remedy must name that one.
+    """
+    stocked_in = "europe-west4"
+    gc = FakeGcloud(quotas=[quota("NVIDIA-L4-GPUS-per-project-region", 0, REGIONS),
+                            CEILING],
+                    accelerators=[{"name": "nvidia-l4",
+                                   "zone": f"{stocked_in}-a"}])
+    gc.preferences = [{
+        "quotaId": "NVIDIA-L4-GPUS-per-project-region",
+        "quotaConfig": {"grantedValue": "0", "preferredValue": "1",
+                        "stateDetail": "Request denied"},
+        "dimensions": {"region": REGIONS[0]},
+        "name": "projects/p/locations/global/quotaPreferences/l4-denied",
+    }]
+    result = cli("--os", "linux", "--gpu", "l4", "--dry-run", gc=gc)
+
+    assert result.exit_code == 2, result.output
+    assert stocked_in in result.output, result.output
+    unstocked = [r for r in REGIONS[1:] if r != stocked_in]
+    for region in unstocked:
+        assert f"--region {region}" not in result.output, (region, result.output)

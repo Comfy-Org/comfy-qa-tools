@@ -11,6 +11,7 @@ No token is ever printed, logged, or written to a file here.
 from __future__ import annotations
 
 import json
+import shlex
 import time
 from dataclasses import asdict, dataclass
 from typing import Annotated, Callable, Optional
@@ -24,12 +25,18 @@ from .quota import (
     available_gpus,
     request_plan,
     request_value,
+    UNLIMITED,
+    held_value,
+    asks,
+    row_name,
     asks_about,
+    friendly_name,
     known_regions,
     spans_many,
     needs_family,
     needs_region,
     resolve_target,
+    regions_metered,
     regions_with_quota,
     matches,
     readiness,
@@ -285,7 +292,7 @@ def _regions_stocking(
 
     wanted = {n for n in names if n != GLOBAL_ALLOWANCE}
     try:
-        catalogue = gc.accelerator_types(project)
+        catalogue = _catalogue(gc, project)
     except GcloudError:
         return {name: None for name in wanted}
 
@@ -312,6 +319,266 @@ def _regions_stocking(
             continue
         out[name] = {_region_of(zone) for i in ids for zone in stocked.get(i, set())}
     return out
+
+
+def askable_regions(name: str, quotas: list[dict], sells,
+                    refused: "set[str] | tuple[str, ...]" = ()) -> list[str]:
+    """Where this card could ACTUALLY be requested: metered, stocked, not refused.
+
+    ONE ANSWER TO ONE QUESTION, because two surfaces were composing it
+    separately. `create` built its suggestion from `regions_metered` alone and
+    offered `africa-south1` — which stocks zero NVIDIA accelerators, so the
+    command it printed exits 2, and it appeared twice in its own alternatives
+    because nothing de-duplicated the list either.
+
+    METERED alone is where a request is possible; METERED AND STOCKED is where a
+    granted request buys something that can start. The second is what a remedy
+    should name, and it is the intersection this function exists to stop being
+    recomputed by hand.
+
+    `sells` may be an unlooked `Availability`, in which case the stocking half is
+    unknown and the metered list is returned as-is — "I could not check" must
+    narrow nothing rather than empty the answer.
+    """
+    metered = set(regions_metered(name, quotas)) - set(refused)
+    where = sells.where.get(name) if getattr(sells, "looked", False) else None
+    return sorted(metered & set(where)) if where is not None else sorted(metered)
+
+
+def _refuse_if_unsold(name: str, region: str | None, sells, quotas) -> None:
+    """Stop if `region` sells no `name`. One function, both entry paths.
+
+    Extracted because the `--gpu` path had this and the `--quota-id` path did
+    not, so the identical request was refused through one flag and filed
+    permanently through the other. A guard reachable from one entry point and not
+    another is a second-site by construction, and the repair is one callable
+    rather than a second copy of the check.
+    """
+    here = sells.where.get(name) if sells.looked else None
+    if not region or here is None or region in here:
+        return
+    # BOTH SETS, because the sentence names both. `here` is where Google SELLS
+    # the card; `regions_metered` is where this project METERS it. Reporting the
+    # first while saying the second printed "this project meters it in 18 regions
+    # that do" about a count that would have been 18 on a project metered in one.
+    #
+    # METERED, not granted: `regions_with_quota` drops zero-limit rows, and every
+    # card you would be requesting is at zero — that is why you are asking — so
+    # that intersection came out empty and the branch reported "none of them
+    # metered by this project" about a project metered in all forty-three, then
+    # withheld the one fix line that works.
+    both = askable_regions(name, quotas, sells)
+    say.fail(
+        f"{name}: {region} does not offer this card"
+        + (f" — this project meters it in {len(both)} region"
+           f"{'s' if len(both) != 1 else ''} that do" if both else
+           f" — Google sells it in {len(here)} regions, none of them metered by "
+           f"this project" if here else " in any zone"),
+        fix=say.fix(
+            *([f"comfy-qat quota request --gpu {name} --region {both[0]}"
+               f"  # metered here and stocked there"] if both else []),
+            f"comfy-qat quota list --region {region}"
+            "  # what this region actually offers"),
+        code=2,
+    )
+
+
+def _region_universe(gc, project: str, quotas: list[dict]) -> set[str]:
+    """Every region that exists, as far as this project can tell.
+
+    TWO SOURCES, because neither alone answers the question. The quota records
+    name the regions this project is metered in; the accelerator catalogue names
+    every region Google sells a GPU in. A region in neither is a typo. A region
+    in either is real — and a REAL region a project happens to hold no quota rows
+    for is not a typo, which is what using the quota universe alone would have
+    called it. `africa-south1` is in the quota set and not the catalogue; most
+    regions are in the catalogue and, on a narrow project, not the quota set.
+
+    Shared so `setup`, `quota list --region` and `quota request --region` cannot
+    disagree about whether a region exists — which is how `setup` came to be the
+    only one of the three with no check at all.
+    """
+    universe = known_regions(quotas)
+    try:
+        catalogue = _catalogue(gc, project)
+    except GcloudError:
+        return universe
+    return universe | {_region_of(entry.get("zone", "").rsplit("/", 1)[-1])
+                       for entry in catalogue}
+
+
+@dataclass(frozen=True)
+class Availability:
+    """Which regions sell each card — or the fact that nobody looked.
+
+    THE CLASS BEHIND SEVERAL ROUNDS OF THIS. Availability used to be a plain
+    `dict` initialised to `{}`, computed only under `--by-region`, and consumed
+    by a branch reading `if per_region and stocks`. That expression cannot tell
+    "never computed" from "computed and found nothing" — so when `--json` emitted
+    the `by_region` array WITHOUT `--by-region` setting the flag that computes
+    it, every row degraded silently to a confident `ready`. The machine surface
+    reported K80 ready in twenty-five regions while the table beside it said "not
+    offered here" for all twenty-five.
+
+    This is ABSENT-VERSUS-ZERO ONE LEVEL UP: not a value that is missing versus a
+    value that is zero, but a COMPUTATION that never ran versus one that ran and
+    found nothing. Everything that applies to the first applies here — they are
+    different facts, one of them means "I do not know", and a truthful surface
+    says so rather than taking the cheerful reading.
+
+    So the two states are different objects. `not_checked()` is the only way to
+    build the first, `offers()` refuses to answer from it, and an empty `where`
+    now unambiguously means "looked, and this project meters nothing".
+    """
+
+    looked: bool
+    where: dict[str, set[str] | None]
+
+    @classmethod
+    def not_checked(cls) -> "Availability":
+        return cls(looked=False, where={})
+
+    def __bool__(self) -> bool:
+        # Falsy when nobody looked, so call sites that still read it as a plain
+        # truthiness test keep the conservative behaviour rather than inverting.
+        return self.looked
+
+    def offers(self, name: str, place: str) -> bool | None:
+        """True, False, or None for "cannot be answered".
+
+        None covers three different reasons and they are all "I do not know":
+        nobody looked, the catalogue could not be read for this card, or the card
+        is one no accelerator id was found for.
+        """
+        if not self.looked:
+            return None
+        places = self.where.get(name)
+        return None if places is None else place in places
+
+
+def _catalogue(gc, project: str) -> list[dict]:
+    """`accelerator-types list`, fetched ONCE per command.
+
+    543 rows and about a second. Two callers want it — the availability check and
+    the region universe — and adding the second doubled the calls, which a test
+    counting them caught immediately. Cached on the `Gcloud` instance because
+    that is the object whose lifetime is the command.
+    """
+    cache = getattr(gc, "_accelerator_cache", None)
+    if cache is None:
+        cache = {}
+        try:
+            gc._accelerator_cache = cache
+        except AttributeError:      # a fake that forbids attributes
+            return gc.accelerator_types(project)
+    if project not in cache:
+        cache[project] = gc.accelerator_types(project)
+    return cache[project]
+
+
+def _stop_on_region_shape(region: str | None) -> None:
+    """Refuse a region that is wrong on its face, before any API call."""
+    wrong = region_shape_problem(region)
+    if wrong:
+        say.fail(wrong[0],
+                 fix=say.fix(*wrong[1], "comfy-qat quota list --by-region  "
+                             "# every region this project meters"),
+                 code=2)
+
+
+def region_shape_problem(region: str | None) -> tuple[str, list[str]] | None:
+    """The half of `region_problem` that needs NO API call at all.
+
+    Empty, zone-shaped and wrong-case are decidable from the string. Only "not
+    one of this project's forty-three" needs the quota records — and running the
+    whole check after that minute-long read meant a typo cost 51 seconds before
+    anybody was told about it.
+    """
+    if region is None:
+        return None
+    if not region.strip():
+        return ("--region was given but empty — if that came from a shell "
+                "variable, it is unset",
+                ["--region us-central1  # or leave the flag off to derive one"])
+    # CASE IS NOT DECIDABLE FOR FREE, and it looked as though it were. Lowering
+    # `US-CENTRAL99` gives `us-central99`, which is not a region either — so the
+    # remedy would hand over a second wrong answer with more confidence than the
+    # first. Telling case-wrong from merely-wrong needs the universe, so that
+    # rule lives in the half that has it. Empty and zone-shaped are genuinely
+    # syntactic.
+    if _region_of(region) != region:
+        return (f"{region!r} is a zone; quota is metered per region",
+                [f"--region {_region_of(region)}  # the region that zone is in"])
+    return None
+
+
+def region_problem(gc, project: str, quotas: list[dict], region: str | None,
+                   *, membership: bool = True) -> tuple[str, list[str]] | None:
+    """`(what is wrong, what to type)` if `region` is not a region, else None.
+
+    ONE CHECK, THREE SURFACES. `quota list`, `quota request` and `setup` each
+    grew their own, and the one that stayed local is the one that let a ZONE
+    through — `quota list --region us-central1-a` answered "no GPU quotas
+    reported" at exit 0 about a project holding six cards, because a local
+    universe built from `applicableLocations` folds in the zone names that
+    `-per-project-zone` rows carry.
+
+    A confident empty answer is worse than a refusal: the typo path exits
+    non-zero and says what is wrong, and this one hands a script a picture it
+    will believe.
+
+    Returns rather than raising, because `setup` stops by raising `SetupStopped`
+    and the quota commands stop by `say.fail` — the QUESTION is shared even where
+    the manner of stopping is not.
+    """
+    # `None` IS OMITTED; `""` IS TYPED AND EMPTY. These fell together out of one
+    # truthiness test, so `--region ""` behaved exactly like leaving the flag off
+    # — deriving a region and, on a real run, filing an irrevocable request into
+    # it. The realistic source of an empty value is `--region "$REGION"` with the
+    # variable unset, and somebody who typed the flag has said they care which
+    # region; choosing one for them is the one reading that cannot be meant.
+    # `None` IS OMITTED, and it left with the block that was extracted — so this
+    # walked straight into `region.lower()` on a create with no `--region`.
+    if region is None:
+        return None
+    # The free half first, so a caller that has not read quota yet gets the same
+    # answer for the same inputs.
+    shape = region_shape_problem(region)
+    if shape:
+        return shape
+    universe = _region_universe(gc, project, quotas)
+    if not universe or region in universe:
+        return None
+
+    # `membership=False` FOR `create`, and it is not an exemption. "This region
+    # exists and this project has no quota for the card in it" is a question
+    # `create` answers BETTER than this function can — it names the regions the
+    # card IS held in, from the grant it just read. Telling that caller "no such
+    # region" would replace a specific true answer with a vaguer one.
+    #
+    # The case rule below still applies, because `US-CENTRAL1` is not a question
+    # about quota at all.
+    if not membership:
+        exact = [p for p in universe if p.lower() == region.lower()]
+        return ((f"no region called {region!r} — regions are lower case",
+                 [f"--region {exact[0]}"]) if exact else None)
+
+    # CASE-INSENSITIVELY. `"US-CENTRAL1".split("-")[0]` is `"US"` and the
+    # universe holds `"us"`, so a region wrong by nothing but case fell to the
+    # generic advice while a zone — wrong by a whole segment — got an exact
+    # suggestion.
+    # Case-only errors first: an exact fold means the region is real and the user
+    # typed it in the wrong case, which deserves a better sentence than a guess.
+    exact = [p for p in universe if p.lower() == region.lower()]
+    if exact:
+        return (f"no region called {region!r} — regions are lower case",
+                [f"--region {exact[0]}"])
+    near = sorted(p for p in universe
+                  if p.split("-")[0].lower() == region.split("-")[0].lower())
+    return (f"no such region {region!r} — this project knows {len(universe)}, "
+            f"and that is not one of them",
+            ([f"--region {near[0]}  # did you mean one of {len(near)} in "
+              f"{region.split('-')[0]}?"] if near else []))
 
 
 def _region_of(place: str) -> str:
@@ -349,7 +616,14 @@ def _record(row, limit, where, status, pool, drivable, cpu_blocked,
     # for RTX PRO 6000, in any of its dimension rows. The 1 is the Spot pool's,
     # and the object never named the quota it came from. Limit, pool and id are
     # one statement or they are three contradicting ones.
-    if quota_id is not None and "quota_id" in record:
+    # BOTH ARRAYS. The guard was `... and "quota_id" in record`, and `record` is
+    # `asdict(row)` — a `CardSummary` for the collapsed view, which has no such
+    # field — so the assignment silently no-opped on one of the two and a
+    # consumer reading `gpus[].quota_id` got a KeyError while the identically
+    # named field worked in `by_region[]`. The comment justifying this field says
+    # "limit, pool and id are one statement or they are three contradicting
+    # ones"; on one array it was none at all.
+    if quota_id is not None:
         record["quota_id"] = quota_id
     # L18: WHICH POOL THE COUNTS ARE ABOUT. `refused_in_regions: 2` sat beside
     # `pool: "Spot"`, and Spot has no refusals — the refusals are the on-demand
@@ -433,6 +707,10 @@ def quota_list_cmd(
                        "by_region (one per card and place).")] = False,
 ) -> None:
     """What can I run today, what is waiting on Google, what did I never ask for."""
+    # BEFORE THE MINUTE-LONG READ. Empty, zone-shaped and wrong-case need no API
+    # call at all, and asking afterwards cost 51 seconds to reject a typo.
+    _stop_on_region_shape(region)
+
     gc = Gcloud()
     try:
         project = _require_project(gc)
@@ -450,21 +728,21 @@ def quota_list_cmd(
     except GcloudError as exc:
         say.fail(exc, code=2)
 
-    if region:
+    if region is not None:
         # F9: A TYPO READS AS "this project has almost no quota". `quota request`
         # validates the same flag and `create` warns about exactly this, so
         # `quota list` was the one surface that let it through with exit 0.
-        known = {place for q in quotas
-                 for info in q.get("dimensionsInfos") or []
-                 for place in (info.get("applicableLocations") or [])}
-        known |= {_region_of(place) for place in known}
-        if known and region not in known:
-            say.fail(
-                f"no region called {region!r} appears in this project's quota",
-                fix=say.fix("comfy-qat quota list — every region this project is "
-                            "metered in", "check the spelling"),
-                code=2,
-            )
+        #
+        # AND IT WAS THE ONE THAT KEPT ITS OWN COPY of the check, which is how a
+        # ZONE got through after the universe was unified: the local set folded
+        # in `applicableLocations`, and `-per-project-zone` rows carry zones.
+        # Calling the shared question rather than maintaining a second answer.
+        wrong = region_problem(gc, project, quotas, region)
+        if wrong:
+            say.fail(wrong[0],
+                     fix=say.fix(*wrong[1], "comfy-qat quota list --by-region  "
+                                 "# every region this project meters"),
+                     code=2)
     rows = readiness(quotas, prefs, region=region)
     cards = summarise(rows)
 
@@ -567,7 +845,27 @@ def quota_list_cmd(
     # Both derived sets, computed here because BOTH renderings read them —
     # the table and `--json`. Defined below the `--json` branch, they were
     # a NameError for the machine-readable surface and nothing else.
-    refused_somewhere = {row.gpu for row in rows if row.status == "denied"}
+    #
+    # FROM THE REFUSALS THEMSELVES, not from `rows`. `rows` is already filtered by
+    # `--region`, so a set whose entire purpose is "refused SOMEWHERE ELSE" was
+    # computed from a view with everywhere else removed — it could only ever see
+    # refusals in the region being asked about. `--region us-central1` therefore
+    # printed "none — request it" for a card refused in europe-west4, while
+    # `setup` declined to re-ask for that exact card and `--by-region` said
+    # "refused elsewhere". Three surfaces, one card, one minute, and the
+    # disagreeing one was the only one issuing an instruction that files
+    # something Google will not let you withdraw.
+    #
+    # Keyed to the REGIONS, because "elsewhere" is the fact a reader then has to
+    # go and look up.
+    refused_regions: dict[str, set[str]] = {}
+    for ask in asks(prefs):
+        if ask.state != "denied":
+            continue
+        card = row_name(ask.quota_id, ask.dimensions)
+        if card:
+            refused_regions.setdefault(card, set()).add(ask.region or "")
+    refused_somewhere = set(refused_regions)
 
     # QUOTA IS NOT AVAILABILITY, and this column was reporting one as the other.
     # `--region europe-west9` called seven cards ready in a region GCE offers
@@ -594,9 +892,22 @@ def quota_list_cmd(
     # footnote saying STATUS reports quota rather than availability is on this
     # view, and it is the wrong answer here: its remedy is "add --region", which
     # collapses the very view the reader asked for.
-    stocks: dict[str, set[str] | None] = {}
-    if by_region and not region:
-        stocks = _regions_stocking(gc, project, {c.gpu for c in cards})
+    stocks = Availability.not_checked()
+    # The regions each card has a row of its OWN for, so a catch-all row can be
+    # told what it covers: everything metered, minus these.
+    named_rows: dict[str, set[str]] = {}
+    for row in rows:
+        if not spans_many(row.region) and row.region != "global":
+            named_rows.setdefault(row.gpu, set()).add(row.region)
+    # COMPUTED WHENEVER IT CAN BE EMITTED, which is the other half of the repair.
+    # `--json` prints the `by_region` array unconditionally, so gating its input
+    # on `--by-region` left the producer and the consumer behind different flags.
+    # A field that exists in the output while its input was never gathered is the
+    # bug; the flag decides both or neither.
+    if (by_region or as_json) and not region:
+        stocks = Availability(
+            looked=True,
+            where=_regions_stocking(gc, project, {c.gpu for c in cards}))
     if region:
         # A FAILED LOOKUP IS NOT A FACT. "I looked and it is not there" and "my
         # lookup found nothing" are different statements, and rendering the
@@ -658,6 +969,13 @@ def quota_list_cmd(
         why = unspendable(name, best.name if best is not None else "")
         return f", {why}" if why else ""
 
+    # Cards whose availability could not be decided for at least one row. The
+    # caveat below is suppressed per ROW rather than per view because of these:
+    # a bucket that is part stocked and part not is exactly as unchecked as a
+    # view with no catalogue, and rendered as a bare `ready` it reads like a
+    # check that passed.
+    not_checked: set[str] = set()
+
     def _offered_in(name: str, place: str) -> bool | None:
         """Does THIS region sell this card? None when it cannot be answered.
 
@@ -671,24 +989,44 @@ def quota_list_cmd(
         # nothing, so every bucket row was judged against a catalogue it cannot
         # be tested against. The rename broke the guard written beside it, in the
         # same change.
-        if not stocks:
+        if not stocks.looked:
             return None
-        places = stocks.get(name)
+        if name == GLOBAL_ALLOWANCE:
+            # NOT APPLICABLE, NOT UNANSWERED. `any (global)` is not a card — the
+            # first footnote in this same output says so — and its row covers one
+            # place, `global`. Falling through to the lookup-failed branch put it
+            # in a sentence reading "whose rows cover several regions at once",
+            # both halves false. `drivable_flag` has carried this guard fourteen
+            # lines up all along, for the same reason.
+            return None
+        places = stocks.where.get(name)
         if places is None:
+            not_checked.add(name)
             return None
         if spans_many(place) or place == "global":
-            # A BUCKET NAMES NO SINGLE REGION, so normally there is nothing to
-            # test. But if the card is stocked in NONE of the regions this
-            # project meters it in, then whichever subset the bucket covers, none
-            # of them stock it — answerable without knowing which. Live, K80 read
-            # `any of 19 ... ready` directly above twenty-four rows saying "not
-            # offered here" about the same card.
-            #
-            # Only that direction. Stocked in one metered region says nothing
-            # about the other forty-one, which is L4, and that stays unchecked.
-            metered = set(regions_with_quota(name, quotas))
-            if metered and not (metered & places):
+            # A BUCKET NAMES NO SINGLE REGION — and its MEMBERSHIP is derivable
+            # anyway. A catch-all dimension row covers exactly the regions with
+            # no row of their own, so it is the metered regions minus the named
+            # siblings, and both of those are already in hand. P100, P4 and V100
+            # each read `any of 19 ... ready` while every named row beneath them
+            # said otherwise: not the K80 case (they ARE stocked somewhere they
+            # are metered) and not unknowable either.
+            # METERED, for the same reason: a bucket belonging to a card at
+            # zero covered nothing, so it read as unanswerable rather than being
+            # checked.
+            metered = set(regions_metered(name, quotas))
+            covered = metered - named_rows.get(name, set())
+            if not covered:
+                # Every metered region has a row of its own, so the bucket covers
+                # nothing this project could use. Nothing to answer.
+                return None
+            if not (covered & places):
                 return False
+            if covered <= places:
+                return True
+            # Mixed: some of what it covers is stocked and some is not, and one
+            # row cannot say both.
+            not_checked.add(name)
             return None
         return place in places
 
@@ -766,7 +1104,10 @@ def quota_list_cmd(
                        f"{'region' if refused == 1 else 'regions'}, never asked "
                        f"in {never}")
         elif state == "none" and name in refused_somewhere:
-            verdict = "none here — refused elsewhere; ask only if this region is new"
+            named = sorted(p for p in refused_regions.get(name, set()) if p)
+            where_refused = ", ".join(named) if named else "elsewhere"
+            verdict = (f"none here — refused in {where_refused}; ask only if "
+                       f"this region is new")
         elif asked and state == "ready":
             verdict = f"ready — {limit} granted; a raise to {asked} was not"
         elif asked and state not in ("denied", "none"):
@@ -810,7 +1151,7 @@ def quota_list_cmd(
                     f"caps every card above it put together. A second GPU box "
                     f"cannot start while the first is running, whatever the "
                     f"per-card rows say.")
-        if not region and not stocks:
+        if not region and (not stocks.looked or not_checked):
             # NOT ON A VIEW THAT CHECKED. `--by-region` now answers availability
             # per row, so this note would sit under rows that contradict it while
             # telling the reader to add a flag that collapses the view they asked
@@ -819,10 +1160,22 @@ def quota_list_cmd(
             #
             # Said once, plainly, because the column cannot be checked cheaply
             # here and "ready" must not quietly mean two things.
+            #
+            # AND IT NAMES THE ROWS IT IS ABOUT when only some were unchecked.
+            # `--by-region` answers availability per row, so suppressing this for
+            # the whole view was true of the named rows and false of the buckets
+            # it classifies as mixed — `T4 any of 19 ready` covers nineteen
+            # regions of which two sell T4, rendered identically to a row that
+            # was checked and passed. The more detailed view was the less honest
+            # one.
+            about = (f" This applies to {', '.join(sorted(not_checked))}, whose "
+                     f"rows cover several regions at once."
+                     if not_checked and stocks.looked else "")
             wrapped("note: STATUS reports quota held, not whether a region "
                     "offers the card. `comfy-qat create` checks both and will "
                     "refuse a card this project holds quota for but Google no "
-                    "longer sells. Add --region to have that checked here.")
+                    "longer sells."
+                    + (about or " Add --region to have that checked here."))
         # Pool explanations first: short, and they apply to rows above.
         for pool in sorted(explained):
             who = ", ".join(dict.fromkeys(held_in.get(pool, [])))
@@ -930,7 +1283,7 @@ def quota_list_cmd(
             return [_record(item, limit, where, status, pool,
                             drivable_flag(item.gpu), cpu_blocked(item.gpu),
                             (_offered_in(item.gpu, getattr(item, "region", where))
-                             if per_region and stocks
+                             if per_region and stocks.looked
                              else _offered_flag(region, item.gpu, absent_here,
                                                 unchecked)),
                             quota_id=qid)
@@ -991,6 +1344,26 @@ def quota_list_cmd(
 # the user names none. It never lowers a standing request — see
 # `quota.request_value`.
 DEFAULT_VALUE = 1
+"""What to ask for when `--value` is left off and no card names a better number.
+
+ONE IS A FLOOR, NOT AN ANSWER. The card table already holds how many GPUs each
+machine takes — an H100 is `a3-highgpu-8g`, eight of them — and `setup` reads it
+to ask for 8. `quota request` asked for 1, so the tool's own printed remedy filed
+a permanent request for a grant that cannot start the only H100 machine it
+builds, while `--value 9` warned that 8 is the most any machine takes. The number
+was held all along and consulted in one direction only.
+
+`_default_for` reads the table; this stays for `--quota-id`, which names no card
+and so has no count to read.
+"""
+
+
+def _default_for(name: str) -> int:
+    """How many of this card to ask for when the user did not say."""
+    from .create import card_named
+
+    card = card_named(name)
+    return card.count if card is not None and card.count else DEFAULT_VALUE
 
 
 @quota_app.command("request")
@@ -1000,16 +1373,17 @@ def quota_request_cmd(
     quota_id: Annotated[Optional[str], typer.Option(
         "--quota-id", help="Raw quota id, if you would rather name it exactly.")] = None,
     value: Annotated[Optional[int], typer.Option(
-        "--value", help="How many of each card. Left off, one — or the value of "
-                        "a request already with Google, which is never lowered "
-                        "by a number you did not type.")] = None,
+        "--value", help="How many of each card. Left off, as many as one machine "
+                        "of that card takes — 8 for an h100, 1 for an l4 — or "
+                        "the value of a request already with Google, which is "
+                        "never lowered by a number you did not type.")] = None,
     allow_lower: Annotated[bool, typer.Option(
         "--allow-lower",
-        help="Permit a value below a request already with Google. Without this, "
-             "a smaller number is refused rather than quietly replacing the "
-             "standing one — a decrease is fulfilled immediately and without "
-             "review, so it is the one quota change that cannot be taken back "
-             "by waiting.")] = False,
+        help="Permit a value below a request already with Google, or below the "
+             "quota this project holds. Without this, a smaller number is "
+             "refused rather than quietly replacing the standing one. Nothing "
+             "in this tool can undo a decrease: `gcloud quotas preferences` has "
+             "create, describe, list and update, and no delete.")] = False,
     release_quota: Annotated[bool, typer.Option(
         "--release-quota",
         help="Permit --value 0, which gives up the quota this project holds for "
@@ -1045,6 +1419,8 @@ def quota_request_cmd(
                  fix=say.fix("comfy-qat quota request --gpu l4,a100",
                              "or --quota-id, to name a raw quota id exactly"),
                  code=2)
+
+    _stop_on_region_shape(region)
 
     gc = Gcloud()
     try:
@@ -1113,36 +1489,68 @@ def quota_request_cmd(
 
     # ONCE, before the loop, because both uses need it and the catalogue is 543
     # rows in a single call. Only when a region was named: without one there is
-    # nothing to check a card against.
-    if region:
+    # nothing to check a card against — and `is not None` rather than truthiness,
+    # so `--region ""` reaches the check instead of passing as an omission.
+    if region is not None:
         # M11: BEFORE ANYTHING ELSE USES IT. A typo'd region otherwise travels
         # the whole command and comes back out as a statement about quota.
-        universe = known_regions(quotas)
-        if universe and region not in universe:
-            near = sorted(p for p in universe if p.split("-")[0] == region.split("-")[0])
+        wrong = region_problem(gc, project, quotas, region)
+        if wrong:
+            # THE WHOLE COMMAND, including the card. An earlier version handed
+            # over `quota request --region asia-east1` with no `--gpu`, which
+            # exits 2 at "name a card to ask for" — while the card the user typed
+            # is in the very invocation being refused.
+            what = f" --gpu {gpu}" if gpu else f" --quota-id {quota_id}"
             say.fail(
-                f"no such region {region!r} — this project's quota names "
-                f"{len(universe)}, and that is not one of them",
+                wrong[0],
                 fix=say.fix(
-                    # THE WHOLE COMMAND, including the card. This handed over
-                    # `quota request --region asia-east1` with no `--gpu`, which
-                    # exits 2 at "name a card to ask for" — while the card the
-                    # user typed is in the very invocation being refused.
-                    *([f"comfy-qat quota request"
-                       f"{' --gpu ' + gpu if gpu else ' --quota-id ' + quota_id}"
-                       f" --region {near[0]}"
-                       f"  # did you mean one of {len(near)} in "
-                       f"{region.split('-')[0]}?"]
-                      if near else []),
+                    *[f"comfy-qat quota request{what} {line}"
+                      for line in wrong[1]],
                     "comfy-qat quota list --by-region  # every region this "
                     "project meters"),
                 code=2,
             )
 
-    sells: dict[str, set[str] | None] = {}
-    if region:
-        names = {n.strip() for n in (gpu or "").split(",") if n.strip()}
-        sells = _regions_stocking(gc, project, names)
+    # THE SAME TYPE `quota list` USES, not a second dict with the same
+    # weakness. This was `sells: dict = {}` computed under `if region is not
+    # None` and read as `sells.get(name)` — correct, but only because its
+    # consumers happen to be gated on the same flag as its producer. That is
+    # an agreement between two call sites rather than a property of the data,
+    # and agreements like it are what keep breaking. One place where "nobody
+    # looked" is expressible, and the agreement stops being load-bearing.
+    # `not_checked()` HERE IS DEFENCE, NOT BEHAVIOUR, and a mutation sweep says
+    # so: replacing it with `Availability(looked=True, where={})` kills no test,
+    # because these consumers are gated on `region` — the same flag that decides
+    # whether the lookup happens — so the two states cannot be told apart from
+    # outside. Recorded rather than papered over with a test that proves nothing.
+    # It is the type anyway, so that the day a consumer stops sharing that flag,
+    # the honest answer is already the one available.
+    # ONE IDENTITY, WHICHEVER FLAG NAMED IT, resolved before any guard runs.
+    #
+    # `names` was seeded from `--gpu` alone, so `--quota-id` handed every
+    # card-keyed guard an EMPTY SET — and an empty set reads as "nothing to
+    # check" rather than "I was not told what to check". The two flags then got
+    # opposite treatment for the identical request: `--gpu l4 --region
+    # africa-south1` refused with a remedy, `--quota-id NVIDIA-L4-GPUS-...
+    # --region africa-south1` built a permanent preference for a region selling
+    # no NVIDIA card at all.
+    #
+    # THE FIX IS NOT A SECOND CALL TO THE GUARD. It is that a raw id already
+    # carries a card identity — `friendly_name` reads `L4` straight off it — so
+    # resolving both flags to one shape HERE makes the whole family of
+    # second-sites unrepresentable, including the next one somebody introduces by
+    # adding a guard to the `--gpu` path. Same move as `Availability`: make the
+    # bad state unconstructible rather than checking for it, one level out.
+    asked_for = {n.strip() for n in (gpu or "").split(",") if n.strip()}
+    if quota_id:
+        named = row_name(quota_id) or friendly_name(quota_id)
+        if named:
+            asked_for.add(named)
+
+    sells = Availability.not_checked()
+    if region is not None:
+        sells = Availability(looked=True,
+                             where=_regions_stocking(gc, project, asked_for))
 
     # L15: A BOUND AT THE TOP, NAMED RATHER THAN ENFORCED. `--value 999999` exited
     # 0 with nothing said. Too large is not destructive — Google refuses it, it is
@@ -1159,6 +1567,30 @@ def quota_request_cmd(
                      f"is not, and Google reads the number.")
 
     wanted: list[tuple[str, Target]] = []
+    if quota_id and gpu:
+        # REFUSED, NOT WARNED. This printed "--gpu l4,t4 ignored" and then filed
+        # three permanent requests — the raw id AND both cards, one of them by
+        # reaching into an existing granted preference. A warning that does not
+        # change behaviour is worse than no warning: it tells somebody they have
+        # been protected from the thing that is about to happen.
+        #
+        # And the shape is its own: not a false sentence about the world, but a
+        # false sentence about this tool's OWN NEXT ACTION, which a reader has no
+        # way to check except by watching what it does.
+        #
+        # Refusing rather than picking a winner, because the command genuinely
+        # cannot know which was meant — and the two were resolved to one identity
+        # last round precisely so two paths could not diverge. This is that
+        # ambiguity one layer out, at the argument list.
+        say.fail(
+            "--gpu and --quota-id both name what to ask for, and they disagree "
+            "here, so this command cannot tell which you meant",
+            fix=say.fix(f"comfy-qat quota request --quota-id {quota_id}"
+                        f"  # the quota, exactly as Google names it",
+                        f"comfy-qat quota request --gpu {gpu}"
+                        f"  # the card or cards, resolved for you"),
+            code=2,
+        )
     if quota_id:
         # F7: CHECKED AGAINST WHAT THE PROJECT REPORTS. `--quota-id NOT-A-QUOTA`
         # was accepted, exit 0, on the irrevocable path — with no check against
@@ -1191,10 +1623,49 @@ def quota_request_cmd(
                     "comfy-qat quota list — which cards this id meters"),
                 code=2,
             )
-        dims = ((("region", region),) if region and needs_region(quota_id) else ())
+        # `needs_region` FIRST, and the missing region is a refusal. This read
+        # `if region and needs_region(...)`, so a MISSING region silently dropped
+        # the dimension the id requires rather than refusing — the `and` made the
+        # guard unreachable in exactly the case it exists for, and the result is
+        # the shape `needs_region`'s own docstring records Google rejecting:
+        #
+        #   INVALID_ARGUMENT: Dimension values must be set for all the dimensions
+        #   ... defined for the quota.
+        #
+        # filed permanently, because `--allow-missing` creates.
+        if needs_region(quota_id) and not region:
+            say.fail(
+                f"{quota_id} is metered per region, so a request for it has to "
+                f"name one",
+                fix=say.fix(
+                    f"comfy-qat quota request --quota-id {quota_id} "
+                    f"--region us-central1",
+                    "comfy-qat quota list --by-region  # every region this "
+                    "project meters"),
+                code=2,
+            )
+        # SAY WHEN A FLAG IS DROPPED. This command refuses an empty region, a
+        # zone-shaped one, an uppercase one and an unknown one — and then
+        # silently ignored a perfectly good one on the id that takes no
+        # dimensions. Being loud about four wrong values and mute about one
+        # ignored value is out of character, which is the argument for saying it
+        # rather than for refusing.
+        if region and not needs_region(quota_id):
+            say.warn(f"--region {region} ignored: {quota_id} is not metered per "
+                     f"region, so a request for it carries no dimensions")
+        dims = ((("region", region),) if needs_region(quota_id) else ())
+        # THE SAME GUARDS THE `--gpu` PATH RUNS, keyed on the identity resolved
+        # above. Whatever the tool says about `--gpu l4` it must say about
+        # `--quota-id NVIDIA-L4-GPUS-per-project-region`: they are one request.
+        named = row_name(quota_id) or friendly_name(quota_id)
+        if named:
+            _refuse_if_unsold(named, region, sells, quotas)
         wanted.append((quota_id, Target(quota_id, dims)))
-    for name in (gpu or "").split(","):
-        name = name.strip()
+    # `dict.fromkeys` RATHER THAN A SET, so the order the user typed survives —
+    # and so `--gpu l4,l4` files ONE request. It filed two identical preferences,
+    # which is the duplicate this whole feature exists to prevent, reachable by
+    # typing a card name twice.
+    for name in dict.fromkeys(n.strip() for n in (gpu or "").split(",")):
         if not name:
             continue
         card = card_named(name)
@@ -1277,13 +1748,16 @@ def quota_request_cmd(
             # rendered as prose. And when the REGION is what is wrong, a list of
             # CARDS is an answer to a question nobody asked — one that contained
             # the card just typed.
-            places = sorted(regions_with_quota(name, quotas)) if region else []
+            # METERED. This is "where else could you ask", and a card at zero is
+            # still metered somewhere — it is the only kind of card that reaches
+            # a request at all.
+            places = sorted(regions_metered(name, quotas)) if region else []
             # H2: `places[0]` IS ALPHABETICAL, NOT ADVICE. On this project that
             # is africa-south1, which sells no NVIDIA accelerator of any kind —
             # so "somewhere it is metered" sent people to file an irrevocable
             # request for a box that can never start. Metered AND stocked, and
             # only metered if the catalogue could not be read.
-            stocked = sells.get(name)
+            stocked = sells.where.get(name) if sells.looked else None
             usable = [p for p in places if p in stocked] if stocked else []
             if places and region not in places:
                 # A FALLBACK IS ONLY HONEST WHEN THE CHECK COULD NOT BE MADE.
@@ -1326,29 +1800,8 @@ def quota_request_cmd(
         # time a correction landed on one surface and missed its sibling. Quota
         # in a region that sells no such card buys a preference that cannot be
         # deleted and a box that can never start.
-        here = sells.get(name)
-        if region and here is not None and region not in here:
-            # BOTH SETS, because the sentence names both. `here` is where Google
-            # SELLS the card; `regions_with_quota` is where this project METERS
-            # it. Reporting the first while saying the second printed "this
-            # project meters it in 18 regions that do" about a count that would
-            # have been 18 on a project metered in one — and offered a region the
-            # project does not meter as the remedy.
-            both = sorted(set(here) & set(regions_with_quota(name, quotas)))
-            say.fail(
-                f"{name}: {region} does not offer this card"
-                + (f" — this project meters it in {len(both)} region"
-                   f"{'s' if len(both) != 1 else ''} that do" if both else
-                   f" — Google sells it in {len(here)} regions, none of them "
-                   f"metered by this project" if here else " in any zone"),
-                fix=say.fix(
-                    *([f"comfy-qat quota request --gpu {name} --region "
-                       f"{both[0]}  # metered here and stocked there"]
-                      if both else []),
-                    f"comfy-qat quota list --region {region}"
-                    "  # what this region actually offers"),
-                code=2,
-            )
+        _refuse_if_unsold(name, region, sells, quotas)
+        here = sells.where.get(name) if sells.looked else None
         if region and here is None:
             # NOT A VERDICT. The catalogue could not be read, or the card is not
             # one this tool can name an accelerator id for; either way the answer
@@ -1356,7 +1809,17 @@ def quota_request_cmd(
             say.result(f"{name}: whether {region} offers this card was not checked")
         wanted.append((name, resolved))
 
-    submitted: list[tuple[str, Target, int]] = []
+    # TWO PHASES, because phase two cannot be taken back. `--gpu l4,t4,h100`
+    # filed L4, filed T4, then refused H100 at the floor and exited 2 — with
+    # `submitted` discarded, so the `track them:` line naming what HAD been filed
+    # never printed either: two permanent requests on the project and no record
+    # of them in the output reporting a failure.
+    #
+    # Everything needed to refuse H100 — the quota records and the preference
+    # list — is already in hand before the loop starts. Nothing has to be sent to
+    # discover it. So every card is checked first and the command files all of
+    # them or none.
+    checked: list[tuple[str, Target, object, int]] = []
     for name, resolved in wanted:
         # M6: SAY SO WHEN GOOGLE HAS ALREADY ANSWERED. `setup` declines to re-ask
         # for a refused card and prints "Not asked again automatically"; `create`
@@ -1390,14 +1853,20 @@ def quota_request_cmd(
         # ... from 8 to 1" about a number nobody had typed.
         send, note = request_value(
             resolved, preferences,
-            value if value is not None else DEFAULT_VALUE,
+            value if value is not None else _default_for(name),
             allow_lower=allow_lower, quotas=quotas,
             release=release_quota and allow_lower)
         # ONCE. `say.fail` below prints the same sentence, so announcing it here
         # as well printed the refusal twice — which every `in result.output`
         # assertion in the suite is happy with, and which anybody running the
         # command sees immediately.
-        if note and send is not None:
+        # AND NOT WHEN THE COMMAND IS ABOUT TO REFUSE. "keeping the standing
+        # request at 8" printed one line above "refusing to lower ... to 2",
+        # exit 2, nothing filed — a sentence asserting an action that did not
+        # happen. `send != value` with no `--allow-lower` is precisely the
+        # refusal below; saying it twice, once wrongly, is worse than once.
+        refusing = value is not None and send != value and not allow_lower
+        if note and send is not None and not refusing:
             # STDERR. `--dry-run | sh` is what `--dry-run` is for, and this line
             # went into the pipe between two commands — it contains a `;`, so the
             # shell attempted "1 would lower it" as a command of its own. Prose is
@@ -1405,11 +1874,18 @@ def quota_request_cmd(
             say.warn(note)
         if send is None:
             # ONE REMEDY PER CAUSE, enumerated rather than appended. `send is
-            # None` has THREE causes and this block offered TWO remedies, so the
-            # third inherited whichever branch it fell through to: a negative was
-            # refused and then told to pass `--allow-lower`, which cannot permit
-            # a negative — nothing can. Somebody runs it, is refused again, and
-            # concludes the tool is broken.
+            # None` has FOUR causes and this block once offered TWO remedies, so
+            # the others inherited whichever branch they fell through to: a
+            # negative was refused and then told to pass `--allow-lower`, which
+            # cannot permit a negative — nothing can.
+            #
+            # THIS COMMENT SAID THREE, AND THERE WERE FOUR, which is how the
+            # UNLIMITED case ended up under "the standing value could not be
+            # read" — the standing value was read, there is no preference at all,
+            # and what is at stake is an unlimited GRANT being traded for a
+            # number. An enumeration in a comment does not notice a new arrival;
+            # `test_every_cause_of_a_refused_value_gets_its_own_remedy` counts
+            # them, and that is what noticing looks like.
             #
             # Sixth instance of "a fix line naming a remedy that cannot work",
             # after `none — request it` on an unrequestable card, `--region
@@ -1419,15 +1895,29 @@ def quota_request_cmd(
             if value is not None and value < 0:
                 # NO FLAG, because there is no flag. A negative has no valid
                 # form, so the only useful thing to hand over is what to type.
+                # THE FLAG THE USER TYPED. This hardcoded `--gpu {name}`, and
+                # on the `--quota-id` path `name` IS the raw quota id — so the
+                # remedy was `--gpu NVIDIA-L4-GPUS-per-project-region`, which
+                # exits 2 at "no card called". Seventh instance of the shape the
+                # comment above this block enumerates, inside that very block:
+                # every other branch here preserves the flag, and the ceiling
+                # case prints `--quota-id GPUS-ALL-REGIONS-per-project` right.
+                flag = (f"--quota-id {name}" if quota_id == name
+                        else f"--gpu {name}")
                 remedy = say.fix(
-                    f"comfy-qat quota request --gpu {name} --value 1"
+                    f"comfy-qat quota request {flag} --value 1"
                     f"  # a count of GPUs, 1 or more",
                     "comfy-qat quota — what this project holds")
+            elif held_value(resolved, quotas) == UNLIMITED:
+                remedy = say.fix(
+                    "comfy-qat quota — what this project holds",
+                    "--allow-lower  # trade the unlimited grant for a number, "
+                    "knowing this tool cannot undo it")
             elif value == 0:
                 remedy = say.fix(
                     "comfy-qat quota — what this project holds",
-                    "--allow-lower --release-quota  # give the quota up, "
-                    "knowing it cannot be taken back by waiting")
+                    "--allow-lower --release-quota  # give the quota up; "
+                    "this tool cannot undo it")
             else:
                 # The standing value could not be read, so there is no number
                 # that is safe to send. Refusing is the only option that cannot
@@ -1450,6 +1940,28 @@ def quota_request_cmd(
                             "--allow-lower  # if you really mean to reduce it"),
                 code=2,
             )
+        if send == 0:
+            # INFERRED, AND SAID AS SUCH. `gcloud quotas preferences update`
+            # carries `--allow-high-percentage-quota-decrease` and
+            # `--allow-quota-decrease-below-usage` (verified in its --help on
+            # this machine); going 1 -> 0 is a 100% decrease, so Google may
+            # refuse the command printed here. Whether it does is UNVERIFIED —
+            # settling it would mean filing an irrevocable request.
+            #
+            # NOT EMITTED AUTOMATICALLY. Those flags exist to override Google's
+            # own safety checks on the one path in this tool that destroys
+            # something, and `--release-quota` is deliberate friction rather than
+            # a formality. Naming them keeps a refusal legible and leaves the
+            # decision to override where it belongs.
+            say.warn("if Google refuses this as too large a decrease, it wants "
+                     "--allow-high-percentage-quota-decrease, and "
+                     "--allow-quota-decrease-below-usage if the quota is in use. "
+                     "This tool does not add either for you.")
+        checked.append((name, resolved, plan, send))
+
+    # --- nothing above this line has sent anything ---------------------------
+    submitted: list[tuple[str, Target, int]] = []
+    for name, resolved, plan, send in checked:
         args = quota_request_command(
             project=project, quota_id=resolved.quota_id, value=send,
             preference_id=plan.preference_id, dimensions=plan.dimensions,
@@ -1457,7 +1969,10 @@ def quota_request_cmd(
             allow_missing=plan.allow_missing, validate_only=validate_only,
         )
         if dry_run:
-            say.result("gcloud " + " ".join(args))
+            # QUOTED, because `--dry-run | sh` is what this output is for and a
+            # justification is prose. `--justification=QA for Comfy Org` pastes
+            # as `--justification=QA` plus two stray positional arguments.
+            say.result("gcloud " + " ".join(shlex.quote(a) for a in args))
             continue
         try:
             gc.run(args)

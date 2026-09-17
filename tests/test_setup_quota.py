@@ -31,8 +31,8 @@ from comfy_qa.quota import GLOBAL_ALLOWANCE
 from comfy_qa.gcloud import Gcloud, GcloudError, quota_preference_id
 from comfy_qa.setup import (
     BLOCKED, CEILING_REQUEST, DEFAULT_JUSTIFICATION, DENIED, GRANTED, PENDING,
-    REQUEST, UNAVAILABLE, Prompts, ensure_quota_requests, plan_quota,
-    request_region, run_setup,
+    REQUEST, UNAVAILABLE, Prompts, SetupStopped, ensure_quota_requests,
+    plan_quota, request_region, run_setup,
 )
 
 # --- the shapes, all from a live project -------------------------------------
@@ -175,6 +175,9 @@ class Cloud:
         # so no test could reach the branch that tells the two apart.
         self.accel_error = accel_error
         self.submitted: list[list[str]] = []
+        # Counted so a test can assert a check happened BEFORE the minute-long
+        # quota read, not merely that it happened.
+        self.quota_reads = 0
 
     def gcloud(self) -> Gcloud:
         return Gcloud(runner=self._run)
@@ -192,6 +195,7 @@ class Cloud:
         if key.startswith("billing projects describe"):
             return {"billingEnabled": True}
         if key.startswith("quotas info list"):
+            self.quota_reads += 1
             return list(self.quotas)
         if key.startswith("quotas preferences list"):
             if self.prefs_error:
@@ -533,7 +537,10 @@ def test_an_unrequestable_card_does_not_abort_setup(tmp_path):
 
     assert config.exists(), "setup did not finish"
     line = next(line for line in p.said if "H100" in line)
-    assert "does not meter" in line, line
+    # The sentence now names the REGION it is about — it used to claim the whole
+    # project did not meter a card that is granted in forty-three regions,
+    # whenever the planning region had no row of its own.
+    assert "meters no" in line, line
     assert FAMILY not in creates(cloud)
 
 
@@ -2898,7 +2905,14 @@ def test_nothing_to_ask_for_recommends_nothing(tmp_path):
 
     line = next(line for line in p.said if "--no-quota-request" in line)
     assert "--gpu" not in line, line
-    assert "Nothing was missing" in line, line
+    # AND IT SAYS WHY THERE IS NOTHING TO ASK FOR. "Nothing was missing anyway"
+    # was one sentence covering three different situations, and only the first of
+    # them was that: here every card is REFUSED and at zero, which is the
+    # opposite of nothing missing. The claim this test was written for — that the
+    # fallback stops recommending five cards nobody needs — is unchanged, and
+    # asserted on `--gpu` above.
+    assert "refused" in line, line
+    assert "Nothing was missing" not in line, line
 
 
 # --- `request_value`, tested directly ----------------------------------------
@@ -2995,8 +3009,15 @@ def test_by_region_does_not_contradict_the_collapsed_table(monkeypatch):
     result = quota_list(Cloud(quotas=spread, preferences=denied_here),
                         monkeypatch, "--by-region")
 
-    elsewhere = [l for l in result.output.splitlines()
-                 if l.startswith("A100 ") and "us-central1" not in l]
+    # THE REGION COLUMN, not the whole line. The verdict now NAMES the region the
+    # refusal was made in, so `"us-central1" not in line` began excluding every
+    # row it was meant to select — a filter colliding with new true text, which
+    # is the third time that has happened in this suite.
+    lines = result.output.splitlines()
+    header = next(l for l in lines if l.startswith("GPU "))
+    start, stop = header.index("REGION"), header.index("LIMIT")
+    elsewhere = [l for l in lines
+                 if l.startswith("A100 ") and l[start:stop].strip() != "us-central1"]
     assert elsewhere, "no other-region rows rendered"
     for line in elsewhere:
         assert "refused" in line, (
@@ -4818,8 +4839,15 @@ def test_a_negative_refusal_does_not_offer_a_flag_that_cannot_permit_it(
 
 
 def test_every_cause_of_a_refused_value_gets_its_own_remedy(monkeypatch):
-    """The three causes, side by side, so a fourth cannot quietly inherit a
-    third's remedy. Each line is the flag that actually changes the outcome."""
+    """The FOUR causes, side by side, so a fifth cannot quietly inherit another's
+    remedy. Each line is the flag that actually changes the outcome.
+
+    It said three, and there were four — the UNLIMITED case had been added to
+    `request_value` without anything here noticing, so it fell into the branch
+    for "the standing value could not be read" and was told it might replace a
+    request that does not exist. An enumeration in a comment does not notice a
+    new arrival. This does, because it fails the moment a cause has no line of
+    its own."""
     held = [quota(T4, 1, locations=["us-central1"])]
 
     zero = quota_request(Cloud(quotas=held), monkeypatch, "--gpu", "t4",
@@ -4835,6 +4863,17 @@ def test_every_cause_of_a_refused_value_gets_its_own_remedy(monkeypatch):
                                monkeypatch, "--gpu", "a100", "--value", "1")
     assert "--allow-lower" in unreadable.output, unreadable.output
     assert "--release-quota" not in unreadable.output, unreadable.output
+    assert "standing request" in unreadable.output, unreadable.output
+
+    unlimited = quota_request(
+        Cloud(quotas=[{"quotaId": "NVIDIA-T4-GPUS-per-project-zone",
+                       "dimensionsInfos": [
+                           {"details": {"value": "-1"},
+                            "applicableLocations": ["us-central1-a"]}]}]),
+        monkeypatch, "--quota-id", "NVIDIA-T4-GPUS-per-project-zone",
+        "--value", "1")
+    assert "unlimited grant" in unlimited.output, unlimited.output
+    assert "standing request" not in unlimited.output, unlimited.output
 
 
 def test_the_region_typo_remedy_is_a_command_that_runs(monkeypatch):
@@ -4878,36 +4917,51 @@ def test_no_metered_region_stocks_it_offers_no_region_at_all(monkeypatch):
 
 
 REMEDY_CASES = [
-    # (args, a cloud that makes this refusal happen)
+    # (args, a cloud that makes this refusal happen, must a `quota request`
+    #  remedy be printed at all)
+    #
+    # THE THIRD COLUMN ARRIVED LATE. Without it the guard only checked the shape
+    # of remedies that WERE printed, so a refusal that withheld the working one
+    # passed it — and that is exactly the defect the fifth pass found on the
+    # h100-at-zero path. Every fixture here also held quota at 1, so not one of
+    # them could reach the zero-limit branch where it happened.
+    (("--gpu", "h100", "--region", "africa-south1"),
+     dict(quotas=[family(0, "NVIDIA_H100", locations=REGIONS_43)],
+          accelerators=stocking("asia-east1", "nvidia-h100-80gb")), True),
     (("--gpu", "l4", "--region", "asia-east99"),
-     dict(quotas=[quota(L4, 1, locations=["us-central1", "asia-east1"])])),
+     dict(quotas=[quota(L4, 1, locations=["us-central1", "asia-east1"])]), True),
+    # No region is both metered and stocked, so there is genuinely no request to
+    # suggest and the remedy says so instead of naming one.
     (("--gpu", "l4", "--region", "us-central1"),
      dict(quotas=[quota(L4, 1, locations=["africa-south1"]),
                   quota(T4, 1, locations=["us-central1"])],
-          accelerators=stocking("us-central1", "nvidia-l4"))),
+          accelerators=stocking("us-central1", "nvidia-l4")), False),
     # WITH A CATALOGUE. Without one the availability check correctly answers
     # "not checked" and the command exits 0, so the case would have been a
     # parametrisation that never reached the refusal it names.
     (("--gpu", "l4", "--region", "africa-south1"),
      dict(quotas=[quota(L4, 1, locations=REGIONS_43)],
-          accelerators=stocking("us-central1", "nvidia-l4"))),
+          accelerators=stocking("us-central1", "nvidia-l4")), True),
+    # The remedy here is two flags, not a command to paste.
     (("--gpu", "t4", "--value", "0"),
-     dict(quotas=[quota(T4, 1, locations=["us-central1"])])),
+     dict(quotas=[quota(T4, 1, locations=["us-central1"])]), False),
     (("--gpu", "t4", "--value", "-5"),
-     dict(quotas=[quota(T4, 1, locations=["us-central1"])])),
-    (("--gpu", "banana"), dict(quotas=THIS_PROJECT)),
-    (("--gpu", "p100"), dict(quotas=THIS_PROJECT)),
+     dict(quotas=[quota(T4, 1, locations=["us-central1"])]), True),
+    (("--gpu", "banana"), dict(quotas=THIS_PROJECT), True),
+    # "ask for one that works: ..." — a list of cards, not an invocation.
+    (("--gpu", "p100"), dict(quotas=THIS_PROJECT), False),
     (("--quota-id", FAMILY, "--region", "us-central1", "--value", "1"),
-     dict(quotas=[family(0, "NVIDIA_H100", locations=["us-central1"])])),
+     dict(quotas=[family(0, "NVIDIA_H100", locations=["us-central1"])]), True),
     (("--quota-id", L4, "--region", "us-central1", "--value", "1"),
-     dict(quotas=[quota(L4, 4, locations=["us-central1"])])),
+     dict(quotas=[quota(L4, 4, locations=["us-central1"])]), True),
     (("--gpu", "h100", "--value", "1"),
-     dict(quotas=THIS_PROJECT, preferences=STANDING_H100_AT_8)),
+     dict(quotas=THIS_PROJECT, preferences=STANDING_H100_AT_8), True),
 ]
 
 
-@pytest.mark.parametrize("args, fixture", REMEDY_CASES)
+@pytest.mark.parametrize("args, fixture, needs_request", REMEDY_CASES)
 def test_a_quota_request_remedy_always_names_what_to_ask_for(args, fixture,
+                                                             needs_request,
                                                              monkeypatch):
     """EIGHT INSTANCES OF ONE SHAPE, so this is the rule rather than a ninth fix.
 
@@ -4930,13 +4984,31 @@ def test_a_quota_request_remedy_always_names_what_to_ask_for(args, fixture,
     assert result.exit_code == 2, f"this case no longer refuses: {result.output}"
 
     printed = re.findall(r"comfy-qat quota request [^,;\n#]*", result.output)
-    assert printed or "quota request" not in result.output, result.output
+    # `printed or "quota request" not in output` PASSED WHEN NOTHING WAS PRINTED,
+    # which is how the h100-at-zero case — where the useful remedy was being
+    # withheld entirely — sailed through a guard written about remedies. A guard
+    # that only checks the shape of what IS printed cannot see what is missing.
+    if needs_request:
+        assert printed, (
+            f"no `quota request` remedy at all, on a refusal that has one:\n"
+            f"{result.output}")
     for invocation in printed:
         parts = shlex.split(invocation.strip())
         if any("<" in part for part in parts):
             continue  # a template, filled in by the reader
         assert {"--gpu", "--quota-id"} & set(parts), (
             f"remedy names nothing to ask for: {invocation!r}\n{result.output}")
+
+        # AND IT CARRIES THE REGION WHEN ONE IS IN PLAY. "Names a card" passed a
+        # remedy that stripped `--region` and therefore filed into a DIFFERENT
+        # region from the one being discussed — the tenth instance of this class
+        # and the first that succeeded at doing the wrong thing. A remedy that
+        # can carry a region and does not is a remedy about somewhere else.
+        asked = dict(zip(args, args[1:])).get("--region")
+        if asked and asked in result.output and "--region" not in parts:
+            raise AssertionError(
+                f"remedy drops the region under discussion: {invocation!r}\n"
+                f"{result.output}")
 
 
 # --- the REGION column has to contain regions ---------------------------------
@@ -4976,7 +5048,8 @@ def test_the_by_region_json_carries_the_same_correction(monkeypatch):
     `"region": "4 regions"` on the same rows. A consumer keying on `(gpu, region)`
     gets a bucket name where it expects a place."""
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)])
-    payload = json.loads(quota_list(cloud, monkeypatch, "--json", "--by-region")
+    # Without the table flag, for the reason above.
+    payload = json.loads(quota_list(cloud, monkeypatch, "--json")
                          .output.split("\n", 1)[1])
 
     for row in payload["by_region"]:
@@ -5036,7 +5109,11 @@ def test_the_by_region_json_carries_the_per_row_availability_verdict(monkeypatch
     ]}
     cloud = Cloud(quotas=[per_region, quota(L4, 1, locations=["us-central1"])],
                   accelerators=stocking("us-central1", "nvidia-l4"))
-    payload = json.loads(quota_list(cloud, monkeypatch, "--json", "--by-region")
+    # WITHOUT `--by-region`, per the rule this round produced: a test asserting
+    # on a JSON array must drive the invocation without the flag that shapes the
+    # corresponding table, because `--json` emits the array either way and that
+    # flag is what masked the defect for two rounds.
+    payload = json.loads(quota_list(cloud, monkeypatch, "--json")
                          .output.split("\n", 1)[1])
     by_place = {(r["gpu"], r["region"]): r["offered_here"]
                 for r in payload["by_region"]}
@@ -5092,7 +5169,8 @@ def test_a_bucket_row_is_not_given_an_availability_verdict(monkeypatch):
                 .output.splitlines() if l.startswith("L4 ") and "any of" in l)
     assert "not offered here" not in line, line
 
-    payload = json.loads(quota_list(cloud, monkeypatch, "--json", "--by-region")
+    # Without the table flag, for the reason above.
+    payload = json.loads(quota_list(cloud, monkeypatch, "--json")
                          .output.split("\n", 1)[1])
     bucket = next(r for r in payload["by_region"]
                   if r["gpu"] == "L4" and "any of" in r["region"])
@@ -5222,3 +5300,1602 @@ def test_the_three_surfaces_agree_about_a_card_refused_elsewhere(monkeypatch):
     assert "request it" not in narrowed, narrowed
     assert all("request it" not in l for l in by_region), by_region
     assert planned["a100-80gb"].outcome == DENIED, planned["a100-80gb"]
+
+
+# --- pass 5.1: a span plus its named siblings is the sum, not the larger ------
+
+
+def test_where_label_adds_the_named_regions_to_the_span():
+    """`quota list` said `T4 1 19 regions ready` while `create --gpu t4` said
+    `T4: 1, in 43 regions` about the same project in the same minute. The API is
+    43: twenty-four individually named rows plus a nineteen-location catch-all.
+
+    `where_label` took `max()` over the spanning labels and DISCARDED every named
+    region — so the answer was not merely low, it excluded us-central1, the
+    tool's own default region.
+
+    THE FIXTURES COULD NOT SEE IT. Every existing unit test of this function
+    feeds it a HOMOGENEOUS set: all named, or one span. The shape that occurs
+    live — named rows AND a catch-all together — was never constructed, in the
+    function whose entire job is describing geography.
+    """
+    from comfy_qa.quota import where_label
+
+    mixed = {"us-central1", "europe-west4", "19 regions"}
+    assert where_label(mixed) == "21 regions", where_label(mixed)
+
+    # and the homogeneous cases still answer as they did
+    assert where_label({"us-central1"}) == "us-central1"
+    assert where_label({"us-central1", "europe-west4"}) == "2 regions"
+    assert where_label({"19 regions"}) == "19 regions"
+    assert where_label({"global"}) == "global"
+
+
+def test_quota_list_and_create_count_the_same_regions(monkeypatch):
+    """The two surfaces, on one fixture built the way the live project reports:
+    named rows for the regions that have their own dimension entry, plus one
+    catch-all covering the rest."""
+    named = ["us-central1", "europe-west4"]
+    spread = [{"quotaId": T4, "dimensionsInfos": [
+        *[{"dimensions": {"region": r}, "details": {"value": "1"},
+           "applicableLocations": [r]} for r in named],
+        {"details": {"value": "1"},
+         "applicableLocations": ["asia-east1", "africa-south1"]},
+    ]}]
+
+    lines = quota_list(Cloud(quotas=spread), monkeypatch).output.splitlines()
+    header = next(l for l in lines if l.startswith("GPU "))
+    start, stop = header.index("WHERE"), header.index("STATUS")
+    where = next(l[start:stop].strip() for l in lines if l.startswith("T4 "))
+
+    from comfy_qa.create import CARDS, card_grant
+
+    _limit, regions = card_grant(CARDS["t4"], spread)
+    assert where == f"{len(regions)} regions", (where, regions)
+
+
+# --- pass 5.4: a retraction that only reached the comment ---------------------
+
+
+RETRACTED = [
+    "immediately and without review",
+    "cannot be taken back by waiting",
+    "quick, permanent and unremarked",
+]
+
+
+def test_a_claim_the_code_retracts_does_not_ship_anywhere_else():
+    """SIXTEENTH SECOND-SITE, and the worst-placed one: the retraction is in a
+    docstring and the claim was still in `--help`.
+
+    `request_value` says outright that "a decrease is fulfilled immediately and
+    without review, so it is the one quota change that is quick, permanent and
+    unremarked" was relayed rather than read and is wrong twice over — nothing in
+    the API schema says "immediately" or "without review", and `resetValue` is
+    documented as the value a quota is reset to "if a quota decrease preference
+    is deleted", which contradicts "permanent" outright.
+
+    It shipped anyway in `quota request --help`, in a remedy line printed at the
+    moment of refusal, and in two docs pages. Help text is more user-facing than
+    the comment retracting it.
+
+    THE GUARD IS THE POINT. Retracting a claim in one file while it ships from
+    four others is not a wording slip, it is the shape this feature has produced
+    sixteen times; the only fix that holds is one that fails when the sentence
+    comes back.
+    """
+    from pathlib import Path
+
+    # WHITESPACE COLLAPSED FIRST. The help text wraps the sentence across three
+    # source lines, so a line-by-line search found the two docs and the remedy
+    # and missed the one that is printed by `--help` — a guard that could not see
+    # the worst instance, which is the defect it was written to stop.
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in sorted([*root.glob("comfy_qa/*.py"), *root.glob("docs/*.md"),
+                        root / "README.md"]):
+        # QUOTES STRIPPED TOO. The help text is built from adjacent string
+        # literals — `"...immediately and without " "review, so..."` — so
+        # collapsing whitespace alone leaves `without " "review` and the search
+        # misses it. A sentence split by the compiler is still a sentence the
+        # user reads in one piece.
+        flat = " ".join(path.read_text().replace('"', " ").replace("'", " ").split())
+        for claim in RETRACTED:
+            start = 0
+            while (at := flat.find(claim, start)) != -1:
+                start = at + 1
+                # The retraction itself quotes the sentence in order to withdraw
+                # it, which is the one place it belongs.
+                if "asserted that Google" in flat[max(0, at - 300):at]:
+                    continue
+                offenders.append(f"{path.name}: {claim!r}")
+    assert not offenders, (
+        "a retracted claim is still shipping:\n  " + "\n  ".join(offenders))
+
+
+def test_an_unlimited_grant_gets_a_remedy_about_a_grant(monkeypatch):
+    """4b, and the SEVENTH instance of the shape the block's own comment names.
+
+    That comment says `send is None` has THREE causes. It has four:
+    `wanted < 0`, `wanted == 0 and not release`, `held == UNLIMITED`, and an
+    unreadable standing value. The fourth fell into the `else`, whose comment
+    reads "The standing value could not be read" — and live:
+
+        NVIDIA-T4-GPUS-per-project-zone: this project holds UNLIMITED ...; 1 would lower it
+        to fix: --allow-lower   # send it anyway, knowing it may replace a larger standing request
+
+    The standing value WAS read. Nothing is replacing a request — there is no
+    preference for that id at all. What is at stake is an unlimited grant, and
+    the remedy describes the stake as a request.
+
+    A comment enumerating the causes is not a guard against a new one arriving;
+    counting them in a test is.
+    """
+    unlimited = [{"quotaId": "NVIDIA-T4-GPUS-per-project-zone",
+                  "dimensionsInfos": [{"details": {"value": "-1"},
+                                       "applicableLocations": ["us-central1-a"]}]}]
+    result = quota_request(Cloud(quotas=unlimited), monkeypatch,
+                           "--quota-id", "NVIDIA-T4-GPUS-per-project-zone",
+                           "--value", "1", "--dry-run")
+
+    assert result.exit_code == 2
+    assert "UNLIMITED" in result.output, result.output
+    assert "standing request" not in result.output, result.output
+    assert "--allow-lower" in result.output, (
+        "allow-lower IS the flag that performs this one, unlike the negative")
+
+
+# --- pass 5.5: nothing irrevocable is filed before everything is checked ------
+
+
+def test_a_refusal_on_the_third_card_files_nothing_for_the_first_two(monkeypatch):
+    """`quota request --gpu l4,t4,h100` filed L4, filed T4, then refused H100 at
+    the floor and exited 2 — with `submitted` discarded, so the `track them:`
+    line naming what HAD been filed never printed either. Two irrevocable
+    requests on the project and no record of them in the output that reported a
+    failure.
+
+    Every input needed to refuse H100 — the quota records and the preference
+    list — is fetched BEFORE the loop. Nothing has to be sent to discover it.
+    So the whole set is checked first, and the command either files all of them
+    or none.
+
+    Ranked as "noted, not a defect" by the fifth pass. It is on the one path in
+    this tool that cannot be undone, and the check is free, which is enough.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT, preferences=STANDING_H100_AT_8)
+    result = quota_request(cloud, monkeypatch, "--gpu", "l4,t4,h100",
+                           "--value", "1")
+
+    assert result.exit_code == 2
+    assert cloud.submitted == [], (
+        f"filed {len(cloud.submitted)} request(s) before refusing the third")
+    assert "h100" in result.output.lower(), result.output
+
+
+def test_a_bucket_is_checked_against_the_regions_it_actually_covers(monkeypatch):
+    """The fifth pass's third finding, still live after the `--by-region` work.
+
+        P100  any of 19  1  ready — this tool cannot drive it
+        P4    any of 19  1  ready — this tool cannot drive it
+        V100  any of 19  1  ready — this tool cannot drive it
+
+    These are not the K80 case: each IS stocked somewhere it is metered, so
+    "stocked nowhere" does not fire and the bucket stayed unchecked. But the
+    membership is not unknowable — a catch-all row covers exactly the regions
+    that have NO row of their own, so it is the metered regions minus the named
+    siblings, both of which are already in hand.
+
+    Third time the missing location list has cost accuracy: `never_asked_in`
+    counted zones, `where_label` undercounted a span, and now this.
+    """
+    named, bucketed = ["us-central1", "europe-west4"], ["asia-east1", "africa-south1"]
+    spread = [{"quotaId": T4, "dimensionsInfos": [
+        *[{"dimensions": {"region": r}, "details": {"value": "1"},
+           "applicableLocations": [r]} for r in named],
+        {"details": {"value": "1"}, "applicableLocations": bucketed},
+    ]}]
+    cloud = Cloud(quotas=spread, accelerators=stocking("us-central1", "nvidia-tesla-t4"))
+
+    lines = quota_list(cloud, monkeypatch, "--by-region").output.splitlines()
+    bucket = next(l for l in lines if l.startswith("T4 ") and "any of" in l)
+    assert "not offered here" in bucket, bucket
+
+    here = next(l for l in lines if l.startswith("T4 ") and " us-central1 " in l)
+    assert "not offered here" not in here, here
+
+
+def test_the_dry_run_line_names_the_card_not_just_the_raw_id(monkeypatch, tmp_path):
+    """`setup --dry-run` ended with
+
+        would ask for GPUS-PER-GPU-FAMILY-per-project-region = 8
+
+    — a raw id that meters five cards, with no card and no region named. The
+    tool's own refusal for that id says "meters several cards and names which one
+    in a dimension, so a raw id cannot say which you mean". Cosmetic, and it
+    contradicts a rule this tool enforces against its users one command over.
+    """
+    # `europe-west4`, not `europe-west1`: `REGIONS_43` is a FOUR-element stand-in
+    # for the live forty-three, so europe-west1 is not a region this fixture's
+    # project meters and `setup` now stops on it as a typo — correctly, and the
+    # test would have been asserting on a refusal instead of a plan.
+    cloud = Cloud(quotas=THIS_PROJECT)
+    p = run(cloud, config_path=tmp_path / "hosts.toml", quota_dry_run=True,
+            region="europe-west4")
+    lines = [l for l in p.said if l.startswith("would ask for")]
+
+    assert lines, "no dry-run request lines"
+    for line in lines:
+        assert "=" in line, line
+        if FAMILY in line:
+            assert "H100-80GB" in line or "h100" in line.lower(), line
+            assert "europe-west4" in line, line
+
+
+# --- pass 5 re-run: metered is not the same question as granted ---------------
+
+
+def test_a_card_at_zero_is_still_metered_and_still_gets_a_region_to_ask_in(
+        monkeypatch):
+    """NINTH INSTANCE OF THE REMEDY SHAPE, INVERTED — not a remedy that fails,
+    but the one that works never being printed. Live:
+
+        $ quota request --gpu h100 --region africa-south1
+        h100: africa-south1 does not offer this card — Google sells it in 20
+              regions, none of them metered by this project
+        to fix: comfy-qat quota list --region africa-south1
+
+    The project meters H100 in all 43 regions, so all 20 ARE metered. And
+    `quota request --gpu h100 --region asia-east1` exits 0 and builds a valid
+    preference — the line that was withheld.
+
+    `regions_with_quota` answers "where is there a NON-ZERO grant", which its
+    docstring says and its name does not. Read as "where is this project
+    metered", the two differ exactly when the limit is zero — which is every card
+    anybody would run `quota request` for.
+
+    T4 holds quota and got the useful remedy; H100 did not. The tool was most
+    unhelpful precisely where it was most needed.
+    """
+    zero_everywhere = [quota(FAMILY, 0, locations=REGIONS_43)]
+    family_rows = [family(0, "NVIDIA_H100", locations=REGIONS_43)]
+    cloud = Cloud(quotas=family_rows,
+                  accelerators=stocking("asia-east1", "nvidia-h100-80gb"))
+    result = quota_request(cloud, monkeypatch, "--gpu", "h100",
+                           "--region", "africa-south1", "--dry-run")
+
+    assert result.exit_code == 2
+    assert "none of them metered" not in result.output, result.output
+    assert "--region asia-east1" in result.output, (
+        "the remedy that works was withheld from the card that needs it")
+
+
+def test_metered_and_granted_are_different_questions():
+    """The predicate, directly. `regions_with_quota` keeps its meaning — where
+    could a box start today — and metering gets its own name, because reading one
+    as the other is what produced the finding above."""
+    from comfy_qa.quota import regions_metered, regions_with_quota
+
+    at_zero = [quota(T4, 0, locations=["us-central1", "asia-east1"])]
+    assert regions_with_quota("t4", at_zero) == []
+    assert sorted(regions_metered("t4", at_zero)) == ["asia-east1", "us-central1"]
+
+    granted = [quota(T4, 1, locations=["us-central1"])]
+    assert regions_with_quota("t4", granted) == ["us-central1"]
+    assert sorted(regions_metered("t4", granted)) == ["us-central1"]
+
+
+def test_a_card_at_zero_gets_the_metered_elsewhere_refusal(monkeypatch):
+    """The second consumer of the same conflation, found by a mutation sweep.
+
+    `places` decides between "this project has no <card> quota in <region>",
+    which names where it IS metered, and the blunter "this project reports no
+    quota for <card>". Built from GRANTED regions, a card at zero had no places
+    at all, so it always fell to the blunt one — again, for exactly the cards a
+    person is asking about.
+    """
+    # A PER-CARD QUOTA, because a family target resolves in any region — Google
+    # keys it on (family, region) and the row need not list the region — so the
+    # unresolvable branch is never reached that way. `T4` is here only to put
+    # europe-west4 in the region universe, ahead of the typo check.
+    metered_in_one = [quota(L4, 0, locations=["us-central1"]),
+                      quota(T4, 1, locations=["europe-west4"])]
+    result = quota_request(Cloud(quotas=metered_in_one), monkeypatch,
+                           "--gpu", "l4", "--region", "europe-west4",
+                           "--dry-run")
+
+    assert result.exit_code == 2
+    assert "no l4 quota in europe-west4" in result.output, result.output
+    assert "--region us-central1" in result.output, (
+        "the refusal knows where the card IS metered and did not say")
+
+
+def test_a_bucket_for_a_card_at_zero_is_still_checked(monkeypatch):
+    """The third consumer. A bucket's membership is metered-minus-named, and with
+    GRANTED semantics a card at zero was metered nowhere — so `covered` came out
+    empty and the row read as unanswerable rather than being checked."""
+    named, bucketed = ["us-central1"], ["asia-east1", "europe-west4"]
+    spread = [{"quotaId": FAMILY, "dimensionsInfos": [
+        *[{"dimensions": {"gpu_family": "NVIDIA_H100", "region": r},
+           "details": {}, "applicableLocations": [r]} for r in named],
+        {"dimensions": {"gpu_family": "NVIDIA_H100"}, "details": {},
+         "applicableLocations": bucketed},
+    ]}]
+    cloud = Cloud(quotas=spread,
+                  accelerators=stocking("us-central1", "nvidia-h100-80gb"))
+
+    bucket = next(l for l in quota_list(cloud, monkeypatch, "--by-region")
+                  .output.splitlines()
+                  if l.startswith("H100-80GB") and "any of" in l)
+    assert "not offered here" in bucket, bucket
+
+
+# --- pass 6: setup is the one surface with neither check ----------------------
+
+
+def test_setup_refuses_a_region_that_does_not_exist(tmp_path):
+    """F1, and one typo produces TWO falsehoods. Live:
+
+        $ comfy-qat setup --dry-run --region us-centrall --non-interactive
+        exit=0
+        H100-80GB  will ask Google for 8 in us-centrall
+        L4         this project does not meter L4 quota, so there is nothing to ask for
+        T4         this project does not meter T4 quota, so there is nothing to ask for
+
+    It plans an irrevocable request for eight H100s into a region that does not
+    exist, AND reports four cards as unmetered when L4 and T4 are granted at 1
+    across forty-three regions.
+
+    SEVENTEENTH SECOND-SITE. `quota list --region` and `quota request --region`
+    both refuse this exact typo with exit 2. `setup` is the command a new user
+    runs first, unattended, and it is the one that files automatically.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    with pytest.raises(SetupStopped) as stopped:
+        run(cloud, config_path=tmp_path / "hosts.toml", region="us-centrall",
+            quota_dry_run=True)
+
+    assert "us-centrall" in str(stopped.value)
+    assert cloud.submitted == [], "planned into a region that does not exist"
+
+
+def test_setup_does_not_call_a_granted_card_unmetered(tmp_path):
+    """The second falsehood, which survives a VALID region too: the code means
+    "no row matched the region I filtered by" and says "this project does not
+    meter L4". Same conflation as `regions_with_quota`, wearing different
+    clothes — and here it reports a card granted in forty-three regions as one
+    the project does not meter at all.
+
+    Said honestly it degrades instead of lying: no quota IN THAT REGION.
+    """
+    only_here = [quota(L4, 1, locations=["us-central1"]),
+                 quota(T4, 1, locations=["europe-west4"])]
+    plan = {a.card: a for a in plan_quota(only_here, PREFS_NONE,
+                                          region="europe-west4")}
+
+    detail = plan["l4"].detail
+    assert "does not meter L4" not in detail, detail
+    assert "europe-west4" in detail, detail
+
+
+def test_setup_refuses_a_region_that_sells_no_gpus(tmp_path):
+    """F2. `setup --region africa-south1` planned an H100 request into a region
+    that sells no NVIDIA accelerator of any kind. `quota request` refuses exactly
+    that, and has since the fourth pass."""
+    cloud = Cloud(quotas=THIS_PROJECT,
+                  accelerators=stocking("us-central1", "nvidia-h100-80gb"))
+    with pytest.raises(SetupStopped) as stopped:
+        run(cloud, config_path=tmp_path / "hosts.toml", region="africa-south1",
+            quota_dry_run=True)
+
+    assert "africa-south1" in str(stopped.value)
+    assert cloud.submitted == []
+
+
+def test_a_region_scoped_raw_id_without_a_region_is_refused(monkeypatch):
+    """F3. `auth.py` read `if region and needs_region(quota_id)` — so a MISSING
+    region silently dropped the required dimension instead of refusing. The `and`
+    made the guard unreachable in precisely the case it exists for.
+
+    The result is the shape `needs_region`'s own docstring records Google
+    rejecting: a dimensionless preference, filed permanently, for an id whose
+    `-per-project-region` suffix defines a region dimension the API requires to
+    be set.
+
+    AND THE TEST STORY IS THE SHARPEST YET. There is a guard named
+    `test_every_region_scoped_request_names_a_region` — and it loops only over a
+    `setup` run's submissions, so the one surface that breaks the rule cannot
+    reach the test that names it. A rule tested on one surface is a rule
+    unenforced on the others.
+    """
+    cloud = Cloud(quotas=[quota(T4, 1, locations=["us-central1"])])
+    result = quota_request(cloud, monkeypatch, "--quota-id", T4,
+                           "--value", "1", "--dry-run")
+
+    assert cloud.submitted == [], result.output
+    assert result.exit_code == 2
+    assert "--region" in result.output, result.output
+
+
+def test_every_surface_that_can_file_a_request_names_the_region(monkeypatch,
+                                                                tmp_path):
+    """The population the guard should have covered. `setup` was already right;
+    `quota request` was not, on both the `--gpu` and `--quota-id` paths, and the
+    existing test could see only the first of the three.
+
+    Asserted on the COMMANDS, from every surface that builds one, so a fourth
+    caller cannot be added without appearing here.
+    """
+    from comfy_qa.quota import needs_region
+
+    # WITH AND WITHOUT A REGION, per surface. The first version handed every
+    # surface an explicit `--region` — so it enumerated the right population and
+    # STILL could not reach the branch, because `if region and needs_region(...)`
+    # only misbehaves when the region is ABSENT. Reintroducing the `and` left
+    # this test green: the same defect it was written to close, one level in.
+    def filed(cloud, *args):
+        quota_request(cloud, monkeypatch, *args)
+        return cloud.submitted
+
+    def at_zero():
+        return Cloud(quotas=[quota(T4, 0, locations=["us-central1"])])
+
+    setup_cloud = Cloud(quotas=THIS_PROJECT)
+    run(setup_cloud, config_path=tmp_path / "hosts.toml", region="us-central1")
+    surfaces = {
+        "setup": setup_cloud.submitted,
+        "--gpu with a region": filed(at_zero(), "--gpu", "t4", "--region",
+                                     "us-central1", "--value", "1"),
+        "--gpu without one": filed(at_zero(), "--gpu", "t4", "--value", "1"),
+        "--quota-id with a region": filed(at_zero(), "--quota-id", T4,
+                                          "--region", "us-central1",
+                                          "--value", "1"),
+        "--quota-id without one": filed(at_zero(), "--quota-id", T4,
+                                        "--value", "1"),
+    }
+
+    built = [args for one in surfaces.values() for args in one]
+    assert len(built) >= 3, f"only {len(built)} commands built"
+    for args in built:
+        quota_id = flag(args, "quota-id")
+        if needs_region(quota_id):
+            dims = parse_dimensions(flag(args, "dimensions"))
+            assert "region" in dims, (quota_id, args)
+
+    # AND THE OMITTED-REGION SURFACES ARE NAMED, because the loop above is
+    # satisfied by filing nothing — from outside, a refusal and a silent drop
+    # look identical, and one of them is a permanent preference.
+    assert surfaces["--quota-id without one"] == [], (
+        "a region-scoped raw id was filed with no region")
+    assert surfaces["--gpu without one"], (
+        "`--gpu` resolves a region itself, so it must still file something")
+
+
+def test_the_default_value_is_the_number_the_card_needs(monkeypatch):
+    """F4. The tool's own remedy printed `--value 1` for an H100 — and
+    `CARDS["h100"]` is `count=8, a3-highgpu-8g`, `setup` asks for 8 from that
+    same table, and `request_value`'s docstring calls 1 "a number that cannot
+    start an `a3-highgpu-8g` even if granted".
+
+    So the floor protects a standing request at 8, and in any region without one
+    the same tool files 1 — permanently, through a line it printed itself, with
+    no warning. The asymmetry fits on one screen: `--value 9` DOES warn that 8 is
+    the most any machine takes. The number was held all along and used in one
+    direction only.
+    """
+    cloud = Cloud(quotas=[family(0, "NVIDIA_H100", locations=REGIONS_43)])
+    quota_request(cloud, monkeypatch, "--gpu", "h100", "--region",
+                  "us-central1")
+
+    assert [flag(a, "preferred-value") for a in cloud.submitted] == ["8"], (
+        cloud.submitted)
+
+
+def test_a_one_gpu_card_still_defaults_to_one(monkeypatch):
+    """The other half, from the same table rather than from a constant: L4 is
+    `count=1`, so nothing changes for it."""
+    cloud = Cloud(quotas=[quota(L4, 0, locations=["us-central1"])])
+    quota_request(cloud, monkeypatch, "--gpu", "l4", "--region", "us-central1")
+
+    assert [flag(a, "preferred-value") for a in cloud.submitted] == ["1"]
+
+
+def test_a_raw_id_with_no_card_still_defaults_to_one(monkeypatch):
+    """`--quota-id` names no card, so there is no count to read and the old
+    default stands."""
+    cloud = Cloud(quotas=[quota(T4, 0, locations=["us-central1"])])
+    quota_request(cloud, monkeypatch, "--quota-id", T4, "--region",
+                  "us-central1")
+
+    assert [flag(a, "preferred-value") for a in cloud.submitted] == ["1"]
+
+
+def test_the_availability_caveat_survives_for_rows_that_were_not_checked(
+        monkeypatch):
+    """F5, and it is the sharpest form of a true premise applied too widely.
+
+    `--by-region` suppresses the "STATUS reports quota held, not whether a region
+    offers the card" note on the stated grounds that it now answers availability
+    per row. True of the named rows and FALSE of the buckets it classifies as
+    mixed — which live are L4 (17 of 42 stocked), T4 (2 of 19) and RTX-PRO-6000
+    (22 of 43). `T4  any of 19  ready` covers nineteen regions of which two sell
+    T4, and reads identically to a row that was checked and passed.
+
+    Net effect: the more detailed view was less honest than the collapsed one.
+
+    The note survives for exactly the rows that were not checked, and names them,
+    so "not checked" stops rendering as "checked and fine".
+    """
+    named, bucketed = ["us-central1"], ["asia-east1", "africa-south1"]
+    mixed = [{"quotaId": T4, "dimensionsInfos": [
+        *[{"dimensions": {"region": r}, "details": {"value": "1"},
+           "applicableLocations": [r]} for r in named],
+        {"details": {"value": "1"}, "applicableLocations": bucketed},
+    ]}]
+    # asia-east1 stocks T4 and africa-south1 does not, so the bucket is mixed.
+    catalogue = stocking("us-central1", "nvidia-tesla-t4") + [
+        {"name": "nvidia-tesla-t4", "zone": "https://x/zones/asia-east1-a"}]
+    out = quota_list(Cloud(quotas=mixed, accelerators=catalogue), monkeypatch,
+                     "--by-region").output
+
+    assert "STATUS reports quota held" in out, out
+    assert "T4" in out.split("STATUS reports quota held")[1][:400], (
+        "the note has to say WHICH rows it is about")
+
+
+def test_the_caveat_stays_away_when_every_row_was_checked(monkeypatch):
+    """The other half, so the note does not simply come back for everyone. With
+    no bucket at all, every row names a region and every one was checked."""
+    all_named = [{"quotaId": T4, "dimensionsInfos": [
+        {"dimensions": {"region": r}, "details": {"value": "1"},
+         "applicableLocations": [r]} for r in ("us-central1", "asia-east1")]}]
+    out = quota_list(Cloud(quotas=all_named,
+                           accelerators=stocking("us-central1", "nvidia-tesla-t4")),
+                     monkeypatch, "--by-region").output
+
+    assert "STATUS reports quota held" not in out, out
+
+
+# --- pass 6 minors: two user-facing strings ----------------------------------
+
+
+@pytest.mark.parametrize("card", ["a100", "a100-80gb", "h100", "l4", "t4"])
+def test_the_refusal_uses_the_right_article(card):
+    """"a A100 box", "a H100-80GB box" — wrong on three of the five drivable
+    cards, in the sentence a person meets when a create is refused."""
+    from comfy_qa.create import CARDS, check_quota
+
+    problem = str(check_quota(CARDS[card], [], [], "us-central1").problem())
+    for vowel in "AEIOU8":
+        assert f"a {vowel}" not in problem, problem
+
+
+def test_no_user_facing_string_says_a_word_twice():
+    """`setup.py` carried "one that works. Ask ask for one that works:" —
+    reachable only on a project holding quota for undrivable cards ONLY, which is
+    why nothing here has ever printed it. A doubled word is trivial; a
+    user-facing string no test can reach is the part worth guarding."""
+    import ast
+    import re as _re
+    from pathlib import Path
+
+    # STRING LITERALS, VIA THE PARSER. Two earlier attempts framed this wrongly:
+    # line-by-line missed the case entirely, because `"... one. Ask "` and
+    # `"ask for one that works"` are adjacent literals on separate lines; and
+    # flattening the whole file found `main main` and `results results` in code,
+    # which is noise. `ast` merges implicit concatenation for us and hands back
+    # exactly the strings a user can see.
+    #
+    # `venv venv` is `python -m venv venv`, a real command and not prose.
+    allowed = {"venv venv", "had had"}
+    root = Path(__file__).resolve().parent.parent
+    doubled = []
+    for path in sorted(root.glob("comfy_qa/*.py")):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+                continue
+            # CASE-INSENSITIVE, because the defect was "Ask ask" — a sentence
+            # boundary followed by the same word — and a case-sensitive
+            # backreference cannot match it. The first version of this guard
+            # passed against the reintroduced original, which is the one thing a
+            # guard must never do.
+            for match in _re.finditer(r"\b(\w+) \1\b", node.value, _re.IGNORECASE):
+                if match.group(0).lower() in allowed:
+                    continue
+                doubled.append(f"{path.name}:{node.lineno}  {match.group(0)!r}")
+    assert not doubled, "a word is repeated in a string:\n  " + "\n  ".join(doubled)
+
+
+# --- pass 7: one region check, called by every surface ------------------------
+
+
+def test_a_zone_passed_as_a_region_is_refused_not_answered(monkeypatch):
+    """EIGHTEENTH SECOND-SITE, and the worst kind: a confident empty answer.
+
+        $ comfy-qat quota list --region us-central1-a
+        exit=0
+        GPU            LIMIT  WHERE   STATUS
+        any (global)       1  global  ready
+
+    That says this project holds no card quota anywhere. It holds six cards at 1.
+    And `us-central1-a` is the single most likely thing a person types when they
+    mean a region, because every `create` and `gcloud` example uses zones.
+
+    Exit 0 is what makes it worse than a refusal: the typo path exits non-zero
+    and says what is wrong; this answers confidently with an empty picture, which
+    is the shape a script trusts and a person believes.
+
+    `quota list` was the one surface that built its OWN region check instead of
+    calling the shared universe — and that local check folds zone names in, so
+    zones from `-per-project-zone` rows passed it.
+    """
+    zoned = [quota(L4, 1, locations=["us-central1"]),
+             {"quotaId": "NVIDIA-L4-GPUS-per-project-zone",
+              "dimensionsInfos": [{"details": {"value": "1"},
+                                   "applicableLocations": ["us-central1-a"]}]}]
+    result = quota_list(Cloud(quotas=zoned), monkeypatch, "--region",
+                        "us-central1-a")
+
+    assert result.exit_code == 2, result.output
+    assert "zone" in result.output.lower(), result.output
+    assert "--region us-central1" in result.output, (
+        "the region it means is right there and was not offered")
+
+
+@pytest.mark.parametrize("surface", ["list", "request"])
+def test_a_region_wrong_only_in_case_gets_the_nearest_match(surface, monkeypatch):
+    """F8. `"US-CENTRAL1".split("-")[0]` is `"US"`; the universe holds `"us"`. So
+    a region wrong by zero characters but for case fell to the generic fix line,
+    while a zone name — wrong by a whole segment — got the exact one."""
+    cloud = Cloud(quotas=[quota(L4, 1, locations=["us-central1"])])
+
+    def refuse(region):
+        args = (("--region", region) if surface == "list"
+                else ("--gpu", "l4", "--region", region))
+        out = (quota_list(cloud, monkeypatch, *args) if surface == "list"
+               else quota_request(cloud, monkeypatch, *args))
+        assert out.exit_code == 2, out.output
+        return out.output
+
+    # Wrong in case ONLY, and the message says so rather than guessing. Both
+    # branches name us-central1, so asserting only the name cannot tell them
+    # apart — a sweep said so by surviving.
+    only_case = refuse("US-CENTRAL1")
+    assert "us-central1" in only_case
+    assert "lower case" in only_case, only_case
+
+    # AND WRONG IN CASE AND SPELLING, which is the input that actually exercises
+    # the nearest-match search: an exact fold cannot rescue it, so if the prefix
+    # comparison is case-sensitive there is no suggestion at all.
+    assert "us-central1" in refuse("US-CENTRAL99")
+
+
+def test_every_surface_asks_the_same_question_about_a_region(monkeypatch,
+                                                             tmp_path):
+    """The population, since this is the second time a region check has been
+    written per surface. All three refuse the same inputs."""
+    zoned = [quota(L4, 1, locations=["us-central1"]),
+             {"quotaId": "NVIDIA-L4-GPUS-per-project-zone",
+              "dimensionsInfos": [{"details": {"value": "1"},
+                                   "applicableLocations": ["us-central1-a"]}]}]
+
+    assert quota_list(Cloud(quotas=zoned), monkeypatch,
+                      "--region", "us-central1-a").exit_code == 2
+    assert quota_request(Cloud(quotas=zoned), monkeypatch, "--gpu", "l4",
+                         "--region", "us-central1-a").exit_code == 2
+    with pytest.raises(SetupStopped):
+        run(Cloud(quotas=zoned), config_path=tmp_path / "hosts.toml",
+            region="us-central1-a", quota_dry_run=True)
+
+
+def test_a_setup_remedy_carries_the_region_it_was_planning_for(tmp_path):
+    """TENTH INSTANCE OF THE REMEDY CLASS, AND THE FIRST THAT IS HARMFUL. The
+    others failed, or were withheld; this one succeeds at doing the wrong thing,
+    permanently.
+
+        $ comfy-qat setup --region europe-west1 --no-quota-request
+        To ask later: comfy-qat quota request --gpu h100
+
+    With no region, `quota request` derives us-central1 — where Google has
+    already refused H100 — while setup's own plan, printed in the same run, named
+    europe-west1. Run the remedy and you file the refused request again.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    p = run(cloud, config_path=tmp_path / "hosts.toml", region="europe-west4",
+            quota_requests=False)
+    later = [l for l in p.said if "quota request --gpu" in l]
+
+    assert later, "no remedy printed"
+    for line in later:
+        assert "--region europe-west4" in line, line
+
+
+def test_a_setup_remedy_carries_the_region_when_nothing_is_sent(tmp_path):
+    """The sibling line, on the declined-confirmation path — same sentence, same
+    omission, printed from a different branch."""
+    cloud = Cloud(quotas=THIS_PROJECT)
+    p = run(cloud, config_path=tmp_path / "hosts.toml", region="europe-west4",
+            prompts=prompts(confirm=False))
+    later = [l for l in p.said if "quota request --gpu" in l]
+
+    assert later, "no remedy printed"
+    for line in later:
+        assert "--region europe-west4" in line, line
+
+
+def test_pools_are_read_through_the_cards_quota_aliases():
+    """F4, and it is STRUCTURALLY THE DEFECT THAT STARTED THE POOL REWRITE.
+
+    RTX PRO 6000 was reported denied while a granted Spot allowance sat unread.
+    `_pool_ids` interpolates the card's DISPLAY name — `NVIDIA-{gpu}-GPUS-...` —
+    so for H100-80GB it builds `PREEMPTIBLE-NVIDIA-H100-80GB-GPUS-...`, which is
+    not what Google meters. The card's `quota_aliases` holds `H100`, the spelling
+    that resolves, and nothing consulted it.
+
+    Latent only because H100 Spot is 0 today, and it would surface the day Google
+    grants any — which is exactly the shape of the original: a pool held and
+    never read.
+    """
+    from comfy_qa.quota import _pool_ids
+
+    ids = {quota_id for _pool, quota_id, _counts, _cost in _pool_ids("H100-80GB")}
+    assert "PREEMPTIBLE-NVIDIA-H100-GPUS-per-project-region" in ids, sorted(ids)
+
+    # And a card with no alias is unchanged.
+    plain = {q for _p, q, _c, _x in _pool_ids("L4")}
+    assert "PREEMPTIDE-NVIDIA-L4-GPUS-per-project-region" not in plain
+    assert "PREEMPTIBLE-NVIDIA-L4-GPUS-per-project-region" in plain, sorted(plain)
+
+
+def test_a_spot_grant_under_the_alias_is_actually_found(monkeypatch):
+    """Through the surface, because `_pool_ids` returning the right string proves
+    nothing about whether anything reads it. A Spot grant metered under the
+    alias has to make the card ready, the way RTX-PRO-6000's did."""
+    spot_h100 = [family(0, "NVIDIA_H100", locations=["us-central1"]),
+                 quota("PREEMPTIBLE-NVIDIA-H100-GPUS-per-project-region", 1,
+                       locations=["us-central1"])]
+    line = next(l for l in quota_list(Cloud(quotas=spot_h100), monkeypatch)
+                .output.splitlines() if l.startswith("H100-80GB"))
+
+    assert "Spot" in line, line
+
+
+# --- pass 7, the rest --------------------------------------------------------
+
+
+def test_the_value_help_says_what_the_default_actually_is():
+    """F6. `--help` still said "Left off, one" after the default became the
+    card's own count — `--gpu h100` sends 8. The prose block immediately above
+    `_default_for` was rewritten for the new behaviour and the `help=` eleven
+    lines below was left at the old answer.
+
+    `--help` is what somebody reads BEFORE typing an irrevocable command, and
+    `test_option_help.py` asserts every option HAS help, never that it is true,
+    so this class had no guard at all."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    text = " ".join(CliRunner().invoke(app, ["quota", "request", "--help"])
+                    .output.split())
+
+    assert "Left off, one" not in text, text
+    assert "8" in text or "the card" in text, (
+        "the help has to say what the default is now")
+
+
+def test_the_ceiling_is_not_listed_among_cards_that_were_not_checked(monkeypatch):
+    """F7. The note read "... This applies to A100, ..., T4, any (global), whose
+    rows cover several regions at once." Two things false about the last member:
+    `any (global)` is not a card — the first note in the same output says so —
+    and its row covers exactly one place, `global`.
+
+    Absent-versus-zero again: `stocks.get("any (global)")` is None because it is
+    not a card, and the `places is None` branch reads that as "lookup failed"
+    rather than "not applicable". The precedent is fourteen lines up in the same
+    file: `drivable_flag` carries `if name == GLOBAL_ALLOWANCE: return None`.
+    """
+    mixed = [{"quotaId": T4, "dimensionsInfos": [
+        {"dimensions": {"region": "us-central1"}, "details": {"value": "1"},
+         "applicableLocations": ["us-central1"]},
+        {"details": {"value": "1"},
+         "applicableLocations": ["asia-east1", "africa-south1"]},
+    ]}, quota(CEILING, 1, locations=["global"])]
+    catalogue = stocking("us-central1", "nvidia-tesla-t4") + [
+        {"name": "nvidia-tesla-t4", "zone": "https://x/zones/asia-east1-a"}]
+    out = quota_list(Cloud(quotas=mixed, accelerators=catalogue), monkeypatch,
+                     "--by-region").output
+
+    note = out.split("STATUS reports quota held")[1]
+    assert "any (global)" not in note[:400], note[:400]
+
+
+def test_both_json_arrays_carry_the_same_keys(monkeypatch):
+    """F9. `by_region[]` objects have `quota_id`; `gpus[]` objects do not, because
+    the guard is `if quota_id is not None and "quota_id" in record` and `record`
+    comes from `asdict(row)` — a `CardSummary`, which has no such field. So the
+    assignment silently no-ops on one of the two arrays and a consumer reading
+    `gpus[].quota_id` gets a KeyError while the same name works next door."""
+    cloud = Cloud(quotas=rtx_three_ways(), preferences=DENIED_RTX)
+    # Without the table flag, for the reason above.
+    payload = json.loads(quota_list(cloud, monkeypatch, "--json")
+                         .output.split("\n", 1)[1])
+
+    collapsed = {k for row in payload["gpus"] for k in row}
+    per_region = {k for row in payload["by_region"] for k in row}
+    assert "quota_id" in collapsed, sorted(collapsed)
+    assert per_region - collapsed <= {"region"}, sorted(per_region - collapsed)
+    assert collapsed - per_region <= {"where"}, sorted(collapsed - per_region)
+
+
+def test_a_refusal_does_not_claim_it_kept_anything(monkeypatch):
+    """F10. Printed one line above the refusal:
+
+        warning: keeping the standing request for ... at 8; 2 would lower it
+        h100: refusing to lower the standing request to 2   [exit 2]
+
+    Nothing was kept. The command filed nothing and exited 2, and the sentence
+    reads as though it proceeded at 8."""
+    cloud = Cloud(quotas=THIS_PROJECT, preferences=STANDING_H100_AT_8)
+    result = quota_request(cloud, monkeypatch, "--gpu", "h100", "--value", "2")
+
+    assert result.exit_code == 2
+    assert "keeping" not in result.output, result.output
+
+
+def test_a_denied_ceiling_still_says_the_request_cannot_be_used(monkeypatch):
+    """F3, and the remedy exists in the file — it just cannot print.
+
+        H100-80GB    will ask Google for 8 in europe-west1
+        any (global) Google refused an earlier request. Not asked again automatically
+
+    `GPUS-ALL-REGIONS` is granted 1 and a raise to 2 was refused. An
+    `a3-highgpu-8g` needs 8. So this irrevocable request, if granted, cannot start
+    a machine — and the two facts sit four lines apart with nothing joining them.
+
+    `setup.py` builds exactly that sentence ("that card comes as more GPUs than
+    one machine"), and attaches it only to the branch that REQUESTS a ceiling
+    raise. When the ceiling is denied, `settled` returns early and the sentence is
+    never built — and the denied case is the one where the user most needs it,
+    because it is the one that will not fix itself on the next run.
+    """
+    denied_ceiling = [preference(CEILING, granted=1, preferred=2,
+                                 state_detail=DENIED_DETAIL, name="ceiling-no")]
+    plan = {a.label: a for a in plan_quota(THIS_PROJECT, denied_ceiling,
+                                           region="us-central1")}
+
+    assert plan["H100-80GB"].outcome == REQUEST, plan["H100-80GB"]
+    ceiling = plan["any (global)"]
+    assert "H100-80GB" in ceiling.detail, (
+        "the card that cannot fit under this ceiling is not named")
+    assert "8" in ceiling.detail, ceiling.detail
+
+
+def test_create_does_not_tell_you_to_file_a_request_google_refused():
+    """F5. Two surfaces, one card, opposite advice:
+
+        $ comfy-qat create --os linux --gpu a100 --dry-run
+        to fix: comfy-qat quota request --gpu a100, then wait for Google
+
+        $ comfy-qat quota list --region us-central1
+        A100  0  us-central1  denied — Google refused this; asking again will not help
+
+    One says ask and wait; the other says asking will not help. And the remedy as
+    printed does the futile thing — `quota request --gpu a100` derives
+    us-central1, the region it was refused in, and warns so itself.
+
+    `quota list` also reports `never asked in 42`, so the useful remedy is a
+    DIFFERENT REGION. `create` did not read the preferences it would need to know
+    any of this; now it does, and a failure to read them degrades to the old
+    wording rather than blocking a create.
+    """
+    from comfy_qa.create import CARDS, check_quota
+
+    refused_here = [preference(A100, granted=0, preferred=1,
+                               state_detail=DENIED_DETAIL, name="a100-usc1",
+                               dimensions={"region": "us-central1"})]
+    # METERED SOMEWHERE ELSE, because "ask in a different region" is only the
+    # remedy when a different region exists — `THIS_PROJECT` meters A100 in
+    # us-central1 alone, which is where it was refused, and the honest answer
+    # there is that there is nowhere else. That case has its own test.
+    spread = [q for q in THIS_PROJECT if q["quotaId"] != A100] + [
+        quota(A100, 0, locations=REGIONS_43)]
+    problem = check_quota(CARDS["a100"], spread, [], "",
+                          preferences=refused_here).problem()
+
+    assert problem is not None
+    assert "wait for Google" not in str(problem.fix), problem.fix
+    assert "refused" in str(problem).lower() or "refused" in str(problem.fix).lower()
+    assert "--region" in str(problem.fix), problem.fix
+
+
+def test_create_still_says_ask_and_wait_when_nothing_was_refused():
+    """The other half: a card nobody has asked about still gets the plain
+    remedy, and a preference list that could not be read behaves the same way."""
+    from comfy_qa.create import CARDS, check_quota
+
+    plain = check_quota(CARDS["a100"], THIS_PROJECT, [], "", preferences=[])
+    assert "wait for Google" in str(plain.problem().fix)
+
+    unread = check_quota(CARDS["a100"], THIS_PROJECT, [], "", preferences=None)
+    assert "wait for Google" in str(unread.problem().fix)
+
+
+@pytest.mark.parametrize("surface", ["list", "request", "setup"])
+def test_an_empty_region_is_an_error_not_an_omission(surface, monkeypatch,
+                                                     tmp_path):
+    """F11, and it is a decision rather than a defect report. `--region ""` fell
+    out of an `if region:` truthiness test and was treated exactly like omitting
+    the flag — planning against a derived region and, on a real run, filing an
+    irrevocable request there.
+
+    The realistic source of an empty value is `--region "$REGION"` in a script
+    with `REGION` unset. Someone who typed the flag has said they care which
+    region; silently choosing one for them is the one reading that cannot be
+    what they meant.
+
+    Omitting the flag entirely is unchanged and still derives a region.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    # THE MESSAGE, not just the exit code. Falling through to "no such region
+    # ''" also exits 2, so an exit-code-only assertion cannot tell the guard from
+    # its absence — which a mutation sweep said out loud.
+    if surface == "list":
+        result = quota_list(cloud, monkeypatch, "--region", "")
+    elif surface == "request":
+        result = quota_request(cloud, monkeypatch, "--gpu", "l4", "--region", "")
+    else:
+        with pytest.raises(SetupStopped) as stopped:
+            run(cloud, config_path=tmp_path / "hosts.toml", region="",
+                quota_dry_run=True)
+        assert "unset" in str(stopped.value), stopped.value
+        return
+
+    assert result.exit_code == 2
+    assert "unset" in result.output, result.output
+
+
+def test_omitting_the_region_entirely_still_derives_one(tmp_path):
+    """The other half, so the guard above does not quietly become "a region is
+    mandatory" — which would break the fresh-install flow the whole feature is
+    for."""
+    cloud = Cloud(quotas=THIS_PROJECT)
+    p = run(cloud, config_path=tmp_path / "hosts.toml", quota_dry_run=True)
+
+    assert any("quota plan" in line for line in p.said), p.said
+
+
+# --- pass 8: "never computed" must not be spellable as "computed and empty" ---
+
+
+def test_json_by_region_carries_verdicts_without_the_table_flag(monkeypatch):
+    """THE INSTANCE. `--json` emits `by_region` ALWAYS; `stocks` was computed
+    only when `--by-region` was ALSO passed. So:
+
+        $ comfy-qat quota list --json          # no --by-region
+        by_region rows: 140, offered_here null: 140
+        K80 rows: 25, statuses: ['ready']
+
+    The machine interface said K80 is ready in 25 regions while the human table
+    said "not offered here" for all 25 of them in the same run, and K80 exists
+    nowhere in Google's catalogue. That is the documented scripting surface.
+
+    THE RULE THIS TEST FOLLOWS, and the reason it exists at all: a test asserting
+    on a JSON array must drive the invocation WITHOUT the flag that shapes the
+    corresponding table. Both tests written for this defect passed `--by-region`,
+    which is the flag that masks it.
+    """
+    per_region = {"quotaId": K80, "dimensionsInfos": [
+        {"dimensions": {"region": r}, "details": {"value": "1"},
+         "applicableLocations": [r]} for r in ("asia-east1", "us-central1")]}
+    cloud = Cloud(quotas=[per_region, quota(L4, 1, locations=["us-central1"])],
+                  accelerators=stocking("us-central1", "nvidia-l4"))
+
+    payload = json.loads(quota_list(cloud, monkeypatch, "--json")
+                         .output.split("\n", 1)[1])
+    k80 = [r for r in payload["by_region"] if r["gpu"] == "K80"]
+
+    assert k80, "the fixture produced no K80 rows"
+    assert all(r["offered_here"] is False for r in k80), k80
+
+
+def test_the_two_surfaces_agree_without_the_table_flag(monkeypatch):
+    """The same run, both surfaces, `--by-region` passed to neither. The defect
+    was visible only by comparing them, which is why neither test caught it."""
+    per_region = {"quotaId": K80, "dimensionsInfos": [
+        {"dimensions": {"region": r}, "details": {"value": "1"},
+         "applicableLocations": [r]} for r in ("asia-east1", "us-central1")]}
+    cloud = Cloud(quotas=[per_region, quota(L4, 1, locations=["us-central1"])],
+                  accelerators=stocking("us-central1", "nvidia-l4"))
+
+    payload = json.loads(quota_list(cloud, monkeypatch, "--json")
+                         .output.split("\n", 1)[1])
+    table = quota_list(cloud, monkeypatch, "--by-region").output
+
+    for row in [r for r in payload["by_region"] if r["gpu"] == "K80"]:
+        line = next(l for l in table.splitlines()
+                    if l.startswith("K80 ") and row["region"] in l)
+        assert (row["offered_here"] is False) == ("not offered here" in line), (
+            row, line)
+
+
+def test_an_unlooked_availability_cannot_answer(monkeypatch):
+    """THE CLASS, not the instance. A computation that never ran and one that ran
+    and found nothing are different facts, and the guard `if per_region and
+    stocks` could not tell them apart — an empty dict meant both, so a surface
+    that forgot to compute degraded silently to a confident `ready`.
+
+    This is absent-versus-zero ONE LEVEL UP: not a missing value versus zero, but
+    a missing COMPUTATION versus one that found nothing. The repair is to make
+    "nobody looked" a state the type can hold and refuse to answer from it.
+    """
+    from comfy_qa.auth import Availability
+
+    looked = Availability(looked=True, where={"L4": set()})
+    assert looked.offers("L4", "us-central1") is False
+    assert looked.offers("T4", "us-central1") is None, "unknown card, not absent"
+
+    blind = Availability.not_checked()
+    assert blind.offers("L4", "us-central1") is None
+    assert not blind, "an unlooked availability must be falsy, like the old {}"
+
+    # HAND-BUILT, because `not_checked()` always carries an empty `where` — so
+    # against it the `looked` guard and an empty dict are indistinguishable, and
+    # a sweep said so by surviving its removal. This is the state the guard
+    # actually defends: data present, nobody having established it applies.
+    stale = Availability(looked=False, where={"L4": {"us-central1"}})
+    assert stale.offers("L4", "us-central1") is None, (
+        "answered from an availability nobody computed")
+
+
+def test_quota_request_availability_is_the_same_type_not_a_second_dict():
+    """THE LAST COPY OF THE REPRESENTATION. `quota request` kept its own
+    `sells: dict = {}`, computed under `if region is not None` and read by
+    `sells.get(name)` — the identical shape that produced the `--json` defect.
+
+    It was CORRECT, but only because its consumers happen to be gated on the same
+    flag as its producer. That is a property of two call sites agreeing, not of
+    the data, and the whole point of this round is that such agreements are what
+    keep breaking. One type, one place where "nobody looked" is expressible, and
+    the agreement stops being load-bearing.
+    """
+    import ast
+    import pathlib
+
+    source = pathlib.Path("comfy_qa/auth.py").read_text()
+    tree = ast.parse(source)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "quota_request_cmd")
+    defaults = [ast.unparse(s.value) for s in fn.body
+                if isinstance(s, ast.AnnAssign | ast.Assign) and s.value is not None
+                and ast.unparse(s.value) in {"{}", "dict()"}]
+
+    assert "{}" not in defaults, (
+        "an availability-shaped dict defaulted to {} again: "
+        "'never computed' and 'computed and empty' are different facts")
+
+
+def test_the_ceiling_clause_reports_the_ceiling_not_the_ask():
+    """Pass 8, finding 2. One argument:
+
+        any (global)  ... NOTE: H100-80GB needs 8 of this ceiling and it is 2
+
+    `GPUS-ALL-REGIONS` is granted 1. The 2 is the REFUSED request. `stuck =
+    _too_big_for(plan, wanted)` passes `wanted` — the number to ask for, floored
+    at CEILING_REQUEST — where the sentence needs `ceiling`, the limit in force,
+    bound one line earlier.
+
+    Three other surfaces get this right, which is what makes it a single-site
+    slip rather than a shared misreading: `quota list` prints `1  global  ready —
+    1 granted; a raise to 2 was not`, `--json` gives `limit: 1, asked_gpus: 2`,
+    and `create` prints `GPUS_ALL_REGIONS ...: 1`.
+
+    The `raising=True` call is CORRECT to pass `wanted` — that sentence is about
+    the ask. Only the denied branch is wrong, so this pins both.
+    """
+    denied_ceiling = [preference(CEILING, granted=1, preferred=2,
+                                 state_detail=DENIED_DETAIL, name="ceiling-no")]
+    ceiling_at_one = [q for q in THIS_PROJECT if q["quotaId"] != CEILING] + [
+        quota(CEILING, 1, locations=["global"])]
+    plan = {a.label: a for a in plan_quota(ceiling_at_one, denied_ceiling,
+                                           region="us-central1")}
+
+    detail = plan["any (global)"].detail
+    assert "and it is 1" in detail, detail
+    assert "and it is 2" not in detail, detail
+
+
+def test_a_flag_that_is_ignored_says_so(monkeypatch):
+    """Pass 8, finding 3. The tool refuses an empty region, a zone-shaped one, an
+    uppercase one and an unknown one — and then silently ignores a perfectly
+    valid one on the id that takes no dimensions. Out of character rather than
+    dangerous, which is the argument for saying it rather than for refusing."""
+    ceiling = [quota(CEILING, 1, locations=["global"]),
+               quota(L4, 1, locations=["us-central1"])]
+
+    ignored = quota_request(Cloud(quotas=ceiling), monkeypatch, "--quota-id",
+                            CEILING, "--region", "us-central1", "--value", "2",
+                            "--dry-run")
+    # The `--region` half stays a warning: the request IS correct and does go
+    # ahead, so there is nothing to refuse. Asserted on the command that was
+    # built, not only on the sentence printed.
+    assert "ignored" in ignored.output.lower(), ignored.output
+    assert ignored.exit_code == 0, ignored.output
+    assert all("--dimensions" not in a for args in ignored.output.splitlines()
+               for a in args.split()), ignored.output
+
+    # THE `--gpu` HALF IS NOW A REFUSAL, and this assertion is why. It checked
+    # that the word "ignored" was PRINTED and never that anything was ignored —
+    # so it passed while the tool filed three permanent requests, two of them for
+    # the cards it had just named as ignored. Assert on what was SENT.
+    cloud = Cloud(quotas=ceiling)
+    both = quota_request(cloud, monkeypatch, "--quota-id", L4, "--gpu", "l4",
+                         "--region", "us-central1", "--value", "1", "--dry-run")
+    assert both.exit_code == 2, both.output
+    assert cloud.submitted == [], both.output
+
+
+def test_the_release_path_names_googles_own_decrease_guards(monkeypatch):
+    """Pass 8, finding 4, and it is INFERRED rather than verified — confirming it
+    would mean filing an irrevocable request.
+
+    What IS verified, from `gcloud quotas preferences update --help` on this
+    machine: `--allow-high-percentage-quota-decrease` and
+    `--allow-quota-decrease-below-usage` exist. Going 1 -> 0 is a 100% decrease,
+    so Google may well refuse the command this tool prints.
+
+    NOT EMITTED AUTOMATICALLY. Those flags exist to override Google's own safety
+    checks on the one path here that destroys something, and `--release-quota` is
+    deliberate friction rather than a formality — silently adding the overrides
+    would undo the point of it. Named instead, so a refusal is legible and the
+    choice to override stays the user's.
+    """
+    cloud = Cloud(quotas=[quota(T4, 1, locations=["us-central1"])])
+    result = quota_request(cloud, monkeypatch, "--gpu", "t4", "--value", "0",
+                           "--allow-lower", "--release-quota", "--dry-run")
+
+    assert "--allow-high-percentage-quota-decrease" in result.output, result.output
+    assert "--allow-high-percentage-quota-decrease" not in " ".join(
+        a for args in cloud.submitted for a in args), "the override was emitted"
+
+
+def test_no_json_array_assertion_hides_behind_the_table_flag():
+    """THE RULE THIS ROUND PRODUCED, made permanent.
+
+    `--json` emits `by_region` whether or not `--by-region` is given, so a test
+    that asserts on that array while passing the flag is exercising a path the
+    flag has already configured — and the flag is exactly what made the defect
+    invisible. Both tests written for it passed `--by-region`; removing only that
+    argument from the repo's own fixture made one of them fail.
+
+    So: a test asserting on a JSON array drives the invocation WITHOUT the flag
+    that shapes the corresponding table. Four existing tests were converted; none
+    of them needed any other change, which is the tell that the flag was doing
+    nothing for them but hiding this.
+    """
+    import ast
+    from pathlib import Path
+
+    masked = []
+    for path in sorted(Path(__file__).resolve().parent.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for fn in [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]:
+            if "by_region" not in ast.unparse(fn):
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.Call):
+                    continue
+                if getattr(node.func, "id", "") not in {
+                        "quota_list", "_json_of", "_by_region_json"}:
+                    continue
+                args = [a.value for a in node.args
+                        if isinstance(a, ast.Constant) and isinstance(a.value, str)]
+                if "--json" in args and "--by-region" in args:
+                    masked.append(f"{path.name}::{fn.name}")
+
+    assert not masked, (
+        "a JSON-array assertion passes the flag that shapes the table:\n  "
+        + "\n  ".join(masked))
+
+
+# --- pass 9: one identity, whichever flag names it ---------------------------
+
+
+def test_the_same_request_through_either_flag_gets_the_same_treatment(monkeypatch):
+    """TENTH ABSENT-VERSUS-ZERO, now inside the GUARD POPULATION rather than the
+    data. `sells` was seeded from `--gpu` only, so `--quota-id` handed the
+    catalogue guard an empty name set — and an empty set read as "nothing to
+    check" rather than "I was not told what to check".
+
+        $ quota request --quota-id NVIDIA-L4-GPUS-per-project-region --region africa-south1
+        exit=0, and a permanent preference for a region selling zero NVIDIA cards
+
+        $ quota request --gpu l4 --region africa-south1
+        exit=2, with a remedy naming eighteen regions that do sell it
+
+    Identical requests. The flag chose whether a guard ran.
+    """
+    cloud = Cloud(quotas=[quota(L4, 1, locations=REGIONS_43)],
+                  accelerators=stocking("us-central1", "nvidia-l4"))
+    raw = quota_request(cloud, monkeypatch, "--quota-id", L4, "--region",
+                        "africa-south1", "--value", "1", "--dry-run")
+
+    assert raw.exit_code == 2, raw.output
+    assert cloud.submitted == []
+    assert "africa-south1" in raw.output
+
+
+@pytest.mark.parametrize("guard, args_gpu, args_raw, fixture", [
+    ("region sells no such card",
+     ("--gpu", "l4", "--region", "africa-south1"),
+     ("--quota-id", L4, "--region", "africa-south1"),
+     dict(quotas=[quota(L4, 1, locations=REGIONS_43)],
+          accelerators=lambda: stocking("us-central1", "nvidia-l4"))),
+    ("already refused",
+     ("--gpu", "a100-80gb", "--region", "europe-west4"),
+     ("--quota-id", A100_80, "--region", "europe-west4"),
+     dict(quotas=[quota(A100_80, 0, locations=["europe-west4"])],
+          preferences=lambda: PREFS_DENIED)),
+])
+def test_both_flags_reach_the_same_guards(guard, args_gpu, args_raw, fixture,
+                                          monkeypatch):
+    """THE CLASS, not the instance. A guard that runs on one entry path and not
+    the other is a second-site by construction, and both of this round's findings
+    were the unfixed half of a pair whose first half already carries a comment
+    counting itself as the thirteenth and seventeenth occurrence.
+
+    Same project, same region, same quota — only the flag differs. Whatever the
+    tool says about one it must say about the other.
+    """
+    def build():
+        kw = {k: (v() if callable(v) else v) for k, v in fixture.items()}
+        return Cloud(**kw)
+
+    by_gpu = quota_request(build(), monkeypatch, *args_gpu, "--value", "1",
+                           "--dry-run")
+    by_raw = quota_request(build(), monkeypatch, *args_raw, "--value", "1",
+                           "--dry-run")
+
+    assert by_gpu.exit_code == by_raw.exit_code, (
+        f"{guard}: --gpu exits {by_gpu.exit_code}, --quota-id exits "
+        f"{by_raw.exit_code}\n--- gpu ---\n{by_gpu.output}\n--- raw ---\n"
+        f"{by_raw.output}")
+
+
+def test_setup_validates_the_region_whatever_flags_follow(tmp_path):
+    """Pass 9, finding 2, and the THIRD time an early return has bypassed checks
+    the ordinary path runs.
+
+        $ comfy-qat setup --dry-run --no-quota-request --region us-centrall
+        exit=0
+        GPU quota: a project-wide allowance only, no specific card granted
+
+    — on a project holding six cards, because `region_problem` sits BELOW the
+    `if not submit:` return while `ensure_gpu_quota` consumes the unvalidated
+    region above it.
+
+    A guard whose reachability depends on which flags were passed is a guard that
+    will be missed again, so the validation moves above every early return: what
+    is checked must not depend on how the command was invoked.
+    """
+    for flags in ({"quota_requests": False}, {"quota_dry_run": True}, {}):
+        cloud = Cloud(quotas=THIS_PROJECT)
+        with pytest.raises(SetupStopped) as stopped:
+            run(cloud, config_path=tmp_path / "hosts.toml",
+                region="us-centrall", **flags)
+        assert "us-centrall" in str(stopped.value), (flags, stopped.value)
+        assert cloud.submitted == [], flags
+
+
+def test_the_skipped_remedy_does_not_name_a_region_that_sells_nothing(tmp_path):
+    """FOUND BY MY OWN SWEEP, not by the report — the twin of finding 2, one
+    function over. The availability check also sits below `if not submit:`, so:
+
+        $ setup --no-quota-request --region africa-south1
+        To ask later: comfy-qat quota request --gpu h100 --region africa-south1
+
+    and that command exits 2, because `quota request` refuses a region selling no
+    such card. Eleventh instance of a printed remedy that cannot run.
+
+    NOT by stopping the run: with `--no-quota-request` nothing irrevocable
+    happens, and refusing the whole setup over it would be refusing to do the
+    job. The remedy stops naming a region that cannot work, which is the actual
+    defect.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT,
+                  accelerators=stocking("us-central1", "nvidia-h100-80gb"))
+    p = run(cloud, config_path=tmp_path / "hosts.toml", region="africa-south1",
+            quota_requests=False)
+    later = next(l for l in p.said if "ask later" in l.lower())
+
+    assert "--region africa-south1" not in later, later
+    assert "africa-south1" in later, (
+        "it still has to say the region asked for offers nothing")
+
+
+def test_the_request_step_validates_its_own_region_when_called_directly():
+    """The hoist, tested at the entry it defends. Going through `run_setup` does
+    not exercise it — `run_setup` validates first, so removing the check inside
+    `ensure_quota_requests` kills nothing, which a sweep said by surviving.
+
+    That is the whole class in miniature: a guard that appears to work because
+    another caller happens to check first. `ensure_quota_requests` is reachable
+    directly, and what it validates must not depend on who called it.
+    """
+    from comfy_qa.setup import ensure_quota_requests
+
+    cloud = Cloud(quotas=THIS_PROJECT)
+    with pytest.raises(SetupStopped) as stopped:
+        ensure_quota_requests(cloud.gcloud(), prompts(), "proj-1",
+                              quotas=THIS_PROJECT, interactive=False,
+                              region="us-centrall", submit=False)
+
+    assert "us-centrall" in str(stopped.value)
+
+
+# --- pass 10: a warning that does not change behaviour is worse than none -----
+
+
+def test_naming_both_flags_is_refused_rather_than_half_honoured(monkeypatch):
+    """THE WORST DEFECT LEFT, and a new shape: not a false sentence about the
+    world, but a false sentence about the tool's OWN NEXT ACTION.
+
+        $ quota request --gpu l4,t4 --quota-id NVIDIA-A100-GPUS-... --region us-central1
+        warning: --gpu l4,t4 ignored: --quota-id names the quota exactly
+        ...update comfyqat_nvidia-a100-gpus-...   <- the --quota-id
+        ...update a0e3b926-...                    <- L4, and that is the EXISTING
+                                                     granted preference, not a minted id
+        ...update comfyqat_nvidia-t4-gpus-...     <- T4
+
+    Three permanent requests, two for cards it had just said it was ignoring, one
+    of them reaching into a live granted preference. The warning told the user
+    they had been protected from the thing that then happened.
+
+    REFUSED, not fixed by making the warning true. The two flags were resolved to
+    one identity last round precisely so two paths could not diverge; this is the
+    same ambiguity resurfacing at the argument layer, and the honest answer is
+    that the command cannot know which the user meant.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    result = quota_request(cloud, monkeypatch, "--gpu", "l4,t4", "--quota-id",
+                           A100, "--region", "us-central1", "--value", "1")
+
+    assert cloud.submitted == [], (
+        f"filed {len(cloud.submitted)} request(s) after saying it was ignoring "
+        f"the cards")
+    assert result.exit_code == 2
+    assert "ignored" not in result.output.lower(), (
+        "a warning that does not change behaviour is worse than none")
+
+
+def test_a_bad_card_beside_a_good_raw_id_does_not_lose_the_request(monkeypatch):
+    """The opposite failure from the same seam: `--gpu banana` beside a valid
+    `--quota-id` aborted at exit 2, so the request the user genuinely asked for
+    never landed. Refusing the COMBINATION answers both — one message, before
+    anything is read, rather than two different failures depending on whether the
+    card name happened to parse."""
+    cloud = Cloud(quotas=THIS_PROJECT)
+    result = quota_request(cloud, monkeypatch, "--gpu", "banana", "--quota-id",
+                           A100, "--region", "us-central1", "--value", "1")
+
+    assert result.exit_code == 2
+    assert cloud.submitted == []
+    assert "--quota-id" in result.output and "--gpu" in result.output
+
+
+def test_the_same_card_twice_files_one_request(monkeypatch):
+    """`--gpu l4,l4` filed the identical preference TWICE — the duplicate this
+    whole feature exists to prevent, reachable by typing a card name twice."""
+    cloud = Cloud(quotas=[quota(L4, 0, locations=["us-central1"])])
+    quota_request(cloud, monkeypatch, "--gpu", "l4,l4", "--region",
+                  "us-central1", "--value", "1")
+
+    assert len(cloud.submitted) == 1, cloud.submitted
+
+
+def test_setup_validates_the_region_before_reporting_on_it(tmp_path):
+    """THE SHARPEST PROCESS FINDING OF THE NIGHT, and it is about my own fix.
+
+    Round nine hoisted `_require_real_region` above every early return in
+    `ensure_quota_requests`, wrote a comment saying so, and pinned it with a test
+    whose docstring quotes the defect. All true — of that function. The CALLER
+    one frame up still ran `ensure_gpu_quota` with the unvalidated region first,
+    so the live tool went on printing
+
+        GPU quota: a project-wide allowance only, no specific card granted
+
+    for `--region us-centrall` on a project holding six granted cards — the exact
+    sentence the round-9 comment quotes as fixed.
+
+    A fix reported done, commented as done, and covered by a passing test, with
+    the defect still live. The test exercised the function; the command has a
+    frame above it.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    p = prompts()
+    with pytest.raises(SetupStopped):
+        run(cloud, prompts=p, config_path=tmp_path / "hosts.toml",
+            region="us-centrall")
+
+    assert not any("project-wide allowance only" in line for line in p.said), (
+        "reported on a region it had not validated:\n  " + "\n  ".join(p.said))
+
+
+# --- pass 10, the rest ------------------------------------------------------
+
+
+def test_the_negative_remedy_keeps_the_flag_the_user_typed(monkeypatch):
+    """U4, and it is the SEVENTH instance of this shape, inside the block whose
+    own comment enumerates six and ends "a remedy that rewrote `--quota-id` to
+    `--gpu` and exited 2".
+
+        $ quota request --quota-id NVIDIA-L4-GPUS-... --value -1
+        to fix: comfy-qat quota request --gpu NVIDIA-L4-GPUS-... --value 1
+
+        $ comfy-qat quota request --gpu NVIDIA-L4-GPUS-... --value 1
+        no card called 'NVIDIA-L4-GPUS-per-project-region'   [exit 2]
+
+    Every other remedy in that block preserves the flag — the ceiling case prints
+    `--quota-id GPUS-ALL-REGIONS-per-project` correctly. One branch hardcoded
+    `--gpu`.
+    """
+    cloud = Cloud(quotas=[quota(L4, 1, locations=["us-central1"])])
+    result = quota_request(cloud, monkeypatch, "--quota-id", L4, "--region",
+                           "us-central1", "--value", "-1", "--dry-run")
+
+    assert result.exit_code == 2
+    assert f"--quota-id {L4}" in result.output, result.output
+    assert f"--gpu {L4}" not in result.output, result.output
+
+
+@pytest.mark.parametrize("surface", ["list", "request"])
+def test_a_decidable_region_is_refused_without_reading_quota(surface,
+                                                             monkeypatch):
+    """U6. A typo'd region cost 51 seconds before rejection, because the check
+    ran after the minute-long quota read. Empty, zone-shaped and wrong-case are
+    decidable with ZERO API calls — only "not one of this project's 43" needs the
+    records."""
+    # BOTH COMMANDS. Covering only one left the other's cheap check surviving its
+    # own removal, because `region_problem` catches the same input after the read
+    # — so the refusal alone cannot tell the early check from its absence.
+    cloud = Cloud(quotas=THIS_PROJECT)
+    result = (quota_list(cloud, monkeypatch, "--region", "us-central1-a")
+              if surface == "list" else
+              quota_request(cloud, monkeypatch, "--gpu", "l4", "--region",
+                            "us-central1-a"))
+
+    assert result.exit_code == 2, result.output
+    assert cloud.quota_reads == 0, (
+        f"read quota {cloud.quota_reads} time(s) to reject a zone name")
+
+
+def test_the_dry_run_command_is_pasteable_with_a_real_justification(monkeypatch):
+    """U7. `--dry-run`'s stated purpose in this file is `--dry-run | sh`, and a
+    justification is prose:
+
+        ... --justification=QA for Comfy Org --email=...
+
+    Pasted, that sends `--justification=QA` and two stray positional arguments.
+    """
+    import shlex
+
+    cloud = Cloud(quotas=[quota(T4, 0, locations=["us-central1"])])
+    result = quota_request(cloud, monkeypatch, "--gpu", "t4", "--region",
+                           "us-central1", "--dry-run", "--justification",
+                           "QA for Comfy Org")
+    line = next(l for l in result.output.splitlines() if l.startswith("gcloud "))
+    parts = shlex.split(line)
+
+    assert "--justification=QA for Comfy Org" in parts, parts
+
+
+def test_the_create_remedy_names_regions_rather_than_a_placeholder():
+    """U5. The remedy reads:
+
+        comfy-qat quota list --by-region   # where this card is metered
+        comfy-qat quota request --gpu h100 --region <one of them>
+
+    and running the first gives two rows for H100: the refused `us-central1`, and
+    `any of 42` — a bucket that names nothing. There is no "them" to pick one of.
+
+    The regions ARE in hand: `create` has just read the quota records, and
+    `regions_metered` lists every region the card is metered in. Naming two or
+    three of them, excluding the one it was refused in, turns a placeholder into
+    something pasteable.
+    """
+    from comfy_qa.create import CARDS, check_quota
+
+    refused_here = [preference(A100, granted=0, preferred=1,
+                               state_detail=DENIED_DETAIL, name="a100-usc1",
+                               dimensions={"region": "us-central1"})]
+    # METERED WIDELY, like the live project — `THIS_PROJECT` meters A100 in
+    # us-central1 alone, which is the region it was refused in, so there would
+    # genuinely be nowhere else and the test would be asserting the wrong half.
+    spread = [q for q in THIS_PROJECT if q["quotaId"] != A100] + [
+        quota(A100, 0, locations=REGIONS_43)]
+    fix = str(check_quota(CARDS["a100"], spread, [], "",
+                          preferences=refused_here).problem().fix)
+
+    assert "<one of them>" not in fix, fix
+    named = [r for r in REGIONS_43 if r in fix and r != "us-central1"]
+    assert named, f"no region named in the remedy: {fix}"
+
+
+def test_the_create_remedy_says_so_when_there_is_nowhere_else():
+    """The other half, and it is the case the live project is actually in: A100
+    is metered in one region and refused in that region. A placeholder would
+    imply somewhere else exists."""
+    from comfy_qa.create import CARDS, check_quota
+
+    refused_here = [preference(A100, granted=0, preferred=1,
+                               state_detail=DENIED_DETAIL, name="a100-usc1",
+                               dimensions={"region": "us-central1"})]
+    fix = str(check_quota(CARDS["a100"], THIS_PROJECT, [], "",
+                          preferences=refused_here).problem().fix)
+
+    assert "nowhere else" in fix, fix
+    assert "<" not in fix, f"a placeholder implying a region exists: {fix}"
+
+
+# --- final: one answer to "where could this actually be requested" ------------
+
+
+def test_the_create_remedy_only_names_regions_that_can_work():
+    """Q1. TWENTY-FIRST SECOND-SITE, thirteenth remedy-that-cannot-work, and it
+    is in the command people actually run:
+
+        to fix: comfy-qat quota request --gpu h100 --region africa-south1
+                # or africa-south1, asia-east1, asia-east2
+
+    `africa-south1` stocks zero NVIDIA accelerators, so that command exits 2 —
+    and it is listed twice in its own alternatives, which tells the reader the
+    tool checked when it did not.
+
+    `_refuse_if_unsold` and the stocked-region helper exist so this could not
+    happen twice. `create` composed its own suggestion from `regions_metered`
+    alone instead of asking them.
+    """
+    from comfy_qa.create import CARDS, check_quota
+
+    refused_here = [preference(A100, granted=0, preferred=1,
+                               state_detail=DENIED_DETAIL, name="a100-usc1",
+                               dimensions={"region": "us-central1"})]
+    spread = [q for q in THIS_PROJECT if q["quotaId"] != A100] + [
+        quota(A100, 0, locations=REGIONS_43)]
+    # Stocked in asia-east1 only, of the regions it is metered in.
+    askable = ["asia-east1"]
+    fix = str(check_quota(CARDS["a100"], spread, [], "",
+                          preferences=refused_here, askable=askable).problem().fix)
+
+    assert "africa-south1" not in fix, fix
+    assert "asia-east1" in fix, fix
+    assert fix.count("asia-east1") <= 2, f"named the same region twice: {fix}"
+
+
+def test_setup_does_not_say_nothing_was_missing_when_cards_are_at_zero(tmp_path):
+    """Q2. `--no-quota-request` said "Nothing was missing anyway" on a project
+    where three of five drivable cards sit at zero.
+
+    `_missing_cards` returns the cards the plan would ASK for, and a refused card
+    does not submit — so "nothing to ask for" came out as "nothing missing". They
+    are different facts, and this is the one place the whole feature's premise is
+    stated back to the user.
+    """
+    # EVERY DRIVABLE CARD SETTLED, which is the live project: L4 and T4 granted,
+    # A100, A100-80GB and H100 all refused. `submits` is false for all five, so
+    # "nothing to ask for" came out as "nothing missing".
+    settled_all = PREFS_DENIED + [
+        preference(A100, granted=0, preferred=1, state_detail=DENIED_DETAIL,
+                   name="a100-usc1", dimensions={"region": "us-central1"}),
+        preference(FAMILY, granted=0, preferred=8, state_detail=DENIED_DETAIL,
+                   name="h100-usc1",
+                   dimensions={"gpu_family": "NVIDIA_H100",
+                               "region": "us-central1"}),
+    ]
+    cloud = Cloud(quotas=THIS_PROJECT, preferences=settled_all)
+    p = run(cloud, config_path=tmp_path / "hosts.toml", quota_requests=False)
+    line = next(l for l in p.said if "no-quota-request" in l)
+
+    assert "Nothing was missing" not in line, line
+    assert "refused" in line.lower() or "denied" in line.lower(), line

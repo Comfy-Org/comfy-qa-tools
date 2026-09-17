@@ -92,6 +92,26 @@ class FakeCloud:
             if self.instances_error:
                 raise self.instances_error
             return list(self.instances)
+        if key.startswith("compute accelerator-types list"):
+            # `setup --region` now checks that the region exists and that it
+            # sells the cards being asked for, the two checks `quota list` and
+            # `quota request` already had. These tests are not about
+            # availability, so the answer is "offered, in the usual regions" —
+            # permissive on purpose, so an unrelated assertion never turns on a
+            # fact this fixture was never written to express.
+            #
+            # ANSWERING THE UNFILTERED CALL TOO: `_regions_stocking` reads the
+            # whole catalogue in one go, and a fake that only answered the
+            # filtered form returned rows named `""`, which matches no card.
+            from comfy_qa.create import CARDS
+
+            name = next((a.split("=")[-1] for a in args
+                         if a.startswith("--filter=name=")), "")
+            ids = [name] if name else [c.accelerator for c in CARDS.values()]
+            return [{"name": i, "zone": f"https://x/zones/{z}"}
+                    for i in ids
+                    for z in ("us-central1-a", "us-east1-b", "europe-west4-a",
+                              "asia-east1-a")]
         raise AssertionError(f"unexpected gcloud call: {key}")
 
 
