@@ -52,6 +52,10 @@ READY = {
          "dimensionsInfos": [{"details": {"value": "1"},
                               "applicableLocations": ["us-central1"]}]},
     ],
+    # setup reads the standing quota requests before it files any, so that a
+    # card already waiting on Google is not asked for twice. Empty here: this
+    # project has never asked for anything.
+    "quotas preferences list": [],
     "compute instances list": [],
 }
 
@@ -140,7 +144,7 @@ def test_zero_quota_is_reported_but_does_not_stop_setup(tmp_path):
         "quotas info list": [{"quotaId": "NVIDIA-L4-GPUS-per-project-region",
                               "dimensionsInfos": [{"details": {"value": "0"},
                                                    "applicableLocations": ["us-central1"]}]}],
-        "quotas preferences create": {},
+        "quotas preferences update": {},
     })
     p = prompts(confirm=True)
     path = run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
@@ -262,7 +266,8 @@ def test_the_project_wide_allowance_is_not_listed_as_a_card(tmp_path):
 
     Listing it beside L4 and T4 reads as a model nobody has heard of.
     """
-    responses = dict(READY, **{"quotas info list": [
+    responses = dict(READY, **{"quotas preferences update": {},
+        "quotas info list": [
         {"quotaId": "GPUS-ALL-REGIONS-per-project",
          "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["global"]}]},
         {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
@@ -277,7 +282,8 @@ def test_the_project_wide_allowance_is_not_listed_as_a_card(tmp_path):
 
 
 def test_a_global_only_allowance_is_still_reported(tmp_path):
-    responses = dict(READY, **{"quotas info list": [
+    responses = dict(READY, **{"quotas preferences update": {},
+        "quotas info list": [
         {"quotaId": "GPUS-ALL-REGIONS-per-project",
          "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["global"]}]},
     ]})

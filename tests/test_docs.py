@@ -593,7 +593,7 @@ def _troubleshooting_text() -> str:
 # same shape as ERROR_TYPES: the unfamiliar is a decision somebody makes, not a
 # default of "fine".
 MESSAGE_FLOOR = {
-    "auth.py": 11,
+    "auth.py": 24,
     "commands.py": 6,
     "config.py": 37,
     # 51 until "every zone tried is out of capacity" was split into three. One
@@ -674,10 +674,40 @@ MESSAGE_FLOOR = {
 # 244 until the driver wait, the RDP readiness gate and the whole-command budget
 # each arrived with an entry. Raised to 251, half the distance to today's 258, on
 # the same rule: this count is shared with everything else landing on the page.
-ENTRY_FLOOR = 251
+# 251 until the quota-request work landed its entries and the slack ran out.
+# Raised to 257, half the distance to today's 264, on the rule the paragraph
+# above gives: this count is shared with everything else on the page, and a floor
+# set to today's exact number turns the next honest deletion into a failure in a
+# file nobody opened.
+# 257 until the third verification pass landed its entries — the unreadable
+# standing value, the raw quota id nobody reports, and the availability verdicts.
+# Raised to 263, half the distance to today's 270, on the rule above.
+# 263 until the fourth verification pass added five entries, three of them about
+# the difference between "not offered here" and "not checked". Raised to 270,
+# half the distance to today's 277, on the rule above.
+# 270 until the fourth pass's remaining findings — the region typo, the raw
+# family id, the absurd value, the card this tool has no machine type for and the
+# already-refused warning. Raised to 276, half the distance to today's 283.
+ENTRY_FLOOR = 276
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
-WORDING_FLOOR = 295
+# 295 until the quota-request work in `setup` landed four entries — a project that
+# meters a card under neither shape, a refusal Google has already given, the
+# preference-collision note and the `--no-quota-request` skip. Raised to 302, half
+# the distance to today's 309, on the same rule: this count is shared with
+# everything else on the page, and today's exact number turns the next honest
+# deletion into a failure in a file nobody opened.
+# 302 until the quota body's second verification pass — the lowering refusal, the
+# not-creatable refusal, the two pool footnotes and the denied/never-asked split
+# all landed entries. Raised to 308, half the distance to today's 315, on the
+# rule the paragraph above gives.
+# 308 until the fourth verification pass — the availability verdicts on `quota
+# request` (refused, metered-elsewhere, not-checked) and the two floor refusals
+# (releasing a grant, and keeping the larger of grant and standing request).
+# Raised to 316, half the distance to today's 323, on the rule above.
+# 316 until the rest of the fourth pass landed its entries. Raised to 322, half
+# the distance to today's 329, on the rule above.
+WORDING_FLOOR = 322
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

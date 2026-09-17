@@ -1062,6 +1062,424 @@ everywhere else: **read the code, and use the message only for why.**
 The *shape* is what a page records. The instance is dated, and dating it is the
 whole job.
 
+## The suite was the weaker instrument
+
+On the quota work of 2026-09-17, **four of the last five defects were found by
+running the product against the live project, not by the tests** — and the suite
+was green for every one of them.
+
+| how it was found | what it was |
+|---|---|
+| reading the live table | `any (global) — not creatable by this tool`: a card rule applied to a row that is not a card |
+| running `quota list --json` | the JSON returned `denied/0` for a card the table called `ready (Spot) 1` — opposite verdicts, same run |
+| running `quota list` twice | the default table said `denied`, `--region europe-west4` said `none`, about the same card |
+| running `setup --no-quota-request` | "to ask later: `--gpu l4,t4`" — both already granted, and the missing cards unnamed |
+
+None of these needed a clever test. They needed somebody to run the thing and
+read the output. **That is not an argument against the suite** — it caught
+plenty, and the mutation sweeps caught more. It is an argument about what a green
+run is evidence *of*, on a feature whose output is prose about somebody else's
+system: the tests assert what the code computes, and every one of those four was
+a case where the computation was fine and the *sentence* was false.
+
+**And the tests written to catch these kept passing for the wrong reason.** Seven
+in two days, all of the same shape and all found by mutation rather than by
+review:
+
+- a fixture with no undrivable card, asserting that the GSP footnote is wrapped —
+  a footnote that never rendered;
+- a `--json` parity test driving a card whose two states were identical, so it
+  could not detect divergence, while the divergence it was named for was live;
+- a width guard whose bound was 120 with the widest row at exactly 120 — a
+  boundary pass with no margin, so the next word added anywhere breaks the guard
+  rather than being caught by it;
+- a "does not re-request" test on a card that was never requested anyway;
+- three that asserted the absence of the bad thing and never the presence of the
+  good one.
+
+> **Asserting that the wrong output is gone is half a test. Assert that the right
+> output is there.**
+
+The cheap habit that catches the whole family: after writing an assertion, ask
+what it says when the thing it looks at **does not exist at all**. `count(x) <= 1`
+and `x not in line` are both satisfied by an empty page.
+
+And one more, for anyone extending a fixture: **a fixture that cannot reach the
+branch proves nothing about it, and looks exactly like one that can.** Every one
+of the seven above was a real test, correctly written, pointed at data that could
+not exercise the case. Mutation found them all; reading them did not.
+
+### The last step is to run it and read what it prints
+
+Not a lesson — **a step**, at the end of every change, after the suite is green
+and you believe you are finished.
+
+Across one long night on the quota feature, **six defects were found this way and
+none of them by a test**: a card rule applied to a row that is not a card; a
+`--json` record contradicting the table beside it on three fields; two runs of
+the same command disagreeing about the same card; a hint recommending quota the
+user already held; a footnote omitting the card it was about; and a status column
+leading with `ready` for a card that does not exist in the region. Every one was
+visible in a single run of the command. Every one had a green suite around it.
+
+The reason is worth stating, because "write better tests" does not fix it. **A
+test asserts what you thought to assert.** On a feature whose output is prose
+about somebody else's system, the defects are mostly in the sentences — a true
+fact in the wrong column, a correct number under a misleading word, an
+instruction that contradicts the row above it. Those are visible at a glance and
+nearly invisible to an assertion, because an assertion has to name the thing
+before it can check it.
+
+> **Run the command. Read the whole output. Read the other surface too.**
+
+The last clause earns its place separately. Four of the six were found by looking
+at `--json` and the human table together, or two flags of the same command
+together — never by looking at either alone. A defect that survives a fix almost
+always survives on the surface nobody re-read.
+
+And **quote what it printed** when you report. Describing the output from memory
+of what you built is how a report comes to disagree with the product; that
+happened twice in one night, and both times the product was right.
+
+**Say which one it is.** Quoting a fixture's output is not quoting the product,
+and a fixture labelled with a real region, project or card id is indistinguishable
+from a live run at a glance. That happened within minutes of this section being
+written: a table headed `europe-west9` came from a fixture whose invented
+catalogue stocked a card that region does not sell, and the reviewer had to go and
+check the live API to work out whether a new false statement had been introduced
+or a test had been quoted. The code was correct; the report was not.
+
+> A fixture wearing a real name is a claim about the world.
+
+Six words fix it — *fixture stocking X and Y* — and they protect exactly the
+reader this section is written for.
+
+### A function tested only in isolation has untested callers
+
+`request_value` is the only function in the quota feature that changes state at
+Google. It had six direct tests covering every case of its contract, and all six
+passed while `comfy-qat quota request --value 0 --allow-lower` sent `1` — because
+the caller wrote `value or DEFAULT_VALUE`, which cannot tell "the user typed 0"
+from "the user typed nothing", two lines below a comment explaining that the
+distinction is the whole point.
+
+Three defects that night had the same shape: the guard was right and the wiring
+was wrong. A dimension matcher honoured dimensions while its caller discarded
+them; a pool override was computed correctly and applied after the sort that
+needed it; and this.
+
+> When a function is correct and the behaviour is wrong, the defect is in a
+> caller — and a suite that only tests the function is structurally blind to it.
+
+Test the contract directly **and** through the seam the user reaches. Neither
+replaces the other: the direct tests say what the function promises, and only the
+end-to-end one says whether anybody gets it.
+
+### A comment that justifies reversed behaviour is worse than no comment
+
+Removing code is not removing the reasoning for it. On the quota work a rendering
+branch was deleted and the comment explaining *why it skipped a case* was left
+behind — attached to a `continue` that now guarded nothing, arguing persuasively,
+in the codebase's own voice, for the exact rule the replacement had just
+reversed. The variable it belonged to was assigned `""` and never reassigned;
+four concatenation sites appended an empty string.
+
+**Two people then described that behaviour to each other from the comment rather
+than from the output**, and one of them carried it into a brief and a summary.
+The rendered output had been correct throughout. The explanation everyone agreed
+on was fiction, and it was fiction with a rationale, which is the part that made
+it survive review.
+
+> A comment reads as intent. A stale one is an instruction to restore the defect.
+
+**The detection is not a grep, and it is worth saying why.** Sweeping for
+comments naming identifiers the module no longer has returns mostly noise —
+cross-module references, deliberately-misspelled examples, quoted test names,
+historical narrative that is correct *as* history. The one real instance here was
+found by reading the terminal and noticing the output did not match the stated
+rule. Which is the same lesson as the section above, one more time: **run it and
+read what it prints.**
+
+What *is* mechanical: when you delete a branch, delete its rationale in the same
+edit, and when you reverse a rule, make the surviving comment say the rule was
+reversed and why. A retraction left in place is useful; a rationale left in place
+is a trap.
+
+### Reviewing has the same trap, one direction over
+
+The writing rule above is *assert the presence, not just the absence*. The
+reviewing rule is its counterpart, and it cost two rounds of crossed messages on
+the same night.
+
+**A claim quoted in order to retract it is not a claim, and `grep` cannot tell
+them apart.** A sweep for a withdrawn sentence hits the correction that withdraws
+it, hits the test named after the bug, and hits the comment explaining why the
+old behaviour was wrong — all of which are the fix rather than the defect. One
+reviewer re-sent six blocks that had already been fixed, because the phrase was
+still findable in the file.
+
+**Check each hit against its surrounding lines, never the line alone.** If a
+sweep is worth automating, classify: a hit within a few lines of *"earlier
+version"*, *"was wrong"*, *"contradicts"* or *"unverified"* is a retraction, and
+everything else is a live claim. That distinction is the whole result; a raw
+count of matches is noise.
+
+The same applies to reading a diff. A file that gains the words it is removing
+looks unchanged to a search and is the opposite.
+
+## A guard protects an object, and the object has a name
+
+Six rounds of work went into "do not lower a standing request". The seventh found
+`comfy-qat quota request --gpu t4 --value 0` building a command that set a
+working grant to zero: no refusal, no warning, exit 0.
+
+Every one of those rounds was correct about the thing it guarded. `--value` was
+made `Optional[int]` so a default could not overwrite a typed number; `or
+DEFAULT_VALUE` was swept out because it could not tell 0 from unset; the refusal
+was made to say the word "lower". All of it protected **the number in a
+request** — and the thing that can actually be lost is **the quota the project
+holds**. A card can hold quota with no request behind it at all. On this project
+that was true of T4, L4, K80, P100, P4 and V100: six of fourteen cards, and
+precisely the six that work today.
+
+Nothing in the suite could see it, because every test of that guard used a card
+that had a preference. The fixtures agreed with the mental model, so they could
+only confirm it.
+
+> Write down which object the guard defends, in the guard. If you cannot name it
+> in one noun, you are guarding a step and not a thing.
+
+The repair is not "add another check". It is to ask what the irreversible loss
+actually is, and make the floor that. Here the floor became `max(standing
+request, granted quota)` — and then a mutation sweep asked the question a third
+time and found nothing covering an UNLIMITED grant, which `max` reads as -1, the
+smallest number there is.
+
+## A remedy that cannot work, eight times
+
+The most frequently recurring defect in this feature was not in a computation. It
+was the last line of an error message:
+
+| the refusal | the remedy it printed | why it cannot work |
+|---|---|---|
+| `none — request it` | file a quota request | the card is one `create` will never accept |
+| no quota in this region | `--region africa-south1` | that region sells no NVIDIA accelerator of any kind |
+| refusing to lower | `--gpu NVIDIA-L4-GPUS-per-project-region` | the user typed `--quota-id`; rewritten, it exits 2 |
+| `-5 is not a number of GPUs` | `--allow-lower` | nothing can permit a negative, by design |
+| no such region | `quota request --region asia-east1` | no `--gpu`: exits 2 at "name a card to ask for" |
+| no quota in this region | `--region <first metered>` | the same africa-south1, in the fallback branch |
+
+Six of those six are the same command, `comfy-qat quota request`, and five of
+them fail for a reason the refusal already knew. None of them is a hard bug.
+Every one of them survived a suite that was green, because **no test ever ran the
+remedy.**
+
+The mechanism is always an append. A block of advice is written for the cases
+that exist when it is written, and later a new cause reaches the same block and
+inherits advice aimed at a different problem. `send is None` grew from one cause
+to three while the remedy stayed at two, so the third took whichever branch it
+fell through to.
+
+> If your error prints a command, something must run that command. A remedy is
+> output, and output that nobody executes is output nobody has tested.
+
+The repair that finally stuck was not a seventh fix. It was a rule narrow enough
+to check mechanically — *every printed `quota request` invocation names a `--gpu`
+or a `--quota-id`, unless it contains a `<placeholder>`* — parametrised over ten
+real refusals. It kills the reverted fixes, and it will catch the ninth instance
+before a person does.
+
+The general form is harder and worth stating anyway: the strongest version of
+this test pastes the remedy back into the CLI and asserts it does not refuse.
+That is not always possible — some remedies are templates, some need state the
+test does not have — but wherever it *is* possible it is the only version that
+cannot drift, because it stops asserting a property of the string and starts
+asserting the thing the string promises.
+
+## The remedy leads somewhere, and that somewhere is untested too
+
+The rule from the section below — *if your error prints a command, something must
+run that command* — earned its keep within ten minutes of being written, and not
+where anybody expected.
+
+A reviewer ran a refusal, got `comfy-qat quota list --by-region` as its remedy,
+and ran **that**. It worked. The table it landed on did not:
+
+* the REGION column contained `19 regions`, a count under a heading that names
+  places — the same defect as `where_label` calling nine zones "9 regions",
+  surviving in the one view whose entire purpose is to name places;
+* `K80` read `ready` against nineteen NAMED regions, and K80 is not in GCE's
+  accelerator catalogue anywhere.
+
+Neither is in the remedy. Both are one step past it. **A remedy is a promise
+about where it takes you, and the destination is part of the promise.**
+
+The second one is the more interesting failure, because the tool was not silent
+about it: the view carries a footnote saying STATUS reports quota held rather
+than availability. The footnote was true, present, and the wrong answer —
+its remedy is "add `--region`", which collapses the very view the reader asked
+for, and the check it describes as expensive is **free here**: the catalogue is
+one call for all 543 rows and every row in this view already names the region to
+test against. The reasoning that justified the caveat was written for the
+collapsed table and inherited by a view where its premise does not hold.
+
+> A caveat is what you write when you cannot check. Before writing one, check
+> whether this particular surface can.
+
+Fixing it then made the caveat itself false — a note telling the reader to add a
+flag to get a check that had just been performed — so the note had to become
+conditional in the same change. And the rename that stopped the REGION column
+printing a count broke the guard written beside it: `spans_many` was being tested
+against the *relabelled* string, so every bucket row was judged against a
+catalogue it cannot be tested against. Both were caught by a mutation sweep, not
+by the suite.
+
+## A rename breaks the guard standing next to it, in the same change
+
+The hardest version of a stale assumption is the one that goes stale *inside the
+commit that creates it*.
+
+`--by-region` printed `42 regions` in a column headed REGION — a count where a
+place belongs. The fix relabelled it to `any of 42`, which cannot be read as
+somewhere to go. Four lines away, the code deciding whether a row could be
+checked against the accelerator catalogue asked:
+
+```python
+if not stocks or spans_many(place) or place == "global":
+    return None          # a bucket names no single region: not checked
+```
+
+`spans_many` matches `^\d+ regions$`. After the rename it matched nothing, so
+every bucket row fell through and was judged against a catalogue it cannot be
+tested against — and answered `not offered here` on the strength of it. **The
+rename and the guard it broke were the same change, by the same author, minutes
+apart, and the suite stayed green.**
+
+The mechanism is worth naming because it is not carelessness. A guard that reads
+a value *by its shape* has an invisible dependency on whoever produces that
+shape. Nothing links them, no type says so, and a search for the guard's name
+does not find the producer. Here the producer was four lines up.
+
+> When you change what a value looks like, search for the code that recognises
+> it by looking. A predicate that matches on spelling is coupled to the speller.
+
+Two smaller lessons came out with it:
+
+* The repair was to test the row's own place instead of the rendered label —
+  **check the thing before it was formatted for a human, not after.** A label is
+  for reading; a predicate should not be reading it.
+* The same file still had `"regions" in where` one branch over, a hand-rolled
+  copy of `spans_many` sitting beside the real one. Swapping it back kills no
+  test, because the two are identical *for the current spelling* — which is the
+  whole point, and the surviving mutant is documented in the code rather than
+  quietly tolerated.
+
+And there is a process note attached to this one. While proving the substring
+version was fragile, the demonstration ended with `git checkout comfy_qa/quota.py`
+— on a repository whose entire body of work is **uncommitted**. That reverted
+1,758 lines to a 419-line HEAD in one command. It was recovered in full from a
+`.bak` taken minutes earlier for an unrelated mutation sweep, which is luck
+rather than method.
+
+> `git checkout <file>` is a delete. On uncommitted work it is the only delete
+> that looks like a navigation command.
+
+## A count is a claim
+
+Three numbers in one night, each printed beside the word "regions", none of them
+a number of regions:
+
+```
+never asked in 172        # 43 regions, counted across a region row and a zone row, summed
+this project's quota names 174   # 43 regions plus ~130 zones plus "global"
+RTX-PRO-6000 ... refused in 2 regions   # beside "ready (Spot)", and Spot had no refusals
+```
+
+Each was arithmetically correct on the set it was handed. The defect is in the
+sentence: `len(places)` is only a count of regions if `places` holds regions, and
+a count printed next to a noun asserts that noun. `applicableLocations` holds
+zones for a `-per-project-zone` row and `global` for the ceiling, and the third
+one attributes a refusal to a pool that has never been refused.
+
+> A number in a sentence is a claim about the noun beside it. Check the set, not
+> the arithmetic.
+
+The last of those is the sharper case, because the fix for it had already been
+made: the `where` column had been corrected a round earlier to stop showing the
+on-demand geography beside a Spot status. The counts sitting two fields away were
+left behind — which is *A correction that lands in one place reads as done*,
+again, on the same row of the same table.
+
+## A rationale outlives the premise it was built on
+
+```python
+# THE NAME `quota list` SHOWS. `self.card` is the display name — `H100-80GB` —
+# and the quota table has an `H100` row and no `H100-80GB` row, so a reader
+# following this sentence to the table found nothing by that name.
+quota_name=card.quota_names[-1],
+```
+
+Every word of that was true when it was written. Then a different fix made
+`quota list` print the card table's own name, and the comment went on justifying
+code that now produced the defect it was written to prevent: `create --gpu h100`
+printing `H100-80GB: 0` and `this project has no H100 quota` four lines apart.
+
+A comment that argues for behaviour is load-bearing in a way a descriptive one is
+not: it tells the next reader the line is deliberate, so they leave it alone. The
+argument has a premise, and nothing in the repository was watching the premise.
+
+> When you change a fact, grep for the sentences that assert it — not just for
+> the code that reads it.
+
+The test guarding this had the same shape. It asserted the literal string
+`H100`, so when the rule's *spelling* changed the test failed while the rule
+itself was being honoured. It now derives the expected name from the same
+function the table renders with, and can no longer tell one from the other
+wrongly.
+
+## Do not run the product against a tree something else is editing
+
+A mutation sweep was running in the background — apply a mutant, run the suite,
+restore from a `.bak` snapshot — while the product was being run against the live
+project in another shell, and while edits were being made to the same files.
+
+Three things went wrong at once, and all three looked like results:
+
+* the sweep's restore overwrote four unrelated edits made after its snapshot;
+* the live run produced output for a tree that was mid-mutation, showing a check
+  passing that had been switched off seconds earlier and back on seconds later;
+* killing the sweep mid-cycle left a mutant in the working tree, where a normal
+  suite run would have reported it as a test failure of unknown origin.
+
+None of it was subtle once seen, and none of it announced itself. The output was
+plausible in every case.
+
+> A background job that writes to the working tree is a second author. Run it
+> alone, or do not run it.
+
+## The instrument failed the same way twice in one session
+
+Class 4 is *an instrument with only one branch*. It happened twice on the same
+night, in the same harness, for the same reason:
+
+```sh
+SEL="tests/a.py tests/b.py"
+pytest -q $SEL          # zsh does not word-split: ONE argument, a path that does not exist
+```
+
+pytest collects nothing, prints no line beginning `FAILED`, and the harness
+reports **SURVIVED** for every mutant — a clean sweep, which reads exactly like
+success. The first time, the fix was to use an array and add a control mutant
+that must be killed. The second time, the array had not been carried across to a
+new copy of the harness.
+
+> A harness that can only report one outcome has not been tested. Prove it can
+> say the other thing, in the same run, every time you write one.
+
+The control now sits in the sweep itself: a docstring-only mutant that must
+SURVIVE beside real mutants that must be KILLED. A sweep where everything dies is
+as suspect as one where nothing does.
+
 ## Provenance
 
 Classes 1–6 are drawn from the commits that introduced and closed them. Class 7

@@ -48,6 +48,57 @@ If something is not fixable from here — no billing account, no project on the
 account — setup stops and prints the link that fixes it. Fix it and run `setup`
 again; it picks up where it left off and skips what is already done.
 
+### The GPU quota it asks for
+
+Quota is the part of this nobody should have to learn. Google meters GPUs per card
+and caps the total across all of them, approval can take days, and the failure
+looks like a create that simply will not go through. So `setup` works out which
+cards this tool can drive that your project cannot run yet, and asks for them —
+all of them, in one pass, rather than one card per round trip.
+
+It prints exactly what it will ask for, with the value and the justification it
+will send, **before** it sends anything, and then takes one confirmation. A quota
+request cannot be withdrawn and may be read by a person at Google, so nothing is
+sent by a run you were not watching. Use `--no-quota-request` to skip the step, or
+`--justification` to write your own reason.
+
+Running `setup` again is safe. Anything already granted, already waiting on Google,
+or already refused is reported and left alone, so the second run files nothing.
+Where a request *is* re-sent, it updates the preference already on the project
+rather than filing a second one — a quota preference cannot be deleted, only
+lowered, so duplicates would be permanent.
+
+To see exactly what it would ask for without asking, use `--dry-run`. That is not
+a printed command: it sends each request to Google with `--validate-only`, so
+Google checks the real thing and creates nothing.
+
+```sh
+comfy-qat setup --dry-run
+```
+
+**CPU quota, and a trap worth knowing about.** Most GPU cards need no CPU quota at
+all: Google's resource-usage page says that to create A2, A3, A4, G2 or G4 VMs
+"you only need to have the required ... GPU quotas ... You don't need to request
+CPU quotas." That covers A100, H100, H200, B200, RTX PRO 6000 and L4. So an
+`A2-CPUS-per-project-region` of 0 on your project is not the reason an A100 will
+not start, however much it looks like one.
+
+The exception is **N1** — T4, V100, P100, P4 and K80 — which does consume the
+generic `CPUS-per-project-region`. That is usually in the hundreds, so it is
+rarely the problem, and `comfy-qat quota` says so when it is.
+
+**Asking is not being granted.** Quota requests are refused routinely, especially
+on a new project with no billing history, and the answer can take days. `setup`
+prints where to watch for it and never reports a request as an allowance.
+
+One thing worth knowing about which cards appear. Google meters GPUs two ways: per
+card, under ids like `NVIDIA-L4-GPUS-per-project-region`, and by family, under a
+single `GPUS-PER-GPU-FAMILY-per-project-region` with the card as a `gpu_family`
+dimension. Every newer card — H100, H200, B200, RTX PRO 6000 — uses the second,
+and `comfy-qat quota` shows both. A card this tool has no machine type for is
+still listed, so you can see what your project holds; it just will not be ordered
+or asked for.
+
 ### If you would rather not be prompted
 
 Every part of setup works without questions:
@@ -57,7 +108,10 @@ comfy-qat setup --project my-project --region us-central1 --non-interactive
 ```
 
 In that mode it never opens a browser: if you are not signed in, it stops and tells
-you the command to run. A prompt-only feature is an incomplete one.
+you the command to run. A prompt-only feature is an incomplete one. There is no
+terminal to confirm the quota requests at either, so `--non-interactive` submits
+them — the flag is your instruction to proceed without being asked. It still prints
+the plan first, and `--no-quota-request` still stops it.
 
 ## 3. Check what you have
 

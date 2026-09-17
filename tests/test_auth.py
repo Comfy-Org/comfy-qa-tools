@@ -100,18 +100,56 @@ def test_value_of_tolerates_shape(quota, expected):
 def test_request_command_is_built_not_guessed():
     args = quota_request_command(
         project="p", quota_id="NVIDIA_L4_GPUS-per-project-region", value=2,
-        region="us-central1", justification="QA",
+        preference_id="comfyqat_x", dimensions={"region": "us-central1"},
+        justification="QA", email="ali@comfy.org",
     )
-    assert args[:3] == ["quotas", "preferences", "create"]
+    assert args[:4] == ["quotas", "preferences", "update", "comfyqat_x"], (
+        "the preference id is POSITIONAL on update and a flag on create")
     assert "--service=compute.googleapis.com" in args
     assert "--preferred-value=2" in args
     assert "--dimensions=region=us-central1" in args
     assert "--justification=QA" in args
+    assert "--email=ali@comfy.org" in args
 
 
-def test_request_command_omits_region_when_global():
-    args = quota_request_command(project="p", quota_id="GPUS_ALL_REGIONS-per-project", value=2)
+def test_the_verb_is_update_because_only_update_is_idempotent():
+    """`create` mints a new, permanent, undeletable preference every call.
+
+    `update <id> --allow-missing` is an upsert — gcloud's own help: "This command
+    updates an existing or creates a new QuotaPreference" — so re-running `setup`
+    addresses the same row instead of filing a second request to a human.
+    """
+    args = quota_request_command(project="p", quota_id="Q", value=1,
+                                 preference_id="i")
+    assert "create" not in args
+    assert "--allow-missing" in args
+
+
+def test_validate_only_is_available_and_off_by_default():
+    """The only server-side check that creates nothing. `create` has no such flag,
+    so a dry run over it could never be more than a printed string."""
+    plain = quota_request_command(project="p", quota_id="Q", value=1,
+                                  preference_id="i")
+    checked = quota_request_command(project="p", quota_id="Q", value=1,
+                                    preference_id="i", validate_only=True)
+    assert "--validate-only" not in plain
+    assert "--validate-only" in checked
+
+
+def test_request_command_omits_dimensions_when_global():
+    args = quota_request_command(project="p", quota_id="GPUS_ALL_REGIONS-per-project",
+                                 value=2, preference_id="i")
     assert not any(a.startswith("--dimensions") for a in args)
+
+
+def test_a_family_request_carries_both_dimensions():
+    """`GPUS-PER-GPU-FAMILY-per-project-region` without a `gpu_family` is a
+    request about no card in particular."""
+    args = quota_request_command(
+        project="p", quota_id="GPUS-PER-GPU-FAMILY-per-project-region", value=1,
+        preference_id="i",
+        dimensions={"region": "us-central1", "gpu_family": "NVIDIA_H100"})
+    assert "--dimensions=gpu_family=NVIDIA_H100,region=us-central1" in args
 
 
 def test_console_url_names_the_project():

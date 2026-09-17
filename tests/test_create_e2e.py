@@ -192,11 +192,38 @@ def card_cloud(key, *, zones=None, **kwargs):
     where = list(zones or ZONES)
     kwargs.setdefault("accelerators", [offers(zone, card.accelerator) for zone in where])
     kwargs.setdefault("machines", [has_machine(zone, card.machine_type) for zone in where])
-    kwargs.setdefault("quotas", [
-        quota(f"NVIDIA-{card.quota_names[-1]}-GPUS-per-project-region", 8, REGIONS),
-        ceiling(8),
-    ])
+    kwargs.setdefault("quotas", [grant_for(card, 8), ceiling(8)])
     return FakeGcloud(**kwargs)
+
+
+def grant_for(card, value, regions=None):
+    """The quota record a REAL project reports for this card, in its own shape.
+
+    This fake used to synthesise `NVIDIA-H100-GPUS-per-project-region` for every
+    card, including the H100 — **and that row does not exist on a real project.**
+    Google gives the H100 no standard per-model quota at all; its on-demand
+    allowance is the family entry, `GPUS-PER-GPU-FAMILY-per-project-region` with
+    `gpu_family=NVIDIA_H100`. So the H100 path was green in CI and dead in
+    production: every test here proved the tool could read a grant nobody has.
+
+    That is the exact shape `docs/tests-that-cannot-fail.md` is about — a double
+    that answers differently from its subject — and it is why the shape is now
+    DERIVED from `Card.quota_family` rather than assumed. A card the table says is
+    metered by family gets the family record; every other card keeps the per-card
+    one.
+    """
+    where = list(regions if regions is not None else REGIONS)
+    if card.quota_family:
+        return {
+            "quotaId": "GPUS-PER-GPU-FAMILY-per-project-region",
+            "dimensionsInfos": [{
+                "dimensions": {"gpu_family": card.quota_family},
+                "details": {"value": str(value)},
+                "applicableLocations": where,
+            }],
+        }
+    return quota(f"NVIDIA-{card.quota_names[-1]}-GPUS-per-project-region",
+                 value, where)
 
 
 @pytest.fixture(autouse=True)
@@ -265,9 +292,7 @@ def test_a_grant_smaller_than_the_cards_block_is_refused_before_anything_exists(
     """An H100 is sold in eights. A grant of 1 passes a per-card check that counts
     one and then fails at the create, after the zone order has been printed."""
     result = cli("--os", "linux", "--gpu", "h100", "--dry-run",
-                 gc=FakeGcloud(quotas=[
-                     quota("NVIDIA-H100-GPUS-per-project-region", 1, REGIONS),
-                     ceiling(8)]))
+                 gc=FakeGcloud(quotas=[grant_for(CARDS["h100"], 1), ceiling(8)]))
     assert result.exit_code == 2
     assert "H100-80GB needs 8 of this project's GPU allowance and the grant is 1" \
         in result.output
@@ -294,7 +319,7 @@ def test_a_refusal_only_ever_suggests_a_gpu_name_the_tool_accepts(cli):
     result = cli("--os", "linux", "--gpu", "h100", "--dry-run",
                  gc=FakeGcloud(quotas=[ceiling(8)]))
     assert result.exit_code == 2
-    assert "--gpu h100 " in result.output
+    assert "--gpu h100," in result.output
     assert "--gpu h100-80gb" not in result.output
 
 
@@ -368,7 +393,7 @@ def test_both_allowances_are_printed_whether_or_not_the_gate_refuses(cli):
     refused = cli("--os", "linux", "--gpu", "l4", "--dry-run",
                   gc=FakeGcloud(quotas=[L4, ceiling(0)]))
     for result in (allowed, refused):
-        assert "L4: 1, in 5 region(s)" in result.output
+        assert "L4: 1, in 5 regions" in result.output
         assert "GPUS_ALL_REGIONS (every card, project-wide)" in result.output
 
 

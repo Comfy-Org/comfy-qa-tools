@@ -93,10 +93,17 @@ def test_an_absent_value_means_no_grant_not_a_crash():
 
 
 def test_one_allowance_over_many_regions_is_one_row():
-    """43 regions sharing an allowance is one row. Forty-three would be noise."""
+    """43 regions sharing an allowance is one row. Forty-three would be noise.
+
+    The label is the COUNT — `7 regions` for this fixture — not `all regions`.
+    There were three phrasings for one geography (`all regions` from `Row.where`,
+    `43 regions` from `Pool.where`, `in 43 region(s)` from `create`); the count
+    form won because it never claims more than it knows, and `pools_for` really
+    does see spans of 41 out of 43.
+    """
     rows = readiness([L4])
     assert len(rows) == 1
-    assert rows[0].region == "all regions"
+    assert rows[0].region == "7 regions"
 
 
 def test_a_single_location_is_named():
@@ -166,11 +173,45 @@ def test_a_card_metered_per_region_and_per_zone_is_one_row():
     assert rows[0].gpu == "L4"
 
 
-def test_collapsing_keeps_the_larger_grant():
+def test_the_region_scoped_row_binds_even_when_the_zone_one_is_larger():
+    """THIS TEST USED TO ASSERT THE OPPOSITE, and it was pinning a disagreement
+    between two surfaces rather than a property of the API.
+
+        assert [(r.limit, r.status) for r in rows] == [(4, "ready")]
+
+    `allowance()` — which is what `create` consults before ordering a box — reads
+    the same two rows through `_for_card` and answers **0**, because
+    `_prefer_region_scope` drops the zone-scoped copy: "this one has L4 at 1
+    across 43 named regions and an unlimited per-zone allowance across the 130
+    zones inside them. Read together, the card looks unlimited and available in a
+    region the project has no grant in. The region-scoped rows are the ones that
+    bind."
+
+    So `quota list` printed "4 ready" about a card `create` refused to order at
+    0. Measured, not argued: `allowance("t4", [region 0, zone 4])` returns 0
+    today and did before this change. `readiness` was the one surface not
+    applying the module's own rule, which is also why a card metered both ways
+    produced two rows whose counts `summarise` then added together — the "never
+    asked in 172" on a project with 43 regions.
+    """
     rows = readiness([
         quota("NVIDIA-T4-GPUS-per-project-region", 0),
         quota("NVIDIA-T4-GPUS-per-project-zone", 4),
     ])
+    assert [(r.limit, r.status) for r in rows] == [(0, "none")]
+
+    from comfy_qa.quota import allowance
+
+    assert allowance("t4", [
+        quota("NVIDIA-T4-GPUS-per-project-region", 0),
+        quota("NVIDIA-T4-GPUS-per-project-zone", 4),
+    ]) == 0, "the surface this was made to agree with"
+
+
+def test_a_card_metered_only_by_zone_is_still_seen():
+    """The other half of the rule: preferring region scope must not hide a card
+    that has no region-scoped row at all."""
+    rows = readiness([quota("NVIDIA-T4-GPUS-per-project-zone", 4)])
     assert [(r.limit, r.status) for r in rows] == [(4, "ready")]
 
 
@@ -196,7 +237,7 @@ def test_a_card_metered_in_25_regions_is_still_one_line():
 
 def test_a_grant_covering_everywhere_says_so():
     cards = summarise(readiness([L4]))
-    assert [(c.gpu, c.where, c.status) for c in cards] == [("L4", "all regions", "ready")]
+    assert [(c.gpu, c.where, c.status) for c in cards] == [("L4", "7 regions", "ready")]
 
 
 def test_one_region_is_named_rather_than_counted():
@@ -232,3 +273,136 @@ def test_summary_orders_ready_then_pending_then_none():
 def test_the_global_allowance_says_global_not_all_regions():
     """It is one project-wide ceiling, not a grant in every region."""
     assert summarise(readiness([GLOBAL]))[0].where == "global"
+
+
+# --- a preference is a state, not a presence ---------------------------------
+#
+# THESE ARE SHAPES, NOT A SNAPSHOT — and the difference is the point.
+#
+# They were introduced as "the five rows really on this project, read on
+# 2026-09-17". By the end of that same day the project had SEVEN, two of the four
+# fixtures no longer matched the row they named (the ceiling had moved from
+# approved-at-1 to denied-at-2; the A100 row that stood for "pending" had been
+# refused), and nothing on the project was pending at all. A provenance claim
+# that decays within hours of being written is the same defect class as every
+# other confident sentence corrected tonight.
+#
+# So the claim is now what it should always have been: each fixture is a SHAPE
+# the live API produces — satisfied, denied, denied-with-no-stateDetail,
+# unanswered — chosen because the state machine has to tell them apart. Which
+# rows a given project holds is a fact about that project on a given evening and
+# belongs in a report, not in a test file.
+#
+# For the record at the time of writing: seven preferences, six of them denied.
+
+from comfy_qa.quota import asks, denied_ids, global_quota_id, pending_ids
+
+DENIED_PREF = {
+    "quotaId": "NVIDIA-A100-80GB-GPUS-per-project-region",
+    "dimensions": {"region": "europe-west4"},
+    "quotaConfig": {"grantedValue": "0", "preferredValue": "1",
+                    "stateDetail": "Quota request denied"},
+}
+APPROVED_PREF = {
+    # Asked for and granted in full. The live ceiling was this shape when these
+    # were written and has since become granted-1-of-2-denied; the shape is what
+    # the state machine needs, so it stays.
+    "quotaId": "GPUS-ALL-REGIONS-per-project",
+    "quotaConfig": {"grantedValue": "1", "preferredValue": "1",
+                    "stateDetail": "Quota request approved to 1"},
+}
+SILENTLY_GRANTED_PREF = {
+    # The live L4 row carries NO stateDetail at all. Reading the state out of
+    # that string alone would leave this one unclassifiable.
+    "quotaId": "NVIDIA-L4-GPUS-per-project-region",
+    "dimensions": {"region": "us-central1"},
+    "quotaConfig": {"grantedValue": "1", "preferredValue": "1"},
+}
+WAITING_PREF = {
+    # Unanswered. Nothing on the live project is in this state any more — every
+    # request has been refused — which is exactly why it has to be a fixture:
+    # the branch is real and the project stopped exercising it.
+    "quotaId": "NVIDIA-A100-GPUS-per-project-region",
+    "dimensions": {"region": "us-central1"},
+    "quotaConfig": {"grantedValue": "0", "preferredValue": "1"},
+}
+
+LIVE_PREFS = [APPROVED_PREF, SILENTLY_GRANTED_PREF, DENIED_PREF, WAITING_PREF]
+
+A100_80GB_ZERO = {
+    "quotaId": "NVIDIA-A100-80GB-GPUS-per-project-region",
+    "dimensionsInfos": [{"details": {"value": "0"},
+                         "applicableLocations": ["europe-west4"]}],
+}
+
+
+def test_a_refusal_is_not_reported_as_still_waiting():
+    """The defect: `preferredValue > 0` was the whole test, so a request Google
+    answered on 2026-08-05 read as pending for a year."""
+    assert denied_ids(LIVE_PREFS) == {"NVIDIA-A100-80GB-GPUS-per-project-region"}
+    assert "NVIDIA-A100-80GB-GPUS-per-project-region" not in pending_ids(LIVE_PREFS)
+
+
+def test_only_the_unanswered_request_is_pending():
+    assert pending_ids(LIVE_PREFS) == {"NVIDIA-A100-GPUS-per-project-region"}
+
+
+def test_a_granted_request_with_no_state_detail_is_still_granted():
+    """Two of the four live shapes carry no `stateDetail`. Deciding the state
+    from that string alone leaves the commonest row unreadable."""
+    state = {a.quota_id: a.state for a in asks(LIVE_PREFS)}
+    assert state["NVIDIA-L4-GPUS-per-project-region"] == "satisfied"
+    assert state["GPUS-ALL-REGIONS-per-project"] == "satisfied"
+
+
+def test_a_denial_at_a_number_you_now_hold_is_history():
+    """Satisfied is decided before denied, deliberately. What Google said last
+    month about a value the project has since reached is not an obstacle."""
+    overtaken = dict(DENIED_PREF,
+                     quotaConfig={"grantedValue": "1", "preferredValue": "1",
+                                  "stateDetail": "Quota request denied"})
+    assert asks([overtaken])[0].state == "satisfied"
+
+
+def test_a_denied_row_is_no_longer_shown_as_waiting_on_google():
+    """`readiness` reads pending through the same helper, so the correction has
+    to reach the table a person actually looks at — not only the new caller."""
+    rows = readiness([A100_80GB_ZERO], preferences=[DENIED_PREF])
+    assert [r.status for r in rows] == ["denied"], (
+        "quota list still says 'pending — waiting on Google' about a refusal")
+    # It was `none` for a while, which stopped the "pending" lie and started a
+    # worse one — `none` renders as "request it", so the table invited the user
+    # to re-file a request Google had just refused.
+    assert rows[0].status != "none"
+
+
+def test_a_malformed_preference_does_not_take_the_read_down():
+    assert asks([{"quotaConfig": {}}, {"quotaId": "X", "quotaConfig": None}])
+
+
+def test_the_ceiling_id_never_resolves_to_the_zone_scoped_copy():
+    """A project carries both, `friendly_name` maps them to the same label, and
+    asking Google to raise the zone-scoped one is a different request."""
+    both = [
+        {"quotaId": "GPUS-ALL-REGIONS-per-project-zone",
+         "dimensionsInfos": [{"details": {"value": "-1"}}]},
+        {"quotaId": "GPUS-ALL-REGIONS-per-project",
+         "dimensionsInfos": [{"details": {"value": "1"}}]},
+    ]
+    assert global_quota_id(both) == "GPUS-ALL-REGIONS-per-project"
+    assert global_quota_id(list(reversed(both))) == "GPUS-ALL-REGIONS-per-project"
+
+
+def test_resolve_never_returns_the_zone_scoped_copy_either():
+    """Same shape one layer over, and this one decides what `quota request` and
+    `setup` actually send. It returned whichever gcloud listed first."""
+    both = [
+        {"quotaId": "NVIDIA-L4-GPUS-per-project-zone",
+         "dimensionsInfos": [{"details": {"value": "-1"},
+                              "applicableLocations": ["us-central1-a"]}]},
+        {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
+         "dimensionsInfos": [{"details": {"value": "1"},
+                              "applicableLocations": ["us-central1"]}]},
+    ]
+    assert resolve("l4", both) == "NVIDIA-L4-GPUS-per-project-region"
+    assert resolve("l4", list(reversed(both))) == "NVIDIA-L4-GPUS-per-project-region"

@@ -104,6 +104,7 @@ REQUIRED = {
     "test_selector_flags",
     "test_setup",
     "test_setup_flow",
+    "test_setup_quota",
     "test_shell_access",
     "test_tripwires",
     "test_stamp",

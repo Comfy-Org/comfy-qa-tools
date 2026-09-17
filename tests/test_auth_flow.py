@@ -15,6 +15,7 @@ import pytest
 from typer.testing import CliRunner
 
 from comfy_qa.cli import app
+from comfy_qa.create import CARDS
 from comfy_qa.gcloud import Gcloud, GcloudError
 
 runner = CliRunner()
@@ -65,9 +66,31 @@ class FakeCloud:
             if self.quota_error:
                 raise self.quota_error
             return copy.deepcopy(self.quotas)
+        if key.startswith("compute accelerator-types list"):
+            # `quota list --region` and `quota request --region` both check that
+            # the region actually offers the card, because holding quota for it
+            # is not the same thing. These tests are not about availability, so
+            # the answer is "offered" — permissive on purpose, so an unrelated
+            # assertion never turns on a fact this fixture was never written to
+            # express.
+            #
+            # THE UNFILTERED CALL IS ANSWERED TOO. This used to echo whatever
+            # `--filter=name=` asked for, which made it permissive only to a
+            # caller that filtered. `quota request` reads the whole catalogue in
+            # one call, so the echo produced rows named `""`, every card matched
+            # nothing, and the command refused every region as selling no GPUs —
+            # a fixture answering one shape of a question it claims to answer
+            # generally.
+            name = next((a.split("=")[-1] for a in args
+                         if a.startswith("--filter=name=")), "")
+            ids = ([name] if name else
+                   [c.accelerator for c in CARDS.values()])
+            return [{"name": i, "zone": f"https://x/zones/{z}"}
+                    for i in ids
+                    for z in ("us-central1-a", "us-east1-a", "africa-south1-a")]
         if key.startswith("quotas preferences list"):
             return list(self.preferences)
-        if key.startswith("quotas preferences create"):
+        if key.startswith("quotas preferences update"):
             self.requests.append(list(args))
             if self.approve:
                 self._grant(args)
@@ -290,13 +313,18 @@ def test_a_region_narrows_to_that_region():
 def test_a_region_the_project_has_no_grant_in_reports_nothing():
     """An all-regions row was relabelled as whatever region you asked about, so
     `--region` invented a grant the project does not have there."""
+    # europe-west4 has to be a region the project is metered in SOMEWHERE, or
+    # `quota list` now refuses it as a typo — which is a different behaviour and
+    # has its own test. The point here is the relabelling, not the validation.
     only_central = quota("NVIDIA-L4-GPUS-per-project-region", 1,
                          ["us-central1", "us-east1"])
-    result = run(FakeCloud(quotas=[only_central]), "quota", "list",
+    elsewhere = quota("NVIDIA-T4-GPUS-per-project-region", 0, ["europe-west4"])
+    result = run(FakeCloud(quotas=[only_central, elsewhere]), "quota", "list",
                  "--region", "europe-west4")
 
     assert result.exit_code == 0, result.output
-    assert "no GPU quotas reported" in result.output
+    assert "L4" not in result.output, (
+        "an all-regions row was relabelled as the region asked about")
     assert "L4" not in result.output
 
 
@@ -490,7 +518,7 @@ def test_dry_run_prints_the_call_and_asks_google_for_nothing():
     result = run(cloud, "quota", "request", "--gpu", "t4", "--dry-run")
 
     assert result.exit_code == 0
-    assert "gcloud quotas preferences create" in result.output
+    assert "gcloud quotas preferences update" in result.output
     assert cloud.requests == []
 
 
@@ -584,15 +612,24 @@ def test_a_card_this_project_does_not_offer_lists_what_it_does():
 
 
 def test_a_card_offered_elsewhere_says_where_rather_than_contradicting_itself():
-    """`no quota for 'l4' in europe-west4. Available: L4` reads as a bug."""
-    only_central = quota("NVIDIA-L4-GPUS-per-project-region", 1, ["us-central1"])
-    result = run(FakeCloud(quotas=[only_central]), "quota", "request",
-                 "--gpu", "l4", "--region", "europe-west4")
+    """"no quota for 'l4' … Available: L4" reads as a contradiction.
+
+    It became "it is metered in all regions, us-central1" — `readiness` yields
+    LABELS, not places, so that is two API dimension entries rendered as prose
+    and reading as a two-item region list. It now names real regions and offers
+    `--by-region` for the rest, and the fix is about the REGION rather than
+    handing back a list of cards containing the one just typed.
+    """
+    metered = quota("NVIDIA-L4-GPUS-per-project-region", 1, ["us-central1"])
+    other = quota("NVIDIA-T4-GPUS-per-project-region", 1, ["europe-west4"])
+    result = run(FakeCloud(quotas=[metered, other]), "quota", "request",
+                 "--gpu", "l4", "--region", "europe-west4", "--no-wait")
 
     assert result.exit_code == 2
-    assert "no quota for 'l4' in europe-west4" in result.stderr
-    assert "it is metered in us-central1" in result.stderr
-
+    assert "no l4 quota in europe-west4" in result.output, result.output
+    assert "us-central1" in result.output, "it does not say where the card is"
+    assert "ask for one of" not in result.output, (
+        "the fix offers cards when the region is the problem")
 
 def test_a_project_with_no_gpu_quota_at_all_offers_nothing():
     result = run(FakeCloud(quotas=[]), "quota", "request", "--gpu", "l4")
@@ -608,7 +645,7 @@ def test_a_request_google_refuses_is_not_a_success():
     real = cloud._run
 
     def refuse(args, mode):
-        if " ".join(args).startswith("quotas preferences create"):
+        if " ".join(args).startswith("quotas preferences update"):
             raise GcloudError("this project has no billing history")
         return real(args, mode)
 
@@ -652,7 +689,18 @@ def test_the_status_quota_line_is_one_row_per_card_and_admits_truncation():
         quota("NVIDIA-T4-GPUS-per-project-region", 1, REGIONS),
         quota("NVIDIA-A100-GPUS-per-project-region", 1, REGIONS),
         quota("NVIDIA-A100-80GB-GPUS-per-project-region", 1, REGIONS),
-        quota("NVIDIA-H100-GPUS-per-project-region", 8, REGIONS),
+        # The family shape, because that is the only one an H100 grant comes in.
+        # There is no `NVIDIA-H100-GPUS-...` row on a real project — Google gives
+        # the H100 no standard per-model quota — and a fixture that invents one
+        # proves the tool can read a grant nobody has.
+        {
+            "quotaId": "GPUS-PER-GPU-FAMILY-per-project-region",
+            "dimensionsInfos": [{
+                "dimensions": {"gpu_family": "NVIDIA_H100"},
+                "details": {"value": "8"},
+                "applicableLocations": REGIONS,
+            }],
+        },
         # And one the tool cannot drive, to prove it is named rather than
         # silently dropped — and that it does not eat one of the four slots.
         K80_PER_REGION,

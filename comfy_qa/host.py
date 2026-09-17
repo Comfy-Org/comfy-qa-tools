@@ -890,7 +890,7 @@ def create_cmd(
     try:
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
                          taken=taken_names(hosts, instances))
-        check = check_quota(blueprint.card, quotas, instances)
+        check = check_quota(blueprint.card, quotas, instances, region or "")
         say.result("\nquota checked:")
         for line in check.lines():
             say.result(f"  {line}")

@@ -28,7 +28,7 @@ for the reason in its own row.
 | command | what it does |
 |---|---|
 | `comfy-qat --version` | the build you are running — `comfy-qat 1.1.0 (841abaa)` from a checkout, no sha from an installed wheel. Paste it with any result |
-| `comfy-qat setup` | first run, all of it: sign-in, project, billing, GPU quota, host list. `--project`, `--region`, `--non-interactive` |
+| `comfy-qat setup` | first run, all of it: sign-in, project, billing, GPU quota, host list. `--project`, `--region`, `--non-interactive`, `--no-quota-request`, `--justification`, `--dry-run` |
 
 ## Is my account ready?
 
@@ -37,7 +37,14 @@ for the reason in its own row.
 | `comfy-qat status` | signed in? which project? billing linked? any GPU quota? One line per check, stopping at the first failure. `--json` |
 | `comfy-qat login` | prints the two `gcloud` sign-in commands for you to run. It never signs you in itself — the browser step has to be you, and running it yourself leaves you the repro trail |
 | `comfy-qat quota list` | one line per card: ready, pending, or never asked for. Takes about a minute, and says so first. `--region`, `--by-region`, `--json` |
-| `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait for the answer. `--value`, `--justification`, `--no-wait`, `--dry-run` |
+| `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` — then wait for the answer. It refuses a region Google sells no such card in, and a raw `--quota-id` for a family quota, which cannot say which card you mean. `--value`, `--allow-lower`, `--release-quota`, `--justification`, `--no-wait`, `--dry-run`, `--validate-only` |
+
+`--value` never lowers by accident. The floor is the larger of the request
+already with Google and the quota the project **holds** — a card can hold quota
+with no request behind it, which on a QA project is usually the card that works.
+Going below the floor needs `--allow-lower`. `--value 0` is a release rather than
+a smaller ask, cannot be taken back by waiting, and needs `--release-quota` on top
+of `--allow-lower`; a negative is refused whatever you pass.
 
 Quota gates the **card**, never the operating system. Once a card is approved you
 can build either Windows or Linux on it.
