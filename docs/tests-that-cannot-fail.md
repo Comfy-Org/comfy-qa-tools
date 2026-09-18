@@ -1862,6 +1862,53 @@ name. **A sweep narrows a list to something readable; it does not decide.** Ever
 one of these rounds ended with reading the candidates by hand, and that is where
 each of the three real findings came from.
 
+## Making a distinction representable is half the work
+
+`Ask.preferred` and `Ask.granted` were changed from `int` to `int | None` on
+purpose, so that a value Google OMITS could be told from a value that is zero.
+That was the right fix, and it introduced this:
+
+```python
+short = next((ask for ask in about
+              if ask.state in ("partial", "denied")
+              and ask.preferred > ask.granted), None)
+```
+
+`TypeError: '>' not supported between instances of 'int' and 'NoneType'` — a raw
+traceback out of `quota list`, the command whose entire job is telling you what
+you hold. Google omits `grantedValue` when it is zero, so any denied or partial
+preference missing either field takes the command down.
+
+**The eleventh instance of absent-versus-zero, living inside the fix for
+absent-versus-zero.** Making the distinction expressible is the half that feels
+like the work. The other half is every consumer of the value, and it is the half
+that is easy to believe you have already done.
+
+> When you widen a type to carry "unknown", the change is not done until you have
+> visited every read of it. Widening is a one-line edit with a fan-out.
+
+The check is mechanical, so it is now a test: **every `<`, `>`, `-` or `+` whose
+operands are attributes named `preferred` or `granted` must have an `is not None`
+guard in the same statement.** Its first version inspected the comparison alone
+and flagged the fixed line — the guard lives in the enclosing `and` chain, which
+unparsing one operand cannot see.
+
+### Twelve live passes could not have found it
+
+The project this was built against writes `grantedValue: 0` explicitly on its
+denied preferences. No amount of running against real data reaches the branch. It
+took reading the code with the type in mind.
+
+And no test could reach it either, for a reason worth naming precisely: the
+**fixture builder** — the one helper every preference in the suite is made with —
+wrote both keys unconditionally. Not one fixture missing a case: the payload was
+*unconstructible from inside the suite*. That is the fixture-cannot-reach-the-branch
+shape at its most complete, and the fix is one `if` in the builder.
+
+> A fixture builder that cannot produce a shape the API produces is a blind spot
+> with the same boundary for every test in the file. Check what your builders
+> refuse to make.
+
 ## A count is a claim
 
 Three numbers in one night, each printed beside the word "regions", none of them

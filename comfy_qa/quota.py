@@ -957,8 +957,26 @@ def readiness(
         # 1 — so the row is ready — and the fact that the raise was refused was
         # invisible, which is half of what a person needs before deciding
         # whether to ask again.
+        # BOTH SIDES ARE `int | None`, AND THAT IS THIS MODULE'S OWN DOING.
+        # `_as_int_or_none` exists so an ABSENT value can be told from a zero —
+        # and Google omits `grantedValue` when it is zero, so a denied preference
+        # routinely arrives with one side missing. Comparing them raised
+        # `TypeError: '>' not supported between instances of 'int' and
+        # 'NoneType'` out of `quota list`, the command whose whole job is saying
+        # what you hold.
+        #
+        # Eleventh instance of absent-versus-zero, living inside the fix for it.
+        # Making the distinction representable is half the work; the other half
+        # is every consumer of the value, and it is the half that is easy to
+        # believe you have already done.
+        #
+        # ABSENT IS NOT COMPARABLE, so a row with no readable pair is not a
+        # shortfall — it is a thing we cannot say that about. Reading a missing
+        # `granted` as 0 would invent the very shortfall this looks for.
         short = next((ask for ask in about
                       if ask.state in ("partial", "denied")
+                      and ask.preferred is not None
+                      and ask.granted is not None
                       and ask.preferred > ask.granted), None)
         asked = short.preferred if short else 0
         if row.limit > 0:
@@ -985,8 +1003,22 @@ def readiness(
         if row.limit > 0:
             refused_in = never_asked_in = 0
         else:
-            refused = {place for ask in about if ask.state == "denied"
-                       for place in ([ask.region] if ask.region else row.locations)}
+            from .zones import region_of
+
+            # REGIONS ON BOTH SIDES. `places` below is narrowed with
+            # `region_of` and this was not — so a denial naming no region fell
+            # back to `row.locations` raw, which for a zone-scoped row is ZONES.
+            # A T4 denied across seven zones in two regions reported
+            # `refused_in=7` beside its own `where` of "2 regions", rendered as
+            # "refused in 7 regions" and keyed `refused_in_regions` in JSON.
+            #
+            # And the over-count drove `never_asked_in` to 0 through the
+            # `max(0, ...)` clamp below, so the split this field exists to report
+            # vanished in precisely the case it was wrong about.
+            refused = {region_of(place) for ask in about
+                       if ask.state == "denied"
+                       for place in ([ask.region] if ask.region
+                                     else row.locations)}
             # A row with no `applicableLocations` still describes one place —
             # the quota itself — so the split has something to divide. Written
             # with the count rather than the `or` idiom, for the reason recorded
@@ -994,8 +1026,6 @@ def readiness(
             # REGIONS, for the reason `where_label` gives: a per-zone row's 130
             # locations are 43 regions, and this number is printed as "never
             # asked in N" with the word regions beside it.
-            from .zones import region_of
-
             places = len({region_of(p) for p in row.locations}) or 1
             refused_in = len(refused)
             never_asked_in = max(0, places - refused_in)

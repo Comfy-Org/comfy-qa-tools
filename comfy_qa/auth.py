@@ -1331,9 +1331,26 @@ def quota_list_cmd(
         # hardcoded hints; its siblings were derived rounds ago.
         from .create import drivable_cards
 
+        # `same_card`, NOT `.upper()`. `drivable_cards()` yields KEYS (`h100`)
+        # and `CardSummary.gpu` is the DISPLAY name (`H100-80GB`), so the
+        # comparison could never exclude h100 — the one family-metered card, and
+        # the one this feature was built for. The table said "pending — waiting
+        # on Google" and the line underneath told the reader to ask again, while
+        # `setup` declines to re-ask for anything pending and this module calls
+        # not re-asking "the whole of the idempotence rule".
+        #
+        # `same_card` exists here for exactly this join, and its docstring
+        # records the same failure one surface over.
+        #
+        # AND `denied` IS SETTLED TOO. The filter excluded only ready and
+        # pending, so a card Google has refused was offered as something to ask
+        # for — the instruction `quota list` exists to stop giving.
+        from .quota import same_card
+
+        settled_now = [g.gpu for g in cards
+                       if g.status in ("ready", "pending", "denied")]
         askable = [c for c in drivable_cards()
-                   if c.upper() not in {g.gpu.upper() for g in cards
-                                        if g.status in ("ready", "pending")}]
+                   if not any(same_card(c, held) for held in settled_now)]
         say.result("\nnothing is usable yet. Ask for a card:")
         say.result(f"  comfy-qat quota request --gpu "
                    f"{','.join(askable or drivable_cards())}"

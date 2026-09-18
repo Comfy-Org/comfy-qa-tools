@@ -1208,14 +1208,23 @@ def ensure_quota_requests(
     plan = plan_quota(quotas, preferences, region=region)
     where, why = request_region(quotas, preferences, region)
 
-    if region:
-        blind = _unsold_here(gc, project, plan, region)
+    # `where`, NOT `region`. The guard was gated on the flag the USER typed, and
+    # with no `--region` the plan DERIVES one and pins every region-scoped target
+    # to it — so the derived region went unchecked, and on a project whose
+    # standing preferences name africa-south1 that is where three irrevocable
+    # requests would be filed, into a region selling no NVIDIA card at all.
+    #
+    # `_refuse_if_unsold` refuses exactly that through `quota request`, and its
+    # own docstring says a guard reachable from one entry point and not another
+    # is a second-site by construction. This was that second entry point.
+    if where:
+        blind = _unsold_here(gc, project, plan, where)
         if blind:
             raise SetupStopped(
-                f"{region} does not offer {', '.join(blind)} — a granted "
+                f"{where} does not offer {', '.join(blind)} — a granted "
                 f"request there buys a box that can never start, and a quota "
                 f"preference cannot be withdrawn",
-                fix=f"comfy-qat quota list --region {region}  # what this "
+                fix=f"comfy-qat quota list --region {where}  # what this "
                     f"region actually offers",
             )
     asking = [ask for ask in plan if ask.submits]

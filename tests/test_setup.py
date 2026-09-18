@@ -21,6 +21,20 @@ def gcloud(**responses):
                 if isinstance(value, Exception):
                     raise value
                 return value
+        if key.startswith("compute accelerator-types list"):
+            # `setup` checks that the region it will file into actually sells the
+            # cards it is about to ask for — including the region it DERIVES when
+            # no `--region` is given, which is where three irrevocable requests
+            # were going unchecked. These tests are not about availability, so
+            # the answer is permissive: every card, in the usual regions.
+            from comfy_qa.create import CARDS
+
+            name = next((a.split("=")[-1] for a in args
+                         if a.startswith("--filter=name=")), "")
+            ids = [name] if name else [c.accelerator for c in CARDS.values()]
+            return [{"name": i, "zone": f"https://x/zones/{z}"}
+                    for i in ids
+                    for z in ("us-central1-a", "europe-west4-a", "asia-east1-a")]
         raise AssertionError(f"unexpected gcloud call: {key}")
 
     return Gcloud(runner=runner)

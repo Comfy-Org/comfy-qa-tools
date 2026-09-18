@@ -425,10 +425,33 @@ def test_status_fails_when_every_granted_card_is_one_this_tool_cannot_drive():
 
 
 def test_nothing_usable_prints_the_command_that_fixes_it():
+    """THE ASSERTION STOPPED AT THE FLAG, and the thing under test is what comes
+    after it.
+
+        assert "comfy-qat quota request --gpu" in result.output
+
+    The `askable` derivation — whose own comment says "DERIVED, both halves. This
+    read `--gpu l4,a100 --region us-central1` whatever the project held" — could
+    be reverted to that hardcoded string and this test stayed green, because the
+    hardcoded string also contains `comfy-qat quota request --gpu`. Class 1 of
+    `docs/tests-that-cannot-fail.md`: the subject of the assertion is the whole
+    line rather than the part that means anything.
+
+    It is also how defect 4 of the same pass survived — the list after `--gpu`
+    offering a card the table two lines above calls pending.
+    """
     result = run(FakeCloud(quotas=[T4, A100]), "quota", "list")
 
     assert "nothing is usable yet" in result.output
-    assert "comfy-qat quota request --gpu" in result.output
+    hint = next(l for l in result.output.splitlines()
+                if "quota request --gpu" in l)
+    asked = hint.split("--gpu", 1)[1].split()[0].split(",")
+
+    # THE CARDS, not the flag. Both fixtures are at zero and neither has been
+    # asked for, so both belong in the list — and nothing else does.
+    assert set(asked) >= {"t4", "a100"}, hint
+    assert all(card in {"a100", "a100-80gb", "h100", "l4", "t4"}
+               for card in asked), hint
 
 
 def test_a_pending_request_is_shown_as_pending_not_missing():

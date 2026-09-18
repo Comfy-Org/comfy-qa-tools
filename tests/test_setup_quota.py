@@ -82,7 +82,17 @@ def preference(quota_id, *, granted, preferred, state_detail=None, dimensions=No
     and fulfillment" — and gcloud's `--reconciling-only` is the server filter
     `reconciling:true`.
     """
-    config = {"grantedValue": str(granted), "preferredValue": str(preferred)}
+    # `None` OMITS THE KEY, which is how Google reports a value it does not have
+    # — and until this line existed the payload was UNCONSTRUCTIBLE from inside
+    # this suite, because the builder every fixture uses wrote both keys
+    # unconditionally. That is the fixture-cannot-reach-the-branch shape at its
+    # most complete: not one fixture, the fixture BUILDER, so a whole class of
+    # real API response had no representation here at all.
+    config = {}
+    if granted is not None:
+        config["grantedValue"] = str(granted)
+    if preferred is not None:
+        config["preferredValue"] = str(preferred)
     if state_detail is not None:
         config["stateDetail"] = state_detail
     row = {"quotaId": quota_id, "quotaConfig": config,
@@ -6963,3 +6973,187 @@ def test_the_gpu_flag_takes_the_same_spellings_everywhere(monkeypatch):
     assert result.exit_code == 2, result.output
     assert cloud.submitted == []
     assert "--gpu h100" in result.output, result.output
+
+
+# --- pass 13: a None reaching an operator that cannot take one ---------------
+
+
+@pytest.mark.parametrize("granted, preferred", [
+    (None, 1),      # Google omits grantedValue when it is zero
+    (0, None),      # and preferredValue can be absent too
+    (None, None),
+])
+def test_quota_list_survives_a_preference_with_a_missing_value(granted, preferred,
+                                                               monkeypatch):
+    """A RAW TRACEBACK OUT OF THE COMMAND WHOSE JOB IS TELLING YOU WHAT YOU HOLD.
+
+        TypeError: '>' not supported between instances of 'int' and 'NoneType'
+
+    `ask.preferred > ask.granted`, and both are `int | None` — made optional
+    deliberately, to fix absent-versus-zero. This is that class for the eleventh
+    time, living INSIDE the fix for it: `_as_int_or_none` exists so absent and
+    zero can be told apart, and this comparison consumes the `None` it introduced
+    and assumes an int.
+
+    INVISIBLE TO LIVE TESTING. The project this was built against writes
+    `grantedValue: 0` explicitly on its denied preferences, so twelve passes
+    against real data could not reach it. A different project gets a traceback.
+    """
+    missing = [preference(L4, granted=granted, preferred=preferred,
+                          state_detail=DENIED_DETAIL, name="half-written",
+                          dimensions={"region": "us-central1"})]
+    result = quota_list(Cloud(quotas=THIS_PROJECT, preferences=missing),
+                        monkeypatch)
+
+    assert result.exit_code == 0, result.output
+    assert "Traceback" not in result.output, result.output
+
+
+def test_no_optional_int_reaches_an_operator_that_cannot_take_none():
+    """THE SWEEP, made permanent, because this is the SECOND time a `None` has
+    reached an operator that cannot take one.
+
+    Every value typed `int | None` in this feature — `Ask.preferred`,
+    `Ask.granted`, and anything `_as_int_or_none` produces — is compared,
+    subtracted or formatted somewhere. Making the distinction representable is
+    half the work; revisiting every consumer is the half that is easy to believe
+    you have already done.
+
+    Mechanical: find `<`, `>`, `<=`, `>=`, `-` and `+` whose operands are
+    attribute reads named `preferred` or `granted`, and require a `is not None`
+    guard in the same statement.
+    """
+    import ast
+    from pathlib import Path
+
+    optional = {"preferred", "granted"}
+    risky = []
+    for path in sorted((Path(__file__).resolve().parent.parent
+                        / "comfy_qa").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        # THE ENCLOSING STATEMENT, not the comparison alone. A guard reads
+        # `a is not None and a > b`, and unparsing only the `a > b` half cannot
+        # see the half that makes it safe — the first version of this test
+        # flagged the fixed line as risky for exactly that reason.
+        for stmt in ast.walk(tree):
+            if not isinstance(stmt, ast.stmt):
+                continue
+            guarded = "is not None" in ast.unparse(stmt)
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.stmt) and node is not stmt:
+                    break
+                if not isinstance(node, (ast.Compare, ast.BinOp)):
+                    continue
+                operands = ([node.left, *node.comparators]
+                            if isinstance(node, ast.Compare)
+                            else [node.left, node.right])
+                names = {o.attr for o in operands
+                         if isinstance(o, ast.Attribute)}
+                if not (names & optional):
+                    continue
+                text = ast.unparse(node)
+                if guarded or "None" in text or "or 0" in text:
+                    continue
+                risky.append(f"{path.name}:{node.lineno}  {text}")
+    assert not risky, (
+        "an int | None reaches an operator that cannot take one:\n  "
+        + "\n  ".join(risky))
+
+
+def test_setup_checks_the_region_it_derived_not_only_the_one_you_typed(tmp_path):
+    """Pass 13, defect 2, and it is the irrevocable one.
+
+    `_unsold_here` is gated on `region` — the flag the USER typed. With no
+    `--region`, `plan_quota` derives one and pins every region-scoped target to
+    it, and that derived region is never checked against the catalogue. Measured
+    on a project whose standing preferences name `africa-south1`:
+
+        derived: africa-south1 — where this project has asked for GPU quota before
+          SUBMITS A100      dims=(('region', 'africa-south1'),)
+          SUBMITS H100-80GB dims=(('gpu_family','NVIDIA_H100'),('region','africa-south1'))
+
+    `africa-south1` sells zero NVIDIA accelerators. `quota request --gpu a100
+    --region africa-south1` is refused outright by `_refuse_if_unsold`, whose own
+    docstring says a guard reachable from one entry point and not another is a
+    second-site by construction — and `setup` is that second entry point.
+
+    The fix is one word: check `where`, the region the plan actually wrote into
+    its targets, not `region`, the flag.
+    """
+    asked_there = [preference(L4, granted=0, preferred=1, reconciling=True,
+                              name="l4-afs",
+                              dimensions={"region": "africa-south1"})]
+    cloud = Cloud(quotas=THIS_PROJECT, preferences=asked_there,
+                  accelerators=stocking("us-central1", "nvidia-tesla-a100"))
+
+    with pytest.raises(SetupStopped) as stopped:
+        run(cloud, config_path=tmp_path / "hosts.toml", quota_dry_run=True)
+
+    # THE DERIVED REGION, whichever it is — the point is that a region NOBODY
+    # TYPED is now checked. Pinning the name would tie this to `request_region`'s
+    # tie-breaking rather than to the guard being reachable at all.
+    assert "does not offer" in str(stopped.value), stopped.value
+    assert cloud.submitted == []
+
+
+def test_the_ask_hint_does_not_offer_a_card_already_pending(monkeypatch):
+    """Pass 13, defect 4. `drivable_cards()` yields KEYS (`h100`) and
+    `CardSummary.gpu` is the DISPLAY name (`H100-80GB`), so `"H100" !=
+    "H100-80GB"` and h100 could never be excluded — the one family-metered card,
+    and the one the feature was built for.
+
+        H100-80GB  0  2 regions  pending — waiting on Google
+        ...
+        nothing is usable yet. Ask for a card:
+          comfy-qat quota request --gpu a100,a100-80gb,h100,l4,t4
+
+    `setup` declines to re-ask for anything pending and the module header calls
+    not re-asking "the whole of the idempotence rule". Two surfaces, one card,
+    opposite advice — and `same_card` exists in this module for exactly this
+    join, with a docstring recording the same failure one surface over.
+
+    Denied cards were admitted too: the filter excluded only ready and pending.
+    """
+    pending_h100 = [preference(FAMILY, granted=0, preferred=8, reconciling=True,
+                               name="h100-pending",
+                               dimensions={"gpu_family": "NVIDIA_H100",
+                                           "region": "us-central1"})]
+    zeroed = [quota(q["quotaId"], 0, locations=REGIONS_43)
+              if q["quotaId"] != FAMILY else q for q in THIS_PROJECT]
+    out = quota_list(Cloud(quotas=zeroed, preferences=pending_h100 + PREFS_DENIED),
+                     monkeypatch).output
+    hint = next((l for l in out.splitlines() if "quota request --gpu" in l), "")
+
+    assert hint, out
+    assert "h100" not in hint, f"offers a card already pending: {hint}"
+    assert "a100-80gb" not in hint, f"offers a card already refused: {hint}"
+
+
+def test_refused_in_counts_regions_when_the_denial_names_none():
+    """Pass 13, defect 5. `places` is narrowed with `region_of`; `refused` is
+    not — when a denial names no region it falls back to `row.locations` raw,
+    which for a zone-scoped row is ZONES.
+
+        Readiness(gpu='T4', region='2 regions', refused_in=7, never_asked_in=0)
+
+    The row's own `where` says 2 regions and `refused_in` says 7, rendered as
+    "refused in 7 regions" and keyed `refused_in_regions` in JSON. The over-count
+    also drives `never_asked_in` to 0 through the `max(0, ...)` clamp, so the
+    split the field exists to report disappears in the case it is wrong about.
+
+    Every denied fixture in this suite carries a region dimension, so the `else
+    row.locations` branch — the one that over-counts — was reached by no test.
+    """
+    from comfy_qa.quota import readiness
+
+    zones = [f"{r}-{z}" for r in ("r1", "r2") for z in "abc"] + ["r1-d"]
+    zone_only = [{"quotaId": "NVIDIA-T4-GPUS-per-project-zone",
+                  "dimensionsInfos": [{"details": {},
+                                       "applicableLocations": zones}]}]
+    region_less = [preference("NVIDIA-T4-GPUS-per-project-zone", granted=0,
+                              preferred=1, state_detail=DENIED_DETAIL,
+                              name="t4-anywhere")]
+    row = readiness(zone_only, region_less)[0]
+
+    assert row.refused_in == 2, (row.refused_in, row.region)
+    assert row.never_asked_in == 0, row.never_asked_in
