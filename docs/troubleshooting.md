@@ -486,11 +486,13 @@ the availability question was not answered either way and the request went ahead
 the other; `comfy-qat quota list --region <region>` reports the same distinction
 as "not checked" rather than as absence.
 
-**`this project reports no quota called '<id>'`**
-`--quota-id` takes a raw Google quota id and this project does not report one by
-that name. It used to be accepted and filed — a permanent preference against an id
-that does not exist. Run `comfy-qat quota` to see the ids this project has, or use
-`--gpu <card>` and let the tool resolve it.
+**`<id> is not a GPU quota this project reports — `quota request` asks for GPU quota only`**
+`--quota-id` takes a raw Google quota id, and this command reads only the GPU
+ones. It used to say "this project reports no quota called '<id>'", which was
+false of every CPU, disk and storage quota the project genuinely holds — the list
+it checks against is already filtered, so the sentence described the filter rather
+than the project. Run `comfy-qat quota` to see the ids this command can ask for,
+or use `--gpu <card>` and let the tool resolve it.
 
 **`<card>: not creatable by this tool, whatever quota it holds`**
 Your project meters that card and `comfy-qat quota` shows the row, but
@@ -548,6 +550,14 @@ a request for it must carry none, so a `--region` alongside it has nowhere to go
 Not an error: the request is correct and goes ahead. It is said out loud because
 this command refuses four other kinds of wrong region and staying mute about an
 ignored one is the odd behaviour.
+
+**`<name> is what `quota list` calls this card; `--gpu` takes <key>`**
+One card has three names and they are not interchangeable: `H100-80GB` is what
+`quota list` shows, and `h100` is what `--gpu` takes. `quota request` used to
+accept the display name while `create` refused it, so the two commands people use
+together disagreed about one card. Both take the key now, and the refusal names
+it rather than saying "no card called", which would be false of a card the tool
+can plainly see.
 
 **`--gpu and --quota-id both name what to ask for, and they disagree here, so this command cannot tell which you meant`**
 Pass one or the other. This used to warn that `--gpu` was "ignored" and then file

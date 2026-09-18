@@ -6899,3 +6899,67 @@ def test_setup_does_not_say_nothing_was_missing_when_cards_are_at_zero(tmp_path)
 
     assert "Nothing was missing" not in line, line
     assert "refused" in line.lower() or "denied" in line.lower(), line
+
+
+# --- pass 12: four false sentences on error paths ----------------------------
+
+
+def test_nowhere_else_does_not_claim_the_card_is_metered_nowhere_else():
+    """V2, and it is my own sentence from the last round. `elsewhere` is metered
+    AND STOCKED minus refused, so empty has two causes — and the message claims
+    only one of them:
+
+        Google already refused A100 in us-central1, and that is the only region
+        this project meters it in
+
+    A card metered in forty-three regions and stocked in none of the other
+    forty-two hits this branch, and that sentence is false about it.
+    """
+    from comfy_qa.create import CARDS, check_quota
+
+    refused_here = [preference(A100, granted=0, preferred=1,
+                               state_detail=DENIED_DETAIL, name="a100-usc1",
+                               dimensions={"region": "us-central1"})]
+    spread = [q for q in THIS_PROJECT if q["quotaId"] != A100] + [
+        quota(A100, 0, locations=REGIONS_43)]
+    fix = str(check_quota(CARDS["a100"], spread, [], "",
+                          preferences=refused_here, askable=[]).problem().fix)
+
+    assert "only region this project meters it in" not in fix, fix
+    assert "nowhere else" in fix, fix
+
+
+def test_a_non_gpu_quota_id_is_refused_for_the_right_reason(monkeypatch):
+    """V3. `--quota-id CPUS-per-project-region` answered "this project reports no
+    quota called 'CPUS-per-project-region'", which is false of every CPU and
+    storage quota the project has. The list it checks against is `gpu_quotas`,
+    already filtered, so the sentence describes the filter rather than the
+    project — the derived-set class again."""
+    cloud = Cloud(quotas=[quota(L4, 1, locations=["us-central1"])])
+    result = quota_request(cloud, monkeypatch, "--quota-id",
+                           "CPUS-per-project-region", "--region", "us-central1",
+                           "--value", "1", "--dry-run")
+
+    assert result.exit_code == 2
+    assert "reports no quota called" not in result.output, result.output
+    assert "GPU" in result.output, result.output
+
+
+def test_the_gpu_flag_takes_the_same_spellings_everywhere(monkeypatch):
+    """V4. `quota request --gpu h100-80gb` was accepted; `create --gpu h100-80gb`
+    refuses it, and the card table says outright that `--gpu h100-80gb` "is not a
+    command — the tool refuses it". One card, two vocabularies, on the two
+    commands a person uses together.
+
+    `create` is the one following the documented rule, so `quota request` stops
+    accepting a display name — and says which spelling to use rather than
+    "no card called", which would be false of a card it can plainly see.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    result = quota_request(cloud, monkeypatch, "--gpu", "h100-80gb",
+                           "--region", "us-central1", "--value", "1",
+                           "--dry-run")
+
+    assert result.exit_code == 2, result.output
+    assert cloud.submitted == []
+    assert "--gpu h100" in result.output, result.output

@@ -1596,8 +1596,18 @@ def quota_request_cmd(
         # was accepted, exit 0, on the irrevocable path — with no check against
         # the quota records this command has already read.
         if quota_id not in {q.get("quotaId") for q in quotas}:
+            # "NO QUOTA CALLED X" WAS A CLAIM ABOUT THE PROJECT, and `quotas` is
+            # `gpu_quotas` — already filtered. So every CPU, disk and storage
+            # quota the project genuinely holds was reported as not existing. The
+            # sentence described the filter rather than the project, which is the
+            # derived-set class in prose.
+            #
+            # Still a refusal: this command asks for GPU quota, and an id it has
+            # not read cannot be resolved to a card, a region or a pool. The
+            # message says which set it means.
             say.fail(
-                f"this project reports no quota called {quota_id!r}",
+                f"{quota_id} is not a GPU quota this project reports — "
+                f"`quota request` asks for GPU quota only",
                 fix=say.fix("comfy-qat quota list — the quota this project has",
                             "comfy-qat quota request --gpu <card> — by card name "
                             "instead of a raw id"),
@@ -1668,7 +1678,28 @@ def quota_request_cmd(
     for name in dict.fromkeys(n.strip() for n in (gpu or "").split(",")):
         if not name:
             continue
-        card = card_named(name)
+        # V4: THE SAME SPELLINGS `create --gpu` TAKES. `card_named` answers "what
+        # does Google meter this as", which is the right question for reading a
+        # quota row and the wrong one for a flag: it matches the DISPLAY name, so
+        # `--gpu h100-80gb` was accepted here while `create --gpu h100-80gb` is
+        # refused, and the card table says outright that `--gpu h100-80gb` "is
+        # not a command — the tool refuses it". One card, two vocabularies, on
+        # the two commands people use together.
+        #
+        # Named rather than refused with "no card called", which would be false
+        # of a card the tool can plainly see.
+        as_quota = card_named(name)
+        if as_quota is not None and name.strip().lower() != as_quota.key:
+            say.fail(
+                f"{name} is what `quota list` calls this card; "
+                f"`--gpu` takes {as_quota.key}",
+                fix=say.fix(f"comfy-qat quota request --gpu {as_quota.key}"
+                            f"  # the same card, the spelling both commands take",
+                            "comfy-qat create --gpu <card> — takes the same "
+                            "spellings"),
+                code=2,
+            )
+        card = as_quota
         # THE SEVENTH SECOND-SITE, in the command that files irrevocable
         # requests. `quota request --gpu b200` answered "this project reports no
         # quota for 'b200'" — false; the project meters it and `quota list`

@@ -450,6 +450,22 @@ def _spread(zones: list[str], regions: list[str]) -> list[str]:
     return spread
 
 
+def _named(regions: list[str]) -> str:
+    """`us-east5`, `us-east5 or europe-west2`, `the 43 regions you hold quota in`.
+
+    Named while there are few enough to name, counted after that — the point is
+    that the sentence describes what was searched rather than what exists.
+    """
+    places = list(dict.fromkeys(regions))
+    if not places:
+        return "any region this project holds quota in"
+    if len(places) == 1:
+        return places[0]
+    if len(places) <= 3:
+        return f"{', '.join(places[:-1])} or {places[-1]}"
+    return f"the {len(places)} regions this project holds quota in"
+
+
 def choose(
     gc, project: str, *, accelerator: str, machine_type: str,
     regions: list[str], config: Path | None = None, probe=None,
@@ -479,8 +495,13 @@ def choose(
     if not in_quota:
         return Ordering(
             zones=(), regions=tuple(ranked_regions), latency=scores,
-            notes=(f"no zone in the regions this project has quota in offers "
-                   f"{accelerator}",),
+            # THE REGIONS ACTUALLY LOOKED AT, which the caller has already
+            # narrowed. `--region us-east5` searched one region and reported a
+            # project-wide fact — false of eighteen stocked regions out of the
+            # forty-three this project meters, and the same command with no
+            # `--region` found six zones seconds later. A message describing a
+            # set the caller narrowed is the derived-set class in prose.
+            notes=(f"no zone in {_named(regions)} offers {accelerator}",),
         )
 
     # Where the card can actually be had, ranked. The denominator `build` uses

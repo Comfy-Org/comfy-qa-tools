@@ -949,10 +949,17 @@ class QuotaCheck:
         refused = ", ".join(self.refused_in)
         if not self.elsewhere:
             # AND SOMETIMES THERE IS NOWHERE ELSE, which is worth saying outright
-            # rather than printing a placeholder that implies there is. This
-            # project meters the card only where it was refused.
-            return (f"Google already refused {self.card} in {refused}, and that "
-                    f"is the only region this project meters it in — so there is "
+            # rather than printing a placeholder that implies there is.
+            #
+            # WHAT IT DOES NOT SAY IS WHY. `elsewhere` is metered AND STOCKED
+            # minus refused, so empty has two causes — metered nowhere else, or
+            # metered widely and stocked nowhere else — and this sentence used to
+            # assert the first. A card metered in forty-three regions and sold in
+            # none of the other forty-two hits this branch, and "the only region
+            # this project meters it in" is false about it. Naming the outcome
+            # rather than a cause the message cannot distinguish.
+            return (f"Google already refused {self.card} in {refused}, and no "
+                    f"other region both meters it and sells it — so there is "
                     f"nowhere else to ask.\n"
                     f"comfy-qat quota list --by-region  # what this project does "
                     f"hold")

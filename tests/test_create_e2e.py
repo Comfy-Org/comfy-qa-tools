@@ -1270,3 +1270,34 @@ def test_a_refused_cards_remedy_names_only_stocked_regions(cli):
     unstocked = [r for r in REGIONS[1:] if r != stocked_in]
     for region in unstocked:
         assert f"--region {region}" not in result.output, (region, result.output)
+
+
+def test_a_zone_shortage_names_the_region_that_was_looked_at(cli):
+    """V1. `create --region us-east5` said:
+
+        nowhere to put comfy-linux: no zone in the regions this project has
+        quota in offers nvidia-l4
+
+    and the same command without `--region` found six zones seconds later. It
+    never names the region the user typed, and states as a PROJECT-WIDE fact
+    something false of eighteen stocked regions out of forty-three metered.
+
+    `create` narrows `regions` to the one `--region` named; the note describes
+    the UNNARROWED set — the derived-set class in prose rather than in data. The
+    sibling no-quota branch names the region, and is the shape copied here.
+    """
+    only_far = [{"name": "nvidia-l4", "zone": f"{REGIONS[0]}-a"}]
+    gc = FakeGcloud(accelerators=only_far)
+    narrowed = REGIONS[1]
+    result = cli("--os", "linux", "--gpu", "l4", "--region", narrowed,
+                 "--dry-run", gc=gc)
+
+    assert result.exit_code == 2, result.output
+    assert "the regions this project has quota in" not in result.output, (
+        result.output)
+    # THE SENTENCE, not the substring. `narrowed in output` is satisfied by
+    # " or us-east5" — a dangling conjunction from the many-regions branch
+    # reached with one region — so it could not tell the phrasing apart. A sweep
+    # said so by surviving.
+    assert f"no zone in {narrowed} offers" in result.output, result.output
+
