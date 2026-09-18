@@ -2566,8 +2566,25 @@ def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
         return None
     if ceiling is None or ceiling < 0:      # -1 is Google's "unlimited"
         return None
-    running = sum(1 for other in others if other.is_remote and other.gpu)
+    # CARDS, NOT BOXES, and `create._cards_running` exists in this repository for
+    # the sole purpose of saying so: "GPUS_ALL_REGIONS is metered in cards, and
+    # an a3-highgpu-8g holds eight of them. Counting boxes says one, which passes
+    # the gate on a ceiling of 8 and is then refused by Google."
+    #
+    # One running H100 read as 1 here against a ceiling metered in cards, so the
+    # gate that exists to refuse before anything bills let it through — the same
+    # unit mismatch the other module names, on the other surface.
+    from .create import card_named
+
+    running = sum(_cards_in(other.gpu, card_named) for other in others
+                  if other.is_remote and other.gpu)
     return ceiling if running >= ceiling else None
+
+
+def _cards_in(gpu: str, card_named) -> int:
+    """How many of the ceiling one box of this card holds. Unknown cards count 1."""
+    card = card_named(gpu)
+    return card.count if card is not None and card.count else 1
 
 
 def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:

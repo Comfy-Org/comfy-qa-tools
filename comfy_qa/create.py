@@ -1046,7 +1046,13 @@ class QuotaCheck:
                 fix=self._ask_somewhere,
                 kind=NO_QUOTA,
             )
-        if self.card_limit > 0 and self.card_limit < self.needed:
+        from .quota import UNLIMITED
+
+        # AN UNLIMITED GRANT IS NEVER SHORT. `card_limit > 0` excluded `-1` by
+        # accident — the sentinel is not a small number, and the next reader
+        # would have had to work that out from the arithmetic.
+        if (self.card_limit is not None and self.card_limit != UNLIMITED
+                and 0 < self.card_limit < self.needed):
             return LifecycleError(
                 f"{self.card} needs {self.needed} of this project's GPU allowance and "
                 f"the grant is {self.card_limit}. Nothing was created.",

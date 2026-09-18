@@ -1909,6 +1909,57 @@ shape at its most complete, and the fix is one `if` in the builder.
 > with the same boundary for every test in the file. Check what your builders
 > refuse to make.
 
+## A sentinel is a special meaning meeting an ordinary operator
+
+`UNLIMITED` is `-1`. Three functions asked `limit > 0`, so on a project holding
+an unlimited grant:
+
+```
+allowance('l4', quotas, region='us-central1')  ->  -1          (correct)
+quota list                                      ->  L4  -1  none — request it
+comfy-qat status                                ->  exit 1
+setup                                           ->  "L4 granted — unlimited"
+```
+
+Four surfaces, two answers, on data one function in the same module reads
+correctly. **`-1` is not "less than 1". It is "the question does not apply."**
+
+This is absent-versus-zero wearing a number, and it is the same root every time:
+a value with a special meaning meets a comparison written for ordinary values.
+`allowance()` knew what the sentinel meant; its consumers did not, because
+knowing was never written down anywhere they could read it.
+
+> A sentinel without a predicate is a convention, and conventions are not
+> inherited by the next caller. Write the question — `holds_quota(limit)` — not
+> the comparison.
+
+The sweep is the same one as for `int | None`, and it needed narrowing twice to
+be useful: **ordering and arithmetic only**, because `==` is total and `row.limit
+== UNLIMITED` is the correct way to ask; and **the predicate's own body is
+exempt**, because one place has to know what `-1` means by hand.
+
+### The fixtures that hid it are the sharper finding
+
+The suite's only two `-1` fixtures exist to prove that the zone-scoped copy of a
+quota gets discarded. So the one shape that would have exposed this was present
+in the file and **pointed at a different question** — every use of it was built to
+skip past the branch where it mattered.
+
+That is "can this file's builders produce the shape" one level subtler. The
+builders could. Every existing use was aimed elsewhere.
+
+> Grep your fixtures for the unusual value before you assume it is untested.
+> Then check what each use of it is *asking*. A fixture that produces the right
+> shape for the wrong question is indistinguishable from coverage.
+
+### And the seam only exists off the live path
+
+The project this was built against has quotas of 0 and 1, so no live run will
+ever produce an unlimited grant — exactly as none produced a missing
+`grantedValue`. Two offline passes, seventeen findings, one of them a crash and
+one of them this. **Running against real data is not a superset of reading the
+code**, and the evidence for that is now two defects deep rather than one.
+
 ## A count is a claim
 
 Three numbers in one night, each printed beside the word "regions", none of them

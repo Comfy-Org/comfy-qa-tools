@@ -715,12 +715,26 @@ def _one_ask_per_pair(plan: list[QuotaAsk]) -> list[QuotaAsk]:
             best[key] = ask
             order.append(key)
         elif ask.value > best[key].value:
-            # Keep the bigger ask, and say who else is behind it, so the line a
-            # person reads names every card the number is for.
-            merged = best[key]
+            # KEEP THE BIGGER ASK. That is all this does, and the comment here
+            # used to claim more: "say who else is behind it, so the line a
+            # person reads names every card the number is for." Nothing was
+            # merged — `merged` was bound and deleted, and the loser's card and
+            # label were dropped outright.
+            #
+            # A comment that argues for behaviour is load-bearing: it tells the
+            # next reader the line is deliberate, so they leave it alone. This
+            # one described a feature that was never written.
+            #
+            # AND THE BRANCH CANNOT RUN with the current card table: the five
+            # drivable cards resolve to five distinct (quota_id, dimensions)
+            # pairs, and only T4 is N1, so no two CPU asks collide either. It is
+            # kept as a guard against a shape the table does not produce today —
+            # a sixth card sharing a pair with a fifth would reach it — and
+            # keeping the larger number is the safe half of what a merge would
+            # do. Naming the other card is the half that is missing, and it is
+            # not written rather than half-written.
             best[key] = QuotaAsk(ask.card, ask.label, ask.outcome, ask.detail,
                                  ask.target, ask.value)
-            del merged
     return [best[key] for key in order]
 
 

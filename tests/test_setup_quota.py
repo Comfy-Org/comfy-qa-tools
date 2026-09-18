@@ -6377,9 +6377,18 @@ def test_quota_request_availability_is_the_same_type_not_a_second_dict():
     tree = ast.parse(source)
     fn = next(n for n in ast.walk(tree)
               if isinstance(n, ast.FunctionDef) and n.name == "quota_request_cmd")
+    # AVAILABILITY-SHAPED NAMES ONLY. This flagged any `{}` at function top
+    # level, including an unrelated de-duplication map — the guard is about the
+    # availability dict that could not tell "never computed" from "computed and
+    # empty", not about dictionaries in general.
+    availability = {"sells", "stocks", "stocked", "offered"}
     defaults = [ast.unparse(s.value) for s in fn.body
                 if isinstance(s, ast.AnnAssign | ast.Assign) and s.value is not None
-                and ast.unparse(s.value) in {"{}", "dict()"}]
+                and ast.unparse(s.value) in {"{}", "dict()"}
+                and availability & {t.id for t in
+                                    ([s.target] if isinstance(s, ast.AnnAssign)
+                                     else s.targets)
+                                    if isinstance(t, ast.Name)}]
 
     assert "{}" not in defaults, (
         "an availability-shaped dict defaulted to {} again: "
@@ -7026,7 +7035,21 @@ def test_no_optional_int_reaches_an_operator_that_cannot_take_none():
     import ast
     from pathlib import Path
 
-    optional = {"preferred", "granted"}
+    # EVERY `int | None` FIELD THIS PACKAGE DECLARES, read off the annotations
+    # rather than listed by hand. The first version named `preferred` and
+    # `granted` — the two that had already bitten — which made the sweep narrower
+    # than the class it is named for, and a sweep that only looks where you have
+    # already been hurt is a regression test wearing a sweep's clothes.
+    optional = set()
+    for path in sorted((Path(__file__).resolve().parent.parent
+                        / "comfy_qa").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (isinstance(node, ast.AnnAssign)
+                    and isinstance(node.target, ast.Name)
+                    and ast.unparse(node.annotation).replace(" ", "")
+                    in {"int|None", "Optional[int]"}):
+                optional.add(node.target.id)
+    assert {"preferred", "granted"} <= optional, sorted(optional)
     risky = []
     for path in sorted((Path(__file__).resolve().parent.parent
                         / "comfy_qa").glob("*.py")):
@@ -7043,6 +7066,14 @@ def test_no_optional_int_reaches_an_operator_that_cannot_take_none():
                 if isinstance(node, ast.stmt) and node is not stmt:
                     break
                 if not isinstance(node, (ast.Compare, ast.BinOp)):
+                    continue
+                # ORDERING AND ARITHMETIC ONLY. `==` and `!=` are total — `None
+                # == -1` is simply False — so they cannot raise and are not this
+                # class. Including them made the widened sweep flag every
+                # `row.limit == UNLIMITED`, which is the CORRECT way to ask.
+                if isinstance(node, ast.Compare) and not any(
+                        isinstance(op, (ast.Lt, ast.Gt, ast.LtE, ast.GtE))
+                        for op in node.ops):
                     continue
                 operands = ([node.left, *node.comparators]
                             if isinstance(node, ast.Compare)
@@ -7157,3 +7188,291 @@ def test_refused_in_counts_regions_when_the_denial_names_none():
 
     assert row.refused_in == 2, (row.refused_in, row.region)
     assert row.never_asked_in == 0, row.never_asked_in
+
+
+# --- pass 14: a sentinel meeting a comparison written for magnitudes ---------
+
+
+UNLIMITED_L4 = [quota(L4, -1, locations=["us-central1"]),
+                quota(CEILING, -1, locations=["global"])]
+
+
+def test_an_unlimited_grant_is_not_read_as_no_quota(monkeypatch):
+    """SENTINEL-VERSUS-MAGNITUDE, which is absent-versus-zero wearing a number.
+
+        allowance('l4', quotas, region='us-central1')  ->  -1   (correct)
+        readiness(...)                                 ->  L4 -1 none
+
+    `readiness`, `pools_for` and `run_checks` all ask `limit > 0`, and UNLIMITED
+    is `-1`. So `quota list` printed `L4 -1 none — request it` on a project
+    holding L4 without limit — an instruction to file an irrevocable request for
+    a card you already hold — while `setup` said "granted — unlimited" in the
+    same minute. `-1` is not "less than 1"; it is "the question does not apply",
+    and `allowance()` knows that while its consumers did not.
+    """
+    out = quota_list(Cloud(quotas=UNLIMITED_L4), monkeypatch).output
+    line = next(l for l in out.splitlines() if l.startswith("L4 "))
+
+    assert "request it" not in line, line
+    assert "unlimited" in line.lower(), line
+
+
+def test_status_does_not_fail_on_an_unlimited_grant(monkeypatch):
+    """The second of the three surfaces: `comfy-qat status` exited 1 for a
+    project whose quota is unlimited, because "any GPU quota?" was `limit > 0`."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud",
+                      lambda *a, **k: Cloud(quotas=UNLIMITED_L4).gcloud())
+        result = CliRunner().invoke(app, ["status"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_an_unlimited_pool_rescues_a_card(monkeypatch):
+    """The third: an unlimited SPOT grant was invisible to the pool layer, which
+    is the defect the pool work exists to prevent — a granted allowance sitting
+    unread — with a sentinel in place of a missing id."""
+    spot = [quota(L4, 0, locations=["us-central1"]),
+            quota(SPOT_L4, -1, locations=["us-central1"])]
+    line = next(l for l in quota_list(Cloud(quotas=spot), monkeypatch)
+                .output.splitlines() if l.startswith("L4 "))
+
+    assert "Spot" in line, line
+
+
+def test_no_limit_is_compared_without_knowing_what_minus_one_means():
+    """THE SWEEP, made permanent. `limit > 0` is the wrong test wherever a limit
+    can be UNLIMITED, and a scoped fix on three call sites leaves the fourth for
+    the next pass.
+
+    Mechanical: any comparison of something named `limit` against a literal must
+    go through `holds_quota`/`UNLIMITED` rather than asking `> 0` directly.
+    """
+    import ast
+    from pathlib import Path
+
+    risky = []
+    for path in sorted((Path(__file__).resolve().parent.parent
+                        / "comfy_qa").glob("*.py")):
+        tree = ast.parse(path.read_text())
+        # THE PREDICATE'S OWN BODY IS THE DEFINITION, not a use of it — it is the
+        # one place that is allowed to know what -1 means by hand.
+        defining = {id(n) for fn in ast.walk(tree)
+                    if isinstance(fn, ast.FunctionDef) and fn.name == "holds_quota"
+                    for n in ast.walk(fn)}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare) or id(node) in defining:
+                continue
+            left = node.left
+            # F7: WIDER THAN THE TWO NAMES IT STARTED WITH. The sweep was named
+            # for "every value typed int | None" and only looked at `preferred`
+            # and `granted` — narrower than its own title, which is the shape it
+            # exists to catch. Any field a dataclass in this package declares
+            # `int | None` is now in scope.
+            named = (isinstance(left, ast.Attribute) and "limit" in left.attr) or \
+                    (isinstance(left, ast.Name) and "limit" in left.id)
+            literal = any(isinstance(c, ast.Constant) and isinstance(c.value, int)
+                          for c in node.comparators)
+            if not (named and literal):
+                continue
+            text = ast.unparse(node)
+            if "UNLIMITED" in text or "holds_quota" in text:
+                continue
+            risky.append(f"{path.name}:{node.lineno}  {text}")
+    assert not risky, (
+        "a limit is compared without knowing what -1 means:\n  "
+        + "\n  ".join(risky))
+
+
+def test_allow_lower_without_a_value_does_not_lower_to_the_default(monkeypatch):
+    """F2, and the comment ten lines above the call site states the rule it
+    breaks: "a number they chose may lower a standing request once they confirm
+    it; A DEFAULT MUST NEVER TOUCH IT."
+
+        $ quota request --gpu h100 --region us-central1 --allow-lower
+        warning: LOWERING the standing request ... from 16 to 8
+        requested h100 = 8
+
+    The user typed no number. `request_value` receives one integer and cannot
+    tell a typed value from a default — the distinction is erased at the call —
+    and the two guards that preserved it are both switched off by `--allow-lower`
+    itself. So the tool's own default was sent over a live PENDING request, under
+    that preference's own id, which this module calls "the whole of the
+    idempotence rule".
+
+    `--allow-lower` is permission to lower to a number you named, not permission
+    for the tool to pick one.
+    """
+    standing = [preference(FAMILY, granted=0, preferred=16, reconciling=True,
+                           name="h100-pending",
+                           dimensions={"gpu_family": "NVIDIA_H100",
+                                       "region": "us-central1"})]
+    cloud = Cloud(quotas=THIS_PROJECT, preferences=standing)
+    result = quota_request(cloud, monkeypatch, "--gpu", "h100", "--region",
+                           "us-central1", "--allow-lower")
+
+    sent = [flag(a, "preferred-value") for a in cloud.submitted]
+    assert "8" not in sent, f"sent a default over a standing 16: {sent}"
+    assert sent in ([], ["16"]), sent
+    assert "LOWERING" not in result.output, result.output
+
+
+def test_an_unreadable_standing_value_still_respects_the_grant(monkeypatch):
+    """F6. The one branch that returns before `_floored`, which is what applies
+    the GRANT floor — the addition this function's docstring calls its whole
+    lesson — and its message names only the unreadable standing value, never the
+    grant being given up.
+
+        request_value(target, prefs, 1, quotas=[L4 at 2], allow_lower=True)
+        -> (1, 'sending 1 ... although its standing value could not be read')
+
+    A project holding 2 sends 1, and nothing in the sentence says so.
+    """
+    from comfy_qa.quota import Target, request_value
+
+    held = [quota(L4, 2, locations=["us-central1"])]
+    unreadable = [preference(L4, granted=None, preferred=None,
+                             dimensions={"region": "us-central1"},
+                             name="half-written")]
+    target = Target(L4, (("region", "us-central1"),))
+    send, note = request_value(target, unreadable, 1, quotas=held,
+                               allow_lower=True)
+
+    assert "2" in note, f"gives up a grant of 2 without saying so: {note}"
+    assert send == 1, send
+
+
+def test_the_wait_can_see_a_pool_quota_it_is_waiting_on(monkeypatch):
+    """F3, and `held_value`'s docstring records the identical fix in capitals:
+    "`_raw_rows` and NOT `rows`, which drops every row whose quota id it cannot
+    name as a card." `_current_value` is the second site and did not get it.
+
+    `rows()` names a row through `friendly_name`, which deliberately drops
+    `PREEMPTIBLE-*`, `COMMITTED-*` and `*-VWS-*` — so `_current_value` returned
+    None for every pool quota, `wait_for_quota` read None as "no such quota,
+    polling cannot fix" and returned without polling once.
+    """
+    from comfy_qa.auth import _current_value
+    from comfy_qa.quota import Target
+
+    spot = [quota(SPOT_L4, 8, locations=["us-central1"])]
+    target = Target(SPOT_L4, (("region", "us-central1"),))
+
+    assert _current_value(Cloud(quotas=spot).gcloud(), "proj-1", target) == 8
+
+
+def test_a_partial_grant_with_no_granted_value_reads_as_none_not_the_word():
+    """F5. `f"Google answered with {short.granted} of the {short.preferred}"`,
+    and `granted` is `int | None` where None means the API OMITTED the field —
+    the distinction `_as_int_or_none` exists to preserve. Google omits
+    `grantedValue` when it is zero, and `partial` is reached whenever
+    `stateDetail` is present without the word "denied", so a refusal worded
+    "not approved" lands here and prints the word None at the user.
+    """
+    half_written = [preference(L4, granted=None, preferred=1,
+                               state_detail="Quota request not approved",
+                               name="odd-wording",
+                               dimensions={"region": "us-central1"})]
+    plan = {a.card: a for a in plan_quota(THIS_PROJECT, half_written,
+                                          region="us-central1")}
+
+    detail = plan["l4"].detail
+    assert "None" not in detail, detail
+
+
+def test_the_switch_gate_counts_cards_not_boxes():
+    """F4. `create._cards_running` exists solely to state that counting boxes is
+    wrong, in this same repository: "Cards, not boxes. GPUS_ALL_REGIONS is
+    metered in cards, and an `a3-highgpu-8g` holds eight of them."
+
+    The switch-order gate counts boxes, so one running H100 reads as 1 against a
+    ceiling metered in cards — and passes a gate it should not.
+    """
+    from comfy_qa.create import card_named
+    from comfy_qa.host import _cards_in
+
+    assert _cards_in("h100", card_named) == 8, (
+        "one a3-highgpu-8g is eight cards, not one box")
+    assert _cards_in("l4", card_named) == 1
+    assert _cards_in("b200", card_named) == 1, (
+        "a card this tool has no entry for still holds at least one")
+
+
+@pytest.mark.parametrize("typed", ["l4,l4", "l4,L4", "l4, l4", "L4,nvidia-l4"])
+def test_the_same_card_spelled_differently_is_one_request(typed, monkeypatch):
+    """F8. The dedupe keyed on the RAW string while `flatten`, `same_card`,
+    `matches` and `card_named` are all case- and separator-insensitive — the only
+    case-sensitive card comparison in the module, in the line whose own comment
+    says `--gpu l4,l4` files ONE request.
+
+        --gpu 'l4,l4'   submissions=1
+        --gpu 'l4,L4'   submissions=2   <- same preference id, sent twice
+    """
+    cloud = Cloud(quotas=[quota(L4, 0, locations=["us-central1"])])
+    quota_request(cloud, monkeypatch, "--gpu", typed, "--region",
+                  "us-central1", "--value", "1")
+
+    assert len(cloud.submitted) == 1, cloud.submitted
+
+
+def test_the_zone_remedy_is_one_a_person_can_run_straight_away(monkeypatch):
+    """F9. The free check refuses a zone and hands back a remedy it can already
+    prove wrong:
+
+        $ quota list --region US-CENTRAL1-A
+        'US-CENTRAL1-A' is a zone; to fix: --region US-CENTRAL1
+        $ quota list --region US-CENTRAL1
+          reading quota (about a minute)      <- the 51s the free check exists to save
+        no region called 'US-CENTRAL1' — regions are lower case
+
+    Validating case needs the universe, which is why that rule lives in the paid
+    half — but this is not validation. The suggestion is DERIVED from the input,
+    and lowering a derived suggestion cannot make it worse.
+    """
+    cloud = Cloud(quotas=THIS_PROJECT)
+    result = quota_list(cloud, monkeypatch, "--region", "US-CENTRAL1-A")
+
+    assert result.exit_code == 2
+    assert "--region us-central1" in result.output, result.output
+    assert cloud.quota_reads == 0
+
+
+def test_row_name_answers_for_an_absent_id():
+    """F13. `row_name`'s first line is "The card ONE quota row is about. None
+    when the row names no card" — and `row_name(None)` raised AttributeError. A
+    function documented to return None for the absent case must survive being
+    given one."""
+    from comfy_qa.quota import row_name
+
+    assert row_name(None) is None
+    assert row_name("") is None
+
+
+def test_the_ceiling_gate_itself_counts_cards(monkeypatch):
+    """THE GATE, not the helper. My first test for this called `_cards_in`
+    directly and passed while the gate went on counting boxes — the
+    function-versus-command trap in miniature, and a sweep said so by surviving.
+
+    One running H100 is eight of the ceiling. Against a ceiling of 2 the switch
+    must be blocked; against a ceiling of 9 it must not.
+    """
+    from comfy_qa.config import Host
+    from comfy_qa.host import _blocked_by_the_ceiling
+
+    def gc_for(ceiling):
+        return Cloud(quotas=[quota(CEILING, ceiling, locations=["global"])]).gcloud()
+
+    running = [Host(name="other", kind="gce", port=8190, gpu="h100",
+                    gce_project="proj-1", gce_instance="o",
+                    gce_zone="us-central1-a")]
+    mine = Host(name="mine", kind="gce", port=8188, gpu="l4",
+                gce_project="proj-1", gce_instance="m",
+                gce_zone="us-central1-a")
+
+    assert _blocked_by_the_ceiling(gc_for(2), mine, running) == 2, (
+        "one a3-highgpu-8g holds eight of the ceiling, not one")
+    assert _blocked_by_the_ceiling(gc_for(9), mine, running) is None

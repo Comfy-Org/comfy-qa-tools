@@ -30,6 +30,7 @@ from .quota import (
     asks,
     row_name,
     asks_about,
+    flatten,
     friendly_name,
     known_regions,
     spans_many,
@@ -507,8 +508,15 @@ def region_shape_problem(region: str | None) -> tuple[str, list[str]] | None:
     # rule lives in the half that has it. Empty and zone-shaped are genuinely
     # syntactic.
     if _region_of(region) != region:
+        # `.lower()` ON THE SUGGESTION. Validating case needs the universe —
+        # which is why that rule lives in the paid half — but this is not
+        # validation: the suggestion is DERIVED from the input, and lowering a
+        # derived suggestion cannot make it worse. `US-CENTRAL1-A` was answered
+        # with `--region US-CENTRAL1`, which then costs the minute-long read this
+        # free check exists to save before being refused for its case.
         return (f"{region!r} is a zone; quota is metered per region",
-                [f"--region {_region_of(region)}  # the region that zone is in"])
+                [f"--region {_region_of(region).lower()}"
+                 f"  # the region that zone is in"])
     return None
 
 
@@ -581,10 +589,30 @@ def region_problem(gc, project: str, quotas: list[dict], region: str | None,
               f"{region.split('-')[0]}?"] if near else []))
 
 
+def _shown(limit: int) -> str:
+    """A limit as a person reads it. `-1` is the sentinel, never the number.
+
+    `create` has printed "unlimited" for this all along; `quota list` printed the
+    raw `-1` in a column headed LIMIT, which reads as a negative allowance. The
+    sentinel leaking into the display is the same defect as the sentinel leaking
+    into a comparison, one surface further out.
+    """
+    from .quota import UNLIMITED
+
+    return "unlimited" if limit == UNLIMITED else str(limit)
+
+
 def _region_of(place: str) -> str:
-    """`us-central1-a` -> `us-central1`. A region passed in comes back unchanged."""
-    head, _, tail = place.rpartition("-")
-    return head if head and len(tail) == 1 and tail.isalpha() else place
+    """`us-central1-a` -> `us-central1`. A region passed in comes back unchanged.
+
+    ONE IMPLEMENTATION, in `zones`. There were three identical copies of this —
+    here, `quota._region_name` and `zones.region_of` — which is the second-site
+    class waiting to happen: the next correction to how a zone is recognised
+    would have landed on one of them.
+    """
+    from .zones import region_of
+
+    return region_of(place)
 
 
 def _record(row, limit, where, status, pool, drivable, cpu_blocked,
@@ -641,19 +669,6 @@ def _record(row, limit, where, status, pool, drivable, cpu_blocked,
         record["region"] = where
     return record
 
-
-def _value_of(quota: dict) -> int:
-    """Pull the effective limit out of a QuotaInfo, tolerating shape changes."""
-    details = quota.get("dimensionsInfos") or []
-    best = 0
-    for entry in details:
-        value = (entry.get("details") or {}).get("value")
-        if isinstance(value, (int, str)):
-            try:
-                best = max(best, int(value))
-            except (TypeError, ValueError):
-                continue
-    return best
 
 
 @app.command("status")
@@ -1141,7 +1156,11 @@ def quota_list_cmd(
 
     def footnote() -> None:
         ceiling = next((c for c in cards if c.gpu == GLOBAL_ALLOWANCE), None)
-        if ceiling is not None and ceiling.limit >= 0:
+        # `!= UNLIMITED` RATHER THAN `>= 0`, which was right by accident: the
+        # note says "at N it caps every card above it", and an unlimited ceiling
+        # caps nothing, so it must not print. Both expressions skip it; only one
+        # says why.
+        if ceiling is not None and ceiling.limit != UNLIMITED:
             # F12: IT WAS ONE MORE ROW, sorted in among the cards, with nothing
             # saying it caps the ready ones above it. It is the cap on total GPUs
             # across every card and region, and on this project it is the number
@@ -1306,9 +1325,14 @@ def quota_list_cmd(
     if by_region:
         shown = rendered(rows, per_region=True)
         width = max([len(e[2]) for e in shown] + [6])
-        say.result(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>5}  STATUS")
+        # The LIMIT column is as wide as its widest VALUE, because "unlimited"
+        # is nine characters and a fixed 5 silently misaligned every row beside
+        # one.
+        amount = max([len(_shown(e[1])) for e in shown] + [5])
+        say.result(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>{amount}}  STATUS")
         for row, limit, where, _status, _pool, _qid in shown:
-            say.result(f"{row.gpu:<14} {where:<{width}} {limit:>5}  "
+            say.result(f"{row.gpu:<14} {where:<{width}} "
+                       f"{_shown(limit):>{amount}}  "
                        f"{status_of(row.gpu, row.status, row.limit, row.asked, row,
                                     limit, _offered_in(row.gpu, row.region))}")
         footnote()
@@ -1316,9 +1340,11 @@ def quota_list_cmd(
 
     shown = rendered(cards)
     width = max([len(e[2]) for e in shown] + [6])
-    say.result(f"{'GPU':<14} {'LIMIT':>5}  {'WHERE':<{width}}  STATUS")
+    amount = max([len(_shown(e[1])) for e in shown] + [5])
+    say.result(f"{'GPU':<14} {'LIMIT':>{amount}}  {'WHERE':<{width}}  STATUS")
     for card, limit, where, _status, _pool, _qid in shown:
-        say.result(f"{card.gpu:<14} {limit:>5}  {where:<{width}}  "
+        say.result(f"{card.gpu:<14} {_shown(limit):>{amount}}  "
+                   f"{where:<{width}}  "
                    f"{status_of(card.gpu, card.status, card.limit, card.asked, card, limit)}")
 
     footnote()
@@ -1692,7 +1718,26 @@ def quota_request_cmd(
     # and so `--gpu l4,l4` files ONE request. It filed two identical preferences,
     # which is the duplicate this whole feature exists to prevent, reachable by
     # typing a card name twice.
-    for name in dict.fromkeys(n.strip() for n in (gpu or "").split(",")):
+    # KEYED ON `flatten`, not on the raw string. This was the ONLY case-sensitive
+    # card comparison in the module — `flatten`, `same_card`, `matches` and
+    # `card_named` are all case- and separator-insensitive — so `--gpu l4,L4`
+    # filed two requests under one preference id while `--gpu l4,l4` filed one.
+    # The first spelling of each is kept, so the order a person typed survives.
+    def one_card(raw: str) -> str:
+        """A key that is the same for every spelling of the same card.
+
+        `flatten` alone is not enough: it does not strip the `nvidia-` prefix
+        that `card_for` and `card_named` both remove, so `--gpu L4,nvidia-l4`
+        still read as two cards.
+        """
+        known = card_named(raw)
+        return known.key if known is not None else flatten(raw)
+
+    seen_cards: "dict[str, str]" = {}
+    for raw in (n.strip() for n in (gpu or "").split(",")):
+        if raw:
+            seen_cards.setdefault(one_card(raw), raw)
+    for name in seen_cards.values():
         if not name:
             continue
         # V4: THE SAME SPELLINGS `create --gpu` TAKES. `card_named` answers "what
@@ -1902,6 +1947,7 @@ def quota_request_cmd(
         send, note = request_value(
             resolved, preferences,
             value if value is not None else _default_for(name),
+            typed=value is not None,
             allow_lower=allow_lower, quotas=quotas,
             release=release_quota and allow_lower)
         # ONCE. `say.fail` below prints the same sentence, so announcing it here
@@ -2092,7 +2138,8 @@ def _current_value(gc: Gcloud, project: str, target: "Target") -> int | None:
     here rather than a `0` that means two things.
 
     DIMENSIONS ARE HONOURED, and they were not. This matched on `quotaId` alone
-    and handed the whole record to `_value_of`, which takes the maximum across
+    and handed the whole record to `_value_of` (since REMOVED), which took the
+    maximum across
     every `dimensionsInfos` entry. A T4 granted 1 in forty-two regions therefore
     satisfied `wanted=1` for a request about europe-west4, and `--wait` announced
     "granted: t4" on the first poll about a request Google had not answered. The
@@ -2103,9 +2150,20 @@ def _current_value(gc: Gcloud, project: str, target: "Target") -> int | None:
     ever raise belongs to a family Google waives. If that changes, this is the
     second place to widen; `quota_list_cmd` was the first and had the same bug.
     """
-    from .quota import covers_dimensions, rows
+    from .quota import _raw_rows, covers_dimensions
 
-    matched = [row for row in rows(gc.gpu_quotas(project))
+    # `_raw_rows` AND NOT `rows`, and `held_value`'s docstring records this exact
+    # fix in capitals one module over: `rows` names a row through
+    # `friendly_name`, which deliberately drops `PREEMPTIBLE-*`, `COMMITTED-*`
+    # and `*-VWS-*`. So this returned None for every POOL quota, and the caller
+    # reads None as "this project reports no such quota, polling cannot fix" —
+    # so `--wait` on a Spot request returned without polling once, and said
+    # "still pending" about a grant it had read one screen earlier.
+    #
+    # Second site of a fix whose first site says, in the same words, that reading
+    # absent when you cannot see is the defect it was written to close.
+    matched = [row for row in _raw_rows(target.quota_id,
+                                        gc.gpu_quotas(project))
                if covers_dimensions(target.quota_id, target.dims, row)]
     if not matched:
         return None

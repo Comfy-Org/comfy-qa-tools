@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from comfy_qa.auth import _value_of, run_checks, wait_for_quota
+from comfy_qa.auth import run_checks, wait_for_quota
 from comfy_qa.gcloud import Gcloud, GcloudError, console_quota_url, quota_request_command
 
 
@@ -86,15 +86,6 @@ def test_non_gpu_quotas_are_ignored():
     assert [q["quotaId"] for q in gc.gpu_quotas("p")] == ["NVIDIA_L4_GPUS-per-project-region"]
 
 
-@pytest.mark.parametrize("quota,expected", [
-    ({"dimensionsInfos": [{"details": {"value": 4}}]}, 4),
-    ({"dimensionsInfos": [{"details": {"value": "7"}}]}, 7),
-    ({"dimensionsInfos": [{"details": {}}]}, 0),
-    ({}, 0),
-    ({"dimensionsInfos": [{"details": {"value": 1}}, {"details": {"value": 5}}]}, 5),
-])
-def test_value_of_tolerates_shape(quota, expected):
-    assert _value_of(quota) == expected
 
 
 def test_request_command_is_built_not_guessed():

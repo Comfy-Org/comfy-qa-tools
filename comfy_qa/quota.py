@@ -159,7 +159,13 @@ def row_name(quota_id: str, dimensions: dict | None = None) -> str | None:
     The whole of the family fix, in one function. Everything else in this module
     reads rows through it, so a surface cannot see one shape and miss the other.
     """
-    name = _SCOPE_SUFFIX.sub("", quota_id or "").upper().replace("_", "-")
+    # `quota_id or ""` HANDLES THE ABSENT ID, and then `friendly_name(quota_id)`
+    # was handed the `None` anyway and raised `AttributeError` — from a function
+    # whose first line promises None "when the row names no card". A function
+    # documented to answer for the absent case has to survive being given one.
+    if not quota_id:
+        return None
+    name = _SCOPE_SUFFIX.sub("", quota_id).upper().replace("_", "-")
     if name.startswith(_NOT_A_CARD):
         return family_name((dimensions or {}).get(_FAMILY_DIMENSION))
     return friendly_name(quota_id)
@@ -552,7 +558,8 @@ def covers_dimensions(
     """`covers`, for a caller holding a (quota id, dimensions) pair rather than an Ask.
 
     Split out so the poll in `quota request --wait` can reuse it. Writing a second
-    matcher there is what produced the defect it fixes: `_value_of` maxed across
+    matcher there is what produced the defect it fixes: `_value_of` (since
+    REMOVED) maxed across
     every row of a quota regardless of dimensions, so a T4 granted in forty-two
     other regions answered a request about europe-west4. A parallel implementation
     of the same predicate is how the two shapes diverged in the first place.
@@ -662,7 +669,7 @@ def held_value(target: "Target", quotas: list[dict] | None) -> int | None:
 def request_value(
     target: "Target", preferences: list[dict] | None, wanted: int, *,
     allow_lower: bool = False, quotas: list[dict] | None = None,
-    release: bool = False,
+    release: bool = False, typed: bool = True,
 ) -> tuple[int | None, str]:
     """The value to actually send, and a sentence about it if it is not `wanted`.
 
@@ -748,6 +755,20 @@ def request_value(
     existing = matching_ask(target, preferences)
     held = held_value(target, quotas)
 
+    # `--allow-lower` IS PERMISSION TO LOWER TO A NUMBER YOU NAMED, not permission
+    # for the tool to pick one. The caller collapsed "the user typed N" and
+    # "nobody typed anything, so use the default" into one integer before this
+    # function could tell them apart — and both guards that preserved the
+    # distinction downstream are switched off by `--allow-lower` itself. So
+    # `quota request --gpu h100 --allow-lower` sent the tool's own default over a
+    # live PENDING request of 16, under that preference's own id.
+    #
+    # The rule had been stated at the call site for six rounds — "a number they
+    # chose may lower a standing request once they confirm it; a default must
+    # never touch it" — written where the value is built and lost one line later.
+    if not typed:
+        allow_lower = False
+
     # A NEGATIVE IS NOT A QUANTITY, and no flag makes it one. Zero is at least a
     # coherent request — hold none of this card — and is refused because it is
     # destructive; -5 is not a request at all, so it is refused before the API is
@@ -798,9 +819,18 @@ def request_value(
         # standing value to keep, and sending anything might replace a larger one
         # — so nothing is sent, which is the only choice that cannot do harm.
         if allow_lower:
-            return wanted, (
-                f"sending {wanted} for {target.quota_id} although its standing "
-                f"value could not be read")
+            # THROUGH `_floored`, like every other lowering path. This returned
+            # early and skipped the GRANT floor — the addition this docstring
+            # calls its whole lesson — so a project holding 2 sent 1 with a
+            # sentence naming only the unreadable standing value and never the 2
+            # being given up. `allow_lower` still performs it; it now says what
+            # it costs, which is what the docstring promises it does.
+            send, note = _floored(target, wanted, held,
+                                  "quota this project holds for",
+                                  allow_lower=True)
+            unreadable = " (its standing request could not be read)"
+            return send, ((note + unreadable) if note else
+                          f"sending {wanted} for {target.quota_id}{unreadable}")
         return None, (
             f"could not read the standing value for {target.quota_id}, so "
             f"{wanted} was not sent — it might replace a larger request")
@@ -979,7 +1009,7 @@ def readiness(
                       and ask.granted is not None
                       and ask.preferred > ask.granted), None)
         asked = short.preferred if short else 0
-        if row.limit > 0:
+        if holds_quota(row.limit):
             status: Status = "ready"
         elif any(ask.state == "pending" for ask in about):
             status = "pending"
@@ -1000,7 +1030,7 @@ def readiness(
         # only number the phrase could sensibly mean elsewhere. A count whose
         # name and arithmetic disagree is the proxy shape: it happens to equal
         # the right answer exactly when nothing is granted.
-        if row.limit > 0:
+        if holds_quota(row.limit):
             refused_in = never_asked_in = 0
         else:
             from .zones import region_of
@@ -1272,7 +1302,7 @@ def pools_for(
         if not rows_here:
             continue
         limit = max(row.limit for row in rows_here)
-        if limit > 0:
+        if holds_quota(limit):
             status: Status = "ready"
         elif any(ask.state == "pending" and ask.quota_id == quota_id
                  for ask in standing):
@@ -1548,20 +1578,45 @@ _ZONE_SCOPED = "-per-project-zone"
 UNLIMITED = -1
 
 
+def holds_quota(limit: int | None) -> bool:
+    """Does this limit let you start anything? UNLIMITED counts; 0 and None do not.
+
+    `-1` IS NOT "LESS THAN 1". It is "the question does not apply", and
+    `limit > 0` is a comparison written for magnitudes meeting a sentinel — so
+    three surfaces read an unlimited grant as no grant at all. `quota list`
+    printed `L4  -1  none — request it`, an instruction to file an irrevocable
+    request for a card the project holds without limit, while `setup` said
+    "granted — unlimited" about the same row in the same minute.
+
+    Sentinel-versus-magnitude, which is absent-versus-zero wearing a number: a
+    value with a special meaning meets an operator that does not know it has one.
+    `allowance()` knew; its consumers did not. One predicate so the next consumer
+    cannot get it wrong either.
+    """
+    return limit is not None and (limit == UNLIMITED or limit > 0)
+
+
 def _region_name(location: str) -> str:
     """`us-central1-a` -> `us-central1`. A region is returned unchanged.
 
     Zone-scoped quota lists zones; region-scoped quota lists regions. Both end up
     in the same set, so both are reduced to the region, which is the unit a
     grant is actually made in.
+
+    ONE IMPLEMENTATION, in `zones`. This was the third identical copy — the
+    second-site class waiting to happen, since the next correction to how a zone
+    is recognised would have landed on one of the three.
     """
-    head, _, tail = location.rpartition("-")
-    return head if head and len(tail) == 1 and tail.isalpha() else location
+    from .zones import region_of
+
+    return region_of(location)
 
 
 def _region_names(row: Row) -> set[str]:
     """Every region one row grants a non-zero allowance in."""
-    if row.limit == 0:
+    # `not holds_quota` rather than `== 0`: the question is "does this row grant
+    # anything", and UNLIMITED grants everything.
+    if not holds_quota(row.limit):
         return set()
     places = list(row.locations) or (
         [row.where] if not spans_many(row.where) and row.where != "global"
