@@ -168,6 +168,34 @@ class Card:
     architecture: str
     count: int = 1
     quota_aliases: tuple[str, ...] = ()
+    # The `gpu_family` DIMENSION this card is metered under, where the project
+    # meters it that way rather than under an id of its own. Empty for every
+    # card that has a `NVIDIA-<card>-GPUS-...` id.
+    #
+    # Both shapes are live and a project reports one or the other, so this is a
+    # spelling the table knows, NOT a decision about which shape to use — that is
+    # read from the project by `quota.resolve_target`, per-card id first. On this
+    # project there is no `NVIDIA-H100-...` row at all and H100 is reachable only
+    # through `GPUS-PER-GPU-FAMILY-per-project-region` with
+    # `gpu_family=NVIDIA_H100`; on another project the per-card id may exist.
+    quota_family: str = ""
+    # How many vCPU one instance of this card's machine type consumes.
+    #
+    # Only N1 actually spends CPU quota — Google's resource-usage page says A2,
+    # A3, A4, G2 and G4 VMs need "only ... the required GPU quotas ... You don't
+    # need to request CPU quotas". So this gates T4, V100, P100, P4 and K80 and
+    # nothing else, and `quota.cpu_quota_applies` is where that is decided.
+    #
+    # It was briefly used to gate every card, on the strength of two real zeros
+    # and an inference. Kept for every card anyway: the number is measured and
+    # true, and the next person to wonder whether a machine fits a quota should
+    # find it here rather than guess. No default, for the same reason
+    # `architecture` has none — a card added without one will not construct, so
+    # the question gets asked about the next card too.
+    #
+    # Read from `gcloud compute machine-types describe <type> --format=
+    # "value(guestCpus)"` on 2026-09-17 rather than transcribed from docs.
+    vcpus: int = 0
 
     @property
     def has_gsp(self) -> bool:
@@ -202,25 +230,25 @@ class Card:
 # on real hardware on 2026-09-09: driver up, ComfyUI generating in 8.6s and 6.3s.
 CARDS: dict[str, Card] = {
     "l4": Card("l4", "L4", "nvidia-l4", "g2-standard-8", attached=True,
-               architecture="Ada"),
+               architecture="Ada", vcpus=8),
     "t4": Card("t4", "T4", "nvidia-tesla-t4", "n1-standard-8", attached=False,
-               architecture="Turing"),
+               architecture="Turing", vcpus=8),
     # Pascal and Volta: real cards, real quota, no GSP. Ordering one buys a box
     # whose GPU cannot initialise — see GSP_ARCHITECTURES.
     "p4": Card("p4", "P4", "nvidia-tesla-p4", "n1-standard-8", attached=False,
-               architecture="Pascal"),
+               architecture="Pascal", vcpus=8),
     "p100": Card("p100", "P100", "nvidia-tesla-p100", "n1-standard-8", attached=False,
-                 architecture="Pascal"),
+                 architecture="Pascal", vcpus=8),
     "v100": Card("v100", "V100", "nvidia-tesla-v100", "n1-standard-8", attached=False,
-                 architecture="Volta"),
+                 architecture="Volta", vcpus=8),
     # Retired by Google in most regions, and Kepler besides, so it fails this
     # tool's own driver check before it ever reaches a zone.
     "k80": Card("k80", "K80", "nvidia-tesla-k80", "n1-standard-8", attached=False,
-                architecture="Kepler"),
+                architecture="Kepler", vcpus=8),
     "a100": Card("a100", "A100", "nvidia-tesla-a100", "a2-highgpu-1g", attached=True,
-                 architecture="Ampere"),
+                 architecture="Ampere", vcpus=12),
     "a100-80gb": Card("a100-80gb", "A100-80GB", "nvidia-a100-80gb", "a2-ultragpu-1g",
-                      attached=True, architecture="Ampere"),
+                      attached=True, architecture="Ampere", vcpus=12),
     # Two things about the H100 that nothing in the name tells you. Both were
     # read off a live project on 2026-08-28.
     #
@@ -237,8 +265,209 @@ CARDS: dict[str, Card] = {
     # spellings, which is why this is a per-card alias rather than a rule.
     "h100": Card("h100", "H100-80GB", "nvidia-h100-80gb", "a3-highgpu-8g",
                  attached=True, architecture="Hopper", count=8,
-                 quota_aliases=("H100",)),
+                 quota_aliases=("H100",), quota_family="NVIDIA_H100", vcpus=208),
 }
+
+# FOUR CARDS THIS PROJECT METERS AND THIS TABLE DELIBERATELY DOES NOT CARRY, so
+# that their absence is a recorded decision rather than an oversight. All four are
+# visible in `comfy-qat quota list` — `quota.rows` names a card from its
+# `gpu_family` dimension, so the tool reports what the project holds whether or
+# not this table has heard of it — and none of them is ordered or asked for.
+#
+# They are listed in `KNOWN_ELSEWHERE` below rather than only in this comment,
+# because `create --gpu b200` answered "no card called 'b200'" — the same
+# sentence as `--gpu banana` — while `quota list` printed a B200 row in the same
+# minute. One surface saying a card does not exist while another lists it is what
+# a comment cannot prevent and a constant can.
+#
+# The accelerator ids above were read from `gcloud compute accelerator-types
+# list` on 2026-09-17 and are correct. What is missing is the MACHINE TYPE and
+# the CARD COUNT, and those are the two fields that cost money to get wrong: the
+# machine type is what `create` orders, and `count` is what the ceiling check
+# measures a request against — H100 is 8 rather than 1 for exactly that reason.
+# Neither can be confirmed without creating an instance, which is the one thing
+# this work may not do. A card added here with a guessed machine type would pass
+# the quota gate and fail at the create, after the wait for approval.
+#
+# H200 and B200 additionally have NO standard on-demand quota — Google's
+# allocation-quota table lists A3 Ultra and A4 as "Not available", with only
+# COMMITTED_* and PREEMPTIBLE_* variants — so asking for either is asking for a
+# refusal from a human reviewer, and `--validate-only` passing says nothing about
+# that. Those two need a reserved-capacity story, not a table row.
+#
+# To add one: fill in the machine type and count, give it `quota_family`, and
+# everything else follows — the refusal, the card lists, the help, `quota list`
+# and the requests `setup` files all read from this table.
+
+
+# SPOT / PREEMPTIBLE, read live on 2026-09-17 and recorded because it is the one
+# route this project has that is not behind a refusal. This tool does not order
+# Spot instances today; the facts are here so that whoever adds it starts from
+# measurements rather than from an inference.
+#
+# Values are `dimensionsInfos[].details.value`, scanned across EVERY row:
+#
+#   PREEMPTIBLE-CPUS-per-project-region            no value in any of 43 rows
+#   PREEMPTIBLE-NVIDIA-L4-GPUS-per-project-region  1, one undimensioned row, 43 locations
+#   PREEMPTIBLE-NVIDIA-RTX-PRO-6000-GPUS-...       1, one undimensioned row, 43 locations
+#   PREEMPTIBLE-NVIDIA-T4-GPUS-per-project-region  1, across 25 rows / 43 locations
+#   PREEMPTIBLE-NVIDIA-V100-GPUS-...               1, across 25 rows / 43 locations
+#
+# A Spot **L4** (G2) or **RTX PRO 6000** (G4) needs no CPU quota — both families
+# are on Google's "you don't need to request CPU quotas" list — so
+# `PREEMPTIBLE_CPUS` having no value does not stop either. Both already hold
+# preemptible GPU quota project-wide.
+#
+# A Spot **T4 or V100** is N1, which DOES consume `PREEMPTIBLE_CPUS`, and that is
+# where it stops. ONCE, not twice: their preemptible GPU quota is granted across
+# 43 locations like the others.
+#
+# THE CORRECTION IS THE POINT. This block first said T4 and V100 were "1 in
+# asia-east1 ONLY (1 location)" and therefore blocked twice over. That came from
+# a measuring script that stopped at the FIRST row with a value in it — and
+# asia-east1 is simply the first row alphabetically. The per-card quotas return
+# one undimensioned row and the dimensioned ones return twenty-five, so a reader
+# that takes row zero is right for one shape and silently wrong for the other.
+# Same two-shapes problem `needs_region` and `matching_ask` exist to handle, met
+# again in a throwaway script rather than in the product — where every reader
+# does scan. Scan the rows; never read the first.
+#
+# "No value" is read as zero throughout this tool (`quota.rows`), which matches
+# an independent reading of 0 for `PREEMPTIBLE_CPUS` — but it is an INFERENCE
+# from an absence, and inferring from an absence is exactly what produced a CPU
+# gate that does not exist. Named here so the next person weighs it as one.
+
+
+KNOWN_ELSEWHERE: dict[str, str] = {
+    # Cards Google sells and meters, and this table has no machine type for. The
+    # accelerator ids were read from `gcloud compute accelerator-types list` on
+    # 2026-09-17; see the note above for why the machine type cannot be guessed.
+    "h100-mega": "nvidia-h100-mega-80gb",
+    "rtx-pro-6000": "nvidia-rtx-pro-6000",
+    "h200": "nvidia-h200-141gb",
+    "b200": "nvidia-b200",
+}
+
+
+def known_card(gpu: str) -> bool:
+    """Is this a real card at all — whatever this tool can do with it?
+
+    The distinction `--gpu banana` and `--gpu b200` did not have. One is a typo;
+    the other is a card this project meters and `quota list` prints.
+    """
+    key = (gpu or "").strip().lower()
+    return card_named(gpu) is not None or key in KNOWN_ELSEWHERE
+
+
+def _refused_regions(card: Card, preferences: list[dict] | None) -> list[str]:
+    """Where Google has already said no to this card. Empty when unknown."""
+    from .quota import asks, row_name
+
+    if not preferences:
+        return []
+    found = set()
+    for ask in asks(preferences):
+        if ask.state != "denied":
+            continue
+        named = row_name(ask.quota_id, ask.dimensions)
+        if named and named.upper() in {n.upper() for n in card.quota_names}:
+            found.add(ask.region or "")
+    return sorted(p for p in found if p)
+
+
+def _ask_elsewhere(card: Card, quotas: list[dict],
+                   preferences: list[dict] | None) -> list[str]:
+    """Regions this card is metered in, minus the ones Google already refused.
+
+    THE FALLBACK ONLY. Metered is where a request is POSSIBLE; the caller passes
+    `askable`, which is metered AND STOCKED — because a remedy naming a region
+    that sells nothing is a command that exits 2, and this function composing the
+    answer by itself is how `create` came to print `africa-south1`.
+    """
+    from .quota import regions_metered
+
+    refused = set(_refused_regions(card, preferences))
+    found: set[str] = set()
+    for name in card.quota_names:
+        found |= set(regions_metered(name, quotas))
+    return sorted(found - refused)
+
+
+def _article(name: str) -> str:
+    """`a` or `an`, by how the name is READ ALOUD rather than by its spelling.
+
+    Card names start with digits and letters that are said as their own words:
+    `A100` is "ay-hundred", `H100` is "aitch", `8` is "eight". So the rule is the
+    initial SOUND, and for this table that is a short list of letters rather than
+    a guess at English.
+    """
+    return "an" if name[:1].upper() in "AEFHILMNORSX8" else "a"
+
+
+def offered(gpu: str) -> bool:
+    """Will `comfy-qat create --gpu` accept a box of this card?
+
+    THE one predicate. There were three — `auth.undrivable`, `auth.uncreatable`
+    and `setup._drivable` — and they disagreed: `undrivable` read
+    `card is not None and not card.has_gsp`, so a card the table has never heard
+    of fell through to drivable, while `uncreatable` in the same file called the
+    same card not creatable. `--json` marked B200, H200, H100-MEGA and
+    RTX-PRO-6000 `"drivable": true` about cards `create` refuses by name.
+
+    `CARDS` holds NINE cards, not five: K80, P4, P100 and V100 are in it
+    deliberately so `create --gpu p100` answers with the GSP explanation instead
+    of "unknown card". So "in the table" is a strictly larger set than "orderable",
+    and reading the first as the second is how B200 slipped past.
+    """
+    card = card_named(gpu)
+    return card is not None and card.has_gsp
+
+
+def no_gsp(gpu: str) -> bool:
+    """Is this a card the table knows and the driver cannot bring up?
+
+    Distinct from `not offered`, and the distinction earns its keep: a card with
+    no GSP gets the specific footnote about the open kernel module, while a card
+    the table has never heard of has no such diagnosis and must not be given one.
+    """
+    card = card_named(gpu)
+    return card is not None and not card.has_gsp
+
+
+def unspendable(gpu: str, pool: str = "") -> str:
+    """Why this tool cannot turn an allowance for `gpu` into a running box, or "".
+
+    ONE PLACE, because `quota list` and `setup` both need it and they disagreed.
+    `auth.py` grew ", no {pool} support yet" and `setup.py` never got it — the
+    third correction in one night to land on one surface and miss its sibling —
+    so `setup` reported "granted as Spot, no on-demand request needed" about a
+    card `create` cannot order by any path, while the table said otherwise.
+
+    Two reasons, and they are different facts:
+
+    * the card is not in `CARDS`, so no `--gpu` value reaches it at all;
+    * the card is orderable, but the only allowance is in a pool `create` cannot
+      spend. Every pool except on-demand is in that position today — see
+      `docs/spot-instances.md`, which is a plan and not an implementation.
+
+    Derived from the table rather than restated, so a card added to `CARDS` stops
+    being caveated with nothing else edited.
+    """
+    from .quota import GLOBAL_ALLOWANCE, ON_DEMAND
+
+    # The project-wide ceiling is not a card and `create` was never going to
+    # order one. Left out, it read "any (global) — not creatable by this tool",
+    # which is true of nothing: applying a card rule to a row that is not a card.
+    if gpu == GLOBAL_ALLOWANCE:
+        return ""
+    if no_gsp(gpu):
+        # Its own sentence, and the GSP footnote explains it underneath.
+        return ""
+    if not offered(gpu):
+        return "not creatable by this tool"
+    if pool and pool != ON_DEMAND:
+        return f"no {pool} support yet"
+    return ""
 
 
 def drivable_cards() -> list[str]:
@@ -466,6 +695,19 @@ def card_for(gpu: str) -> Card:
     key = key.removeprefix("nvidia-").removeprefix("tesla-")
     if key in CARDS:
         return CARDS[key]
+    if (gpu or "").strip().lower() in KNOWN_ELSEWHERE:
+        # M8: A REAL CARD, AND THIS TOOL HAS NO MACHINE TYPE FOR IT. Answering
+        # "no card called 'b200'" said the card does not exist, in the same
+        # minute `quota list` printed a B200 row — and left the reader with no
+        # way to tell a typo from a gap in this table.
+        raise LifecycleError(
+            f"{gpu} is a real card and this tool has no machine type for it, so "
+            f"it cannot create one. This tool can create: "
+            f"{', '.join(drivable_cards())}.",
+            fix="comfy-qat quota list — what this project holds, including "
+                "cards this tool cannot order",
+            kind=NO_QUOTA,
+        )
     raise LifecycleError(
         # The DRIVABLE cards, not every key in the table. The table also holds
         # four cards this tool refuses to order at all (GSP_ARCHITECTURES), and
@@ -612,13 +854,48 @@ class QuotaCheck:
     # `a3-highgpu-8g` is one instance and eight of the ceiling, and counting boxes
     # lets a create through the gate that Google then refuses.
     held: int = 0
+    quota_name: str = ""
+    """What `quota list` calls this card, which is not always its display name.
+
+    The H100 is shown as `H100-80GB` and metered as `H100`, so a refusal naming
+    the display name sent readers to a table row that does not exist.
+    """
+    elsewhere: tuple[str, ...] = ()
+    """Regions this card is metered in and has NOT been refused in.
+
+    Carried so the refusal can name somewhere to ask rather than `<one of them>`,
+    which pointed at a table whose whole content for this card was the refused
+    region and an unnamed bucket.
+    """
+    refused_in: tuple[str, ...] = ()
+    """Regions Google has already refused this card in, if that could be read.
+
+    `create` used to say "ask and wait" about a card `quota list` reported as
+    denied, and the remedy it printed derived the very region the refusal was
+    made in. Two surfaces, one card, opposite advice — and the one that spends
+    money gave the futile half.
+    """
+    asked_region: str = ""
+    """The region the USER named, for a fix line that sends them back to it.
+
+    The refusal said `--region us-central1` whatever was typed, so on a project
+    already refused there it sent somebody to re-file the exact request Google
+    denied, in a region they had not asked about.
+    """
 
     def lines(self) -> list[str]:
         """What was checked and what it said — printed by a dry run and a real one."""
+        from .quota import UNLIMITED
+        from .quota import where_label as _where_label
+
         def amount(value: int | None) -> str:
             if value is None:
                 return "not granted"
-            return "unlimited" if value < 0 else str(value)
+            # `== UNLIMITED`, not `< 0`. Correct either way, and spelled as a
+            # magnitude comparison it is the one idiom this whole class is about
+            # — invisible to the sweep, and the next edit here has no way to know
+            # the sentinel is what the branch is for.
+            return "unlimited" if value == UNLIMITED else str(value)
 
         def ceiling(value: int | None) -> str:
             # None here is not the same None as the card's. A card the project
@@ -627,11 +904,14 @@ class QuotaCheck:
             # read — which does not gate anything, and must not read as "zero".
             if value is None:
                 return "not reported by this project"
-            return "unlimited" if value < 0 else str(value)
+            return "unlimited" if value == UNLIMITED else str(value)
 
         out = [
             f"{self.card}: {amount(self.card_limit)}"
-            + (f", in {len(self.regions)} region(s)" if self.regions else ""),
+            # L14: the SAME phrasing `quota list` prints, from the same
+            # function — "in 43 region(s)" beside that table's own label for the
+            # identical span was the third vocabulary for one geography.
+            + (f", in {_where_label(self.regions)}" if self.regions else ""),
             f"GPUS_ALL_REGIONS (every card, project-wide): {ceiling(self.global_limit)}",
         ]
         if self.running:
@@ -649,6 +929,66 @@ class QuotaCheck:
     def typed(self) -> str:
         """The `--gpu` spelling to put in a fix line, never the display name."""
         return self.key or self.card.lower()
+
+    @property
+    def _ask_somewhere(self) -> str:
+        """The remedy, which must not be "ask again where you were refused".
+
+        `quota list` says "asking again will not help" about exactly this card
+        while this line said "then wait for Google", and the command it prints
+        derives the refused region when none is given. A refusal somewhere is not
+        a refusal everywhere — `quota list` reports the same card never asked in
+        forty-two other regions — so the useful remedy is a different region.
+
+        BOTH BRANCHES read this, because the last time one of them was corrected
+        the other was not, and that was the fourteenth instance of exactly that.
+        """
+        plain = (f"comfy-qat quota request --gpu {self.typed}"
+                 f"{self._where}, then wait for Google")
+        if not self.refused_in:
+            return plain
+        # NAME THEM. `<one of them>` sent the reader to `--by-region`, whose
+        # entire content for this card is the refused region plus a bucket row
+        # called `any of 42` — there is no "them" to pick one of. The regions
+        # were in hand all along: this object is built from the quota records.
+        refused = ", ".join(self.refused_in)
+        if not self.elsewhere:
+            # AND SOMETIMES THERE IS NOWHERE ELSE, which is worth saying outright
+            # rather than printing a placeholder that implies there is.
+            #
+            # WHAT IT DOES NOT SAY IS WHY. `elsewhere` is metered AND STOCKED
+            # minus refused, so empty has two causes — metered nowhere else, or
+            # metered widely and stocked nowhere else — and this sentence used to
+            # assert the first. A card metered in forty-three regions and sold in
+            # none of the other forty-two hits this branch, and "the only region
+            # this project meters it in" is false about it. Naming the outcome
+            # rather than a cause the message cannot distinguish.
+            return (f"Google already refused {self.card} in {refused}, and no "
+                    f"other region both meters it and sells it — so there is "
+                    f"nowhere else to ask.\n"
+                    f"comfy-qat quota list --by-region  # what this project does "
+                    f"hold")
+        picks = ", ".join(self.elsewhere[:3])
+        return (f"Google already refused {self.card} in {refused}, so asking "
+                f"there again will not help. Ask somewhere else:\n"
+                f"comfy-qat quota request --gpu {self.typed} --region "
+                f"{self.elsewhere[0]}  # or {picks}\n"
+                f"comfy-qat quota list --by-region  # every region it is metered in")
+
+    @property
+    def _where(self) -> str:
+        """` --region <what the user asked for>`, or nothing at all.
+
+        NOT A FALLBACK LITERAL. This said `--region us-central1` when no region
+        was typed, and on this project that is exactly where H100 was refused —
+        so the remedy for "no H100 quota" was to re-file the request Google had
+        already denied, in a region the user never named, and then wait for an
+        answer already given. `create` cannot vet a region: it does not read
+        preferences and does not know what a region sells. `quota request` does
+        both, and derives one when none is given, so the honest thing is to hand
+        the question over rather than guess at it.
+        """
+        return f" --region {self.asked_region}" if self.asked_region else ""
 
     def problem(self) -> LifecycleError | None:
         """The reason this cannot be created, or None. Nothing has happened yet.
@@ -686,22 +1026,50 @@ class QuotaCheck:
         block can never again resurrect the wrong cause.
         """
         if not self.card_limit:
+            # THE NAME `quota list` SHOWS — which is now the card's own name,
+            # and used to be its alias.
+            #
+            # THIS COMMENT USED TO ARGUE THE OPPOSITE: "the quota table has an
+            # `H100` row and no `H100-80GB` row, so a reader following this
+            # sentence to the table found nothing by that name." That was true
+            # when it was written. It stopped being true when `family_name` began
+            # returning the card table's name, and the code went on following the
+            # dead rationale — so `create --gpu h100` printed "H100-80GB: 0" and
+            # "this project has no H100 quota" four lines apart. It is kept, as a
+            # correction rather than a deletion, because the reasoning is right
+            # and only its premise moved: this name has to be whatever the table
+            # prints, and asserting which one that is belongs in a test.
+            metered = self.quota_name
             return LifecycleError(
-                f"this project has no {self.card} quota, so a {self.card} box cannot "
+                f"this project has no {metered} quota, so {_article(metered)} "
+                f"{metered} box cannot "
                 f"start anywhere. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.typed} "
-                    f"--region us-central1, then wait for Google",
+                # THE REGION THE USER ASKED FOR, not a literal. This said
+                # `--region us-central1` whatever was typed — which on a project
+                # that has already been refused there sends somebody to re-file
+                # the exact request Google denied, in a region they did not name.
+                fix=self._ask_somewhere,
                 kind=NO_QUOTA,
             )
-        if self.card_limit > 0 and self.card_limit < self.needed:
+        from .quota import UNLIMITED
+
+        # AN UNLIMITED GRANT IS NEVER SHORT. `card_limit > 0` excluded `-1` by
+        # accident — the sentinel is not a small number, and the next reader
+        # would have had to work that out from the arithmetic.
+        if (self.card_limit is not None and self.card_limit != UNLIMITED
+                and 0 < self.card_limit and self.card_limit < self.needed):
             return LifecycleError(
                 f"{self.card} needs {self.needed} of this project's GPU allowance and "
                 f"the grant is {self.card_limit}. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.typed} "
-                    f"--region us-central1, then wait for Google",
+                # THE SIBLING. The branch above was corrected to stop naming a
+                # literal region and this one was not, so it went on sending
+                # people to us-central1 whatever they typed — the fourteenth time
+                # a fix landed on one site and missed the one beside it.
+                fix=self._ask_somewhere,
                 kind=NO_QUOTA,
             )
-        if self.global_limit is not None and 0 <= self.global_limit < self.needed:
+        if (self.global_limit is not None and self.global_limit != UNLIMITED
+                and self.global_limit < self.needed):
             return LifecycleError(
                 f"GPUS_ALL_REGIONS is {self.global_limit} on this project — that is the "
                 f"ceiling across every card, whatever the {self.card} grant says, and "
@@ -711,9 +1079,9 @@ class QuotaCheck:
                     "https://console.cloud.google.com/iam-admin/quotas",
                 kind=NO_QUOTA,
             )
-        if self.running and self.global_limit is not None and 0 <= self.global_limit < (
-            self.needed + self.held
-        ):
+        if (self.running and self.global_limit is not None
+                and self.global_limit != UNLIMITED
+                and self.global_limit < self.needed + self.held):
             first = _stop_the_box(*self.running[0])
             if len(self.running) == 1:
                 return LifecycleError(
@@ -739,8 +1107,9 @@ class QuotaCheck:
                 f"this project's {self.card} grant names no region, so there is "
                 f"nowhere to put the box. The grant itself is "
                 f"{self.card_limit}. Nothing was created.",
-                fix=f"comfy-qat quota request --gpu {self.typed} "
-                    f"--region us-central1",
+                # THE THIRD SITE of the same invented literal, found by grep
+                # after the second turned up beside the first.
+                fix=f"comfy-qat quota request --gpu {self.typed}{self._where}",
                 kind=NO_QUOTA,
             )
         return None
@@ -838,16 +1207,18 @@ def card_grant(card: Card, quotas: list[dict]) -> tuple[int | None, list[str]]:
     that carries both spellings would otherwise be read off whichever one came
     back with a zero.
     """
-    from .quota import UNLIMITED, allowance, regions_with_quota
+    from functools import reduce
 
+    from .quota import allowance, better_limit, regions_with_quota
+
+    # `reduce(better_limit, ...)` rather than a hand-rolled `UNLIMITED in ...`
+    # ahead of a `max`. Correct either way — this was the one site of the class
+    # that already checked the sentinel — but the check lived in a statement
+    # above the comparison it protects, which is the arrangement that hid the
+    # other nine. One predicate, asked where the question is.
     limits = [allowance(name, quotas) for name in card.quota_names]
     granted = [value for value in limits if value is not None]
-    if not granted:
-        limit: int | None = None
-    elif UNLIMITED in granted:
-        limit = UNLIMITED
-    else:
-        limit = max(granted)
+    limit: int | None = reduce(better_limit, granted) if granted else None
 
     regions: set[str] = set()
     for name in card.quota_names:
@@ -855,8 +1226,15 @@ def card_grant(card: Card, quotas: list[dict]) -> tuple[int | None, list[str]]:
     return limit, sorted(regions)
 
 
-def check_quota(card: Card, quotas: list[dict], instances: list[dict]) -> QuotaCheck:
-    """Read the allowance. Pure — the caller does the two gcloud reads."""
+def check_quota(card: Card, quotas: list[dict], instances: list[dict],
+                asked_region: str = "", *,
+                preferences: list[dict] | None = None,
+                askable: "list[str] | None" = None) -> QuotaCheck:
+    """Read the allowance. Pure — the caller does the gcloud reads.
+
+    `preferences` is OPTIONAL and `None` means "could not be read", which must
+    not block a create: it only ever removes advice, never adds a refusal.
+    """
     from .quota import global_allowance
 
     limit, regions = card_grant(card, quotas)
@@ -868,6 +1246,15 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict]) -> QuotaC
         running=tuple(_gpu_boxes_running(instances)),
         regions=tuple(regions),
         key=card.key,
+        # THE CARD'S OWN NAME. This was `quota_names[-1]` — the ALIAS — because
+        # `quota list` used to print `H100` where this table says `H100-80GB`.
+        # `family_name` now returns the card table's name, so the two agree and
+        # the alias is the spelling nothing shows any more.
+        quota_name=card.name,
+        refused_in=tuple(_refused_regions(card, preferences)),
+        elsewhere=tuple(askable if askable is not None
+                        else _ask_elsewhere(card, quotas, preferences)),
+        asked_region=asked_region or "",
         held=_cards_running(instances),
     )
 
@@ -890,7 +1277,7 @@ def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None
 
 def build(
     gc: Gcloud, blueprint: Blueprint, ordering: Ordering, project: str, say,
-    *, limit: int = MAX_ATTEMPTS,
+    *, attempts: int = MAX_ATTEMPTS,
 ) -> str:
     """Try the zones in order until one has room. Returns the zone that worked.
 
@@ -914,7 +1301,7 @@ def build(
     one was not. Following it creates a box somewhere nobody chose, or burns a
     minute on a create that cannot succeed.
 
-    **`limit`.** The same cap `zones.choose` applies to the ranked list, applied
+    **`attempts`.** The same cap `zones.choose` applies to the ranked list, applied
     again here because the suggestions are not on that list. `choose` hands over
     six zones and every refusal can name a fresh one, so the queue refills as
     fast as it drains: an uncapped fall-through has no end and is a command that
@@ -926,7 +1313,7 @@ def build(
     tried: list[str] = []
     capped = False
     while queue:
-        if len(tried) >= limit:
+        if len(tried) >= attempts:
             capped = True
             break
         zone = queue.pop(0)
@@ -1008,7 +1395,7 @@ def build(
     if capped:
         say(f"stopping after {len(tried)} zones — each attempt takes about a minute")
         raise LifecycleError(
-            f"stopped after {limit} zones, all out of {blueprint.card.name} capacity: "
+            f"stopped after {attempts} zones, all out of {blueprint.card.name} capacity: "
             f"{', '.join(tried)}. Nothing was created and nothing is billing — this is "
             f"a cap, not the whole world, so there may be room somewhere untried.",
             # `--region` first, because it is the flag that matches what this
@@ -1261,12 +1648,20 @@ def order_zones(
                 # --zones=<bogus>` makes gcloud refuse the argument outright, so
                 # moving them ahead of this would replace a clear refusal with a
                 # raw gcloud error for exactly the case this is about.
+                # NO `--region`, and the comment above is why. `region_of` on a
+                # mistyped zone yields a region string nobody has vetted — not
+                # metered, possibly not real — so the command this hands over
+                # exits 2. This path cannot vet it without another API call, and
+                # `quota request` with no region derives one AND checks it, which
+                # is strictly more than can be done here.
+                #
+                # Found by sweeping for suggestions composed rather than asked
+                # for, two lines below a comment about this exact trap.
                 fix=(f"check the zone name first — a typo reads as a region "
                      f"this project has no quota in: gcloud compute zones list "
                      f"--filter=name={zone}; then either drop --zone and let "
-                     f"this pick, or ask for the card there: comfy-qat quota "
-                     f"request --gpu {blueprint.card.key} "
-                     f"--region {region_of(zone)}"),
+                     f"this pick, or ask for the card: comfy-qat quota "
+                     f"request --gpu {blueprint.card.key}"),
                 kind=NO_QUOTA,
             )
         offered = zones_with_machine_type(

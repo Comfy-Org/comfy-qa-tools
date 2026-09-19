@@ -226,3 +226,23 @@ def test_with_no_host_list_at_all_it_points_at_setup(tmp_path, monkeypatch):
 
     assert result.exit_code == 0
     assert "comfy-qat setup" in result.output
+
+
+def test_every_docs_page_is_linked_from_the_readme():
+    """A page can be added and never linked, and nothing checked.
+
+    `docs/tests-that-cannot-fail.md` names this gap itself — it is how
+    `session-expiry.md` went missing from the index for as long as it did — and
+    then leaves it open: "a free edit is an unguarded one". This is the guard.
+
+    Derived from the directory rather than a list here, so a page added tomorrow
+    is in scope the moment it exists and there is nothing to remember.
+    """
+    readme = README.read_text()
+    pages = sorted(path.name for path in (README.parent / "docs").glob("*.md"))
+    assert pages, "no docs pages found — the guard would be vacuous"
+
+    missing = [page for page in pages if f"docs/{page}" not in readme]
+    assert missing == [], (
+        f"{missing} exist in docs/ and nothing in the README links them. "
+        f"Add them to the index at the foot of the README.")

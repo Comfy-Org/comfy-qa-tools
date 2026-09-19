@@ -88,9 +88,13 @@ class FakeGcloud:
         self.calls.append("gpu_quotas")
         return list(self._quotas)
 
-    def accelerator_types(self, project, name):
+    def accelerator_types(self, project, name=""):
+        """`name` is OPTIONAL on the real one, and the region check reads the
+        whole catalogue in a single call — so a fake requiring it turned a new
+        caller into a TypeError rather than an answer."""
         self.calls.append("accelerator_types")
-        return [entry for entry in self._accelerators if entry["name"] == name]
+        return [entry for entry in self._accelerators
+                if not name or entry["name"] == name]
 
     def machine_types(self, project, zone_list, name):
         self.calls.append("machine_types")
@@ -106,7 +110,25 @@ class FakeGcloud:
         if problem is not None:
             raise GcloudError("Could not fetch resource", raw=problem)
 
+    def quota_preferences(self, project):
+        """`create` reads these to know where a card has already been refused, so
+        its remedy stops saying "ask and wait" about a card `quota list` calls
+        denied. Empty here: these tests are about zones and plans, and an empty
+        list gives the plain remedy, which is what they already assert.
+
+        The `__getattr__` guard below is what made this necessary rather than
+        silent, and that is the point of it."""
+        self.calls.append("quota_preferences")
+        return []
+
     def __getattr__(self, item):  # pragma: no cover - the guard, not the path
+        # PUBLIC NAMES ONLY. This guard is about `create` reaching for a gcloud
+        # METHOD nobody expected, and it earned its keep catching exactly that.
+        # It also caught `getattr(gc, "_accelerator_cache", None)` — an attribute
+        # PROBE with a default, which `__getattr__` sees and whose default a
+        # raised AssertionError defeats. Private names are bookkeeping, not API.
+        if item.startswith("_"):
+            raise AttributeError(item)
         raise AssertionError(f"create asked the fake for {item!r}")
 
 

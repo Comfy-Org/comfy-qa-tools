@@ -28,14 +28,15 @@ class FakeCloud:
 
     def __init__(
         self, *, account="ali@comfy.org", projects=("proj-1",), project="proj-1",
-        billing=True, quotas=(), instances=(), expired=False, login=0,
-        quota_error=None, instances_error=None,
+        billing=True, quotas=(), preferences=(), instances=(), expired=False,
+        login=0, quota_error=None, instances_error=None,
     ):
         self.account = account
         self.projects = list(projects)
         self.project = project
         self.billing = billing
         self.quotas = list(quotas)
+        self.preferences = list(preferences)
         self.instances = list(instances)
         self.expired = expired
         self.login = login
@@ -82,13 +83,35 @@ class FakeCloud:
             if self.quota_error:
                 raise self.quota_error
             return list(self.quotas)
-        if key.startswith("quotas preferences create"):
+        if key.startswith("quotas preferences list"):
+            return list(self.preferences)
+        if key.startswith("quotas preferences update"):
             self.requests.append(list(args))
             return {}
         if key.startswith("compute instances list"):
             if self.instances_error:
                 raise self.instances_error
             return list(self.instances)
+        if key.startswith("compute accelerator-types list"):
+            # `setup --region` now checks that the region exists and that it
+            # sells the cards being asked for, the two checks `quota list` and
+            # `quota request` already had. These tests are not about
+            # availability, so the answer is "offered, in the usual regions" —
+            # permissive on purpose, so an unrelated assertion never turns on a
+            # fact this fixture was never written to express.
+            #
+            # ANSWERING THE UNFILTERED CALL TOO: `_regions_stocking` reads the
+            # whole catalogue in one go, and a fake that only answered the
+            # filtered form returned rows named `""`, which matches no card.
+            from comfy_qa.create import CARDS
+
+            name = next((a.split("=")[-1] for a in args
+                         if a.startswith("--filter=name=")), "")
+            ids = [name] if name else [c.accelerator for c in CARDS.values()]
+            return [{"name": i, "zone": f"https://x/zones/{z}"}
+                    for i in ids
+                    for z in ("us-central1-a", "us-east1-b", "europe-west4-a",
+                              "asia-east1-a")]
         raise AssertionError(f"unexpected gcloud call: {key}")
 
 
@@ -310,16 +333,32 @@ def test_zero_quota_offers_the_request_and_sends_it_for_the_named_region(hosts):
     args = cloud.requests[0]
     assert "--quota-id=NVIDIA-L4-GPUS-per-project-region" in args
     assert "--preferred-value=1" in args
-    assert "--dimensions=region=us-central1" in args
+    assert "--dimensions=region=us-central1" in args, (
+        "`-per-project-region` defines a region dimension and the API requires "
+        "every defined dimension to be set — proved by a real submission, which "
+        "--validate-only had passed three times without it")
     assert "Which region?" not in result.output, "--region was already given"
 
 
-def test_zero_quota_asks_for_a_region_when_none_was_given(hosts):
+def test_the_region_is_worked_out_rather_than_asked_for(hosts):
+    """This used to prompt "Which region?" and it no longer does.
+
+    The prompt was there because one card was being requested and somebody had
+    to say where. The step now asks for every card the project is missing, in
+    one pass, and a question per run for a value the project can answer itself
+    is the keystroke tax `setup` exists to remove — so the region is derived
+    (`setup.request_region`) and PRINTED with the reason it was chosen.
+
+    What must not come back is a silent choice: the input below would answer a
+    prompt if one were asked, and the run is asserted to have consumed only the
+    confirmation.
+    """
     cloud = FakeCloud(quotas=[L4_ZERO])
-    result = run(cloud, input="y\nus-west1\n")
+    result = run(cloud, input="y\n")
 
     assert result.exit_code == 0, result.output
-    assert "--dimensions=region=us-west1" in cloud.requests[0]
+    assert "Which region?" not in result.output
+    assert "region us-central1" in result.output, "the choice was made silently"
 
 
 def test_declining_the_request_still_finishes_setup(hosts):
@@ -336,7 +375,7 @@ def test_a_refused_quota_request_is_reported_not_raised(hosts):
     real = cloud._run
 
     def refuse(args, mode):
-        if " ".join(args).startswith("quotas preferences create"):
+        if " ".join(args).startswith("quotas preferences update"):
             raise GcloudError("this project has no billing history")
         return real(args, mode)
 
@@ -348,14 +387,23 @@ def test_a_refused_quota_request_is_reported_not_raised(hosts):
     assert hosts.exists()
 
 
-def test_no_terminal_names_a_card_it_can_see_rather_than_a_placeholder_id(hosts):
-    """`--quota-id <id>` left a blank only another command could fill."""
+def test_no_terminal_asks_google_rather_than_printing_a_command(hosts):
+    """The requirement that changed this test, in the user's words: a fresh
+    install should end with "the request should already be submitted".
+
+    `--non-interactive` used to print `comfy-qat quota request --gpu l4 --region
+    us-central1` and send nothing, which is the behaviour the requirement exists
+    to replace — a scripted setup that ends with a homework assignment. There is
+    no prompt to confirm at here, and the flag is a person's own instruction to
+    proceed without one, so it submits. It still prints the plan first.
+    """
     cloud = FakeCloud(quotas=[L4_ZERO])
     result = run(cloud, "--non-interactive", "--region", "us-central1")
 
     assert result.exit_code == 0
-    assert "comfy-qat quota request --gpu l4 --region us-central1" in result.output
-    assert cloud.requests == [], "--non-interactive asks Google for nothing"
+    assert "--quota-id=NVIDIA-L4-GPUS-per-project-region" in cloud.requests[0]
+    assert "will ask Google for 1" in result.output, "it submitted without saying so"
+    assert result.output.index("will ask Google") < result.output.index("requested")
 
 
 def test_a_region_with_no_quota_is_not_reported_as_the_whole_project(hosts):

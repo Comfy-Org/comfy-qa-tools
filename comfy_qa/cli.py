@@ -142,6 +142,25 @@ def setup_cmd(
     non_interactive: Annotated[bool, typer.Option(
         "--non-interactive", help="Never prompt. Fails with the command to run "
                                   "instead of opening a browser.")] = False,
+    quota_requests: Annotated[bool, typer.Option(
+        "--quota-request/--no-quota-request",
+        help="Ask Google for the GPU quota this project is missing. On by "
+             "default; the exact list is printed before anything is sent, and a "
+             "quota request cannot be withdrawn.")] = True,
+    justification: Annotated[Optional[str], typer.Option(
+        "--justification",
+        help="Why you need the quota, sent to Google verbatim — this is what a "
+             "human reviewer reads. Left off, setup sends its own description "
+             "of what the tool does, and prints it before sending.")] = None,
+    dry_run: Annotated[bool, typer.Option(
+        "--dry-run",
+        help="Print the quota plan and reach nothing — no request, and no call "
+             "to Google. Use --validate-only to have Google check each request "
+             "without creating anything.")] = False,
+    validate_only: Annotated[bool, typer.Option(
+        "--validate-only",
+        help="Ask Google whether each quota request is valid and create "
+             "nothing. Stronger than --dry-run, which only prints.")] = False,
     config: host.ConfigOption = None,
 ) -> None:
     """Get this machine ready, in one command.
@@ -152,7 +171,12 @@ def setup_cmd(
     end. An existing list is read, never replaced.
     """
     prompts = setup_mod.Prompts(
-        confirm=typer.confirm,
+        # Default YES, which is the whole of "the request should already be
+        # submitted on a fresh install" — a newcomer who reads the printed plan
+        # and presses return ends up with the requests in. It is a confirmation
+        # rather than an announcement because the thing on the other side of it
+        # cannot be withdrawn and is read by a person at Google.
+        confirm=lambda question: typer.confirm(question, default=True),
         ask=typer.prompt,
         choose=_choose,
         say=say.step,
@@ -163,6 +187,8 @@ def setup_cmd(
             interactive=not non_interactive,
             project=project, region=region, no_numpy=no_numpy,
             config_path=config,
+            quota_requests=quota_requests, justification=justification,
+            quota_dry_run=dry_run, quota_validate_only=validate_only,
         )
     except (setup_mod.SetupStopped, GcloudError) as exc:
         # One handler, because there was never a difference: both are a message

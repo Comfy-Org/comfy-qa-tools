@@ -432,8 +432,12 @@ def test_a_card_with_no_grant_is_refused_before_anything_is_created():
 
 
 def test_a_card_that_needs_more_of_the_allowance_than_is_granted_is_refused():
-    h100 = {"quotaId": "NVIDIA-H100-80GB-GPUS-per-project-region",
-            "dimensionsInfos": [{"details": {"value": "1"},
+    # The family shape. `NVIDIA-H100-80GB-GPUS-per-project-region` exists in no
+    # form on any project — see `create.CARDS`, which records that the H100 has
+    # no `-80GB-` quota row — so a fixture using it tested a grant nobody holds.
+    h100 = {"quotaId": "GPUS-PER-GPU-FAMILY-per-project-region",
+            "dimensionsInfos": [{"dimensions": {"gpu_family": "NVIDIA_H100"},
+                                 "details": {"value": "1"},
                                  "applicableLocations": ["us-central1"]}]}
     problem = check_quota(CARDS["h100"], [h100, ceiling(8)], []).problem()
     assert "needs 8 of this project's GPU allowance and the grant is 1" in str(problem)
@@ -1048,7 +1052,7 @@ def test_the_cap_offers_the_flag_that_widens_the_search_as_well_as_the_one_that_
     with pytest.raises(LifecycleError) as raised:
         build(cloud, LINUX_L4,
               order("us-central1-a", "us-central1-b", "us-central1-c"),
-              PROJECT, lambda line: None, limit=2)
+              PROJECT, lambda line: None, attempts=2)
     assert "stopped after 2 zones" in str(raised.value)
     assert "--region" in raised.value.fix
     assert "--zone" in raised.value.fix
