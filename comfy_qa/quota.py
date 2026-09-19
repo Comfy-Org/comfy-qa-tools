@@ -471,7 +471,11 @@ AskState = Literal["satisfied", "partial", "pending", "denied"]
 # fallback matches the word. The failure directions are not symmetric: reading a
 # denial as pending strands a person waiting for an answer that came, while
 # reading a pending request as denied costs at worst one re-ask.
-_DENIED = "denied"
+# THE PHRASE GOOGLE SENDS, not the bare word. `"denied" in detail` also matched
+# "Quota request was not denied" — a substring test on prose, reading as if it
+# were exact, on the line that decides whether a card is reported as refused.
+# Word-splitting does not help: the negation contains the word either way.
+_DENIED = "request denied"
 
 
 @dataclass(frozen=True)
@@ -1032,6 +1036,8 @@ def readiness(
     quotas: list[dict], preferences: list[dict] | None = None, *, region: str | None = None,
 ) -> list[Readiness]:
     """What can I run today, what is waiting on Google, and what did I never ask for."""
+    from .zones import region_of
+
     standing = asks(preferences)
     found: list[Readiness] = []
 
@@ -1052,7 +1058,16 @@ def readiness(
     for row in binding:
         if not _applies(row.where, list(row.locations), region):
             continue
-        where = region if (region and spans_many(row.where)) else row.where
+        # NARROWED, like the membership test that admitted the row. `_applies`
+        # narrows a row's locations with `region_of` before judging it, and this
+        # label did not — so `--region us-central1` admitted two zone-scoped rows
+        # and then printed `us-central1-a` and `us-central1-b` in the REGION
+        # column, while four other surfaces in the same output said
+        # `us-central1`. `spans_many` only catches the "N regions" form, so a
+        # single-zone row kept its zone.
+        where = (region if (region and (spans_many(row.where)
+                                        or region_of(row.where) == region))
+                 else row.where)
         # KEYED ON THE ROW, not on the quota id alone. Every modern card shares
         # ONE quota id, so "this id has a request" would mark H100, H200, B200
         # and RTX PRO 6000 by whatever was asked about one of them. The same
@@ -1106,8 +1121,27 @@ def readiness(
         #
         # the refused request's number hung on the pending one. A wrong join, not
         # a tie: it is stable under row order, so no ordering rule fixes it.
-        pending = next((ask for ask in about if ask.state == "pending"), None)
-        denied = next((ask for ask in about if ask.state == "denied"), None)
+        # AND A RULE FOR THE TIE WITHIN ONE STATE. `next(...)` took the first
+        # match in a list order gcloud offers no contract for, so two pending
+        # requests covering one row — ordinary for a per-card quota, where one
+        # grant row covers every region — reported 4 or 2 depending on which way
+        # the API listed them, and it survived `summarise` into both tables.
+        #
+        # The previous pass fixed the CROSS-state join and left this. The rule
+        # matches what `summarise` does one layer up: `better_limit` over
+        # `preferred`, so the largest outstanding ask is the one reported and a
+        # tie can never shrink the number on screen.
+        def _widest(state: str) -> "Ask | None":
+            matching = [ask for ask in about if ask.state == state]
+            if not matching:
+                return None
+            return max(matching, key=lambda ask: (
+                ask.preferred == UNLIMITED,
+                ask.preferred if ask.preferred is not None else -2,
+                ask.preference_id))
+
+        pending = _widest("pending")
+        denied = _widest("denied")
         if holds_quota(row.limit):
             status: Status = "ready"
             deciding = None
@@ -1140,7 +1174,6 @@ def readiness(
         if holds_quota(row.limit):
             refused_in = never_asked_in = 0
         else:
-            from .zones import region_of
 
             # REGIONS ON BOTH SIDES. `places` below is narrowed with
             # `region_of` and this was not — so a denial naming no region fell
@@ -1152,10 +1185,17 @@ def readiness(
             # And the over-count drove `never_asked_in` to 0 through the
             # `max(0, ...)` clamp below, so the split this field exists to report
             # vanished in precisely the case it was wrong about.
+            # `!= "global"`, for the reason `known_regions` gives in capitals:
+            # "`global` IS NOT A REGION ... counting it made the live figure
+            # 44". A denied ask naming no region falls back to `row.locations`,
+            # and the project-wide ceiling's only location is `global` — so a
+            # single refusal of the ceiling published `refused_in_regions: 1`
+            # about a region that does not exist.
             refused = {region_of(place) for ask in about
                        if ask.state == "denied"
                        for place in ([ask.region] if ask.region
-                                     else row.locations)}
+                                     else row.locations)
+                       if place != "global"}
             # A row with no `applicableLocations` still describes one place —
             # the quota itself — so the split has something to divide. Written
             # with the count rather than the `or` idiom, for the reason recorded
@@ -1440,13 +1480,15 @@ def pools_for(
             status = "denied"
         else:
             status = "none"
-        places = {place for row in rows_here for place in row.locations}
-        if len(places) == 1:
-            pool_where = next(iter(places))
-        elif places:
-            pool_where = f"{len(places)} regions"
-        else:
-            pool_where = rows_here[0].where
+        # `where_label`, NOT A FOURTH SPELLING. This counted raw locations —
+        # no `region_of` narrowing, and `global` counted as a region — which is
+        # a fourth phrasing of the label `where_label` exists to make singular:
+        # "There were three for the same forty-three regions". It is the one
+        # place that did not call it. Latent today, because `_pool_ids` only
+        # builds `-per-project-region` ids whose locations really are regions;
+        # closed as the consistency matter it is rather than a bug biting now.
+        places = [place for row in rows_here for place in row.locations]
+        pool_where = where_label(places) if places else rows_here[0].where
         found.append(Pool(name, quota_id, limit, status, counts, cost,
                           where=pool_where))
     return found
@@ -1623,8 +1665,17 @@ def resolve_target(
     # `quota list` is deliberately NOT built this way: it names a row from its own
     # dimension, so a card the table has never heard of is still reported. Display
     # derives from the project; REQUESTS come from the table.
-    found = [row for row in rows(quotas)
-             if family and row.dims.get(_FAMILY_DIMENSION) == family]
+    # THROUGH `_prefer_region_scope`, like every other collapse in this module.
+    # This was the one that never went through it, and it is the one whose
+    # answer becomes the target of an IRREVOCABLE preference: with a family
+    # metered under both scopes, `found[0]` below picked whichever record gcloud
+    # happened to list first, so the same command on the same project could file
+    # against a different quota id on a different day, and the zone-scoped id
+    # got handed a `region` dimension it does not define — the exact
+    # INVALID_ARGUMENT `needs_region`'s docstring records.
+    found = _prefer_region_scope(
+        [row for row in rows(quotas)
+         if family and row.dims.get(_FAMILY_DIMENSION) == family])
     if not found:
         # A record the API returned with no `dimensionsInfos` at all produces no
         # rows, and is not a reason to refuse to ask for the card — `resolve` is
@@ -1652,11 +1703,25 @@ def resolve_target(
         where = next(
             (row.dims["region"] for row in found if row.dims.get("region")), None)
     if not where:
-        where = next((loc for row in found for loc in row.locations), None)
+        # `!= "global"`, the SECOND SITE of the guard the per-card fallback
+        # forty lines up already has — under a comment calling itself "one
+        # caller away from being reachable, which is what a guard asymmetry
+        # is". This is that caller: same fallback, same `--dimensions=
+        # region=global` that Google rejects, one branch over.
+        where = next((loc for row in found for loc in row.locations
+                      if loc != "global"), None)
     if not where:
         return None
-    return Target(found[0].quota_id, tuple(sorted(
-        {_FAMILY_DIMENSION: family, "region": where}.items())))
+    # AN EXPLICIT RULE, not a position. Sorted so the answer cannot depend on
+    # the order the API listed records in — an irrevocable action whose target
+    # moves with list order is not reproducible, and nothing in the output
+    # would show it had moved.
+    quota_id = sorted({row.quota_id for row in found})[0]
+    # AND ONLY THE DIMENSIONS THIS QUOTA DEFINES. The `--gpu` path takes this
+    # Target verbatim with no `needs_region` check — only `--quota-id` re-checks
+    # — so the invariant belongs on the Target rather than on one caller.
+    dims = {_FAMILY_DIMENSION: family, "region": where}
+    return Target(quota_id, tuple(sorted(dims.items())))
 
 
 def _prefer_region_scope_ids(records: list[dict]) -> list[dict]:

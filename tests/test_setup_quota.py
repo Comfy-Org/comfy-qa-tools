@@ -6710,6 +6710,260 @@ def test_a_project_with_no_gpu_quota_at_all_still_says_so(monkeypatch):
     assert nothing.exit_code == 0, nothing.output
 
 
+def _two_pending_l4():
+    """One per-card grant covering three regions, two pending requests.
+
+    Ordinary for a per-card quota: one grant row covers every region, so every
+    region's preference covers it. That is what makes a same-state tie routine
+    rather than exotic.
+    """
+    quotas = [{"quotaId": L4, "dimensionsInfos": [
+        {"applicableLocations": ["us-central1", "europe-west4", "asia-east1"],
+         "details": {}}]}]
+    usc = preference(L4, granted=0, preferred=4, reconciling=True,
+                     dimensions={"region": "us-central1"}, name="l4-usc")
+    euw = preference(L4, granted=0, preferred=2, reconciling=True,
+                     dimensions={"region": "europe-west4"}, name="l4-euw")
+    return quotas, usc, euw
+
+
+def test_a_same_state_tie_is_broken_by_a_rule_not_by_gcloud_order():
+    """Pass 17, F3. The previous pass fixed the CROSS-state join — a pending
+    status carrying a denied request's number — and left the SAME-state tie
+    unordered.
+
+        readiness(quotas, [usc, euw])[0].asked   -> 4
+        readiness(quotas, [euw, usc])[0].asked   -> 2
+
+    `next((ask for ask in about if ask.state == "pending"), None)` takes the
+    first match in a list order gcloud offers no contract for, and it survives
+    `summarise`, so both tables move together.
+
+    This module holds itself to exactly this standard in three other places —
+    `_rank`, `matching_ask` and the `readiness` dedupe — each with a comment
+    saying so. The rule chosen here matches what `summarise` already does one
+    layer up: `better_limit` over `preferred`, so the LARGEST outstanding ask is
+    the one reported and a tie can never shrink the number on screen.
+    """
+    from comfy_qa.quota import readiness, summarise
+
+    quotas, usc, euw = _two_pending_l4()
+
+    one = readiness(quotas, [usc, euw])[0]
+    other = readiness(quotas, [euw, usc])[0]
+
+    assert one.asked == other.asked, (one, other)
+    assert one.asked == 4, one
+    assert (summarise([one])[0].asked
+            == summarise([other])[0].asked == 4)
+
+
+def test_a_denied_tie_is_broken_the_same_way():
+    """The same rule on the other state, because a fix aimed at `pending` alone
+    leaves the identical defect one branch over — which is this codebase's most
+    repeated finding."""
+    from comfy_qa.quota import readiness
+
+    quotas, _, _ = _two_pending_l4()
+    big = preference(L4, granted=0, preferred=9, state_detail=DENIED_DETAIL,
+                     dimensions={"region": "us-central1"}, name="l4-usc")
+    small = preference(L4, granted=0, preferred=2, state_detail=DENIED_DETAIL,
+                       dimensions={"region": "europe-west4"}, name="l4-euw")
+
+    assert (readiness(quotas, [big, small])[0].asked
+            == readiness(quotas, [small, big])[0].asked == 9)
+
+
+def test_a_region_view_labels_a_zone_scoped_row_with_the_region():
+    """Pass 17, F4. The user asked about a region and got zones back.
+
+        $ comfy-qat quota list --region us-central1
+        L4  us-central1-a  ...
+        L4  us-central1-b  ...
+
+    `_applies` admits the row by narrowing its locations with `region_of` — that
+    fix landed last round — and then `where = region if (region and
+    spans_many(row.where)) else row.where` labels it with `row.where`, which was
+    never narrowed. `spans_many` only catches the "N regions" form, so a
+    single-zone row keeps its zone. Four other surfaces in the same output say
+    `us-central1`.
+
+    The precondition is the one `_applies`' own comment names as live: a card
+    metered ONLY per-zone, so `_prefer_region_scope` does not drop the rows.
+    """
+    from comfy_qa.quota import readiness
+
+    zone_only = [{"quotaId": "NVIDIA-L4-GPUS-per-project-zone",
+                  "dimensionsInfos": [
+                      {"applicableLocations": ["us-central1-a"],
+                       "details": {"value": "1"}},
+                      {"applicableLocations": ["us-central1-b"],
+                       "details": {"value": "1"}}]}]
+
+    places = {row.region for row in readiness(zone_only, [],
+                                              region="us-central1")}
+
+    assert places == {"us-central1"}, places
+
+
+def test_global_is_not_counted_as_a_refused_region():
+    """Pass 17, F5. `known_regions` strips `global` under a comment reading
+    "`global` IS NOT A REGION ... counting it made the live figure 44". The
+    `refused` set in `readiness` does not, so a denied ask naming no region
+    falls back to `row.locations`, and `global` is published as one of
+    `refused_in_regions`."""
+    from comfy_qa.quota import readiness
+
+    ceiling_only = [{"quotaId": CEILING, "dimensionsInfos": [
+        {"applicableLocations": ["global"], "details": {"value": "0"}}]}]
+    denied = [preference(CEILING, granted=0, preferred=2,
+                         state_detail=DENIED_DETAIL, name="ceiling-no")]
+
+    row = readiness(ceiling_only, denied)[0]
+
+    assert row.refused_in == 0, (
+        f"counted 'global' as a refused region: {row}")
+
+
+def test_the_pool_label_is_the_one_every_other_surface_uses():
+    """Pass 17, F6. `pools_for` counts raw locations — no `region_of`, and
+    `global` counted as a region — producing a FOURTH spelling of a label
+    `where_label` exists to make singular: "There were three for the same
+    forty-three regions". Latent today, because `_pool_ids` only builds
+    `-per-project-region` ids; closed as a consistency matter."""
+    from comfy_qa.quota import pools_for, where_label
+
+    # A POOL id, because `pools_for` reads the Spot/committed/workstation
+    # spellings and takes the on-demand row as an argument. The first fixture
+    # here named the plain id, produced no pools at all, and the test failed
+    # with StopIteration — which looks like a defect and is a bad fixture.
+    mixed = [{"quotaId": f"PREEMPTIBLE-{L4}", "dimensionsInfos": [
+        {"applicableLocations": ["global", "us-central1", "us-central1-a"],
+         "details": {"value": "1"}}]}]
+
+    pool = next(p for p in pools_for("l4", mixed, []) if p.limit is not None)
+
+    assert pool.where == where_label(["global", "us-central1",
+                                      "us-central1-a"]), pool
+
+
+def test_a_denial_is_read_from_the_whole_phrase_not_a_substring():
+    """Pass 17, F7. `_DENIED in detail` is a substring test on prose, so
+    "Quota request was not denied" reads as denied. Google's real strings make
+    this unlikely to bite; the module treats the prose as a deliberate fallback
+    and a substring test reads as if it were exact."""
+    from comfy_qa.quota import asks
+
+    # granted=0, so the `satisfied` branch cannot fire first and the prose is
+    # what decides. With granted=1 this test passed without reaching the line it
+    # names — the shape `docs/tests-that-cannot-fail.md` is entirely about.
+    negated = [preference(L4, granted=0, preferred=1,
+                          state_detail="Quota request was not denied",
+                          name="l4-not-denied")]
+
+    assert [ask.state for ask in asks(negated)] != ["denied"]
+
+
+FAMILY_REGION = "GPUS-PER-GPU-FAMILY-per-project-region"
+FAMILY_ZONE = "GPUS-PER-GPU-FAMILY-per-project-zone"
+
+
+def _family_pair():
+    """One family metered under BOTH scopes — the shape the fuzzer shrank to."""
+    return [
+        {"quotaId": FAMILY_REGION, "dimensionsInfos": [
+            {"dimensions": {"gpu_family": "NVIDIA_H100"},
+             "applicableLocations": ["us-central1", "europe-west1"],
+             "details": {}}]},
+        {"quotaId": FAMILY_ZONE, "dimensionsInfos": [
+            {"dimensions": {"gpu_family": "NVIDIA_H100"},
+             "applicableLocations": ["us-central1-a"],
+             "details": {"value": "-1"}}]},
+    ]
+
+
+def test_the_quota_a_permanent_request_is_filed_against_is_not_chosen_by_order():
+    """Pass 17, F1. Found by fuzzing, and the worst kind of ordering bug.
+
+    `resolve_target`'s family branch ends `Target(found[0].quota_id, ...)`.
+    `found[0]` is POSITIONAL, and `found` is the one collapse in this module
+    that never passes through `_prefer_region_scope` — so when a family is
+    metered under both region and zone scope, WHICH QUOTA ID A PERMANENT
+    PREFERENCE IS FILED AGAINST depends on the order gcloud happened to return
+    records in.
+
+    Two things make that worse than an ordering nit. An irrevocable action whose
+    target depends on list order IS NOT REPRODUCIBLE — the same command on the
+    same project can file against a different id on a different day and nothing
+    in the output would show it. And when the zone-scoped twin sorts first the
+    Target carries a `region` dimension that quota DOES NOT DEFINE, which is the
+    shape `needs_region`'s own docstring records Google rejecting outright:
+    `INVALID_ARGUMENT: Dimension values must be set for all the dimensions`.
+
+    The determinism property is the one the fuzzer used: shuffle the rows, and
+    the answer must not move. Every sibling collapse in this module already has
+    an explicit rule for exactly this reason — `_for_card`, `readiness`,
+    `global_allowance`, and `_prefer_region_scope_ids`, which was written FOR
+    this branch's no-rows fallback and never applied to the branch itself.
+    """
+    import itertools
+
+    from comfy_qa.quota import resolve_target
+
+    answers = {resolve_target("h100", list(order), family="NVIDIA_H100",
+                              region="us-central1")
+               for order in itertools.permutations(_family_pair())}
+
+    assert len(answers) == 1, f"the target moved with the input order: {answers}"
+    target = answers.pop()
+    assert target is not None
+    # AND IT MUST BE THE REGION-SCOPED ONE, because the Target carries a region
+    # dimension. Determinism alone would be satisfied by always picking the
+    # zone id, which is deterministic and wrong.
+    assert target.quota_id == FAMILY_REGION, target
+
+
+def test_a_request_never_carries_a_dimension_its_quota_does_not_define():
+    """F1's second half, and the reachability that makes it matter.
+
+    The `--gpu` path takes this Target verbatim and appends it with no
+    `needs_region` check; only the raw `--quota-id` path re-checks. So the
+    invariant belongs on the Target itself rather than on one caller: if the
+    quota id does not define a region, the Target must not carry one.
+    """
+    from comfy_qa.quota import needs_region, resolve_target
+
+    for order in (_family_pair(), list(reversed(_family_pair()))):
+        target = resolve_target("h100", order, family="NVIDIA_H100",
+                                region="us-central1")
+        assert target is not None
+        carries = dict(target.dims)
+        assert ("region" in carries) == needs_region(target.quota_id), (
+            f"{target.quota_id} defines region={needs_region(target.quota_id)} "
+            f"and the request carries {carries}")
+
+
+def test_the_family_branch_never_builds_region_global():
+    """Pass 17, F2. The second site of a guard the per-card branch already has.
+
+    Forty lines up, the per-card fallback filters `place != "global"` under a
+    comment calling itself "one caller away from being reachable, which is what
+    a guard asymmetry is". This is that caller: same fallback, same `global`
+    leaking into `--dimensions=region=global`, one branch over.
+    """
+    from comfy_qa.quota import resolve_target
+
+    global_first = [{"quotaId": FAMILY_REGION, "dimensionsInfos": [
+        {"dimensions": {"gpu_family": "NVIDIA_H100"},
+         "applicableLocations": ["global", "us-central1"],
+         "details": {}}]}]
+
+    target = resolve_target("h100", global_first, family="NVIDIA_H100")
+
+    assert target is not None
+    assert dict(target.dims).get("region") != "global", target
+
+
 def test_a_grant_that_names_no_place_is_not_quietly_read_as_everywhere():
     """Pass 16, L8 — REPORTED, WEIGHED, AND DELIBERATELY NOT "FIXED".
 

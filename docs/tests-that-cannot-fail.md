@@ -2009,6 +2009,56 @@ the tell that the sweep was measuring something real.
 > A sweep that only confirms your last fix is worth nothing. A sweep that flags
 > your current one is working.
 
+## What a property-based pass showed that nineteen inspection passes could not
+
+Nineteen adversarial reading passes ran over this feature, and then one
+property-based fuzz pass ran over the same code. It found seven things the
+readings had not — the worst of them non-determinism on the path that files
+irrevocable requests — but that is not the part worth recording here.
+
+**The part worth recording is what it showed to be ABSENT.** Two invariants held
+under real load:
+
+```
+zero unhandled exceptions          260,000 payloads / 11,138,572 calls
+request_value never below floor    1,382,988 sends, including 1,549 unlimited
+                                   grants and 1,047 unlimited standing requests
+typed=False + allow_lower=True     byte-identical to the guarded result, every time
+```
+
+Those are the two classes that actually matter here: the crash class, and the
+class where a command run to ask for MORE quota takes some away. Nineteen passes
+argued them clean by inspection. This shows them clean empirically, and the
+difference is one of kind, not degree.
+
+**An inspection pass can only report what it looked at.** Its coverage is a
+claim about attention — and this feature's history is a long record of careful
+attention missing things: a sweep blind to the shape it was written from, a
+guard exempted by proximity, a fix landing on a comparison while the gate in
+front of it kept the same bug. Every one of those was found by a later reading
+of the same lines an earlier reading had approved.
+
+A property pass makes a different claim. It does not say "I looked and saw
+nothing wrong"; it says **"this property held across eleven million calls over
+inputs nobody chose."** No amount of reading produces that sentence, and it is
+the closest thing to "zero bugs of this class" anyone can honestly obtain.
+
+Two lessons for anything built after this:
+
+- **Write the invariant down, not the example.** "`request_value` never returns
+  below the floor" is checkable against arbitrary input; "`--value 0` does not
+  destroy a T4 grant" is checkable against one. The first is what found 1,549
+  unlimited grants to test against; the second is what a reader thinks of.
+- **The properties worth fuzzing are the ones whose violation is
+  unrecoverable.** Crashes and quota destruction, here, because a preference
+  cannot be deleted. Not "does the table align".
+
+The determinism property is the same shape and it is why F1 was found:
+**the same input in a different order must produce the same answer.** Shuffle
+and compare. It costs nothing, and it catches the class this module had already
+written an explicit ordering rule for in four other places — and missed in the
+fifth, which was the one whose answer becomes the target of a permanent request.
+
 ## A guard inherits something incidental from the defect you wrote it against
 
 This has now happened **three times in one session**, to three unrelated guards,
