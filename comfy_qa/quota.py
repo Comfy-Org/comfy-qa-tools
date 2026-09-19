@@ -329,7 +329,6 @@ def rows(quotas: list[dict]) -> list[Row]:
                 where = where_label(locations)
             else:
                 where = "global"
-
             limit = _limit_of(info)
             if limit is None:
                 continue
@@ -512,15 +511,16 @@ class Ask:
         return self.dimensions.get("region")
 
 
-def _as_int(value: object) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
-
-
 def _as_int_or_none(value: object) -> int | None:
-    """`_as_int` for the fields where an absence must stay an absence."""
+    """An int from the API, where an ABSENCE STAYS AN ABSENCE.
+
+    `_as_int` used to sit above this and return 0 for anything unreadable. It
+    was the function whose absent-is-zero flattening this feature spent several
+    passes undoing, it had no callers left, and a callable function is what the
+    next person reaching for "an int from the API" will find. Deleted rather
+    than left loaded. `_limit_of` is the other half of the same lesson: absent
+    and unreadable are different facts, and only one of them is zero.
+    """
     try:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -545,10 +545,19 @@ def asks(preferences: list[dict] | None) -> list[Ask]:
         # WITHOUT LIMIT reads -1, `-1 >= 1` is False, and the record fell through
         # to `pending` — reading as still under consideration forever, and
         # sitting in `pending_ids` forever, which makes the card permanently
-        # un-re-askable. `preferred > 0` stays a magnitude test on purpose: it
-        # asks whether anything was actually requested.
+        # un-re-askable.
+        #
+        # AND `holds_quota` FOR THE GATE. This line previously read `preferred >
+        # 0` under a comment claiming the magnitude test was deliberate — "it
+        # asks whether anything was actually requested". That reasoning was
+        # wrong, not merely unpinned: UNLIMITED is the LARGEST thing anyone can
+        # request, and `-1 > 0` is False, so a standing request FOR an unlimited
+        # amount, fulfilled, never reached `satisfied` at all. `setup` called it
+        # pending, or with a stateDetail `denied`, and printed "-1 of the -1
+        # asked for". The fix landed on the comparison and the gate in front of
+        # it was left holding the same bug.
         elif (preferred is not None and granted is not None
-              and preferred > 0 and meets(granted, preferred)):
+              and holds_quota(preferred) and meets(granted, preferred)):
             # Satisfied before denied, deliberately. A request denied at 1 on a
             # project that has since reached 1 by some other route is not
             # something to re-ask for, and what Google said last month about a
@@ -629,10 +638,25 @@ def matching_ask(target: "Target", preferences: list[dict] | None) -> Ask | None
     exact both ways.
     """
     wanted = target.dims
-    for ask in asks(preferences):
-        if ask.quota_id == target.quota_id and ask.dimensions == wanted:
-            return ask
-    return None
+    # AN EXPLICIT RULE, because gcloud offers no contract for its list order and
+    # the winner here decides WHICH PREFERENCE ID GETS UPDATED — an irrevocable
+    # write — and what the floor is. Every other collapse in this module says
+    # the same thing about the same API: `_rank`, `global_allowance`, and
+    # `readiness`'s dedupe.
+    #
+    # Google's uniqueness rule should make two preferences on one (quota id,
+    # dimensions) pair impossible and no live shape produced it, so this is a
+    # guard rather than a fix. The rule is chosen to be the safe one if the
+    # shape ever appears: the LARGEST standing request wins, so a collapse can
+    # never lower the floor a request is measured against.
+    matches = [ask for ask in asks(preferences)
+               if ask.quota_id == target.quota_id and ask.dimensions == wanted]
+    if not matches:
+        return None
+    return max(matches, key=lambda ask: (
+        better_limit(ask.preferred, 0) == UNLIMITED,
+        ask.preferred if ask.preferred is not None else -2,
+        ask.preference_id))
 
 
 @dataclass(frozen=True)
@@ -826,14 +850,21 @@ def request_value(
     # exist, so "nothing is at risk" is never a thing this function knows. There
     # is no QA reason to zero a GPU quota, and the cost of being wrong is a grant
     # that cannot be recovered by waiting.
-    if wanted == 0 and not release:
+    if wanted == 0 and not (release and allow_lower):
         losing = held if held is not None else existing.preferred if existing else None
+        # NAME THE HALF THAT IS MISSING. `release` used to arrive already
+        # ANDed with `allow_lower`, so by here the two had collapsed into one
+        # boolean and the sentence named the same flag every time — including
+        # the one the user had just passed. The `to fix:` block under it was
+        # right, so the two disagreed on screen.
+        need = [flag for flag, given in (("--allow-lower", allow_lower),
+                                         ("--release-quota", release))
+                if not given]
         return None, (
             f"refusing to set {target.quota_id} to 0"
             + (f", releasing the {_shown(losing)} this project holds"
                if losing else "")
-            + " — pass --release-quota as well as --allow-lower if that is "
-              "really what you mean")
+            + f" — pass {' and '.join(need)} if that is really what you mean")
 
     # `wanted` is non-negative by here, so any finite request is a reduction.
     if held == UNLIMITED:
@@ -1064,21 +1095,41 @@ def readiness(
                       # UNLIMITED reads as -1, so `4 > -1` called it a shortfall
                       # and reported 4 still owing on a card held without limit.
                       and not meets(ask.granted, ask.preferred)), None)
-        asked = short.preferred if short else 0
+        # ONE ASK DECIDES BOTH, and it used to be two. `status` was taken from
+        # whichever ask was pending and `asked` from the first SHORTFALL ask —
+        # different preferences whenever a card is metered per-card, because one
+        # grant row covers every region and so every region's preference covers
+        # it. The live shape: a request for 4 pending in us-central1 beside a
+        # request for 2 refused in europe-west4 printed
+        #
+        #     T4  0  2 regions  pending — waiting on Google — 0 of the 2 asked for
+        #
+        # the refused request's number hung on the pending one. A wrong join, not
+        # a tie: it is stable under row order, so no ordering rule fixes it.
+        pending = next((ask for ask in about if ask.state == "pending"), None)
+        denied = next((ask for ask in about if ask.state == "denied"), None)
         if holds_quota(row.limit):
             status: Status = "ready"
-        elif any(ask.state == "pending" for ask in about):
+            deciding = None
+        elif pending is not None:
             status = "pending"
-        elif any(ask.state == "denied" for ask in about):
+            deciding = pending
+        elif denied is not None:
             # Google answered, and the answer was no. Rendering this as
             # "request it" is advice to re-file a refusal.
             status = "denied"
+            deciding = denied
         elif short is not None:
             # Answered, and answered with nothing. Rare, and not the same fact as
             # never having asked.
             status = "partial"
+            deciding = short
         else:
             status = "none"
+            deciding = None
+        asked = (deciding.preferred if deciding is not None
+                 and deciding.preferred is not None
+                 else (short.preferred if short else 0))
         # THE SPLIT IS ABOUT WHY YOU CANNOT USE A CARD, so a row you CAN use has
         # neither half. `never_asked_in` was `places - refused`, i.e. "not
         # refused" — which made a granted L4 report 43 places nobody had asked
@@ -1215,7 +1266,14 @@ def summarise(rows: list[Readiness]) -> list[CardSummary]:
 
         summaries.append(CardSummary(
             gpu=gpu, limit=best, status=status, where=where,
-            asked=max((e.asked for e in relevant), default=0),
+            # `better_limit`, NOT `max`. `asked` carries UNLIMITED like every
+            # other limit in this module — it is a preference's `preferredValue`
+            # — and `max(0, -1)` is 0, so a standing request for an unlimited
+            # amount vanished from the collapsed table while the per-region view
+            # still showed it. The sentinel class, in a field annotated plain
+            # `int`, which is why the vocabulary sweep could not see it until it
+            # learned to follow a limit through a constructor.
+            asked=reduce(better_limit, (e.asked for e in relevant), 0),
             # ACROSS EVERY ENTRY, not only the winning status. `relevant` keeps
             # the rows matching the status that won, so summing the split over
             # it dropped exactly the rows the split exists to count: a card

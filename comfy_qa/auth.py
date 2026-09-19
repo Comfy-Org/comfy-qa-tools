@@ -409,9 +409,45 @@ def _region_universe(gc, project: str, quotas: list[dict]) -> set[str]:
     try:
         catalogue = _catalogue(gc, project)
     except GcloudError:
-        return universe
-    return universe | {_region_of(entry.get("zone", "").rsplit("/", 1)[-1])
-                       for entry in catalogue}
+        # NARROWED, AND SAID SO. This used to `return universe` — the quota
+        # records alone — which is exactly what the capitals above call a
+        # mistake: a real region a project holds no rows for became a typo. A
+        # 403, a revoked credential or a timeout on the catalogue read therefore
+        # made the tool announce that a GPU-selling region does not exist, exit
+        # 2, on `quota request` as well as `quota list`.
+        #
+        # Failure is not absence. `_regions_stocking` catches this same
+        # exception from this same call and returns "I could not look";
+        # `Availability` exists in this module for the same distinction. One
+        # more place it has to be representable rather than inferred.
+        return _Universe(frozenset(universe), complete=False)
+    return _Universe(
+        frozenset(universe | {_region_of(entry.get("zone", "").rsplit("/", 1)[-1])
+                              for entry in catalogue}),
+        complete=True)
+
+
+@dataclass(frozen=True)
+class _Universe:
+    """Every region that exists, and whether that set is the whole of it.
+
+    `complete=False` means the catalogue could not be read, so the set is the
+    quota records alone and ABSENCE FROM IT PROVES NOTHING. Membership still
+    proves something — a region in the set is real either way — which is why
+    this is two fields rather than an Optional.
+    """
+
+    known: frozenset[str]
+    complete: bool
+
+    def __iter__(self):
+        return iter(self.known)
+
+    def __len__(self) -> int:
+        return len(self.known)
+
+    def __contains__(self, region: object) -> bool:
+        return region in self.known
 
 
 @dataclass(frozen=True)
@@ -563,6 +599,15 @@ def region_problem(gc, project: str, quotas: list[dict], region: str | None,
     universe = _region_universe(gc, project, quotas)
     if not universe or region in universe:
         return None
+    # ABSENCE FROM AN INCOMPLETE SET IS NOT EVIDENCE. Everything below this line
+    # reasons from "the region is not in the universe"; with the catalogue
+    # unread the universe is the quota records alone, and a real region the
+    # project holds nothing in is not in them. The CASE rule survives, because
+    # `US-CENTRAL1` is wrong whatever else is true.
+    if not universe.complete:
+        exact = [p for p in universe if p.lower() == region.lower()]
+        return ((f"no region called {region!r} — regions are lower case",
+                 [f"--region {exact[0]}"]) if exact else None)
 
     # `membership=False` FOR `create`, and it is not an exemption. "This region
     # exists and this project has no quota for the card in it" is a question
@@ -1129,12 +1174,28 @@ def quota_list_cmd(
             where_refused = ", ".join(named) if named else "elsewhere"
             verdict = (f"none here — refused in {where_refused}; ask only if "
                        f"this region is new")
+        # `_shown` ON `asked` TOO. It exists so the sentinel never reaches the
+        # display — "the sentinel leaking into the display is the same defect as
+        # the sentinel leaking into a comparison, one surface further out" — and
+        # the field beside `limit` was left raw, so a standing request for an
+        # unlimited amount printed "a raise to -1 was not".
         elif asked and state == "ready":
-            verdict = f"ready — {limit} granted; a raise to {asked} was not"
+            verdict = (f"ready — {limit} granted; a raise to {_shown(asked)} "
+                       f"was not")
         elif asked and state not in ("denied", "none"):
-            verdict = f"{notes.get(state, state)} — {limit} of the {asked} asked for"
+            verdict = (f"{notes.get(state, state)} — {limit} of the "
+                       f"{_shown(asked)} asked for")
         else:
             verdict = notes[state]
+        # A REFUSAL ELSEWHERE SURVIVES A PENDING REQUEST HERE. `refused_in` is
+        # computed on every row and was rendered only under `denied`, so a card
+        # refused in one region and pending in another read as simply pending —
+        # the one fact that says the next request may go the same way, dropped
+        # from the row that most needs it. The `denied` branch above already
+        # names its own refusals, which is why this excludes it.
+        if refused and state not in ("denied", "none") and "refused" not in verdict:
+            verdict += (f", refused in {refused} "
+                        f"{'region' if refused == 1 else 'regions'}")
         return _with_tail(verdict + blocked, name)
 
     def _with_tail(verdict: str, name: str) -> str:
@@ -1480,13 +1541,48 @@ def quota_request_cmd(
     is not, and may go to a human. A brand-new account with no billing history is
     often refused until it has been billed once.
     """
-    if not gpu and not quota_id:
+    # THE PARSED LIST, NOT THE RAW FLAG. This was `if not gpu and not quota_id`,
+    # a truthiness test on the string, so `--gpu ,` — or `,,,`, or ` , `, or two
+    # spaces — walked straight past it naming no card at all. The submit loop
+    # then ran zero times and the command exited 2 with EMPTY STDOUT AND EMPTY
+    # STDERR, or, under --dry-run/--validate-only, exited 0 just as silently,
+    # with --validate-only meaning "Google says this is valid" about no request.
+    #
+    # A refusal that prints nothing is worse than any wrong message: there is no
+    # way to tell it from a crash. The realistic source is `--gpu "$A,$B"` with
+    # both variables unset — the same shape `region_problem` refuses for
+    # `--region "$REGION"`, and for the same reason: somebody who typed the flag
+    # has said they care what goes in it.
+    named = {n.strip() for n in (gpu or "").split(",") if n.strip()}
+    if gpu is not None and not named:
+        # TYPED AND EMPTY IS ITS OWN REFUSAL, and it fires even with a valid
+        # `--quota-id` beside it. With both flags the ambiguity check downstream
+        # said "--gpu and --quota-id both name what to ask for, and they
+        # disagree here" — false, because `--gpu ,` names nothing — and then
+        # offered `comfy-qat quota request --gpu ,` as the remedy: the command
+        # that exits 2 in silence. Sixth instance of a fix line naming a remedy
+        # that cannot work.
+        say.fail(f"--gpu {gpu!r} names no card",
+                 fix=say.fix("comfy-qat quota request --gpu l4,a100",
+                             "or --quota-id, to name a raw quota id exactly"),
+                 code=2)
+    if not named and not quota_id:
         say.fail("name a card to ask for",
                  fix=say.fix("comfy-qat quota request --gpu l4,a100",
                              "or --quota-id, to name a raw quota id exactly"),
                  code=2)
 
     _stop_on_region_shape(region)
+
+    # SAY WHEN A FLAG IS DROPPED — the rule this command already applies to
+    # `--region`, on the one flag that can give quota away. `--release-quota`
+    # only does anything alongside `--value 0`, and passed without one it
+    # changed nothing and said nothing: the single most consequential flag here
+    # was also the only one that could be silently inert.
+    if release_quota and value != 0:
+        saw = f"--value {value}" if value is not None else "no --value at all"
+        say.warn(f"--release-quota ignored: it permits --value 0, and this "
+                 f"command was given {saw}")
 
     gc = Gcloud()
     try:
@@ -1983,7 +2079,10 @@ def quota_request_cmd(
             value if value is not None else _default_for(name),
             typed=value is not None,
             allow_lower=allow_lower, quotas=quotas,
-            release=release_quota and allow_lower)
+            # BOTH FLAGS, SEPARATELY. Passing the conjunction erased which half
+            # was missing, and the refusal could only ever name one of them.
+            # `request_value` still requires both; it can now say which is absent.
+            release=release_quota)
         # ONCE. `say.fail` below prints the same sentence, so announcing it here
         # as well printed the refusal twice — which every `in result.output`
         # assertion in the suite is happy with, and which anybody running the

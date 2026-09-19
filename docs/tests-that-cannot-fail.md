@@ -2009,6 +2009,80 @@ the tell that the sweep was measuring something real.
 > A sweep that only confirms your last fix is worth nothing. A sweep that flags
 > your current one is working.
 
+## A guard inherits something incidental from the defect you wrote it against
+
+This has now happened **three times in one session**, to three unrelated guards,
+and the shape is identical every time: the guard was written while looking at
+one instance, and it quietly took on a property of THAT INSTANCE rather than of
+the class.
+
+1. **A doubled-word regex that could not match its own subject.** Written
+   case-sensitively, against a defect that read `Ask ask`.
+2. **A sentinel sweep built from the shape it had just fixed.** It required a
+   limit to meet a LITERAL, because all four known instances looked like
+   `limit > 0` — so it was blind by construction to `row.limit >
+   existing.limit`, which was live in the same file while it was green.
+3. **An exemption keyed on proximity.** The sweep skipped a comparison when the
+   enclosing condition mentioned a predicate ANYWHERE. In `A and meets(x, y)`
+   the `meets` exempted `A` as well — so a real, previously-fixed defect could
+   be reintroduced *next to its own fix* and the sweep stayed green. The live
+   instance was already sitting there: `preferred > 0`, a genuine sentinel bug,
+   passing because of the correct code beside it.
+
+The check that catches all three:
+
+> **Construct the instance the guard is meant to stop, put it in the least
+> convenient position, and confirm the guard fails.** Not a synthetic example —
+> the real one, relocated.
+
+"Least convenient" is the load-bearing half. Every one of these guards caught
+the defect in the position it was found in. What none of them caught was the
+same defect one step over: spelled differently, named differently, or standing
+next to the fix. So the reintroduction has to move it — into a different
+expression form, under a different name, beside a passing predicate — and each
+relocation is a separate run. **One at a time.** A sweep that catches one
+instance in four looks exactly like a sweep that works, if you only ever
+reintroduce one.
+
+That arithmetic is worth writing down, because it is the only thing that
+measured any of this. Across four versions of the sentinel sweep, against
+fourteen known sites reverted one at a time: **8 of 14, then 11 of 14, then 14
+of 14** — and the suite was green at every stage, because the tree was correct
+the whole time. **A sweep's own coverage is not something the suite can tell
+you.** You have to break the code on purpose, one site at a time, and count.
+
+The three things that made a detector walk past a limit that was plainly there,
+all found this way:
+
+- **The guard was read from too wide a scope.** First "any enclosing statement",
+  which let a `try:` exempt its own `return` two lines later. Then the enclosing
+  condition, which let one safe predicate exempt every comparison beside it. The
+  exemption has to be attached to **the operands being compared**, not to
+  neighbouring words — and an operand may be wrapped in a conditional, a
+  comprehension or an arithmetic expression, so the matcher has to see what the
+  operands are made of.
+- **The value travelled under another name.** A detector that recognises limits
+  by spelling cannot see `found >= wanted`. Following the value through the call
+  graph found more; following it to a fixpoint — locals from producers,
+  parameters from arguments, fields from constructors, each feeding the other —
+  found the rest. The field that cost the most was annotated plain `int`.
+- **The vocabulary was hand-written.** Deriving it from the code (`int | None`
+  annotations, constructor arguments) means a field added tomorrow is covered.
+  Scope it to the modules that actually import the layer, rather than trimming
+  the list, or `port` and `pid` become limits.
+
+And the reason to do any of it, which is the question to ask of every guard here:
+
+> **Would this detector have found the instance I am about to fix, before I
+> found it?** If no, it is documentation of past work rather than protection
+> against future work.
+
+The version that answered yes to all fourteen then found **four sites no
+verification pass had reported**, including a standing UNLIMITED request that
+any finite number could replace without `--allow-lower` — the critical class
+from an earlier pass, on the side several rounds of guard work had not looked
+at. **The sweep is the deliverable, not the patch.** This is what that buys.
+
 ## A count is a claim
 
 Three numbers in one night, each printed beside the word "regions", none of them

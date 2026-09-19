@@ -495,6 +495,22 @@ dressed as an absence of approval. **The requests themselves went out**: fix the
 access and run `comfy-qat quota` to see where they stand. Do not re-run `quota
 request` to "retry" — that files against the same preference ids again.
 
+**`names no card`** (as in ``--gpu ',' names no card``)
+`--gpu` was typed and parses to nothing — `,`, `,,,`, spaces. Almost always
+`--gpu "$A,$B"` with the variables unset. It is refused rather than ignored,
+because a flag you typed is one you meant: before this it walked past the guard,
+asked for nothing, and exited 2 with completely empty output — or exited **0**
+under `--dry-run` / `--validate-only`, which reads as "Google says this is
+valid" about no request at all. Name the cards, e.g. `--gpu l4,a100`.
+
+**`--release-quota ignored: it permits --value 0, and this command was given`**
+`--release-quota` only does anything alongside `--value 0` — it is the second
+half of the confirmation for giving up quota this project holds. Passed with any
+other value, or with none, it changes nothing; before this it also said nothing,
+which made the most consequential flag on this command the only one that could
+be silently inert. The message ends `--value N was asked for` or
+`no --value was given`, naming which it saw.
+
 **`<card>: whether <region> offers this card was not checked`**
 Not a refusal and not a verdict. Either `gcloud compute accelerator-types list`
 could not be read, or the card is one this tool has no accelerator id for — so

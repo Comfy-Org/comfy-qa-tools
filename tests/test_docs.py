@@ -593,7 +593,7 @@ def _troubleshooting_text() -> str:
 # same shape as ERROR_TYPES: the unfamiliar is a decision somebody makes, not a
 # default of "fine".
 MESSAGE_FLOOR = {
-    "auth.py": 24,
+    "auth.py": 37,
     "commands.py": 6,
     "config.py": 37,
     # 51 until "every zone tried is out of capacity" was split into three. One

@@ -6710,6 +6710,474 @@ def test_a_project_with_no_gpu_quota_at_all_still_says_so(monkeypatch):
     assert nothing.exit_code == 0, nothing.output
 
 
+def test_a_grant_that_names_no_place_is_not_quietly_read_as_everywhere():
+    """Pass 16, L8 — REPORTED, WEIGHED, AND DELIBERATELY NOT "FIXED".
+
+    A `-per-project-region` record whose entry carries no `applicableLocations`
+    gets `where="global"`. `_applies` reads that as covering every region;
+    `regions_with_quota`, `regions_metered` and `known_regions` read it as
+    covering none.
+
+    I changed `rows()` to drop the row — the `_limit_of` precedent, "a fact we
+    cannot read is not claimed" — and three EXISTING tests in `test_create.py`
+    went red. They were right and the change was wrong. This shape is already
+    handled, deliberately, and better than dropping it would be:
+
+        l4 names no region ... The grant itself is 1
+
+    and a comment explaining that the grant SIZE is what tells this apart from
+    holding no quota at all. `allowance` answering 1 is what supplies that
+    number; `regions_with_quota` answering nothing is what supplies the
+    refusal. They are not two readers disagreeing — they answer two different
+    questions, and `create` combines both into the one honest sentence.
+
+    So what this test pins is that the combination survives: the raw grant is
+    still readable, the placement is still empty, and `create` still refuses
+    rather than searching. The verifier could not produce this shape from the
+    live API either, which is the other half of the argument for not rebuilding
+    working behaviour around it.
+    """
+    from comfy_qa.quota import (allowance, known_regions, regions_metered,
+                                regions_with_quota)
+
+    no_place = [{"quotaId": L4,
+                 "dimensionsInfos": [{"details": {"value": "1"}}]}]
+
+    # The grant is readable — this is the number the refusal quotes.
+    assert allowance("l4", no_place, region="europe-west4") == 1
+    # And it is placed nowhere, which is what stops anything acting on it.
+    assert regions_with_quota("l4", no_place) == []
+    assert regions_metered("l4", no_place) == []
+    assert sorted(known_regions(no_place)) == []
+
+
+def test_a_genuinely_global_row_still_covers_every_region():
+    """The guard standing aside. `GPUS-ALL-REGIONS-per-project` defines no
+    dimensions and names no locations, and it really does apply everywhere —
+    the fix must not take that with it."""
+    from comfy_qa.quota import allowance, rows
+
+    ceiling = [{"quotaId": CEILING,
+                "dimensionsInfos": [{"details": {"value": "4"}}]}]
+
+    assert [r.gpu for r in rows(ceiling)] == [GLOBAL_ALLOWANCE]
+    assert allowance(GLOBAL_ALLOWANCE, ceiling, region="europe-west4") == 4
+
+
+def test_which_standing_request_is_addressed_does_not_depend_on_row_order():
+    """Pass 16, L9. `matching_ask` returns the FIRST match in gcloud's order.
+
+    The winner decides which preference id gets UPDATED — an irrevocable write —
+    and what the floor is. Every other collapse in this module was given an
+    explicit rule for exactly this reason: `_rank`, `global_allowance` and
+    `readiness`'s dedupe all say in so many words that the API offers no
+    contract for that order.
+
+    Google's uniqueness rule should make two preferences on one (quota id,
+    dimensions) pair impossible, and the verifier could not produce the shape
+    from the live API — so this pins the GUARD, not an observed defect, and the
+    rule is chosen to be the safe one if the shape ever appears: the LARGEST
+    standing request wins, so a collapse can never lower the floor.
+    """
+    from comfy_qa.quota import Target, matching_ask
+
+    target = Target(T4, (("region", "us-central1"),))
+    pending_4 = preference(T4, granted=0, preferred=4, reconciling=True,
+                           dimensions={"region": "us-central1"}, name="t4a")
+    denied_2 = preference(T4, granted=0, preferred=2,
+                          state_detail=DENIED_DETAIL,
+                          dimensions={"region": "us-central1"}, name="t4b")
+
+    one = matching_ask(target, [pending_4, denied_2])
+    other = matching_ask(target, [denied_2, pending_4])
+
+    assert one is not None and other is not None
+    assert one.preference_id == other.preference_id, (one, other)
+    assert one.preferred == 4, one
+
+
+@pytest.mark.parametrize("passed,missing", [
+    (["--release-quota"], "--allow-lower"),
+    (["--allow-lower"], "--release-quota"),
+    ([], "--allow-lower"),
+])
+def test_the_zero_refusal_names_the_flag_that_is_actually_missing(
+        monkeypatch, passed, missing):
+    """Pass 16, L7. The refusal names a flag the user already passed.
+
+        $ comfy-qat quota request --gpu l4 --value 0 --release-quota
+        refusing to set ... to 0 — pass --release-quota as well as
+        --allow-lower if that is really what you mean
+
+    `--release-quota` WAS passed. `release` reaches `request_value` as
+    `release_quota and allow_lower`, so by the time the sentence is built the
+    two halves have been collapsed into one boolean and it cannot tell which is
+    absent — it names the same one every time. The `to fix:` block under it is
+    right, which is what makes the sentence worth fixing rather than deleting:
+    they disagree.
+
+    Parametrised over which half is missing, because a fix that hard-codes the
+    other name is the same defect facing the other way.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    cloud = Cloud(quotas=[quota(L4, 1, locations=["us-central1"]),
+                          quota(CEILING, 1, locations=["global"])])
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
+        result = CliRunner().invoke(
+            app, ["quota", "request", "--gpu", "l4", "--region", "us-central1",
+                  "--value", "0", *passed])
+
+    assert not cloud.submitted, cloud.submitted
+    refusal = next(l for l in result.output.splitlines() if "refusing" in l)
+    assert missing in refusal, refusal
+    for already in passed:
+        assert already not in refusal, (
+            f"named {already}, which was passed: {refusal}")
+
+
+def test_release_quota_without_a_value_is_not_silently_inert(monkeypatch):
+    """L7's second half. `--release-quota` with no `--value` changes nothing and
+    says nothing. This module refuses an empty region, a zone-shaped one, an
+    uppercase one and an unknown one, and warns when `--region` is dropped under
+    a comment headed SAY WHEN A FLAG IS DROPPED. This is the one flag that can
+    be passed and ignored in silence — and it is the flag that gives up quota."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    cloud = Cloud(quotas=[quota(L4, 1, locations=["us-central1"]),
+                          quota(CEILING, 1, locations=["global"])])
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
+        result = CliRunner().invoke(
+            app, ["quota", "request", "--gpu", "l4", "--region", "us-central1",
+                  "--release-quota", "--dry-run"])
+
+    assert "--release-quota" in result.output, result.output
+    assert "ignored" in result.output.lower(), result.output
+
+
+def test_an_unlimited_ask_is_not_printed_as_minus_one_or_dropped(monkeypatch):
+    """Pass 16, L6. `_shown` exists so the sentinel never reaches the display —
+    "the sentinel leaking into the display is the same defect as the sentinel
+    leaking into a comparison, one surface further out" — and the field beside
+    `limit` was left raw:
+
+        L4   1  2 regions  ready — 1 granted; a raise to -1 was not
+
+    `summarise` compounds it. `max((e.asked for e in relevant), default=0)`
+    picks 0 over -1, so the unlimited ask disappears from the collapsed table
+    while the per-region view still carries it: the two surfaces disagreeing
+    about one project, which is this module's recurring shape.
+
+    Found by the sweep itself once it learned to follow a limit through a
+    dataclass constructor — `asked` is annotated plain `int`, so no vocabulary
+    built on `int | None` could ever have reached it.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+    from comfy_qa.quota import readiness, summarise
+
+    # TWO ROWS, because the collapse is what `summarise` does and a single row
+    # has nothing to collapse. Pinned per region, so one carries the unlimited
+    # ask and the other carries none — which is the pair `max` gets wrong.
+    quotas = [{"quotaId": L4, "dimensionsInfos": [
+                   {"dimensions": {"region": "us-central1"},
+                    "details": {"value": "1"},
+                    "applicableLocations": ["us-central1"]},
+                   {"dimensions": {"region": "europe-west4"},
+                    "details": {"value": "1"},
+                    "applicableLocations": ["europe-west4"]}]},
+              quota(CEILING, 1, locations=["global"])]
+    raise_to_unlimited = [preference(L4, granted=1, preferred=UNLIMITED,
+                                     state_detail="Quota request approved to 1",
+                                     dimensions={"region": "us-central1"},
+                                     name="l4pref")]
+
+    card = next(c for c in summarise(readiness(quotas, raise_to_unlimited))
+                if c.gpu == "L4")
+    assert card.asked == UNLIMITED, (
+        f"the unlimited ask was dropped by max(): {card}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud",
+                      lambda *a, **k: Cloud(
+                          quotas=quotas,
+                          preferences=raise_to_unlimited).gcloud())
+        shown = CliRunner().invoke(app, ["quota", "list"])
+
+    line = next(l for l in shown.output.splitlines() if l.startswith("L4"))
+    assert "-1" not in line, line
+    assert "unlimited" in line.lower(), line
+
+
+def test_the_asked_for_number_comes_from_the_request_that_set_the_status(
+        monkeypatch):
+    """Pass 16, M3. A wrong join, not a tie — stable under row order.
+
+    `status` is `pending` if ANY covering ask is pending. `asked` is the FIRST
+    covering ask that is partial-or-denied and fell short. For a per-card quota
+    those are routinely different preferences, because one grant row covers every
+    region and so every region's preference covers it. The live `a100-80-euw4`
+    shape with a pending request elsewhere is exactly this.
+
+        T4   0  2 regions  pending — waiting on Google — 0 of the 2 asked for
+
+    The truth is a request for FOUR pending in us-central1 and a separate request
+    for TWO refused in europe-west4. The line takes the refused request's number
+    and hangs it on the pending one, and the refusal itself is invisible —
+    `refused_in` is computed on the same row and `status_of` renders it only on
+    the `denied` branch. Somebody waits for an answer to a request for 4 while
+    reading a number from one that was already answered no.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+    from comfy_qa.quota import readiness
+
+    quotas = [quota(T4, 0, locations=["us-central1", "europe-west4"]),
+              quota(CEILING, 1, locations=["global"])]
+    mixed = [preference(T4, granted=0, preferred=4, reconciling=True,
+                        dimensions={"region": "us-central1"},
+                        name="t4-usc1-pending"),
+             preference(T4, granted=0, preferred=2, state_detail=DENIED_DETAIL,
+                        dimensions={"region": "europe-west4"},
+                        name="t4-euw4-denied")]
+
+    row = next(r for r in readiness(quotas, mixed) if r.gpu == "T4")
+    assert row.status == "pending", row
+    assert row.asked == 4, (
+        f"status came from the pending request and the number came from the "
+        f"refused one: {row}")
+
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud",
+                      lambda *a, **k: Cloud(quotas=quotas,
+                                            preferences=mixed).gcloud())
+        shown = CliRunner().invoke(app, ["quota", "list"])
+
+    line = next(l for l in shown.output.splitlines() if l.startswith("T4"))
+    assert "of the 2 asked" not in line, line
+    # AND THE REFUSAL MUST NOT VANISH. It is on the same row, and rendering it
+    # only under `denied` means a card refused in one region and pending in
+    # another reads as simply pending.
+    assert "refused" in line, line
+
+
+@pytest.mark.parametrize("typed", [",", ",,,", " , ", "  "])
+def test_a_gpu_flag_that_names_no_card_is_refused_out_loud(monkeypatch, typed):
+    """Pass 16, H2. The worst possible refusal: exit 2 with nothing printed.
+
+    `if not gpu and not quota_id` is a truthiness test on the RAW STRING, so any
+    value that parses to an empty card list walks past it. `asked_for` is empty,
+    the submit loop runs zero times, and then
+
+    * a real run reaches `if not submitted: raise typer.Exit(code=2)` — exit 2,
+      empty stdout, empty stderr, nothing anywhere;
+    * `--dry-run` / `--validate-only` return before that check — **exit 0**, also
+      silent, with `--validate-only` meaning "Google says this is valid" about no
+      request at all.
+
+    The realistic source is `--gpu "$A,$B"` with the variables unset, which is
+    the same shape `region_problem` has a whole paragraph about for `--region
+    "$REGION"` — and the same conclusion: somebody who typed the flag has said
+    they care, so an empty value is the one reading that cannot be meant.
+
+    A user cannot tell a silent exit 2 from a crash. Parametrised because the
+    guard has to run against the PARSED list, and a fix aimed at the literal
+    `","` would leave `" , "` and `"  "` exactly where they are.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    for extra in ([], ["--dry-run"], ["--validate-only"]):
+        cloud = Cloud()
+        with monkeypatch.context() as patch:
+            patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
+            result = CliRunner().invoke(
+                app, ["quota", "request", "--gpu", typed, *extra])
+
+        assert result.output.strip(), (
+            f"exit {result.exit_code} with NO output at all, on {extra}")
+        assert result.exit_code == 2, (extra, result.output)
+        assert not cloud.submitted, cloud.submitted
+
+
+def test_the_ambiguity_refusal_does_not_offer_a_command_that_exits_silently(
+        monkeypatch):
+    """H2's second half. With `--quota-id` alongside an empty `--gpu`, the
+    ambiguity refusal fires — "they disagree here" — and hands back the broken
+    command as the remedy:
+
+        to fix: comfy-qat quota request --quota-id NVIDIA-L4-...
+                comfy-qat quota request --gpu ,
+
+    `--gpu ,` names nothing, so "they disagree" is false, and the offered fix is
+    the command that exits 2 in silence. This module names the class itself:
+    "a fix line naming a remedy that cannot work"."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    cloud = Cloud()
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
+        result = CliRunner().invoke(
+            app, ["quota", "request", "--gpu", ",", "--quota-id", L4])
+
+    assert "disagree" not in result.output, result.output
+    assert "--gpu ," not in result.output, result.output
+    assert not cloud.submitted, cloud.submitted
+
+
+def test_a_catalogue_that_could_not_be_read_does_not_deny_a_real_region(monkeypatch):
+    """Pass 16, H1. Failure reported as absence, on the irrevocable command.
+
+    `_region_universe` is TWO sources, and its own docstring says in capitals why
+    the quota records alone are not enough: "a REAL region a project happens to
+    hold no quota rows for is not a typo, which is what using the quota universe
+    alone would have called it." Three lines below, `except GcloudError: return
+    universe` does precisely that, silently — so a 403, a revoked credential or a
+    timeout on `accelerator-types list` narrows the universe to the quota records
+    and the tool announces that a real, GPU-selling region does not exist:
+
+        no such region 'europe-west3' — this project knows 6, and that is not
+        one of them
+
+    exit 2, on `quota list` AND on `quota request`, the command that files
+    permanent requests. Same project, same flag, and the only difference is
+    whether a second API call happened to answer.
+
+    The sibling catching the identical exception from the identical call
+    (`_regions_stocking`) returns None — "I could not look" — which is the
+    distinction this codebase has now drawn at least four times. This one
+    converted a failure to look into a fact about the world.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+    from comfy_qa.gcloud import DENIED, GcloudError
+
+    # A region this project holds no quota row for. Real, and absent from the
+    # quota universe — which is the whole shape.
+    quotas = [quota(L4, 1, locations=["us-central1"]),
+              quota(CEILING, 1, locations=["global"])]
+
+    def run(cloud, *args):
+        with monkeypatch.context() as patch:
+            patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
+            return CliRunner().invoke(app, list(args))
+
+    stocked = [{"name": "nvidia-l4", "zone": f"https://x/zones/{zone}"}
+               for zone in ("us-central1-a", "europe-west3-b")]
+
+    for command in (["quota", "list", "--region", "europe-west3"],
+                    ["quota", "request", "--gpu", "l4",
+                     "--region", "europe-west3", "--dry-run"]):
+        down = run(Cloud(quotas=quotas,
+                         accel_error=GcloudError("PERMISSION_DENIED",
+                                                 kind=DENIED)), *command)
+        up = run(Cloud(quotas=quotas, accelerators=stocked), *command)
+
+        assert "no such region" not in down.output, (command, down.output)
+        # THE PROPERTY, rather than a sentence: the verdict must not turn on
+        # whether a second API call happened to answer. Asserting only that the
+        # words "no such region" are gone would pass on a tool that had instead
+        # started refusing for some other invented reason.
+        assert down.exit_code == up.exit_code, (command, down.output, up.output)
+        assert _verdict(down.output) == _verdict(up.output), (
+            command, down.output, up.output)
+
+
+def _verdict(output: str) -> str:
+    """The first thing the command SAYS, which is the part that must not move.
+
+    The remedy under it is allowed to differ and should: with the catalogue
+    answering, `quota request` can add "and stocked there" to the region it
+    suggests, and with it unread it cannot. A richer suggestion is the catalogue
+    doing its job. What must never turn on whether that second call answered is
+    the verdict itself — which is what H1 was.
+    """
+    lines = [line for line in output.splitlines()
+             if line.strip() and "reading quota" not in line
+             and not line.startswith(("to fix:", " ", "\t"))
+             and "not checked" not in line]
+    return lines[0] if lines else ""
+
+
+def test_a_region_that_is_really_a_typo_is_still_refused(monkeypatch):
+    """The guard standing aside. The fix must not be "stop checking regions":
+    with the catalogue answering, a genuine typo is still refused at exit 2."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    quotas = [quota(L4, 1, locations=["us-central1"]),
+              quota(CEILING, 1, locations=["global"])]
+    up = Cloud(quotas=quotas, accelerators=[
+        {"name": "nvidia-l4", "zone": "https://x/zones/us-central1-a"},
+        {"name": "nvidia-l4", "zone": "https://x/zones/europe-west3-b"}])
+
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: up.gcloud())
+        typo = CliRunner().invoke(
+            app, ["quota", "list", "--region", "us-centrel1"])
+
+    assert "no such region" in typo.output, typo.output
+    assert typo.exit_code == 2, typo.output
+
+
+def test_an_unlimited_request_fulfilled_without_limit_is_satisfied(monkeypatch):
+    """Pass 16, M4. The GATE in front of the fix, left as a magnitude test.
+
+        elif (preferred is not None and granted is not None
+              and preferred > 0 and meets(granted, preferred)):
+
+    The comparison was changed to `meets` last round because `-1 >= 1` is False.
+    `preferred > 0` was left alone, and `-1 > 0` is False too — so a standing
+    request FOR an unlimited amount, fulfilled, never reaches `satisfied` at all
+    and falls through to `pending`. `setup` then says
+
+        L4 pending   already asked, and Google has not answered yet
+
+    about a request Google answered, and with a `stateDetail` it says `denied`
+    and prints `-1 of the -1 asked for`: a fulfilled request reported as a
+    refusal, two sentinels rendered as magnitudes, on the step that decides
+    whether to file another irrevocable one.
+
+    MY COMMENT ON THAT LINE CLAIMED THE MAGNITUDE TEST WAS DELIBERATE — "it asks
+    whether anything was actually requested" — and that reasoning is wrong, not
+    merely unpinned: UNLIMITED is the largest thing anyone can request, and
+    `holds_quota` is the predicate that already means "does this amount let you
+    start anything". The module asserts two lines from here that
+    `existing.preferred` can be UNLIMITED, and `_floored` carries a guard
+    written for exactly that.
+    """
+    from comfy_qa.quota import asks
+
+    unlimited_ask = [preference(L4, granted=UNLIMITED, preferred=UNLIMITED,
+                                name="l4-unl",
+                                dimensions={"region": "us-central1"})]
+
+    assert [ask.state for ask in asks(unlimited_ask)] == ["satisfied"]
+
+    # AND THROUGH `setup`, because the state is only interesting for what it
+    # makes the tool do next: a satisfied request is not re-asked.
+    quotas = [quota(L4, 0, locations=["us-central1", "europe-west4"]),
+              quota(CEILING, 1, locations=["global"])]
+    plan = {a.label: a for a in plan_quota(quotas, unlimited_ask,
+                                           region="us-central1")}
+
+    assert "-1" not in plan["L4"].detail, plan["L4"].detail
+    assert plan["L4"].outcome != "pending", plan["L4"].detail
+
+
 def test_a_preference_google_fulfils_without_limit_is_not_pending_forever():
     """Pass 15's "lower, recorded not ranked", item three, now demonstrated.
 
@@ -7666,6 +8134,18 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
     trees = {path: ast.parse(path.read_text()) for path in roots}
     functions = {fn.name: fn for tree in trees.values() for fn in ast.walk(tree)
                  if isinstance(fn, ast.FunctionDef)}
+    # DATACLASS CONSTRUCTORS COUNT AS CALLS. `Readiness(..., asked=asked)` puts a
+    # limit into a field annotated plain `int`, and `asked` does carry UNLIMITED
+    # — so `max(e.asked for e in relevant)` picked 0 over -1 and silently dropped
+    # an unlimited ask from the collapsed table. The annotation vocabulary could
+    # not see it and neither could anything else: the limit arrives through a
+    # constructor, which is a call the sweep was not walking.
+    classes = {cls.name: cls for tree in trees.values() for cls in ast.walk(tree)
+               if isinstance(cls, ast.ClassDef)}
+    class_fields = {name: [node.target.id for node in cls.body
+                           if isinstance(node, ast.AnnAssign)
+                           and isinstance(node.target, ast.Name)]
+                    for name, cls in classes.items()}
     module_of = {fn.name: path.name for path, tree in trees.items()
                  for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)}
 
@@ -7707,7 +8187,7 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
     here = {"name": ""}   # which module is being read, for the scope above
 
     def vocabulary(word) -> bool:
-        return "limit" in word or (word in FIELDS
+        return "limit" in word or ((word in FIELDS or word in limit_fields)
                                    and here["name"] in QUOTA_MODULES)
 
     def spelled_limit(node) -> bool:
@@ -7741,6 +8221,7 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
     # to be locals, and each feeds the other until nothing changes. Bounded by
     # the call graph, and the package is small.
     limit_params: set[tuple[str, str]] = set()
+    limit_fields: set[str] = set()
     locals_of: dict[str, set[str]] = {name: set() for name in functions}
 
     def is_limit_in(fn_name, node) -> bool:
@@ -7778,7 +8259,7 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
 
     for _ in range(10):
         before = (len(limit_params), sum(len(v) for v in locals_of.values()),
-                  len(PRODUCERS))
+                  len(PRODUCERS), len(limit_fields))
         for fn_name, fn in functions.items():
             known = locals_of[fn_name]
             known |= {arg.arg for arg in
@@ -7821,6 +8302,16 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
                             or getattr(call.func, "attr", None))
                     callee = functions.get(name)
                     if callee is None:
+                        if name in class_fields:
+                            names = class_fields[name]
+                            for position, arg in enumerate(call.args):
+                                if (is_limit_in(fn.name, arg)
+                                        and position < len(names)):
+                                    limit_fields.add(names[position])
+                            for keyword in call.keywords:
+                                if (keyword.arg in names
+                                        and is_limit_in(fn.name, keyword.value)):
+                                    limit_fields.add(keyword.arg)
                         continue
                     names = [a.arg for a in
                              callee.args.posonlyargs + callee.args.args]
@@ -7831,7 +8322,7 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
                         if keyword.arg and is_limit_in(fn.name, keyword.value):
                             limit_params.add((name, keyword.arg))
         if before == (len(limit_params), sum(len(v) for v in locals_of.values()),
-                      len(PRODUCERS)):
+                      len(PRODUCERS), len(limit_fields)):
             break
     else:
         raise AssertionError("the limit dataflow did not settle in ten rounds")
@@ -7857,27 +8348,78 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
             for child in ast.iter_child_nodes(node):
                 parent[id(child)] = node
 
-        def guarding_text(node, parent=parent):
-            """The nearest statement's own text — not its body's."""
+        def enclosing_header(node, parent=parent):
+            """The nearest statement's own condition — not its body's."""
             while node is not None and not isinstance(node, ast.stmt):
                 node = parent.get(id(node))
             if node is None:
-                return ""
-            header = [node]
+                return []
             if hasattr(node, "body"):
-                header = [getattr(node, "test", None), getattr(node, "iter", None),
-                          *getattr(node, "items", [])]
-            return " ".join(ast.unparse(part) for part in header
-                            if part is not None)
+                return [part for part in
+                        (getattr(node, "test", None), getattr(node, "iter", None),
+                         *getattr(node, "items", []))
+                        if part is not None]
+            return [node]
+
+        def operands(node):
+            """What this node actually orders."""
+            parts = ([node.left, *node.comparators]
+                     if isinstance(node, ast.Compare) else list(node.args))
+            out = set()
+            while parts:
+                part = parts.pop()
+                out.add(ast.unparse(part))
+                # INTO the operand, not just its outer form. `held == UNLIMITED
+                # or (held if held is not None else 0) >= card.vcpus` guards the
+                # right name, and matching on the unparsed text of the whole
+                # conditional missed it — three correctly guarded sites reported
+                # as defects. An exemption attached to the operands has to be
+                # able to see what the operands are MADE of.
+                if isinstance(part, (ast.GeneratorExp, ast.ListComp,
+                                     ast.SetComp)):
+                    parts.append(part.elt)
+                elif isinstance(part, ast.IfExp):
+                    parts += [part.body, part.orelse]
+                elif isinstance(part, ast.BoolOp):
+                    parts += list(part.values)
+                elif isinstance(part, ast.BinOp):
+                    parts += [part.left, part.right]
+            return out
+
+        def sentinel_tested(node):
+            """Operands an explicit SENTINEL TEST in scope has established.
+
+            THE EXEMPTION IS ATTACHED TO THE OPERANDS, NOT TO NEIGHBOURING WORDS.
+            It used to be "does the enclosing condition mention UNLIMITED or a
+            predicate anywhere", and in `A and meets(x, y)` the `meets` exempted
+            `A` as well — so `preferred > 0`, a live sentinel bug, passed because
+            of the fix sitting beside it, and `wanted >= floor` could be
+            reintroduced next to its own `meets` and stay green. The fourth pass's
+            real defect, hidden by the guard written to catch it.
+
+            `meets`, `better_limit` and `covers` deliberately do NOT count here.
+            They are safe THEMSELVES and say nothing about a neighbour. Only a
+            test that names an operand and the sentinel in the same breath —
+            `x == UNLIMITED`, `x != UNLIMITED`, `UNLIMITED in xs`,
+            `holds_quota(x)` — establishes anything about that operand.
+            """
+            safe = set()
+            for part in enclosing_header(node):
+                for inner in ast.walk(part):
+                    if (isinstance(inner, ast.Compare)
+                            and "UNLIMITED" in ast.unparse(inner)):
+                        safe |= {ast.unparse(side) for side
+                                 in [inner.left, *inner.comparators]}
+                    elif (isinstance(inner, ast.Call)
+                          and getattr(inner.func, "id", "") == "holds_quota"):
+                        safe |= {ast.unparse(arg) for arg in inner.args}
+            return safe - {"UNLIMITED"}
 
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.FunctionDef):
                 continue
             for node in ast.walk(fn):
                 if id(node) in defining:
-                    continue
-                if any(word in guarding_text(node)
-                       for word in ("UNLIMITED", *PREDICATES)):
                     continue
                 if isinstance(node, ast.Compare):
                     if not any(isinstance(op, (ast.Lt, ast.Gt, ast.LtE, ast.GtE))
@@ -7893,7 +8435,11 @@ def test_no_limit_is_compared_without_knowing_what_minus_one_means():
                 else:
                     continue
                 text = ast.unparse(node)
+                # The node's OWN text still exempts it — that guard is attached
+                # to the thing being ordered, which is the whole distinction.
                 if any(word in text for word in ("UNLIMITED", *PREDICATES)):
+                    continue
+                if operands(node) & sentinel_tested(node):
                     continue
                 risky.append(f"{path.name}:{node.lineno}  {text}")
 
