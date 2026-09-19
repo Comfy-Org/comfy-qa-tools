@@ -478,6 +478,23 @@ The tail of the message above: the card is metered somewhere you can actually us
 it. `comfy-qat quota list --by-region` lists those regions, and
 `comfy-qat quota list --region <region>` says what any one region offers.
 
+**`could not read existing quota requests, so the preference ids below are the ones this would MINT. Where a request already exists for the same quota and dimensions, the real run uses that preference's own id instead`**
+Printed by `--dry-run` when the preference list cannot be read. The ids shown are
+what the tool WOULD mint; where a request already exists for the same quota and
+dimensions, a real run addresses that record by its own id instead. It goes to
+stderr, because `--dry-run` output is meant to be piped to a shell and the
+apostrophe in this sentence used to open a quote that never closed — breaking the
+whole script rather than one line.
+
+**`the requests were filed. The wait stopped because this project's quota stopped answering`**
+`--wait` polls this project's quota until the request is answered. A read failure
+that waiting cannot fix — an expired sign-in, a revoked credential, a 403, a
+project that is gone — ends the wait instead of being polled through for the
+full thirty minutes and then reported as `still pending`, which is a read failure
+dressed as an absence of approval. **The requests themselves went out**: fix the
+access and run `comfy-qat quota` to see where they stand. Do not re-run `quota
+request` to "retry" — that files against the same preference ids again.
+
 **`<card>: whether <region> offers this card was not checked`**
 Not a refusal and not a verdict. Either `gcloud compute accelerator-types list`
 could not be read, or the card is one this tool has no accelerator id for — so

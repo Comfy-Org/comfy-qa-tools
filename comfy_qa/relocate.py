@@ -849,7 +849,17 @@ def _within_the_allowance(gc: Gcloud, plan: Plan, source_disk: dict) -> Plan:
         needed = float(source_disk.get("sizeGb") or 0)
     except (TypeError, ValueError):
         return plan
-    if not needed or usage + needed <= limit:
+    # A NEGATIVE LIMIT IS UNLIMITED HERE TOO. `regions describe` is a different
+    # API from `quotas info list`, and it uses the same `-1` — so `usage + needed
+    # <= -1` is False and an unlimited SSD allowance read as no room at all,
+    # silently downgrading the disk type. Found by the sentinel sweep reaching
+    # outside the quota module, which is the point of sweeping by shape.
+    from .quota import UNLIMITED
+
+    # THE CONSTANT, not `< 0`. Both exclude it; only one is visible to a reader
+    # — and to the sweep, which flagged my own fix because a bare `< 0` says
+    # nothing about what -1 means.
+    if not needed or limit == UNLIMITED or usage + needed <= limit:
         return plan
     return replace(plan, disk_type=GCLOUD_DEFAULT_DISK_TYPE,
                    disk_note=(
@@ -867,10 +877,17 @@ def _over_the_ceiling(plan: Plan, found: Found) -> MoveError | None:
     "zero" and refusing on it blocks a move the project is entitled to. Google's
     -1 is "no explicit limit" and is not a number to compare against either.
     """
+    # `meets`, and the two conditions become one. The sentinel used to be
+    # handled by `ceiling < 0` in a different statement from the comparison it
+    # protects — correct, and unreadable both to the next editor and to the sweep
+    # over this class. The docstring above already says -1 "is not a number to
+    # compare against"; this stops comparing against it.
+    from .quota import meets
+
     ceiling = found.ceiling
-    if ceiling is None or ceiling < 0:
+    if ceiling is None:
         return None
-    if found.cards_held + found.cards_needed <= ceiling:
+    if meets(ceiling, found.cards_held + found.cards_needed):
         return None
 
     source = plan.host.gce_instance

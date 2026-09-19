@@ -12,6 +12,7 @@ can build either Windows or Linux on it, so OS never appears here.
 from __future__ import annotations
 
 import re
+from functools import reduce
 from dataclasses import dataclass
 from typing import Iterable, Literal
 
@@ -329,20 +330,9 @@ def rows(quotas: list[dict]) -> list[Row]:
             else:
                 where = "global"
 
-            raw = (info.get("details") or {}).get("value")
-            try:
-                limit = int(raw)
-            except (TypeError, ValueError):
-                # AN INFERENCE, NAMED AS ONE. An absent value is read as zero:
-                # `details: {}` is what all five modern GPU families report here,
-                # and an independent reading of `PREEMPTIBLE_CPUS` agrees that
-                # absent means none. But `CPUS-ALL-REGIONS-per-project` reports
-                # `'32'` in the same field, so absence is the API's way of saying
-                # something rather than a parse failure — and inferring meaning
-                # from an absence is precisely what produced a CPU gate that does
-                # not exist. The reading is almost certainly right and it is still
-                # an assumption; this is where it is made.
-                limit = 0
+            limit = _limit_of(info)
+            if limit is None:
+                continue
             out.append(Row(quota_id, gpu, where, limit, tuple(locations),
                            tuple(sorted(dimensions.items()))))
     return out
@@ -361,6 +351,30 @@ def _for_card(gpu: str, quotas: list[dict]) -> list[Row]:
     """
     return _prefer_region_scope(
         [row for row in rows(quotas) if same_card(row.gpu, gpu)])
+
+
+def _rank(row: "Readiness") -> tuple[int, int]:
+    """How much a row deserves to win a tie: better status, then more specific.
+
+    A TIE USED TO BE BROKEN BY THE ORDER GCLOUD LISTED `dimensionsInfos`, and the
+    winner carries `status`, `refused_in`, `never_asked_in` and `quota_id` with
+    it — so one payload gave two different sentences, one saying "asking again
+    will not help" and the other "never asked in 2", about the same card in the
+    same region. The API offers no contract for that order; `global_allowance`'s
+    docstring says exactly that about its own case.
+
+    `_ORDER` is this module's single statement of which status is more
+    favourable, so ties read it rather than re-deciding. After that the NARROWER
+    CLAIM wins: `never_asked_in` counts the regions a row is silent about, so a
+    row covering exactly the region asked for has none, and one covering it as
+    part of a span has the rest. Both rows are true; the narrower one is the
+    answer to the question that was asked.
+
+    Not `spans_many(row.region)`, which would be the obvious test and does not
+    work: under `--region X` the relabel has already rewritten every covering
+    row's `region` to X, so the span is gone by the time this runs.
+    """
+    return (_ORDER[row.status], row.never_asked_in)
 
 
 def _prefer_region_scope(found: list[Row]) -> list[Row]:
@@ -391,7 +405,22 @@ def _applies(where: str, locations: list[str], region: str | None) -> bool:
         return True
     if "global" in locations:
         return True
-    return region in locations
+    # NARROWED, like every other site in this module. A zone-scoped row's
+    # `applicableLocations` are ZONES, so `"us-central1" in ["us-central1-a",
+    # ...]` was always False and the row was judged not to cover the region it
+    # plainly covers. `where_label`, `known_regions`, `_region_names`,
+    # `regions_metered` and the `refused` set in `readiness` all narrow first —
+    # the last of them under a comment reading "REGIONS ON BOTH SIDES. `places`
+    # below is narrowed with `region_of` and this was not". This is the site that
+    # was missed.
+    #
+    # It bites for a card metered ONLY per-zone, because `_prefer_region_scope`
+    # otherwise drops the zone rows before anything asks — so `create` was
+    # steered to a region by `regions_with_quota` and told the project held
+    # nothing there by `allowance`, about the same project in the same second.
+    from .zones import region_of
+
+    return region in {region_of(place) for place in locations}
 
 
 # --- what did we already ask Google for, and what did Google say ------------
@@ -512,8 +541,14 @@ def asks(preferences: list[dict] | None) -> list[Ask]:
 
         if pref.get("reconciling") is True:
             state: AskState = "pending"
+        # `meets`, NOT `granted >= preferred`. A preference Google fulfils
+        # WITHOUT LIMIT reads -1, `-1 >= 1` is False, and the record fell through
+        # to `pending` — reading as still under consideration forever, and
+        # sitting in `pending_ids` forever, which makes the card permanently
+        # un-re-askable. `preferred > 0` stays a magnitude test on purpose: it
+        # asks whether anything was actually requested.
         elif (preferred is not None and granted is not None
-              and preferred > 0 and granted >= preferred):
+              and preferred > 0 and meets(granted, preferred)):
             # Satisfied before denied, deliberately. A request denied at 1 on a
             # project that has since reached 1 by some other route is not
             # something to re-ask for, and what Google said last month about a
@@ -659,10 +694,12 @@ def held_value(target: "Target", quotas: list[dict] | None) -> int | None:
     for row in _raw_rows(target.quota_id, quotas or []):
         if not covers_dimensions(target.quota_id, target.dims, row):
             continue
-        if row.limit == UNLIMITED:
-            return UNLIMITED
-        if best is None or row.limit > best:
-            best = row.limit
+        # `better_limit` RATHER THAN A SHORT-CIRCUIT AND A `>`. Four functions
+        # carried the same two lines, which is four places for the next
+        # correction to miss — and the `>` is invisible to a reader as the
+        # sentinel-unsafe half, because the guard above it is a separate
+        # statement.
+        best = better_limit(best, row.limit)
     return best
 
 
@@ -837,8 +874,16 @@ def request_value(
     # The floor is the LARGER of the two, because either can be the thing that is
     # lost: a grant of 4 under a standing request of 1 must not be trimmed to 1,
     # and a standing request of 8 over a grant of 1 must not be trimmed to 1.
+    # `better_limit`, NOT `>`. The comment above says either can be the thing
+    # that is lost, and the sentinel makes that asymmetric: the GRANT side is
+    # handled forty lines up and returns before reaching here, so `held` is a
+    # magnitude — but `existing.preferred` can be UNLIMITED, and against -1 every
+    # finite grant is "larger". The unlimited STANDING REQUEST was therefore
+    # never the floor, and `--value 4` replaced it with 4, under that record's
+    # own id, with no --allow-lower and no sentence. The critical class from the
+    # fourth pass, on the side six rounds of guard work did not look at.
     floor, what = existing.preferred, "standing request for"
-    if held is not None and held > floor:
+    if better_limit(held, floor) == held and held != floor:
         floor, what = held, "quota this project holds for"
     return _floored(target, wanted, floor, what, allow_lower=allow_lower)
 
@@ -852,12 +897,20 @@ def _floored(
     allow_lower: bool,
 ) -> tuple[int | None, str]:
     """`wanted`, unless it is below what this project would lose by sending it."""
-    if floor is None or wanted >= floor:
+    # `meets`, NOT `wanted >= floor`. `4 >= -1` is True, so an UNLIMITED floor
+    # was cleared by every finite number and this function — the one that decides
+    # whether an irrevocable `preferences update` goes out — waved it through
+    # with an empty note. The grant side of that was closed forty lines up in
+    # `request_value`; the STANDING REQUEST side reached here.
+    #
+    # `_shown` on both messages for the same reason: printing the floor raw said
+    # "keeping ... at -1", a sentence about a number the project does not have.
+    if floor is None or meets(wanted, floor):
         return wanted, ""
     if allow_lower:
-        return wanted, (f"LOWERING the {what} {target.quota_id} from {floor} "
-                        f"to {wanted}")
-    return floor, (f"keeping the {what} {target.quota_id} at {floor}; "
+        return wanted, (f"LOWERING the {what} {target.quota_id} from "
+                        f"{_shown(floor)} to {wanted}")
+    return floor, (f"keeping the {what} {target.quota_id} at {_shown(floor)}; "
                    f"{wanted} would lower it")
 
 
@@ -1007,7 +1060,10 @@ def readiness(
                       if ask.state in ("partial", "denied")
                       and ask.preferred is not None
                       and ask.granted is not None
-                      and ask.preferred > ask.granted), None)
+                      # `not meets`, NOT `preferred > granted`: a grant of
+                      # UNLIMITED reads as -1, so `4 > -1` called it a shortfall
+                      # and reported 4 still owing on a card held without limit.
+                      and not meets(ask.granted, ask.preferred)), None)
         asked = short.preferred if short else 0
         if holds_quota(row.limit):
             status: Status = "ready"
@@ -1070,7 +1126,21 @@ def readiness(
     for row in found:
         key = (row.gpu, row.region)
         existing = best.get(key)
-        if existing is None or row.limit > existing.limit:
+        # `better_limit`, NOT `>`. An UNLIMITED row lost this to a zero and
+        # took its status with it — see that function for the measurement.
+        #
+        # AND A TIE IS BROKEN BY WHAT THE ROW SAYS, not by the order gcloud
+        # happened to list `dimensionsInfos`. On equal limits the first row
+        # encountered used to win and carry `status`, `refused_in`,
+        # `never_asked_in` and `quota_id` with it, so one payload gave two
+        # different sentences depending on an order the API offers no contract
+        # for. `_ORDER` is this module's single statement of which status is more
+        # favourable; ties read it rather than re-deciding.
+        if existing is None:
+            best[key] = row
+        elif better_limit(row.limit, existing.limit) != existing.limit:
+            best[key] = row
+        elif row.limit == existing.limit and _rank(row) < _rank(existing):
             best[key] = row
 
     return sorted(best.values(),
@@ -1126,7 +1196,7 @@ def summarise(rows: list[Readiness]) -> list[CardSummary]:
 
     summaries: list[CardSummary] = []
     for gpu, entries in grouped.items():
-        best = max(entry.limit for entry in entries)
+        best = reduce(better_limit, (entry.limit for entry in entries))
         # The SECOND collapse, and it had the same hole as the first: three
         # branches for five states, so a card denied in every region summarised
         # as "none — request it" even once `readiness` knew better. Picking the
@@ -1301,7 +1371,7 @@ def pools_for(
                      if not region or _applies(row.where, list(row.locations), region)]
         if not rows_here:
             continue
-        limit = max(row.limit for row in rows_here)
+        limit = reduce(better_limit, (row.limit for row in rows_here))
         if holds_quota(limit):
             status: Status = "ready"
         elif any(ask.state == "pending" and ask.quota_id == quota_id
@@ -1350,10 +1420,9 @@ def _raw_rows(quota_id: str, quotas: list[dict]) -> list[Row]:
             explicit = dimensions.get("region") or dimensions.get("zone")
             where = explicit or (locations[0] if len(locations) == 1
                                  else (where_label(locations) if locations else "global"))
-            try:
-                limit = int((info.get("details") or {}).get("value"))
-            except (TypeError, ValueError):
-                limit = 0
+            limit = _limit_of(info)
+            if limit is None:
+                continue
             found.append(Row(quota_id, "", where, limit, tuple(locations),
                              tuple(sorted(dimensions.items()))))
     return found
@@ -1472,7 +1541,16 @@ def resolve_target(
             # Same F11 fallback as the family branch below: only reached when
             # there is nothing to derive from, and it takes whichever location
             # the API listed first.
-            where = next((place for place in row.locations), None)
+            #
+            # `!= "global"`, which the other five sites that turn a location into
+            # a region all do and this one did not. A row listing "global" first
+            # built `--dimensions=region=global` — a request Google rejects, from
+            # the command that refuses an empty region, a zone-shaped one, an
+            # uppercase one and an unknown one. Not reachable from either live
+            # caller today, both of which always pass a region; one caller away
+            # from being reachable, which is what a guard asymmetry is.
+            where = next((place for place in row.locations
+                          if place != "global"), None)
         if not where:
             return None
         return Target(row.quota_id, (("region", where),))
@@ -1578,6 +1656,59 @@ _ZONE_SCOPED = "-per-project-zone"
 UNLIMITED = -1
 
 
+def _limit_of(info: dict) -> int | None:
+    """The limit on one `dimensionsInfos` entry, or None if it cannot be read.
+
+    ABSENT AND UNREADABLE ARE DIFFERENT FACTS, and one `except (TypeError,
+    ValueError)` read both as zero in three copied-out places.
+
+    An ABSENT value is read as zero, and that is an inference rather than a
+    reading: `details: {}` is what all five modern GPU families report here, and
+    an independent reading of `PREEMPTIBLE_CPUS` agrees that absent means none.
+    But `CPUS-ALL-REGIONS-per-project` reports `'32'` in the same field, so
+    absence is the API's way of saying something rather than a parse failure.
+    Inferring meaning from an absence is precisely what produced a CPU gate that
+    did not exist; the reading is almost certainly right and it is still an
+    assumption, and this is where it is made.
+
+    A value that is PRESENT and unparseable is neither read nor inferable, and
+    zero is the dangerous direction: it renders as `none — request it`, the one
+    line in this tool that tells somebody to file a request that cannot be
+    undone. None here drops the row, so the card reads as not metered — which is
+    what "we could not read this" actually means.
+    """
+    raw = (info.get("details") or {}).get("value")
+    if raw is None:
+        return 0
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def better_limit(one: int | None, other: int | None) -> int | None:
+    """The larger of two limits, where UNLIMITED is larger than everything.
+
+    `max()` IS DEFINED ON MAGNITUDES AND THE SENTINEL IS NOT ONE. `-1 > 0` is
+    False, so an unlimited grant lost a dedupe to a zero row and took its
+    `status` with it: `quota list --region us-central1` printed `L4 0 none —
+    request it` while `--by-region` printed `unlimited ready` and `allowance()`
+    returned -1, in the same second. The one instruction in that table which
+    files an undeletable preference, about a card held without limit.
+
+    `holds_quota` fixed the comparisons where a limit met a LITERAL. These are
+    limit against limit, and `max` over limits, and neither was touched — which
+    is the shape of the fix rather than the shape of the class.
+    """
+    if one is None:
+        return other
+    if other is None:
+        return one
+    if UNLIMITED in (one, other):
+        return UNLIMITED
+    return max(one, other)
+
+
 def holds_quota(limit: int | None) -> bool:
     """Does this limit let you start anything? UNLIMITED counts; 0 and None do not.
 
@@ -1594,6 +1725,53 @@ def holds_quota(limit: int | None) -> bool:
     cannot get it wrong either.
     """
     return limit is not None and (limit == UNLIMITED or limit > 0)
+
+
+def sentinel_yields(best: int | None, limit: int) -> int:
+    """The CEILING's rule, where -1 means "no explicit limit" and so LOSES.
+
+    The exact opposite of `better_limit`, and deliberately so: `global_allowance`
+    reads a project-wide ceiling, where a record carrying -1 states the ABSENCE
+    of a constraint rather than a grant of infinity — so a number that was really
+    read beats it. Everywhere else in this module the sentinel dominates.
+
+    It exists as a name rather than a bare `max` under a comment because the
+    sweep over this class reads the syntax tree, and a comment is not in it. An
+    exemption that has to be hard-coded into the detector is an exemption nobody
+    reviews; an exemption with a docstring is a decision.
+
+    Callers must already have excluded UNLIMITED from `limit`, which is why the
+    only one branches on it first.
+    """
+    return limit if best is None else max(best, limit)
+
+
+def meets(held: int | None, wanted: int) -> bool:
+    """Does what this project holds satisfy a request for `wanted`?
+
+    THE THIRD MEMBER OF THE SENTINEL CLASS, and the one both earlier members
+    missed. `holds_quota` answers "any at all"; `better_limit` picks the larger
+    of two. Neither answers "is this enough", which is what a WAIT asks sixty
+    times over thirty minutes — and `found >= wanted` is `-1 >= 1`, False, so
+    `quota request --wait` burned its entire window and then reported `still
+    pending`, exit 75, about a request Google had already fulfilled WITHOUT
+    LIMIT. The only one of these defects that costs wall clock.
+
+    It is also the site no sweep over literals could ever reach: both operands
+    are names. That is why the sweep now matches any ordering where EITHER side
+    is a limit, literal or not, rather than the shapes the known defects had.
+    """
+    if held is None:
+        return False
+    if held == UNLIMITED:
+        return True
+    # THE SENTINEL ON THE OTHER SIDE TOO. `held >= wanted` alone reads `4 >= -1`
+    # as True, so a FLOOR of UNLIMITED was cleared by any finite number — which
+    # is how `_floored` let `--value 4` replace an unlimited standing request.
+    # Nothing finite covers a demand for everything.
+    if wanted == UNLIMITED:
+        return False
+    return held >= wanted
 
 
 def _region_name(location: str) -> str:
@@ -1697,10 +1875,12 @@ def allowance(gpu: str, quotas: list[dict], *, region: str | None = None) -> int
     for row in _for_card(gpu, quotas):
         if region and not _applies(row.where, list(row.locations), region):
             continue
-        if row.limit == UNLIMITED:
-            return UNLIMITED
-        if best is None or row.limit > best:
-            best = row.limit
+        # `better_limit` RATHER THAN A SHORT-CIRCUIT AND A `>`. Four functions
+        # carried the same two lines, which is four places for the next
+        # correction to miss — and the `>` is invisible to a reader as the
+        # sentinel-unsafe half, because the guard above it is a separate
+        # statement.
+        best = better_limit(best, row.limit)
     return best
 
 
@@ -1780,10 +1960,9 @@ def _cpu_rows(quota_id: str, quotas: list[dict]) -> list[Row]:
             explicit = dimensions.get("region") or dimensions.get("zone")
             where = explicit or (locations[0] if len(locations) == 1
                                  else (where_label(locations) if locations else "global"))
-            try:
-                limit = int((info.get("details") or {}).get("value"))
-            except (TypeError, ValueError):
-                limit = 0
+            limit = _limit_of(info)
+            if limit is None:
+                continue
             found.append(Row(quota_id, dimensions.get(_CPU_FAMILY_DIMENSION, ""),
                              where, limit, tuple(locations),
                              tuple(sorted(dimensions.items()))))
@@ -1838,10 +2017,12 @@ def cpu_allowance(machine_type: str, quotas: list[dict], *,
             continue
         if region and not _applies(row.where, list(row.locations), region):
             continue
-        if row.limit == UNLIMITED:
-            return UNLIMITED
-        if best is None or row.limit > best:
-            best = row.limit
+        # `better_limit` RATHER THAN A SHORT-CIRCUIT AND A `>`. Four functions
+        # carried the same two lines, which is four places for the next
+        # correction to miss — and the `>` is invisible to a reader as the
+        # sentinel-unsafe half, because the guard above it is a separate
+        # statement.
+        best = better_limit(best, row.limit)
     return best
 
 
@@ -1849,10 +2030,12 @@ def cpu_ceiling(quotas: list[dict]) -> int | None:
     """`CPUS-ALL-REGIONS-per-project` — 32 here, which no H100 can ever fit."""
     best: int | None = None
     for row in _cpu_rows(CPU_CEILING, quotas):
-        if row.limit == UNLIMITED:
-            return UNLIMITED
-        if best is None or row.limit > best:
-            best = row.limit
+        # `better_limit` RATHER THAN A SHORT-CIRCUIT AND A `>`. Four functions
+        # carried the same two lines, which is four places for the next
+        # correction to miss — and the `>` is invisible to a reader as the
+        # sentinel-unsafe half, because the guard above it is a separate
+        # statement.
+        best = better_limit(best, row.limit)
     return best
 
 
@@ -1897,8 +2080,11 @@ def global_allowance(quotas: list[dict]) -> int | None:
     ):
         if row.limit == UNLIMITED:
             unlimited = True
-        elif best is None or row.limit > best:
-            best = row.limit
+        else:
+            # `sentinel_yields`, which is the CEILING's opposite rule and is
+            # named so the sweep can read the intent instead of a bare `max` it
+            # has to be told to ignore. A comment is not in the syntax tree.
+            best = sentinel_yields(best, row.limit)
     if best is not None:
         return best
     return UNLIMITED if unlimited else None

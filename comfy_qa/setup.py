@@ -452,11 +452,17 @@ def _too_big_for(plan: list[QuotaAsk], ceiling: int, *, raising: bool = False) -
     running `setup` again.
     """
     from .create import card_named
+    from .quota import meets
 
     bigger = sorted({
         card.name for ask in plan if ask.outcome == REQUEST and ask.card
         for card in [card_named(ask.card)]
-        if card is not None and card.count > ceiling
+        # `not meets`, not `>`. `8 > -1` is True, so an UNLIMITED ceiling would
+        # make every card "too big for" a project nothing caps. `plan_quota`
+        # returns on UNLIMITED long before this runs, so the behaviour is
+        # unchanged — but that guard is twenty-five lines and one function away,
+        # and this is the statement a reader has to trust.
+        if card is not None and not meets(ceiling, card.count)
     })
     if not bigger:
         return ""

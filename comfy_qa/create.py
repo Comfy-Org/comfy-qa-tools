@@ -885,12 +885,17 @@ class QuotaCheck:
 
     def lines(self) -> list[str]:
         """What was checked and what it said — printed by a dry run and a real one."""
+        from .quota import UNLIMITED
         from .quota import where_label as _where_label
 
         def amount(value: int | None) -> str:
             if value is None:
                 return "not granted"
-            return "unlimited" if value < 0 else str(value)
+            # `== UNLIMITED`, not `< 0`. Correct either way, and spelled as a
+            # magnitude comparison it is the one idiom this whole class is about
+            # — invisible to the sweep, and the next edit here has no way to know
+            # the sentinel is what the branch is for.
+            return "unlimited" if value == UNLIMITED else str(value)
 
         def ceiling(value: int | None) -> str:
             # None here is not the same None as the card's. A card the project
@@ -899,7 +904,7 @@ class QuotaCheck:
             # read — which does not gate anything, and must not read as "zero".
             if value is None:
                 return "not reported by this project"
-            return "unlimited" if value < 0 else str(value)
+            return "unlimited" if value == UNLIMITED else str(value)
 
         out = [
             f"{self.card}: {amount(self.card_limit)}"
@@ -1052,7 +1057,7 @@ class QuotaCheck:
         # accident — the sentinel is not a small number, and the next reader
         # would have had to work that out from the arithmetic.
         if (self.card_limit is not None and self.card_limit != UNLIMITED
-                and 0 < self.card_limit < self.needed):
+                and 0 < self.card_limit and self.card_limit < self.needed):
             return LifecycleError(
                 f"{self.card} needs {self.needed} of this project's GPU allowance and "
                 f"the grant is {self.card_limit}. Nothing was created.",
@@ -1063,7 +1068,8 @@ class QuotaCheck:
                 fix=self._ask_somewhere,
                 kind=NO_QUOTA,
             )
-        if self.global_limit is not None and 0 <= self.global_limit < self.needed:
+        if (self.global_limit is not None and self.global_limit != UNLIMITED
+                and self.global_limit < self.needed):
             return LifecycleError(
                 f"GPUS_ALL_REGIONS is {self.global_limit} on this project — that is the "
                 f"ceiling across every card, whatever the {self.card} grant says, and "
@@ -1073,9 +1079,9 @@ class QuotaCheck:
                     "https://console.cloud.google.com/iam-admin/quotas",
                 kind=NO_QUOTA,
             )
-        if self.running and self.global_limit is not None and 0 <= self.global_limit < (
-            self.needed + self.held
-        ):
+        if (self.running and self.global_limit is not None
+                and self.global_limit != UNLIMITED
+                and self.global_limit < self.needed + self.held):
             first = _stop_the_box(*self.running[0])
             if len(self.running) == 1:
                 return LifecycleError(
@@ -1201,16 +1207,18 @@ def card_grant(card: Card, quotas: list[dict]) -> tuple[int | None, list[str]]:
     that carries both spellings would otherwise be read off whichever one came
     back with a zero.
     """
-    from .quota import UNLIMITED, allowance, regions_with_quota
+    from functools import reduce
 
+    from .quota import allowance, better_limit, regions_with_quota
+
+    # `reduce(better_limit, ...)` rather than a hand-rolled `UNLIMITED in ...`
+    # ahead of a `max`. Correct either way — this was the one site of the class
+    # that already checked the sentinel — but the check lived in a statement
+    # above the comparison it protects, which is the arrangement that hid the
+    # other nine. One predicate, asked where the question is.
     limits = [allowance(name, quotas) for name in card.quota_names]
     granted = [value for value in limits if value is not None]
-    if not granted:
-        limit: int | None = None
-    elif UNLIMITED in granted:
-        limit = UNLIMITED
-    else:
-        limit = max(granted)
+    limit: int | None = reduce(better_limit, granted) if granted else None
 
     regions: set[str] = set()
     for name in card.quota_names:
@@ -1269,7 +1277,7 @@ def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None
 
 def build(
     gc: Gcloud, blueprint: Blueprint, ordering: Ordering, project: str, say,
-    *, limit: int = MAX_ATTEMPTS,
+    *, attempts: int = MAX_ATTEMPTS,
 ) -> str:
     """Try the zones in order until one has room. Returns the zone that worked.
 
@@ -1293,7 +1301,7 @@ def build(
     one was not. Following it creates a box somewhere nobody chose, or burns a
     minute on a create that cannot succeed.
 
-    **`limit`.** The same cap `zones.choose` applies to the ranked list, applied
+    **`attempts`.** The same cap `zones.choose` applies to the ranked list, applied
     again here because the suggestions are not on that list. `choose` hands over
     six zones and every refusal can name a fresh one, so the queue refills as
     fast as it drains: an uncapped fall-through has no end and is a command that
@@ -1305,7 +1313,7 @@ def build(
     tried: list[str] = []
     capped = False
     while queue:
-        if len(tried) >= limit:
+        if len(tried) >= attempts:
             capped = True
             break
         zone = queue.pop(0)
@@ -1387,7 +1395,7 @@ def build(
     if capped:
         say(f"stopping after {len(tried)} zones — each attempt takes about a minute")
         raise LifecycleError(
-            f"stopped after {limit} zones, all out of {blueprint.card.name} capacity: "
+            f"stopped after {attempts} zones, all out of {blueprint.card.name} capacity: "
             f"{', '.join(tried)}. Nothing was created and nothing is billing — this is "
             f"a cap, not the whole world, so there may be room somewhere untried.",
             # `--region` first, because it is the flag that matches what this

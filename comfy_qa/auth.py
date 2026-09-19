@@ -23,6 +23,8 @@ from .quota import (
     GLOBAL_ALLOWANCE,
     Target,
     available_gpus,
+    better_limit,
+    meets,
     request_plan,
     request_value,
     UNLIMITED,
@@ -45,8 +47,12 @@ from .quota import (
     summarise,
 )
 from .gcloud import (
+    DENIED,
     Gcloud,
     GcloudError,
+    NO_GCLOUD,
+    NO_PROJECT,
+    NOT_FOUND,
     console_quota_url,
     quota_request_command,
 )
@@ -1319,6 +1325,23 @@ def quota_list_cmd(
         return
 
     if not rows:
+        # A CLAIM ABOUT THE PROJECT, OR ABOUT THE REGION — they are different
+        # facts and this printed the first for both. `--region europe-west4` on a
+        # project that meters plenty in us-central1 said "no GPU quotas
+        # reported", which is false about the project and unhelpful about the
+        # region. `known_regions`' own docstring names this class: conflating
+        # "the lookup found nothing" with "there is nothing there".
+        #
+        # `quota request` already gets the identical situation right and names
+        # where the card IS metered, which is the half that matters — an empty
+        # answer with no onward move is what sends somebody to file an
+        # irrevocable request in a region nothing is metered in.
+        if region:
+            say.result(f"{project}: no GPU quota metered in {region}")
+            elsewhere = sorted(known_regions(quotas) - {region})
+            if elsewhere:
+                say.result(f"metered in: {', '.join(elsewhere)}")
+            return
         say.result(f"{project}: no GPU quotas reported")
         return
 
@@ -1510,7 +1533,15 @@ def quota_request_cmd(
         # written for it said so immediately.
         if dry_run:
             preferences = []
-            say.result(
+            # STDERR. `--dry-run | sh` is what this output is for, and this
+            # sentence went to stdout — where the apostrophe in "preference's"
+            # opens a single-quoted string that never closes, so the ENTIRE
+            # script, including the real gcloud line beneath it, is a syntax
+            # error and nothing runs at all. Not one broken line: the whole pipe.
+            #
+            # The rule was established on this exact path one round earlier.
+            # Second site, and the worse of the two.
+            say.warn(
                 "could not read existing quota requests, so the preference ids "
                 "below are the ones this would MINT. Where a request already "
                 "exists for the same quota and dimensions, the real run uses "
@@ -1899,7 +1930,10 @@ def quota_request_cmd(
             # NOT A VERDICT. The catalogue could not be read, or the card is not
             # one this tool can name an accelerator id for; either way the answer
             # is "I did not check", and refusing on it would invent an absence.
-            say.result(f"{name}: whether {region} offers this card was not checked")
+            # STDERR, for the reason the line above it now carries: this is
+            # prose on a path whose output is meant to be piped to a shell.
+            # Defect 8 of the same pass as the apostrophe, and the same rule.
+            say.warn(f"{name}: whether {region} offers this card was not checked")
         wanted.append((name, resolved))
 
     # TWO PHASES, because phase two cannot be taken back. `--gpu l4,t4,h100`
@@ -2103,10 +2137,26 @@ def quota_request_cmd(
     deadline = time.monotonic() + WAIT_TIMEOUT_SECONDS
     still_waiting = []
     for name, resolved, sent in submitted:
-        granted = wait_for_quota(
-            lambda want=resolved: _current_value(gc, project, want), wanted=sent,
-            timeout=max(0.0, deadline - time.monotonic()), interval=POLL_SECONDS,
-        )
+        try:
+            granted = wait_for_quota(
+                lambda want=resolved: _current_value(gc, project, want),
+                wanted=sent,
+                timeout=max(0.0, deadline - time.monotonic()),
+                interval=POLL_SECONDS,
+            )
+        except GcloudError as exc:
+            # THE REQUESTS ARE ALREADY FILED, and that is the first thing to
+            # say: the failure is in the watching, not in the asking, and
+            # somebody reading a bare error here would reasonably re-run the
+            # command and file them a second time. `wait_for_quota` now re-raises
+            # a failure waiting cannot fix rather than polling through it for
+            # half an hour and calling the result "still pending".
+            say.warn(f"the requests were filed. The wait stopped because this "
+                     f"project's quota stopped answering: {exc}")
+            still_waiting.extend([name] + [n for n, _, _ in submitted
+                                           if n not in still_waiting
+                                           and n != name])
+            break
         if granted:
             say.result(f"granted: {name}")
         else:
@@ -2167,7 +2217,14 @@ def _current_value(gc: Gcloud, project: str, target: "Target") -> int | None:
                if covers_dimensions(target.quota_id, target.dims, row)]
     if not matched:
         return None
-    return max(row.limit for row in matched)
+    # `better_limit`, NOT `max`. An unlimited grant read as -1 never satisfied
+    # `>= wanted`, so `--wait` burned its whole thirty-minute window on a quota
+    # the project holds without limit.
+    from functools import reduce
+
+    from .quota import better_limit
+
+    return reduce(better_limit, (row.limit for row in matched))
 
 
 def wait_for_quota(
@@ -2201,10 +2258,25 @@ def wait_for_quota(
             # and a missing quota burned the whole half-hour window in silence.
             if found is None:
                 return False
-            if found >= wanted:
+            # `meets`, not `>=`: an UNLIMITED grant reads as -1 and `-1 >= 1`
+            # is False, so the whole thirty-minute window was spent waiting for
+            # quota the project already held. See `quota.meets`.
+            if meets(found, wanted):
                 return True
-        except GcloudError:
-            pass  # a transient read failure is not a denial; keep waiting
+        except GcloudError as exc:
+            # A TRANSIENT read failure is not a denial. A PERMANENT one is not a
+            # denial either — it is a failure to read, and waiting cannot fix it.
+            # Swallowing both meant a revoked credential or a 403 on `quotas info
+            # list` polled sixty times across thirty minutes and then reported
+            # `still pending`: a read failure rendered as an absence of approval,
+            # which is absent-versus-zero wearing an exception.
+            #
+            # `kind` exists so callers need not match on prose, and `is_auth` is
+            # already the question "would signing in again fix this".
+            if exc.is_auth or exc.kind in (DENIED, NO_PROJECT, NO_GCLOUD,
+                                           NOT_FOUND):
+                raise
+            pass  # keep waiting
         if now() >= deadline:
             return False
         sleep(interval)

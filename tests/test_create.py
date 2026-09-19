@@ -1052,7 +1052,7 @@ def test_the_cap_offers_the_flag_that_widens_the_search_as_well_as_the_one_that_
     with pytest.raises(LifecycleError) as raised:
         build(cloud, LINUX_L4,
               order("us-central1-a", "us-central1-b", "us-central1-c"),
-              PROJECT, lambda line: None, limit=2)
+              PROJECT, lambda line: None, attempts=2)
     assert "stopped after 2 zones" in str(raised.value)
     assert "--region" in raised.value.fix
     assert "--zone" in raised.value.fix

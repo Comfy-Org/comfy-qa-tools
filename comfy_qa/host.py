@@ -2559,12 +2559,12 @@ def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
     # The remaining question is whether `len(others) >= ceiling`, and nothing
     # answers that without the read.
     try:
-        from .quota import global_allowance
+        from .quota import global_allowance, meets
 
         ceiling = global_allowance(gc.gpu_quotas(host.gce_project or ""))
     except Exception:
         return None
-    if ceiling is None or ceiling < 0:      # -1 is Google's "unlimited"
+    if ceiling is None:
         return None
     # CARDS, NOT BOXES, and `create._cards_running` exists in this repository for
     # the sole purpose of saying so: "GPUS_ALL_REGIONS is metered in cards, and
@@ -2578,7 +2578,13 @@ def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
 
     running = sum(_cards_in(other.gpu, card_named) for other in others
                   if other.is_remote and other.gpu)
-    return ceiling if running >= ceiling else None
+    # `meets`, NOT `running >= ceiling`. The unlimited case used to be handled
+    # by an early `ceiling < 0` eight lines up — correct, and invisible here: two
+    # magnitudes, a sentinel that is neither, and the only thing keeping them
+    # apart sitting in a different statement. Asked through the predicate the
+    # question is sentinel-safe where it is asked, and the widened sweep can read
+    # it. Identical answers on every input; this is legibility, not a fix.
+    return None if meets(ceiling, running + 1) else ceiling
 
 
 def _cards_in(gpu: str, card_named) -> int:

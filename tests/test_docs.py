@@ -692,7 +692,10 @@ MESSAGE_FLOOR = {
 # family id, the zone-as-region, the lower-case region, the empty region, the
 # refused-elsewhere remedy and the ceiling note. Raised to 283, half the distance
 # to today's 291, on the rule above.
-ENTRY_FLOOR = 283
+# 283 until the offline passes — the UNLIMITED sentinel entries, the two prose
+# lines moved off stdout under `--dry-run`. Raised to 289, half the distance to
+# today's 296, on the rule above.
+ENTRY_FLOOR = 289
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -713,7 +716,9 @@ ENTRY_FLOOR = 283
 # the distance to today's 329, on the rule above.
 # 322 until the sixth and seventh passes landed their entries. Raised to 330,
 # half the distance to today's 338, on the rule above.
-WORDING_FLOOR = 330
+# 330 until the offline passes landed theirs. Raised to 336, half the distance to
+# today's 343, on the rule above.
+WORDING_FLOOR = 336
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

@@ -1960,6 +1960,55 @@ ever produce an unlimited grant — exactly as none produced a missing
 one of them this. **Running against real data is not a superset of reading the
 code**, and the evidence for that is now two defects deep rather than one.
 
+## A detector built from the defects you found has their shape, not the class's
+
+The sentinel fix — `holds_quota`, so `-1` stops reading as "less than 1" — came
+with a sweep to make it permanent. The sweep looked for **a limit compared
+against a literal**, because that is what every instance it was written from
+looked like: `limit > 0`, four times.
+
+It was green, and these were live in the same file:
+
+```python
+if existing is None or row.limit > existing.limit:     # limit vs limit
+best = max(entry.limit for entry in entries)           # no comparison node at all
+```
+
+`-1 > 0` is False, so an unlimited grant lost a dedupe to a zero row and took its
+`status` with it: `quota list --region us-central1` printed `L4 0 none — request
+it` while `--by-region` printed `unlimited ready` in the same second — the one
+instruction in that table which files an undeletable preference, about a card the
+project holds without limit.
+
+**The sweep could not see either, by construction.** It had been given the shape
+of the four defects rather than the shape of the class.
+
+> Before trusting a detector, ask: **would it have found the instance I am about
+> to fix, before I found it?** If no, it is documentation of past work, not
+> protection against future work.
+
+This is the second time in one session. A doubled-word regex could not match its
+own subject (`Ask ask` — case-sensitive backreference); a sentinel sweep could not
+match its own family. Both passed. Both were written immediately after fixing the
+thing they could not see.
+
+### Widening it found four more, in three modules
+
+Ordering where *either* operand is a limit, plus `max`/`min`/`sorted` over limits
+— because `max` is defined on magnitudes and a sentinel is not one. That found
+four accumulators carrying their own copy of `if row.limit == UNLIMITED: return
+UNLIMITED` (four places for the next correction to miss), and one in a different
+module entirely: `regions describe` is a separate API that uses the same `-1`, so
+an unlimited SSD allowance read as no room and silently downgraded a disk type.
+
+It also flagged **my own fix for that**, written as `limit < 0` — which excludes
+the sentinel correctly and says nothing about what `-1` means. Using the constant
+made it legible to the sweep and to the next reader at the same time, which is
+the tell that the sweep was measuring something real.
+
+> A sweep that only confirms your last fix is worth nothing. A sweep that flags
+> your current one is working.
+
 ## A count is a claim
 
 Three numbers in one night, each printed beside the word "regions", none of them
