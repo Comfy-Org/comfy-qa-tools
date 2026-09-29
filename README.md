@@ -24,7 +24,7 @@ never collide on `PATH`.
 ## Status
 
 **1.1.0. Every command is implemented, tested, and has run against real GCE
-hardware on both Linux and Windows** — not against fakes.
+hardware on both Linux and Windows**.
 
 The verbs are at the top level: `comfy-qat go linux`. The `host ...` and
 `auth ...` spellings were a deprecation window rather than a second permanent way
