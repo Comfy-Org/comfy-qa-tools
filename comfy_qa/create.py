@@ -486,6 +486,47 @@ def undrivable_cards() -> list[str]:
     return sorted(key for key, card in CARDS.items() if not card.has_gsp)
 
 
+def os_keys() -> list[str]:
+    """The `--os` spellings, in the order the menu and the help offer them.
+
+    The sibling of `drivable_cards`, and here for the same reason: `linux` and
+    `windows` were typed out in the `--os` help, in `image_for`'s refusal, in
+    two fix lines and in the docs, and `IMAGES` is where they are decided. Two
+    is a short enough list to look safe to repeat, which is exactly how a third
+    image would get added and advertised nowhere.
+
+    The ALIASES are deliberately not in it: `ubuntu` and `win` are spellings the
+    tool accepts, not choices it offers, and a menu of seven rows for two
+    operating systems is a worse menu.
+    """
+    return [key for key, _note in os_menu()]
+
+
+def os_menu() -> list[tuple[str, str]]:
+    """Each `--os` spelling and the image it means, for a prompt or a help line.
+
+    The KEY first and the display name second, and they are not
+    interchangeable: `--os` takes `linux`, and `Ubuntu 22.04` is what `list`
+    shows and what discovery reads back off a box. `create.build` once
+    interpolated the second into a fix line and handed somebody
+    `comfy-qat create --os Ubuntu 22.04`, which Typer exits 2 on — see
+    `tests/test_os_families.py`. Pairing them here keeps a caller from having to
+    know which is which.
+    """
+    return [(key, image.os) for key, image in IMAGES.items()]
+
+
+def gpu_menu() -> list[tuple[str, str]]:
+    """Each `--gpu` spelling and the machine type it brings with it.
+
+    The sibling of `os_menu`, and the note is the machine type on purpose: it
+    is the thing a person cannot look up from the card name and the thing that
+    decides what the box costs. `create`'s own help calls the card "the only
+    real decision", and this is the fact that decision turns on.
+    """
+    return [(key, CARDS[key].machine_type) for key in drivable_cards()]
+
+
 def card_named(name: str) -> Card | None:
     """The card a QUOTA's friendly name means — `P100`, `H100`, `A100-80GB`.
 

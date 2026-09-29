@@ -190,6 +190,15 @@ def _message_argument(call: ast.Call, *, in_except: bool) -> ast.AST | None:
     if name in SAY_FAILURES:
         return call.args[0] if call.args else None
 
+    # `ask.settle`'s refusal for a required choice with nobody to ask. The
+    # literal is at the call site, which is not a reporter, and it is printed by
+    # `say.fail` one frame down, which has no literal — so without this rule the
+    # refusal a script gets for a missing `--os` is collected at neither end and
+    # is invisible to this whole file. The same shape as the `say` rule below,
+    # and the same answer: name the keyword the message arrives under.
+    if name == "settle":
+        return next((kw.value for kw in call.keywords if kw.arg == "missing"), None)
+
     if name in ERROR_TYPES:
         return call.args[0] if call.args else None
 
@@ -466,6 +475,13 @@ NOT_A_FAILURE = {
     # it through `error` or `fail` like everything else.
     "step": "a phase of a long operation starting",
     "detail": "a fact under the step it belongs to",
+    # A paragraph under the step it belongs to, in a gutter. Where it carries
+    # the words of a refusal — `ask.settle` prints an invalid `--gpu`'s reason
+    # through it before offering the menu — those words are a `LifecycleError`
+    # already collected at the `LifecycleError(...)` that built them, which is
+    # the same position `write_fix` is in and excused for.
+    "explain": "renders a paragraph; a refusal's words are collected at its raise site",
+    "gutter": "picks the glyph, prints nothing",
     # A KNOWN GAP, not a category. `write_fix` prints the `to fix:` half of a
     # message whose first half was already collected at the raise site, and
     # "to fix" is in NOT_AN_ENTRY for that reason. Collecting it here would
@@ -593,6 +609,12 @@ def _troubleshooting_text() -> str:
 # same shape as ERROR_TYPES: the unfamiliar is a decision somebody makes, not a
 # default of "fine".
 MESSAGE_FLOOR = {
+    # The prompt module, new with `create`'s `--os`/`--gpu` menus. One message
+    # of its own — the warning that a supplied flag cannot be used and is being
+    # asked for instead. The two refusals for a flag nobody can be asked for are
+    # counted against `host.py`, where their literals are written; see the
+    # `settle` rule in `_message_argument`.
+    "ask.py": 1,
     "auth.py": 37,
     "commands.py": 6,
     "config.py": 37,
@@ -695,7 +717,12 @@ MESSAGE_FLOOR = {
 # 283 until the offline passes — the UNLIMITED sentinel entries, the two prose
 # lines moved off stdout under `--dry-run`. Raised to 289, half the distance to
 # today's 296, on the rule above.
-ENTRY_FLOOR = 289
+# 289 until `create` learned to ask for `--os` and `--gpu` rather than exit 2 on
+# a parse error. Three entries landed — the two refusals for a required choice
+# with nobody to ask, and the warning that a supplied flag is being asked for
+# again — and the rest of the distance is other people's work on the page.
+# Raised to 296, half the distance to today's 302, on the rule above.
+ENTRY_FLOOR = 296
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -718,7 +745,10 @@ ENTRY_FLOOR = 289
 # half the distance to today's 338, on the rule above.
 # 330 until the offline passes landed theirs. Raised to 336, half the distance to
 # today's 343, on the rule above.
-WORDING_FLOOR = 336
+# 336 until `create`'s prompts landed their entries — four quoted wordings, the
+# two required-choice refusals sharing one entry and the invalid-flag warning.
+# Raised to 342, half the distance to today's 349, on the rule above.
+WORDING_FLOOR = 342
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

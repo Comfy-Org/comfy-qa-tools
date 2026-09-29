@@ -198,10 +198,15 @@ def run_checks(gc: Gcloud) -> list[Check]:
 
     # LAST, deliberately. Tunnel speed is readiness and belongs here — `setup`
     # installs NumPy into gcloud's own python now, so this row is the catch-up
-    # for anyone who ran setup before it did. But `status` prints the fix for the
-    # FIRST failing check, so a missing NumPy placed any earlier would mask a
-    # missing account or an unlinked billing project behind advice about a
-    # slower tunnel. It is the only check here that blocks nothing.
+    # for anyone who ran setup before it did. It is the only check here that
+    # blocks nothing, and it is therefore the only one that can fail while a
+    # later check still runs: every other failure above returns.
+    #
+    # `status` used to print the fix for the FIRST failing check, which made the
+    # position of this one load-bearing — a missing NumPy placed any earlier
+    # would have masked a missing account behind advice about a slower tunnel.
+    # It now prints the fix for every failing check, so the masking is gone and
+    # last is merely where a non-blocking row belongs.
     from .setup import gcloud_numpy
 
     wanted = gcloud_numpy(gc)
@@ -732,12 +737,36 @@ def status_cmd(
     else:
         for check in checks:
             say.check(check.ok, f"{check.name:<10} {check.detail}")
-        failed = next((c for c in checks if not c.ok), None)
-        if failed and failed.fix:
-            # The rows are the answer and stay on stdout; the fix belongs to a
-            # failure and goes where every other fix goes. This was the one
-            # `to fix:` of fourteen that was printed on stdout.
-            say.write_fix(failed.fix)
+        # EVERY failing check, not the first. This was
+        # `next((c for c in checks if not c.ok), None)`, so a report with three
+        # `fail` rows printed three problems and one fix — and the other two
+        # rows were a problem with no fix, which is the one shape `say.error`
+        # exists to make unrepresentable. The reader fixes what they were given,
+        # runs `status` again, and meets the next one.
+        #
+        # `run_checks` stops at its first failure today, so at most one of these
+        # rows can fail and this loop and the line it replaced print the same
+        # thing on every reachable path. That is the reason to write it now
+        # rather than the reason not to: the stopping is a property of
+        # `run_checks` — the comment on the `numpy` check below turns on it —
+        # and the renderer must not be the thing that makes it load-bearing. A
+        # check added after `numpy`, or any one of them made non-blocking the
+        # way `numpy` was, brings the defect back with nothing here to notice.
+        #
+        # The rows are the answer and stay on stdout; the fix belongs to a
+        # failure and goes where every other fix goes. This was the one
+        # `to fix:` of fourteen that was printed on stdout.
+        #
+        # ONCE PER FIX, not once per row. Two checks can fail for one reason and
+        # carry one remedy — `gcloud auth login` answers an expired session on
+        # the account row and on anything below it that needed the credential —
+        # and a remedy printed twice reads as two things to do.
+        printed: list[str] = []
+        for check in checks:
+            if check.ok or not check.fix or check.fix in printed:
+                continue
+            printed.append(check.fix)
+            say.write_fix(check.fix)
 
     if any(not c.ok for c in checks):
         raise typer.Exit(code=1)
@@ -1528,8 +1557,16 @@ def quota_request_cmd(
                                 "human reviewer reads. Left off, nothing is sent at all.")] = None,
     wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait for approval. On by default.")] = True,
     dry_run: Annotated[bool, typer.Option(
-        "--dry-run", help="Print the gcloud calls and reach nothing. Use "
-                          "--validate-only to have Google check them.")] = False,
+        # THE SAME CORRECTION AS `setup --dry-run`, on the sibling that had it
+        # too: "reach nothing" is false here as well. This command reads the
+        # project's existing quota preferences before the dry-run branch — it
+        # has to, to print the preference ids it would use — and says so on
+        # stderr when that read fails. What the flag guarantees is that nothing
+        # is SENT.
+        "--dry-run", help="Print the gcloud calls and send nothing. Your "
+                          "existing quota requests are still read, to print the "
+                          "ids this would use. Use --validate-only to have "
+                          "Google check the requests themselves.")] = False,
     validate_only: Annotated[bool, typer.Option(
         "--validate-only", help="Ask Google whether the request is valid and create "
                                 "nothing. Stronger than --dry-run, which only prints: "

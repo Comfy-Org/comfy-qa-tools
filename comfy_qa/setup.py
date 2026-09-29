@@ -1128,12 +1128,17 @@ def ensure_quota_requests(
       * in a terminal it takes one confirmation, defaulting to yes, so the
         requirement is met by pressing return and nothing is sent by a person
         who was not looking;
-      * `--dry-run` prints the plan and reaches nothing at all, and
-        `--validate-only` asks GOOGLE whether each request is valid and creates
-        nothing. The two used to be one flag whose meaning changed between
-        commands — `quota request --dry-run` printed, `setup --dry-run` called
-        Google — which is a trap for whoever learns the flag on one and carries
-        it to the other;
+      * `--dry-run` prints the plan and files nothing, and `--validate-only`
+        asks GOOGLE whether each request is valid and creates nothing. Neither
+        is "reaches nothing": the plan both of them print is computed from a
+        live quota read that has already happened by the time either branch is
+        taken, and the rest of `setup` runs either way. The difference is what
+        is SENT — a dry run sends no request at all, and `--validate-only`
+        sends each one with `--validate-only` so Google checks the real thing.
+        The two used to be one flag whose meaning changed between commands —
+        `quota request --dry-run` printed, `setup --dry-run` called Google —
+        which is a trap for whoever learns the flag on one and carries it to
+        the other;
       * `--no-quota-request` skips the step entirely.
 
     `--non-interactive` submits without the confirmation, because there is no
@@ -1264,8 +1269,17 @@ def ensure_quota_requests(
           f"cannot be deleted once made, only lowered.")
 
     if dry_run:
-        # PRINTS AND REACHES NOTHING. The plan above is the whole output.
-        p.say("dry run — nothing was sent and Google was not contacted. "
+        # PRINTS AND ASKS FOR NOTHING. The plan above is the whole output of
+        # this step.
+        #
+        # It used to say "Google was not contacted", which is true of the
+        # submission and false of the run: the plan being printed was read from
+        # the project's live quota a minute earlier, by this same command. A
+        # sentence about what the tool did is a test assertion written in prose,
+        # and that one asserted something the caller could disprove by watching
+        # it.
+        p.say("dry run — no quota request was sent. The plan above was read "
+              "from this project's live quota; nothing was filed with Google. "
               "To have Google check each request without creating anything: "
               "comfy-qat setup --validate-only")
         for ask in asking:

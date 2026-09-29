@@ -32,6 +32,7 @@ import comfy_qa.host as host_module
 from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.host import app
+from wording import said
 
 HOSTS = """\
 [hosts.local]
@@ -398,7 +399,7 @@ def test_a_probe_that_times_out_and_cannot_be_re_read_claims_nothing(cli):
     result = cli("move", "comfy-win", cloud=cloud)
 
     assert result.exit_code == 1, result.output
-    assert "may be running and billing" in result.output, result.output
+    assert "may be running and billing" in said(result), result.output
     assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
             in result.output), result.output
 
@@ -1532,7 +1533,7 @@ def test_a_failed_stop_that_cannot_be_re_read_does_not_claim_anything(cli):
     result = cli("down", "comfy-win", cloud=cloud)
 
     assert result.exit_code == 1, result.output
-    assert "may still be running and billing" in result.output, result.output
+    assert "may still be running and billing" in said(result), result.output
     assert ("gcloud compute instances stop comfy-win --zone=us-central1-a"
             in result.output), result.output
 

@@ -25,6 +25,7 @@ from comfy_qa import lifecycle, tunnel
 from comfy_qa.cli import app
 
 from fakes import Clock, FakeComfyUI, FakeGcloud, fake_tunnel_launcher, free_port, hosts_toml
+from wording import said
 
 BOX = "comfy-win"
 
@@ -359,7 +360,7 @@ def test_logs_with_nothing_ever_launched_says_the_box_is_still_billing(world):
     # The ssh ran, but the precondition it checks — that something started
     # ComfyUI on that box — is unmet, and no log was read. A refusal.
     assert result.exit_code == 2
-    assert "nothing has started ComfyUI there" in result.output
+    assert "nothing has started ComfyUI there" in said(result)
     assert "running and billing" in result.output
     assert f"comfy-qat down {BOX}" in result.output
 
@@ -533,7 +534,7 @@ def test_the_missing_log_still_gets_its_own_message(world):
 
     no_traceback(result)
     assert result.exit_code == 2, "a precondition unmet is a refusal, not a failure"
-    assert "nothing has started ComfyUI there" in result.output
+    assert "nothing has started ComfyUI there" in said(result)
     assert "did not finish" not in result.output
 
 

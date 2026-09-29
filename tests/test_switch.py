@@ -33,6 +33,7 @@ from comfy_qa.host import _answering as _real_answering
 from comfy_qa.lifecycle import alternatives, running_elsewhere
 from comfy_qa.stamp import Stamp
 from comfy_qa.tunnel import TunnelState
+from wording import said
 
 HOSTS = """\
 [hosts.local]
@@ -294,7 +295,7 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
 
     assert result.exit_code == 1
     assert "no L4 capacity in us-central1-a" in result.output
-    assert "not a fault on your side" in result.output
+    assert "not a fault on your side" in said(result)
     assert "comfy-linux is untouched" in result.output
     assert "where you can test instead" in result.output
     assert "comfy-qat switch comfy-linux   # Ubuntu 22.04, A100" in result.output
@@ -328,8 +329,8 @@ def test_an_ambiguous_selector_refuses_before_anything_is_touched(cli):
                  statuses={"comfy-linux": "RUNNING"})
 
     assert result.exit_code == 2
-    assert "comfy-win (Windows Server 2022, L4)" in result.output
-    assert "comfy-win-2 (Windows Server 2022, A100-80GB)" in result.output
+    assert "comfy-win (Windows Server 2022, L4)" in said(result)
+    assert "comfy-win-2 (Windows Server 2022, A100-80GB)" in said(result)
     assert "windows/l4" in result.output
     assert result.calls == [], "an ambiguous switch still called Google"
 

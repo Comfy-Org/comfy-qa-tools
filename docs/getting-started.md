@@ -68,12 +68,25 @@ Where a request *is* re-sent, it updates the preference already on the project
 rather than filing a second one — a quota preference cannot be deleted, only
 lowered, so duplicates would be permanent.
 
-To see exactly what it would ask for without asking, use `--dry-run`. That is not
-a printed command: it sends each request to Google with `--validate-only`, so
-Google checks the real thing and creates nothing.
+To see exactly what it would ask for without asking, use `--dry-run`. It prints
+the plan and files nothing.
 
 ```sh
 comfy-qat setup --dry-run
+```
+
+Two things `--dry-run` does not mean, both worth knowing before you reach for it.
+It is not offline: the plan is worked out from a live read of your project's
+quota, which is the slow part of `setup` and happens either way. And it covers
+the quota requests only — the rest of the run is unchanged, so a dry run still
+signs you in, still writes your host list, and still speeds up gcloud's tunnels.
+
+If you want Google itself to check each request without creating anything, that
+is `--validate-only`: it sends the real request with `--validate-only` attached,
+so the answer comes from Google rather than from this tool.
+
+```sh
+comfy-qat setup --validate-only
 ```
 
 **CPU quota, and a trap worth knowing about.** Most GPU cards need no CPU quota at
@@ -161,6 +174,20 @@ them that offer the card, ranked by latency measured from where you are sitting,
 and tried in order until one has capacity. Quota is checked *before* anything
 exists, because a refusal costs nothing and a quota failure after the instance
 exists costs money and a cleanup.
+
+Leave either flag off and, at a terminal, you are asked — the operating systems
+and the cards this tool can actually drive, as a numbered list, so neither is
+something you have to already know:
+
+```sh
+comfy-qat create
+```
+
+In a script, a pipe or CI there is nobody to ask, so the same command refuses and
+names what to pass rather than waiting for an answer that cannot come. Either way
+the run says what it settled on — `GPU: l4 (from --gpu)` for a flag you typed,
+`GPU: l4` for one you picked — so a transcript reads the same whichever way the
+command was started.
 
 Run it with `--dry-run` first if you want to see the plan, the quota it read and
 the zone order it would try, without creating anything.

@@ -29,6 +29,7 @@ from comfy_qa.cli import app
 from comfy_qa.gcloud import GcloudError
 
 from fakes import Clock, FakeComfyUI, FakeGcloud, fake_tunnel_launcher, free_port, hosts_toml
+from wording import said
 
 BOX = "comfy-win"
 
@@ -990,5 +991,5 @@ def test_a_port_held_by_something_that_is_not_comfyui_still_refuses(world):
     result = run(world, "go", BOX, "--no-browser")
 
     assert result.exit_code == 1
-    assert "not answering as ComfyUI" in result.output
+    assert "not answering as ComfyUI" in said(result)
     assert "Stop-Process" in result.output, "name the way to clear it"

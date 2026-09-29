@@ -739,11 +739,67 @@ def discover_cmd(
             _forget(path, [host for host, _owner in ghosts], yes=yes)
 
 
+def _os_problem(value: str) -> str | None:
+    """Why `--os <value>` cannot be used, in `plan`'s own words, or None.
+
+    `image_for`, which is the first line of `plan`, rather than a membership
+    test against `os_keys()` — `--os ubuntu` and `--os win` are spellings the
+    tool accepts and a set of the two keys would call them mistakes. The one
+    function decides, here and there.
+    """
+    from .create import image_for
+    from .lifecycle import LifecycleError
+
+    try:
+        image_for(value)
+    except LifecycleError as exc:
+        return str(exc)
+    return None
+
+
+def _gpu_problem(value: str) -> str | None:
+    """Why `--gpu <value>` cannot be used, in `plan`'s own words, or None.
+
+    The same two calls `plan` makes and in the same order: `card_for`, which
+    separates a typo from a real card this tool has no machine type for, and
+    then the GSP test, which is the one that has to keep its own sentence —
+    `--gpu p100` names a card the table knows, that a project can hold quota
+    for, and that would boot, bill, and never see its own GPU.
+
+    Not a second opinion about what a valid card is. Whatever this returns, the
+    value goes to `plan` and `plan` is what refuses; this decides only whether
+    there is a menu worth offering instead of an abort.
+    """
+    from .create import card_for, undrivable
+    from .lifecycle import LifecycleError
+
+    try:
+        card = card_for(value)
+    except LifecycleError as exc:
+        return str(exc)
+    if not card.has_gsp:
+        return str(undrivable(card))
+    return None
+
+
 @app.command("create")
 def create_cmd(
-    os_choice: Annotated[str, typer.Option(
-        "--os", help="linux or windows. One box per OS is the pattern here.")],
-    gpu: Annotated[str, typer.Option(
+    # OPTIONAL, AND ASKED FOR. Both were required options with no menu behind
+    # either, so bare `comfy-qat create` was Typer's `Missing option '--os'.`
+    # and exit 2 — from the command whose own help calls the card "the only real
+    # decision", in a tool that already holds the list of answers. Absent and
+    # there is somebody to ask, `ask.settle` asks; absent with nobody there, it
+    # refuses by name with the same exit code. See `ask.py` for the rule.
+    os_choice: Annotated[Optional[str], typer.Option(
+        # "Left off, you are asked" ALONE would be the same defect this branch
+        # corrected in `setup --dry-run`: a help line true of one way of running
+        # the command and false of the other. In a pipe or a script there is
+        # nobody to ask and the command refuses, which is the half a person
+        # writing the script needs.
+        "--os", help="linux or windows. One box per OS is the pattern here. "
+                     "Left off, you are asked — or, with nobody to ask, told "
+                     "what to pass.")] = None,
+    gpu: Annotated[Optional[str], typer.Option(
         # The whole list, not "l4, t4, a100...". `--help` is one of the places
         # this tool advertises cards, and the trailing dots used to cover four
         # more it knows about and refuses — P4, P100, V100, K80 have no GSP and
@@ -751,7 +807,8 @@ def create_cmd(
         # completing the dots from `quota list` got a card that cannot work.
         # `tests/test_gpu_driver.py` holds this line to `create.drivable_cards()`.
         "--gpu", help="The card: l4, t4, a100, a100-80gb or h100. The machine "
-                      "type follows from it.")],
+                      "type follows from it. Left off, you are asked — or, with "
+                      "nobody to ask, told what to pass.")] = None,
     name: Annotated[Optional[str], typer.Option(
         "--name", help="Name the box. Default: comfy-linux / comfy-win, numbered if taken.")] = None,
     zone: Annotated[Optional[str], typer.Option(
@@ -780,6 +837,8 @@ def create_cmd(
     `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
     off — so the file is read and then rewritten. `--dry-run` writes nothing.
     """
+    from . import ask
+    from . import create as create_mod
     from .create import (
         _refused_regions, build, check_quota, host_entry, next_steps, nowhere,
         order_zones, plan, summary, taken_names,
@@ -805,23 +864,60 @@ def create_cmd(
     # there is deliberately no default and no "the last one you used", because a
     # tool that picks for you is a tool that reads results from the wrong box.
     # Here the box costs money and can land on the wrong continent.
+    # ABOVE THE PROMPTS, deliberately. Both flags are already on the command
+    # line, one of them will be thrown away whatever anybody answers, and asking
+    # two questions before refusing over a third is how a refusal arrives too
+    # late to be read as being about what was typed.
     if zone and region:
         # Quoted, because these four are whatever the user typed and this frame
         # runs BEFORE `plan` has judged any of them. `--os "Ubuntu 22.04"` echoed
         # back bare is `--os Ubuntu 22.04`, on which Typer exits 2 over the stray
         # positional — so a refusal about two flags answers about a third. A
         # value that needs no quoting comes back unchanged.
-        said = [shlex.quote(value) for value in (os_choice, gpu, zone, region)]
+        said = [shlex.quote(value) for value in (zone, region)]
+        # WHAT WAS TYPED, and nothing else. `--os` and `--gpu` are optional now,
+        # so a remedy that restates them restates `None` on the run that left
+        # them off — and the two commands it offers have to be runnable as
+        # printed, which is what the rest of this file spends its refusals on.
+        # Left off here, they are asked for, exactly as they would have been.
+        chosen = "".join(
+            f"--{flag} {shlex.quote(value)} "
+            for flag, value in (("os", os_choice), ("gpu", gpu)) if value)
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
             "pins one zone, --region asks for a choice within one region",
             fix=say.fix(
                 "one or the other:",
-                f"comfy-qat create --os {said[0]} --gpu {said[1]} --zone {said[2]}",
-                f"comfy-qat create --os {said[0]} --gpu {said[1]} --region {said[3]}",
+                f"comfy-qat create {chosen}--zone {said[0]}",
+                f"comfy-qat create {chosen}--region {said[1]}",
             ),
             code=2,
         )
+
+    # THE TWO DECISIONS THIS COMMAND CANNOT MAKE FOR ANYBODY, settled before the
+    # host list is read and long before Google is contacted: a question asked
+    # after a minute of quota reading is a question asked too late, and a
+    # refusal for a missing flag has to cost what Typer's parse error cost.
+    os_menu = create_mod.os_menu()
+    gpu_menu = create_mod.gpu_menu()
+    os_choice = ask.settle(
+        "--os", os_choice,
+        label="OS", question="Which operating system?",
+        options=[key for key, _ in os_menu], notes=[note for _, note in os_menu],
+        problem=_os_problem,
+        missing="--os is required and there is no terminal to ask at: "
+                + " or ".join(key for key, _ in os_menu),
+        fix="comfy-qat create --os linux --gpu l4",
+    )
+    gpu = ask.settle(
+        "--gpu", gpu,
+        label="GPU", question="Which card?",
+        options=[key for key, _ in gpu_menu], notes=[note for _, note in gpu_menu],
+        problem=_gpu_problem,
+        missing="--gpu is required and there is no terminal to ask at: "
+                + ", ".join(key for key, _ in gpu_menu),
+        fix="comfy-qat create --os linux --gpu l4",
+    )
 
     path = config or DEFAULT_CONFIG_PATH
     try:
@@ -1874,9 +1970,14 @@ def rdp_cmd(
         f"stops working",
         expect=f"up to {PASSWORD_TIMEOUT}s",
     ).start()
-    say.detail("gcloud's own warning, which --quiet suppresses: on an account "
-               "that already exists this can lose data encrypted with the old "
-               "password")
+    # `explain`, not `detail`: three clauses and 170 characters is a paragraph,
+    # and as one `detail` line the terminal wrapped it wherever the window ended
+    # and left the second half flush at column 0 — under a step whose own
+    # progress lines are indented, so the warning's tail read as output from
+    # something else. The gutter says where it starts and where it stops.
+    say.explain("gcloud's own warning, which --quiet suppresses: on an account "
+                "that already exists this can lose data encrypted with the old "
+                "password")
     try:
         # Registered for the same reason `create`, `up` and `delete` are: the
         # request reaches Google before the interrupt reaches gcloud, and this
