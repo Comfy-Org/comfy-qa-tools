@@ -1852,6 +1852,44 @@ def test_quota_list_never_blames_cpu_quota_for_a_waived_family(monkeypatch):
             assert "CPU quota" not in line, line
 
 
+def test_quota_list_does_say_when_cpu_quota_blocks_a_card(monkeypatch):
+    """THE OTHER HALF, and the mutation sweep's strongest single finding.
+
+    The test above asserts the CPU tail is ABSENT when it should be. Nothing
+    asserted it was PRESENT when it should be — so `stopped = cpu_blocked(name)`
+    could be replaced with `stopped = ""` and the suite stayed green. The sweep
+    instrumented the closure and ran the whole suite: `cpu_blocked` is called
+    about SIX HUNDRED times and returns empty every single one.
+
+    Six hundred executions of proof that half the test was never written. This
+    is `docs/tests-that-cannot-fail.md`'s "asserting that the wrong output is
+    gone is half a test" with a measurement attached — and it landed on a test
+    whose own docstring is about a guard with a blind spot exactly where the
+    second site was.
+
+    T4 is the one N1 card the tool drives, so it is the one card whose CPU pool
+    is genuinely consulted; the waived families above must stay silent in the
+    same run, which is what makes this the other half of that test rather than
+    a contradiction of it.
+    """
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    # An N1 pool too small for one T4 machine, and a ceiling that is not the
+    # thing biting — so the sentence can only come from the per-family gate.
+    starved_n1 = THIS_PROJECT + [cpu("N1-CPUS-per-project-region", 1),
+                                 cpu(CPU_CEILING_ID, 1000)]
+    cloud = Cloud(quotas=starved_n1)
+    with monkeypatch.context() as patch:
+        patch.setattr("comfy_qa.auth.Gcloud", lambda *a, **k: cloud.gcloud())
+        result = CliRunner().invoke(app, ["quota", "list"])
+
+    assert result.exit_code == 0, result.output
+    t4 = next(l for l in result.output.splitlines() if l.startswith("T4"))
+    assert "CPU quota" in t4, t4
+
+
 # --- `quota request --wait` must not call somebody else's grant an answer ------
 
 
@@ -6866,6 +6904,10 @@ def test_a_denial_is_read_from_the_whole_phrase_not_a_substring():
 
 FAMILY_REGION = "GPUS-PER-GPU-FAMILY-per-project-region"
 FAMILY_ZONE = "GPUS-PER-GPU-FAMILY-per-project-zone"
+# A SECOND region-scoped id carrying the same family. Contrived, and it has
+# to be: `_prefer_region_scope` cannot break a tie between two region-scoped
+# ids, so this is the only shape in which the sort is the only thing deciding.
+OTHER_FAMILY_REGION = "A100-GPUS-PER-GPU-FAMILY-per-project-region"
 
 
 def _family_pair():
@@ -6923,24 +6965,621 @@ def test_the_quota_a_permanent_request_is_filed_against_is_not_chosen_by_order()
     assert target.quota_id == FAMILY_REGION, target
 
 
-def test_a_request_never_carries_a_dimension_its_quota_does_not_define():
+def test_a_machine_type_lookup_is_exact_not_a_prefix():
+    """Mutation sweep, finding 30 — the second-site class, in two functions that
+    are literal copies of each other.
+
+    `zones_offering` has the identical line and IS covered; the machine-type
+    half was never given the same treatment, so `n1-standard-8` also returned
+    the zones of `n1-standard-80` — a machine ten times the size, in zones the
+    one you asked for may not be sold in.
+    """
+    from comfy_qa.zones import zones_with_machine_type
+
+    payload = [{"name": "n1-standard-8", "zone": "https://x/zones/us-central1-a"},
+               {"name": "n1-standard-80", "zone": "https://x/zones/europe-west4-b"}]
+
+    assert zones_with_machine_type(payload, "n1-standard-8") == ["us-central1-a"]
+
+
+def test_a_zone_in_an_unranked_region_is_kept_not_dropped():
+    """Mutation sweep, finding 31. The line's own comment: "dropping a zone
+    silently is the wrong way to find out that something started to." Under the
+    mutation a zone whose region the caller did not rank simply vanishes from
+    the attempt list — the create that would have succeeded there is never
+    tried."""
+    from comfy_qa.zones import _spread
+
+    spread = _spread(["us-central1-a", "asia-east1-a"], ["us-central1"])
+
+    assert set(spread) == {"us-central1-a", "asia-east1-a"}, spread
+    assert spread[0] == "us-central1-a", spread
+
+
+@pytest.mark.parametrize("places,expected", [
+    (["us-east5"], "us-east5"),
+    (["us-east5", "europe-west2"], "us-east5 or europe-west2"),
+    (["a", "b", "c"], "a, b or c"),
+    (["a", "b", "c", "d"], "the 4 regions this project holds quota in"),
+])
+def test_regions_are_named_while_there_are_few_enough_to_name(places, expected):
+    """Mutation sweep, finding 32. `<= 3` -> `<= 1` survived: the tests covered
+    the ONE case and the MANY case and never 2 or 3, so the whole naming band
+    the threshold exists to define was untested and `us-east5 or europe-west2`
+    could silently become "the 2 regions this project holds quota in"."""
+    from comfy_qa.zones import _named
+
+    assert _named(places) == expected
+
+
+def test_meets_answers_rather_than_crashing_on_an_unreadable_limit():
+    """Mutation sweep, finding 24 — and the mutant CRASHES rather than lying.
+
+    `if held is None: return False` in `meets` could be deleted and nothing
+    failed, because nothing in the suite ever calls `meets` with an unreadable
+    held value — though `_as_int_or_none` exists precisely so that `None` is
+    what an absent API value becomes. An earlier survivor in my own sweep said
+    the same thing about the same line; this pins it.
+
+    ABSENT IS NOT ZERO AND IT IS NOT UNLIMITED. "This project reports no such
+    quota" cannot satisfy a request for one.
+    """
+    from comfy_qa.quota import UNLIMITED, meets
+
+    assert meets(None, 1) is False
+    assert meets(None, 0) is False
+    assert meets(UNLIMITED, 10 ** 9) is True
+    assert meets(10 ** 9, UNLIMITED) is False
+    assert meets(0, 1) is False
+    assert meets(1, 1) is True
+
+
+def test_the_ceiling_rule_keeps_the_larger_number_that_was_read():
+    """Mutation sweep, finding 25. `sentinel_yields` exists as a NAMED function
+    rather than a bare `max` so the static sweep can read the intent — and the
+    only thing naming it is `PREDICATES`, the set of functions allowed to order
+    a limit.
+
+    THE SWEEP VERIFIES THE NAME, NOT THE RULE. No behavioural test asserted it
+    returns the larger of two real limits, so `max` could become `min` with
+    everything green. That is "presence, where you meant value", one layer out:
+    on the guard rather than on the code.
+    """
+    from comfy_qa.quota import sentinel_yields
+
+    assert sentinel_yields(None, 4) == 4
+    assert sentinel_yields(4, 8) == 8
+    assert sentinel_yields(8, 4) == 8
+
+
+def test_a_card_is_measured_against_its_own_cpu_family():
+    """Mutation sweep, findings 26-27. Two guards in the CPU layer, both
+    unheld.
+
+    `if dedicated in ids` makes `cpu_target` prefer the card's own family pool;
+    without it an N1 machine falls through to the general pool even where
+    `N1-CPUS-per-project-region` exists. And the family filter in
+    `cpu_allowance` reads EVERY `vm_family`'s row, so a C3D machine is measured
+    against N1's 64 instead of its own 16 — against a docstring that says "the
+    smallest of the gates that apply".
+
+    The payload has to carry MORE THAN ONE family, which is what no fixture
+    did.
+    """
+    from comfy_qa.quota import cpu_allowance, cpu_target
+
+    # THE DEDICATED SHAPE, for `cpu_target`'s own guard: with
+    # `N1-CPUS-per-project-region` present it must be preferred over the general
+    # pool, and without the guard an N1 machine is measured against 512.
+    dedicated = [cpu("N1-CPUS-per-project-region", 64, vm_family="N1"),
+                 cpu(GENERAL_CPUS, 512)]
+    n1 = cpu_target("n1-standard-8", dedicated, region="us-central1")
+    assert n1 is not None and n1.quota_id.startswith("N1-"), n1
+    assert cpu_allowance("n1-standard-8", dedicated,
+                         region="us-central1") == 64
+
+    # AND THE SHARED, FAMILY-DIMENSIONED SHAPE, which is the one the family
+    # filter reads. A fixture built from per-family IDS never reaches that
+    # branch at all — my first one did not, and the mutant survived it.
+    shared = [{"quotaId": "CPUS-PER-VM-FAMILY-per-project-region",
+               "dimensionsInfos": [
+                   {"dimensions": {"vm_family": "N1", "region": "us-central1"},
+                    "applicableLocations": ["us-central1"],
+                    "details": {"value": "64"}},
+                   {"dimensions": {"vm_family": "C3D", "region": "us-central1"},
+                    "applicableLocations": ["us-central1"],
+                    "details": {"value": "16"}}]}]
+
+    assert cpu_allowance("c3d-standard-4", shared, region="us-central1") == 16
+    assert cpu_allowance("n1-standard-8", shared, region="us-central1") == 64
+
+
+def test_a_row_is_placed_by_its_own_dimension_not_by_its_locations():
+    """Mutation sweep, finding 29 — 1,410 differing lines, the largest blast
+    radius in the sweep.
+
+    `explicit = dimensions.get("region") or dimensions.get("zone")` could be
+    replaced with `None` and the suite stayed green, because every fixture
+    carrying a region dimension also carries exactly ONE matching
+    `applicableLocation` — so the `len(locations) == 1` branch below produced
+    the same answer every time.
+
+    The row this needs is one whose `dimensions.region` is not the only entry in
+    its locations, which is the ordinary shape for a quota that is pinned to one
+    region and applicable across the zones within it.
+    """
+    from comfy_qa.quota import rows
+
+    # THE LOCATIONS MUST NOT NARROW TO THE SAME ANSWER. My first fixture used
+    # two ZONES of the one region, and `where_label` narrows those to
+    # "us-central1" — the same string the dimension gives — so the mutant
+    # survived and the test looked fine. The locations here span two REGIONS,
+    # which `where_label` calls "2 regions", so only the dimension can produce
+    # the right answer.
+    pinned = [{"quotaId": L4, "dimensionsInfos": [
+        {"dimensions": {"region": "us-central1"},
+         "applicableLocations": ["us-central1", "europe-west4"],
+         "details": {"value": "1"}}]}]
+
+    assert [row.where for row in rows(pinned)] == ["us-central1"]
+
+
+def test_a_committed_use_allowance_does_not_count_as_runnable():
+    """Mutation sweep, finding 19 — 308 differing lines.
+
+    `test_pools_for_is_tested_directly` asserts WORKSTATION `counts is False`
+    and SPOT `counts is True`, and says nothing about COMMITTED, because its
+    fixture is the live RTX PRO 6000 shape where the committed id is not
+    present. The one pool whose `counts=False` is load-bearing was the one
+    unasserted: a committed-use allowance is a billing commitment, not capacity
+    this tool can spend.
+    """
+    from comfy_qa.quota import COMMITTED, pools_for
+
+    committed_only = [{"quotaId": f"COMMITTED-NVIDIA-L4-GPUS-per-project-region",
+                       "dimensionsInfos": [
+                           {"applicableLocations": ["us-central1"],
+                            "details": {"value": "8"}}]}]
+
+    pool = next(p for p in pools_for("l4", committed_only, [])
+                if p.name == COMMITTED)
+
+    assert pool.counts is False, pool
+    assert pool.usable is False, pool
+
+
+def test_a_pool_is_read_only_where_you_asked():
+    """Mutation sweep, finding 20 — 132 differing lines. `pools_for`'s `--region`
+    filter could be deleted with the suite green, because the only direct test
+    never passes a region: a Spot grant in europe-west4 would be reported as
+    available in us-central1."""
+    from comfy_qa.quota import pools_for
+
+    elsewhere = [{"quotaId": f"PREEMPTIBLE-{L4}", "dimensionsInfos": [
+        {"dimensions": {"region": "europe-west4"},
+         "applicableLocations": ["europe-west4"],
+         "details": {"value": "4"}}]}]
+
+    assert pools_for("l4", elsewhere, [], region="us-central1") == []
+    assert pools_for("l4", elsewhere, [], region="europe-west4") != []
+
+
+def test_a_pool_reports_its_whole_span_not_its_first_row():
+    """Mutation sweep, finding 21. The line exists because "a row won by a
+    non-on-demand pool used to show the on-demand one's", and a Spot pool
+    metered as two per-region rows reported `us-central1` instead of
+    `2 regions`."""
+    from comfy_qa.quota import pools_for
+
+    two_regions = [{"quotaId": f"PREEMPTIBLE-{L4}", "dimensionsInfos": [
+        {"dimensions": {"region": "us-central1"},
+         "applicableLocations": ["us-central1"], "details": {"value": "1"}},
+        {"dimensions": {"region": "europe-west4"},
+         "applicableLocations": ["europe-west4"], "details": {"value": "1"}}]}]
+
+    pool = next(p for p in pools_for("l4", two_regions, []))
+
+    assert pool.where == "2 regions", pool
+
+
+def test_on_demand_wins_a_tie_against_spot():
+    """Mutation sweep, finding 22. `best_pool`'s docstring makes on-demand the
+    tiebreak winner and nothing held it, because no fixture produced two
+    counting pools at the same status. It matters because `create` can only
+    order on-demand: recommending Spot on a tie names a pool the tool cannot
+    spend."""
+    import itertools
+
+    from comfy_qa.quota import ON_DEMAND, SPOT, Pool, best_pool
+
+    on_demand = Pool(ON_DEMAND, L4, 1, "ready", True, "")
+    spot = Pool(SPOT, f"PREEMPTIBLE-{L4}", 1, "ready", True, "reclaimable")
+
+    for order in itertools.permutations([on_demand, spot]):
+        assert best_pool(list(order)).name == ON_DEMAND, order
+
+
+def test_a_ready_workstation_allowance_is_not_usable():
+    """Mutation sweep, finding 23 — 65 differing lines. `Pool.usable` is
+    `counts and status == "ready"`, and dropping `counts` makes a ready
+    WORKSTATION allowance read as capacity. The property is the only thing
+    keeping an unverified VWS grant out of "you can run this"."""
+    from comfy_qa.quota import WORKSTATION, Pool
+
+    vws = Pool(WORKSTATION, "NVIDIA-L4-VWS-GPUS-per-project-region", 4,
+               "ready", False, "workstation")
+
+    assert vws.usable is False, vws
+
+
+def test_the_table_reports_partial_as_partial_not_as_none():
+    """Mutation sweep, finding 14. `status = "partial"` -> `"none"` survives.
+
+    `test_a_partial_grant_is_its_own_state_and_not_pending` asserts
+    `asks()[0].state == "partial"` — the PREFERENCE READER's state. The
+    `Readiness.status` the table actually prints is a different value computed
+    130 lines later, and nothing pinned it. Two values with the same name, one
+    tested.
+
+    What it costs is in the module's own top-of-file comment: `none` renders as
+    "request it", so `quota list` tells a person to re-file an answer Google has
+    already given.
+    """
+    from comfy_qa.quota import readiness
+
+    answered_with_nothing = [quota(L4, 0, locations=["us-central1"])]
+    partial = [preference(L4, granted=0, preferred=2,
+                          state_detail="Quota request partially approved",
+                          dimensions={"region": "us-central1"}, name="l4-part")]
+
+    row = next(r for r in readiness(answered_with_nothing, partial)
+               if r.gpu == "L4")
+
+    assert row.status == "partial", row
+
+
+def test_rank_prefers_the_narrower_claim_on_a_tie():
+    """Mutation sweep, finding 15. `_rank`'s docstring: "the NARROWER CLAIM
+    wins ... Both rows are true; the narrower one is the answer to the question
+    that was asked." The status half of the key was tested and the second
+    element was not, so negating it survived — 28 differing rows."""
+    import itertools
+
+    from comfy_qa.quota import Readiness, _rank
+
+    narrow = Readiness("L4", "us-central1", 1, "ready", L4, 0, 0, 1)
+    wide = Readiness("L4", "us-central1", 1, "ready", L4, 0, 0, 40)
+
+    for order in itertools.permutations([narrow, wide]):
+        assert min(order, key=_rank) is narrow, order
+
+
+def test_a_row_naming_no_place_still_describes_one():
+    """Mutation sweep, finding 16. The `or 1` is written under "A row with no
+    `applicableLocations` still describes one place — the quota itself — so the
+    split has something to divide." Dropping it makes a zero-limit row report
+    `never_asked_in: 0` instead of 1: never having asked becomes invisible."""
+    from comfy_qa.quota import readiness
+
+    no_places = [{"quotaId": L4, "dimensionsInfos": [
+        {"details": {"value": "0"}, "applicableLocations": []}]}]
+
+    row = next(r for r in readiness(no_places) if r.gpu == "L4")
+
+    assert row.never_asked_in == 1, row
+
+
+def test_summarise_chooses_its_status_rather_than_inheriting_it():
+    """Mutation sweep, finding 17. `min(..., key=_ORDER)` -> `entries[0].status`
+    survives, because `readiness` already sorts by `_ORDER` before returning —
+    so `entries[0]` is the most favourable row for every caller in the suite.
+
+    The `min()` is doing nothing today and is the only thing between the
+    collapse and whatever order a future caller hands it. Called directly, in
+    an order `readiness` would never produce, which is the only way to see it.
+    """
+    import itertools
+
+    from comfy_qa.quota import Readiness, summarise
+
+    ready = Readiness("L4", "us-central1", 1, "ready", L4, 0, 0, 0)
+    none = Readiness("L4", "europe-west4", 0, "none", L4, 0, 0, 1)
+
+    for order in itertools.permutations([ready, none]):
+        assert summarise(list(order))[0].status == "ready", order
+
+
+def test_the_refused_split_is_summed_over_every_row_not_the_winning_ones():
+    """Mutation sweep, finding 18. The line carries a comment describing this
+    exact defect — "a card denied in one region and never asked about in 42
+    reported 'refused in 1, never asked in 0', because the 42 `none` rows were
+    filtered out one line above". The correction landed and nothing held it.
+
+    Needs a card whose WINNING status differs from the status of the rows
+    carrying the counts: ready in one region, denied in another.
+    """
+    from comfy_qa.quota import readiness, summarise
+
+    split = [{"quotaId": L4, "dimensionsInfos": [
+        {"dimensions": {"region": "us-central1"}, "details": {"value": "1"},
+         "applicableLocations": ["us-central1"]},
+        {"dimensions": {"region": "europe-west4"}, "details": {"value": "0"},
+         "applicableLocations": ["europe-west4"]}]}]
+    denied_there = [preference(L4, granted=0, preferred=1,
+                               state_detail=DENIED_DETAIL,
+                               dimensions={"region": "europe-west4"},
+                               name="l4-euw-no")]
+
+    card = next(c for c in summarise(readiness(split, denied_there))
+                if c.gpu == "L4")
+
+    assert card.status == "ready", card
+    assert card.refused_in == 1, (
+        f"the refusal was summed over the winning rows only: {card}")
+
+
+def test_an_accelerator_row_reporting_zero_still_counts_as_a_card():
+    """Mutation sweep, finding 11. `max(1, int(accel["acceleratorCount"]))` is
+    documented intent — "a count that reads as zero or less is counted as one
+    rather than dropped: an unfamiliar payload shape is not evidence of an empty
+    machine, a card that is there is spending, and guessing low here is the
+    direction that costs money."
+
+    The tests covered the `except (TypeError, ValueError)` half — a MISSING
+    count — and not the `0` half, so `max(1, ...)` could be dropped with the
+    suite green and a running GPU box would stop counting against the ceiling.
+    """
+    from comfy_qa.create import _cards_running
+
+    zero_count = [{"name": "box-a", "guestAccelerators": [
+        {"acceleratorType": "nvidia-l4", "acceleratorCount": 0}]}]
+
+    assert _cards_running(zero_count) == 1, (
+        "a box reporting zero cards was read as holding none")
+
+
+def test_a_refused_region_is_not_offered_back_as_somewhere_to_ask():
+    """Mutation sweep, finding 13. `askable_regions`' docstring says "metered,
+    stocked, NOT REFUSED", and the refused half was untested — every call site
+    in the suite passed an empty `refused`.
+
+    `create`'s `_ask_somewhere` exists precisely because "a refusal somewhere is
+    not a refusal everywhere", and the remedy must not point back at the region
+    Google has already said no to. Dropping the subtraction sends somebody to
+    re-file exactly the request that was refused, which is the one instruction
+    this tool must never print.
+    """
+    from comfy_qa.auth import Availability, askable_regions
+
+    metered_both = [quota(L4, 1, locations=["us-central1", "europe-west4"])]
+    sells = Availability(looked=True,
+                         where={"L4": ("us-central1", "europe-west4")})
+
+    offered = askable_regions("L4", metered_both, sells,
+                              refused=("us-central1",))
+
+    assert "us-central1" not in offered, offered
+    assert "europe-west4" in offered, offered
+
+
+def test_a_row_labelled_with_a_region_but_listing_global_covers_everywhere():
+    """Mutation sweep, finding 12 — the single widest survivor, 123 differing
+    behaviours in the fingerprint.
+
+    `if "global" in locations:` in `_applies` could be replaced with `if False:`
+    and the suite stayed green. `_applies` is read by `readiness`, `allowance`,
+    `pools_for`, `covers_dimensions` and `resolve_target`, so this branch is
+    underneath most of the module.
+
+    `test_the_project_wide_ceiling_applies_wherever_you_ask` is the test for
+    exactly this and it drives the ceiling through `readiness`, whose row hits
+    the EARLIER `where in ("global", region)` branch first. The third branch — a
+    row whose `where` is a REGION NAME but whose `applicableLocations` contain
+    `global` — was never built, so the test that names this behaviour never
+    reached the line implementing it.
+    """
+    from comfy_qa.quota import _applies
+
+    assert _applies("us-central1", ["global"], "europe-west4") is True
+    # And the guard standing aside: a row naming real regions is still judged
+    # against them, or "covers everywhere" would be the answer to everything.
+    assert _applies("us-central1", ["us-central1"], "europe-west4") is False
+
+
+def test_a_card_granted_less_than_one_machine_is_still_requested():
+    """Mutation sweep, finding 6. `setup.py` reports GRANTED on a grant that
+    cannot start the card.
+
+        if held == UNLIMITED or (held if held is not None else 0) >= card.count:
+
+    Replacing `card.count` with `1` survives, because every fixture in the suite
+    grants either ZERO or the card's full count — so the two can never disagree.
+    A project holding 1 H100 is reported GRANTED and no request is filed, for a
+    card that comes as an `a3-highgpu-8g`: eight GPUs in one machine.
+
+    Same class as `_ceiling_wanted`'s own docstring — "holding H100 quota and a
+    ceiling of 2 means a create that passes the per-card gate and fails at the
+    ceiling" — one gate earlier.
+    """
+    from comfy_qa.create import card_named
+
+    h100 = card_named("h100")
+    assert h100 is not None and h100.count > 1, h100
+
+    one_card = [family(1, "NVIDIA_H100", locations=["us-central1"]),
+                quota(CEILING, 8, locations=["global"])]
+    plan = {a.label: a for a in plan_quota(one_card, PREFS_NONE,
+                                           region="us-central1")}
+
+    h100_ask = next(a for label, a in plan.items() if "H100" in label)
+    assert h100_ask.outcome == REQUEST, (
+        f"granted on {1} of the {h100.count} one machine needs: {h100_ask}")
+
+
+def test_setup_never_files_against_the_general_cpu_pool():
+    """Mutation sweep, finding 7. `_cpu_request`'s own docstring says the
+    general pool is NOT asked for — "they govern every VM on the project, GPU or
+    not, so raising them is a different conversation with a different reviewer —
+    not something a setup command should file on somebody's behalf" — and
+    nothing held it.
+
+    Dropping the `startswith(machine_family_of(card))` half of the guard
+    survives: on a project with no `N1-CPUS-per-project-region`, `cpu_target`
+    falls back to `CPUS-per-project-region` and the mutant files against it.
+    """
+    general_only = [quota(T4, 0, locations=["us-central1"]),
+                    quota(CEILING, 1, locations=["global"]),
+                    quota("CPUS-per-project-region", 0,
+                          locations=["us-central1"])]
+
+    plan = plan_quota(general_only, PREFS_NONE, region="us-central1")
+    filed = [a.target.quota_id for a in plan
+             if a.submits and a.target is not None]
+
+    assert not [q for q in filed if "CPUS" in q and "N1-" not in q], filed
+
+
+def test_two_asks_on_one_pair_collapse_to_the_larger(monkeypatch):
+    """Mutation sweep, findings 8-9. `_one_ask_per_pair` keys on (quota id,
+    dimensions) and keeps the larger value, and NEITHER half was held.
+
+    `setup.py` says outright that the branch "cannot run with the current card
+    table ... kept as a guard against a shape the table does not produce today".
+    That is true, and it is the argument FOR this test rather than against it: a
+    guard nothing exercises is a guard nobody notices breaking when the table
+    changes, and what it guards against is filing two requests on one pair —
+    "Google refuses the second outright ... exactly the duplicate this feature
+    is built to avoid".
+
+    Called directly, because the shape cannot be produced through `plan_quota`.
+    Both orders, because keeping the larger must not depend on which arrived
+    first.
+    """
+    from comfy_qa.quota import Target
+    from comfy_qa.setup import QuotaAsk, REQUEST, _one_ask_per_pair
+
+    pair = Target(L4, (("region", "us-central1"),))
+    small = QuotaAsk("l4", "L4", REQUEST, "one", pair, 1)
+    large = QuotaAsk("l4-alias", "L4-alias", REQUEST, "eight", pair, 8)
+
+    for order in ([small, large], [large, small]):
+        collapsed = _one_ask_per_pair(list(order))
+        assert len(collapsed) == 1, collapsed
+        assert collapsed[0].value == 8, collapsed
+
+
+def _family_zone_only():
+    """A family metered ONLY per zone, so no region-scoped row exists to prefer."""
+    return [{"quotaId": FAMILY_ZONE, "dimensionsInfos": [
+        {"dimensions": {"gpu_family": "NVIDIA_H100"},
+         "applicableLocations": ["us-central1-a"],
+         "details": {"value": "-1"}}]}]
+
+
+@pytest.mark.parametrize("quotas", [
+    _family_pair(), list(reversed(_family_pair())), _family_zone_only(),
+])
+def test_a_request_never_carries_a_dimension_its_quota_does_not_define(quotas):
     """F1's second half, and the reachability that makes it matter.
 
     The `--gpu` path takes this Target verbatim and appends it with no
     `needs_region` check; only the raw `--quota-id` path re-checks. So the
     invariant belongs on the Target itself rather than on one caller: if the
     quota id does not define a region, the Target must not carry one.
+
+    THE THIRD CASE IS THE WHOLE TEST, and it was missing. A mutation sweep
+    replaced `if needs_region(quota_id):` with `if True:` and this stayed green,
+    because both original fixtures supply a region-scoped record and
+    `_prefer_region_scope` drops the zone one before the assertion is reached —
+    so `needs_region(...)` was True on every iteration and the assertion read
+    `True == True` with and without the guard. The branch it exists to pin was
+    never taken.
+
+    With a family metered ONLY per zone the mutant builds
+
+        Target('GPUS-PER-GPU-FAMILY-per-project-zone',
+               (('gpu_family','NVIDIA_H100'), ('region','us-central1-a')))
+
+    a permanent request carrying a ZONE as a region, on a quota that defines no
+    region at all — the `INVALID_ARGUMENT: Dimension values must be set for all
+    the dimensions` shape `needs_region`'s own docstring records.
     """
     from comfy_qa.quota import needs_region, resolve_target
 
-    for order in (_family_pair(), list(reversed(_family_pair()))):
-        target = resolve_target("h100", order, family="NVIDIA_H100",
-                                region="us-central1")
-        assert target is not None
-        carries = dict(target.dims)
-        assert ("region" in carries) == needs_region(target.quota_id), (
-            f"{target.quota_id} defines region={needs_region(target.quota_id)} "
-            f"and the request carries {carries}")
+    target = resolve_target("h100", quotas, family="NVIDIA_H100",
+                            region="us-central1")
+    assert target is not None
+    carries = dict(target.dims)
+    assert ("region" in carries) == needs_region(target.quota_id), (
+        f"{target.quota_id} defines region={needs_region(target.quota_id)} "
+        f"and the request carries {carries}")
+
+
+def test_the_scope_preference_is_what_decides_where_the_region_comes_from():
+    """TWO GUARDS PRODUCING ONE OBSERVABLE IS ONE GUARD, as far as a suite is
+    concerned — findings 2-3 of the mutation sweep, and a shape this project had
+    not named before.
+
+    `resolve_target` carries two independent guards: `_prefer_region_scope` over
+    the rows, and `sorted(...)[0]` over the resulting ids. The test above
+    asserts `target.quota_id == FAMILY_REGION`, which EITHER guard produces
+    alone — `sorted()` happens to pick `...-per-project-region` over
+    `...-per-project-zone` because "region" sorts before "zone", a coincidence
+    of spelling rather than a rule — so each one survived being deleted while
+    the other was still there. A future refactor can remove either invisibly.
+
+    They are not the same rule. This one pins `_prefer_region_scope`'s OTHER
+    job: it governs which rows the region fallback derives from. With the
+    zone-scoped record carrying the only places and no `--region` supplied, the
+    scope preference leaves nothing to derive a region from and the answer is
+    None — a refusal to build a request. Without it, the zone `us-central1-a`
+    becomes the `region` dimension of a permanent preference.
+    """
+    from comfy_qa.quota import resolve_target
+
+    zone_carries_the_places = [
+        {"quotaId": FAMILY_ZONE, "dimensionsInfos": [
+            {"dimensions": {"gpu_family": "NVIDIA_H100"},
+             "applicableLocations": ["us-central1-a"],
+             "details": {"value": "-1"}}]},
+        {"quotaId": FAMILY_REGION, "dimensionsInfos": [
+            {"dimensions": {"gpu_family": "NVIDIA_H100"},
+             "applicableLocations": [], "details": {}}]},
+    ]
+
+    target = resolve_target("h100", zone_carries_the_places,
+                            family="NVIDIA_H100")
+
+    assert target is None, (
+        f"derived a region from a zone-scoped row: {target}")
+
+
+def test_the_sort_is_what_makes_two_region_scoped_ids_deterministic():
+    """The other half of findings 2-3, pinning the guard the test above cannot
+    see.
+
+    `_prefer_region_scope` cannot break a tie between two ids that are BOTH
+    region-scoped — it drops zone rows and stops. Only the sort decides, and
+    with the sort removed the answer moves with the order the API listed the
+    records in: an irrevocable request filed against a different quota id on a
+    different day, with nothing in the output to show it moved.
+    """
+    from comfy_qa.quota import resolve_target
+
+    def both(order):
+        return [{"quotaId": quota_id, "dimensionsInfos": [
+            {"dimensions": {"gpu_family": "NVIDIA_H100"},
+             "applicableLocations": ["us-central1"], "details": {}}]}
+            for quota_id in order]
+
+    first = resolve_target("h100", both([FAMILY_REGION, OTHER_FAMILY_REGION]),
+                           family="NVIDIA_H100", region="us-central1")
+    second = resolve_target("h100", both([OTHER_FAMILY_REGION, FAMILY_REGION]),
+                            family="NVIDIA_H100", region="us-central1")
+
+    assert first == second, (first, second)
+    assert first is not None
+    assert first.quota_id == OTHER_FAMILY_REGION, first
 
 
 def test_the_family_branch_never_builds_region_global():
@@ -7048,6 +7687,38 @@ def test_which_standing_request_is_addressed_does_not_depend_on_row_order():
     assert one is not None and other is not None
     assert one.preference_id == other.preference_id, (one, other)
     assert one.preferred == 4, one
+
+    # THE OTHER TWO KEYS. Findings 4-5 of the mutation sweep: with `preferred=4`
+    # beside `preferred=2` only the MIDDLE key of the three is ever exercised —
+    # the UNLIMITED key is False for both and the preference-id key is never
+    # reached — so two thirds of the rule this function states could be deleted
+    # with the suite green, on the tie-break that decides WHICH PREFERENCE ID
+    # GETS UPDATED.
+    unlimited = preference(T4, granted=0, preferred=UNLIMITED, reconciling=True,
+                           dimensions={"region": "us-central1"}, name="t4-unl")
+    finite = preference(T4, granted=0, preferred=2, reconciling=True,
+                        dimensions={"region": "us-central1"}, name="t4-two")
+    for order in ([unlimited, finite], [finite, unlimited]):
+        picked = matching_ask(target, order)
+        assert picked is not None and picked.preferred == UNLIMITED, (
+            f"a finite request outranked an unlimited one: {picked}")
+
+    # ABSENT RANKS LAST, and it has to rank BELOW zero rather than level with
+    # it: tied, the decision falls to the preference id, which is arbitrary.
+    # THE NAMES ARE ADVERSARIAL ON PURPOSE. With the absent request named
+    # `t4-absent` and the zero named `t4-zero`, ranking absent level with zero
+    # still picked the zero — the preference-id key broke the tie the right way
+    # BY ACCIDENT, and the mutant survived. The fixture was doing the work the
+    # rule is supposed to do. Named so the id key breaks the tie the WRONG way,
+    # the assertion can only pass if absent really does rank below zero.
+    absent = preference(T4, granted=0, preferred=None, reconciling=True,
+                        dimensions={"region": "us-central1"}, name="t4-zzz")
+    zero = preference(T4, granted=0, preferred=0, reconciling=True,
+                      dimensions={"region": "us-central1"}, name="t4-aaa")
+    for order in ([absent, zero], [zero, absent]):
+        picked = matching_ask(target, order)
+        assert picked is not None and picked.preferred == 0, (
+            f"an absent standing value tied with a zero: {picked}")
 
 
 @pytest.mark.parametrize("passed,missing", [

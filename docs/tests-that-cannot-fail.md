@@ -2059,6 +2059,55 @@ and compare. It costs nothing, and it catches the class this module had already
 written an explicit ordering rule for in four other places — and missed in the
 fifth, which was the one whose answer becomes the target of a permanent request.
 
+## Two guards producing one observable is one guard
+
+A mutation sweep found this and no reading pass had:
+
+```python
+found = _prefer_region_scope([...])                    # delete this -> suite green
+quota_id = sorted({row.quota_id for row in found})[0]  # delete this -> suite green
+```
+
+**Each survives removal individually.** Not because either is dead code — both
+are load-bearing — but because the test asserts an outcome that *either one
+alone* produces. `sorted()` picks `...-per-project-region` over
+`...-per-project-zone` because "region" sorts before "zone", a coincidence of
+spelling; and `_prefer_region_scope` has already reduced the list to one row, so
+the sort has nothing left to decide. The test asserted `target.quota_id ==
+FAMILY_REGION` and could not tell which guard delivered it.
+
+They are not the same rule. `_prefer_region_scope` also governs which rows the
+region fallback derives from, so deleting it turns a refusal into a permanent
+request carrying a **zone** as its region. A future refactor can remove either
+one, see a green suite, and ship.
+
+> **A suite counts guards by observables, not by lines.** Two guards that
+> produce one observable are one guard as far as it is concerned — and the
+> redundancy is invisible until one of them is deleted, at which point it is no
+> longer redundant.
+
+This is the sibling of "a defect can walk through the seam between two correct
+tests", with guards in place of tests, and it has the same two fixes:
+
+- **Give each guard its own observable.** Here: one test where only
+  `_prefer_region_scope` can produce the answer (zone-scoped row carrying the
+  only places, no region supplied — the answer must be a refusal), and one where
+  only the sort can (two distinct *region*-scoped ids, both orders). Neither can
+  be an assertion about the same field as the other.
+- **Or make them one function**, so there is one thing to delete and one thing
+  to test.
+
+The check is mechanical and worth running on any pair of guards on a path that
+matters: **delete one, run the suite.** If it is green, you have one guard, and
+you do not know which.
+
+A related fixture trap surfaced while fixing it. A tie-break's last key is the
+preference id, and the test that exercised it named its records `t4-absent` and
+`t4-zero` — so when the rule under test was mutated away, the id key broke the
+tie *the right way by accident* and the mutant survived. Renaming them so the id
+key breaks it the **wrong** way made the test real. **When a fixture's incidental
+details can produce the expected answer, they will.**
+
 ## A guard inherits something incidental from the defect you wrote it against
 
 This has now happened **three times in one session**, to three unrelated guards,
@@ -2228,6 +2277,40 @@ new copy of the harness.
 The control now sits in the sweep itself: a docstring-only mutant that must
 SURVIVE beside real mutants that must be KILLED. A sweep where everything dies is
 as suspect as one where nothing does.
+
+### And a third way, which is not the harness at all
+
+```
+mutation A -> run -> mutation B, same byte length, same second -> run
+```
+
+CPython invalidates a `.pyc` on `(mtime, size)`. Two edits of the **same byte
+length** written **within the same second** match on both, so the second run
+imports the first run's bytecode and reports a verdict about code that was never
+executed. It produced four spurious results in a fast differential where each
+iteration took about a second. Full mutation sweeps are not affected — an
+iteration is nine seconds or more, so the mtimes always differ — which is
+precisely why it is worth recording: **the bug only appears when the instrument
+gets faster.** Making a harness quicker can make it start lying.
+
+    PYTHONDONTWRITEBYTECODE=1, and remove __pycache__ before each run.
+
+That is now **three distinct mechanisms** by which a mutation sweep has silently
+reported the opposite of the truth in this project: a shell that did not
+word-split, a harness copy that lost its control, and the interpreter's own
+bytecode cache. They have nothing in common except the failure mode — every one
+printed a confident clean sweep.
+
+> An instrument that can lie silently is worse than no instrument, because it
+> converts "we did not check" into "we checked and it was fine". Every sweep
+> here carries a control that must survive and real mutants that must die, and
+> the run is only believed if both halves come back as expected.
+
+A fourth near-miss, from the same week, is worth the same line. A sweep's
+backup copies were written to `/tmp`, and `/tmp` was cleaned mid-run: the
+restore step failed silently, and three mutants came back SURVIVED that a
+by-hand re-run then killed. **Put a sweep's only copy of the tree somewhere
+that is not swept**, and re-verify any survivor by hand before you believe it.
 
 ## Provenance
 

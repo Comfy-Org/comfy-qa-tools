@@ -1566,6 +1566,14 @@ def quota_request_cmd(
                  fix=say.fix("comfy-qat quota request --gpu l4,a100",
                              "or --quota-id, to name a raw quota id exactly"),
                  code=2)
+    # REDUNDANT TODAY, AND KEPT — said here rather than left looking covered.
+    # A mutation sweep showed this guard survives being reverted to the raw
+    # `if not gpu and not quota_id`, because the typed-but-empty guard above
+    # already catches every case that reaches it. It is not dead: it is the
+    # branch for "neither flag was given at all", which the guard above does not
+    # answer, and it would be the only thing standing if that one were narrowed.
+    # A survivor with a reason written down is a decision; one left silent is
+    # something the next sweep has to rediscover.
     if not named and not quota_id:
         say.fail("name a card to ask for",
                  fix=say.fix("comfy-qat quota request --gpu l4,a100",

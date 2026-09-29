@@ -79,6 +79,22 @@ def test_user_spelling_is_forgiven(typed):
     assert matches(typed, "NVIDIA-L4-GPUS-per-project-region")
 
 
+@pytest.mark.parametrize("typed", ["a100-80gb", "a100_80gb", "A100 80GB",
+                                   "  A100-80GB  ", "a100 80 gb"])
+def test_every_spelling_the_docstring_names_is_forgiven(typed):
+    """Mutation sweep, finding 28. `flatten`'s docstring names THREE forms —
+    hyphen, underscore and SPACE — and the parametrisation above covers the
+    first two. Dropping `.replace(" ", "")` survived, so `A100 80GB` stopped
+    naming the card the docstring says it names.
+
+    A docstring listing three cases and a test covering two is the cheapest
+    version of a test that cannot fail: the third case reads as covered.
+    """
+    from comfy_qa.quota import same_card
+
+    assert same_card(typed, "A100-80GB")
+
+
 def test_l4_does_not_match_a100():
     assert not matches("l4", "NVIDIA-A100-GPUS-per-project-region")
 
