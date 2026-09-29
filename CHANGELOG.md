@@ -3,6 +3,61 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.2.0 — every GPU asked for at setup, and a terminal that reads
+
+Two things. `setup` now asks Google for every GPU this project could run, and
+every surface tells the truth about the answer — ready, pending, denied with
+the reason, or not creatable here. And the output that carries those answers
+was rewritten to be read rather than merely to be correct.
+
+The first was driven against a live project with real billing throughout, not
+fixtures. Google refused six of seven requests automatically, which is account
+standing rather than anything this tool does — but finding that out is the
+point, and along the way it turned up a 96 GB Blackwell the project already
+held through a Spot quota pool nothing was reading.
+
+### Added
+
+- **All four quota pools are read per card**, not just on-demand: Spot,
+  committed use and workstation allowances are enumerated too. A card's status
+  is the most favourable state it has anywhere, with the pool named. RTX PRO
+  6000 was reported as denied for months while a granted Spot allowance sat
+  unread.
+- **`create` asks when it can.** `--os` and `--gpu` were required with a menu
+  for neither, so a bare `comfy-qat create` was a Typer parse error while
+  `drivable_cards()` already held the answer. At a terminal it now asks; with
+  no terminal it names the values and a command that runs. A supplied flag is
+  confirmed where the prompt would have been, so a scripted run and an
+  interactive one produce the same transcript.
+- **A region is checked before a request is filed for it.** Asking for quota in
+  a region that stocks no NVIDIA card buys a grant that can never start a box,
+  and a quota preference cannot be withdrawn.
+
+### Changed
+
+- **Denied is no longer rendered as "none — request it".** Google's answer and
+  the absence of a question are different facts; the tool was advising users to
+  re-file requests that had been refused seconds earlier.
+- **Prose wraps at 96 columns.** 112 message literals were over that before any
+  value was interpolated, and every one reached the terminal unbroken — the GSP
+  refusal was 372 characters on one line. Commands, URLs and the `to fix:`
+  block are deliberately left whole: a wrapped command is the one part of a
+  message meant to be copied becoming the one part that cannot be.
+- **Every failing check carries its own fix**, not just the first.
+
+### Fixed
+
+- **`quota request` could destroy quota you hold.** `--value` defaulted to `1`
+  and a re-run addresses an existing preference by its own id, so running it to
+  check on a standing request for 8 silently replaced it with 1. Lowering now
+  requires `--allow-lower`, releasing requires `--release-quota` as well, and
+  neither can be reached by a value nobody typed.
+- **`quota list` crashed** on any denied preference where Google omits a value,
+  which it does whenever that value is zero.
+- **`--dry-run` said three different things.** Its help claimed it would make no
+  call to Google; the plan is computed from a live quota read. The help, the
+  runtime line, the docstring and the docs now agree with the code.
+
 ## 1.1.0 — the deprecation window closes, and the first real hardware
 
 Two things, and the second is the larger one. One release of notice, and the
