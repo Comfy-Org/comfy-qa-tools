@@ -2255,6 +2255,51 @@ plausible in every case.
 > A background job that writes to the working tree is a second author. Run it
 > alone, or do not run it.
 
+### The same hazard from the other side, and it is worse
+
+It happened again, and this time the sweep was mine and the reader was somebody
+else. They ran the full suite against the shared tree twice and got **one
+failure each time, a different test each time**:
+
+```
+run 1:  FAILED test_the_sort_is_what_makes_two_region_scoped_ids_deterministic
+run 2:  FAILED test_which_standing_request_is_addressed_does_not_depend_on_row_order
+```
+
+Both passed in isolation — one of them 5/5 alone. Both were order-determinism
+tests, on the path that files irrevocable requests. That is a frightening
+signature, and the two hypotheses it suggests are both serious: **process-global
+test pollution**, which would make every result the sweep produced untrustworthy,
+or **a real intermittent order-dependence** in the code.
+
+It was neither. It was my mutation sweep, observed live. Mutants 03 and 04 were
+applied in exactly that order, each kills exactly one test, and reintroducing
+them reproduces both failures byte for byte — same test names, same
+`1 failed, 9099 passed`. Eight subsequent full-suite runs on a still tree — four
+random hash seeds and four fixed — were clean.
+
+The first version of this lesson was written from the EDITOR's side: do not run
+the product against a tree something else is editing. The other side is worse,
+because **the reader has no way to tell.** A mutant is indistinguishable from a
+regression: the suite is the instrument, and its output is exactly what a real
+intermittent defect would produce. The reader did the right thing at every step —
+ran it twice, isolated the test, ran it five times alone, refused to diagnose a
+moving tree, and reported rather than concluded — and none of that could have
+revealed the cause, because the cause was not in the tree they were reading.
+
+Two practices, and the second is the one that actually works:
+
+- **A sweep must announce itself.** A marker file in the repo root, removed on
+  exit, so anyone running the suite can see why it is red.
+- **Better: a sweep must not touch the shared tree at all.** Run it in a `git
+  worktree`, or a copy. The reviewer's own sweep did this — separate worktrees,
+  `git diff` empty afterwards, all five files byte-identical — and it is the
+  reason their 201 mutations cost nobody a false alarm while mine cost two.
+
+> A sweep that mutates the tree other people read does not have a coordination
+> problem. It has a **correctness** problem: it is publishing false failures,
+> and they are indistinguishable from the true ones it exists to find.
+
 ## The instrument failed the same way twice in one session
 
 Class 4 is *an instrument with only one branch*. It happened twice on the same

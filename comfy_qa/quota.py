@@ -1716,7 +1716,7 @@ def resolve_target(
     # the order the API listed records in — an irrevocable action whose target
     # moves with list order is not reproducible, and nothing in the output
     # would show it had moved.
-    quota_id = found[0].quota_id
+    quota_id = sorted({row.quota_id for row in found})[0]
     # AND ONLY THE DIMENSIONS THIS QUOTA DEFINES. The `--gpu` path takes this
     # Target verbatim with no `needs_region` check — only `--quota-id` re-checks
     # — so the invariant belongs on the Target rather than on one caller.
