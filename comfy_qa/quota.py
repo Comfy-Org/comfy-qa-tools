@@ -1720,7 +1720,9 @@ def resolve_target(
     # AND ONLY THE DIMENSIONS THIS QUOTA DEFINES. The `--gpu` path takes this
     # Target verbatim with no `needs_region` check — only `--quota-id` re-checks
     # — so the invariant belongs on the Target rather than on one caller.
-    dims = {_FAMILY_DIMENSION: family, "region": where}
+    dims = {_FAMILY_DIMENSION: family}
+    if needs_region(quota_id):
+        dims["region"] = where
     return Target(quota_id, tuple(sorted(dims.items())))
 
 
