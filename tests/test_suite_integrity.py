@@ -68,6 +68,7 @@ REQUIRED = {
     "test_create_cli",
     "test_create_e2e",
     "test_create_hostile",
+    "test_create_prompts",
     "test_detached",
     "test_detached_e2e",
     "test_discover",

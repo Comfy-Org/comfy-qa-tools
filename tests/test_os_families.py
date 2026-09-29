@@ -58,6 +58,11 @@ EXPECTED_READERS = {
     ("config", "_matches_os"): "SELECTOR, not a family. Deliberately not merged.",
     ("config", "describe"): "renderer — one-line description of a host",
     ("create", "steps"): "renderer — what `create` says it is about to build",
+    # The `--os` menu `create` offers when the flag was left off. A RENDERER,
+    # and the pairing is the point: it returns (key, os) together precisely so
+    # that the caller building a prompt cannot reach for the display name the
+    # way `create.build` once did. What goes back to `--os` is the key.
+    ("create", "os_menu"): "renderer — the `--os` prompt's rows, key and image",
     # `create.build` was here, and its reason was WRONG in a way this list was the
     # last place anyone would look for it. The line read: the fix line for a
     # stockout hands back a whole `comfy-qat create --os ... --gpu ... --region

@@ -34,6 +34,8 @@ from comfy_qa.setup import (
     REQUEST, UNAVAILABLE, Prompts, SetupStopped, ensure_quota_requests,
     plan_quota, request_region, run_setup,
 )
+from comfy_qa.say import FIX_LABEL
+from wording import said
 
 # --- the shapes, all from a live project -------------------------------------
 
@@ -4454,7 +4456,7 @@ def test_dry_run_puts_only_commands_on_stdout(monkeypatch):
     for line in result.stdout.splitlines():
         assert not line.strip() or line.startswith("gcloud "), (
             f"not a command, on stdout: {line!r}")
-    assert "would lower it" in result.stderr, result.stderr
+    assert "would lower it" in said(result.stderr), result.stderr
 
 
 def test_a_raw_family_quota_id_is_refused_rather_than_sent_without_its_family(
@@ -7755,7 +7757,17 @@ def test_the_zero_refusal_names_the_flag_that_is_actually_missing(
                   "--value", "0", *passed])
 
     assert not cloud.submitted, cloud.submitted
-    refusal = next(ln for ln in result.output.splitlines() if "refusing" in ln)
+    # THE REFUSAL AND NOT THE FIX UNDER IT, which is what picking a single line
+    # was for: the `to fix:` block names both flags correctly, so folding it in
+    # would make the "did not name the one I passed" half pass for the wrong
+    # reason. `say` wraps a refusal at 96 columns and this one runs to 197
+    # characters, so "the line containing it" is no longer the whole sentence —
+    # the lines from `refusing` down to the `to fix:` label are.
+    lines = result.output.splitlines()
+    start = next(i for i, ln in enumerate(lines) if "refusing" in ln)
+    end = next((i for i, ln in enumerate(lines[start:], start)
+                if ln.startswith(FIX_LABEL)), len(lines))
+    refusal = said("\n".join(lines[start:end]))
     assert missing in refusal, refusal
     for already in passed:
         assert already not in refusal, (

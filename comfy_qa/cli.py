@@ -154,9 +154,19 @@ def setup_cmd(
              "of what the tool does, and prints it before sending.")] = None,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run",
-        help="Print the quota plan and reach nothing — no request, and no call "
-             "to Google. Use --validate-only to have Google check each request "
-             "without creating anything.")] = False,
+        # WHAT THE FLAG DOES, WHICH IS NARROWER THAN ITS NAME. This said "reach
+        # nothing — no request, and no call to Google", and the second half was
+        # never true of this command: the plan it prints is computed from a live
+        # quota read, and `setup` says "checking GPU quota" and spends a minute
+        # on it before any dry-run branch is reached. The rest of setup — the
+        # NumPy install, the host list, the sign-in and billing checks, the
+        # discovery pass — runs exactly as it does without the flag. What
+        # `--dry-run` covers is the quota REQUESTS, and only those.
+        help="File no quota request: print the plan and send nothing. The rest "
+             "of setup still runs, and the plan is computed from a live quota "
+             "read, so this does reach Google — it just asks it for nothing. "
+             "Use --validate-only to have Google check each request without "
+             "creating anything.")] = False,
     validate_only: Annotated[bool, typer.Option(
         "--validate-only",
         help="Ask Google whether each quota request is valid and create "
@@ -225,22 +235,14 @@ def setup_cmd(
 def _choose(question: str, options: list[str]) -> str:
     """Numbered pick. Typer has no list prompt, and a free-text guess is worse.
 
-    Plain `typer.echo` rather than `say`: this is the body of a prompt, and it
-    has to appear on the same stream as the question `typer.prompt` is about to
-    ask. It is neither an answer nor a diagnostic.
+    The pick itself lives in `ask.choose`, because `create` needs the same one
+    and two numbered lists in one package is the second-site shape this repo
+    keeps finding. What stays here is the stream: `setup`'s prompts have always
+    been on stdout, and moving them is not this change.
     """
-    typer.echo(question)
-    for index, option in enumerate(options, start=1):
-        typer.echo(f"  {index}. {option}")
-    while True:
-        raw = typer.prompt("Number")
-        try:
-            picked = int(raw)
-        except ValueError:
-            picked = 0
-        if 1 <= picked <= len(options):
-            return options[picked - 1]
-        typer.echo(f"pick a number between 1 and {len(options)}")
+    from . import ask
+
+    return ask.choose(question, options, err=False)
 
 
 def register(parent: typer.Typer, name: str = "qa") -> None:

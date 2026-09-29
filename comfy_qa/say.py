@@ -8,12 +8,13 @@ stderr and its result on stdout in one command, and the literal
 whitespace included. None of that is visible while writing one line; all of it is
 visible when someone pastes a whole run into Slack.
 
-So: one vocabulary, seven kinds, each with one rendering and one stream.
+So: one vocabulary, eight kinds, each with one rendering and one stream.
 
     result   what the command was asked to produce      stdout
     check    one pass/fail row of a report              stdout, `ok  ` / `fail`
     step     a phase of a long operation starting       stderr, indented 2
     detail   a fact under the step it belongs to        stderr, indented 4
+    explain  a paragraph under the step it belongs to   stderr, `┃` down the left
     warn     worth knowing, not fatal                   stderr, `warning: `
     error    what went wrong, and what to do            stderr, plus `to fix: `
     fail     the same, then stop                        stderr, plus an exit code
@@ -22,7 +23,15 @@ The stream rule in one sentence: **stdout carries the answer, stderr carries the
 story**. `comfy-qat env --json | jq` never sees a progress line, and
 `comfy-qat go 2>&1 | tee run.log` never loses one.
 
-What is deliberately absent from these seven writers: spinners, progress bars,
+Prose wraps and things to paste do not. A refusal, a warning and an explanation
+are read, so they are broken at `PROSE_WIDTH` by the writer rather than by the
+terminal — 112 of the message literals in this package are over that before a
+value is put into one, and each used to arrive as a single line for the window
+to fold wherever it happened to end. A `to fix:` block is pasted, so `write_fix`
+typesets it and nothing wraps it; a command with a newline in the middle is the
+one part of a message meant to be copied becoming the one part that cannot be.
+
+What is deliberately absent from these eight writers: spinners, progress bars,
 cursor movement, colour. This tool's output is read twice — once in a terminal
 and once in a Slack code block — and everything that redraws survives only the
 first reading. A long step says so by printing another whole line, which is the
@@ -58,6 +67,8 @@ Exit codes, so the fourteen places that used to pick their own agree:
 from __future__ import annotations
 
 import re
+import sys
+import textwrap
 import threading
 import time
 from typing import Callable, NoReturn
@@ -80,6 +91,36 @@ FAIL_MARK = "fail"
 
 STEP_INDENT = "  "
 DETAIL_INDENT = "    "
+
+# The left-hand mark that binds a paragraph into one object. A four-space indent
+# says "this belongs to the line above"; it does not say where the block ends,
+# and it is the same indent a pasted command sample carries — so a two-sentence
+# explanation and a thing to type render identically. A constant glyph down the
+# left says both at once, on every line, including the blank ones inside it.
+#
+# NO COLOUR, deliberately, and this is the one place the difference from the
+# tool this idea was taken from is worth writing down: theirs is `pc.dim('┃')`,
+# and dim is an SGR escape. This module's rule — the paragraph above the kinds —
+# is that nothing it writes may redraw or colour, because the output is read
+# twice and only plain whole lines survive the Slack paste. The glyph carries
+# the whole effect; the dimming carried none of it.
+#
+# ASCII FALLBACK, because a glyph that cannot be encoded is worse than the
+# indent it replaced: `typer.echo` on a `cp1252` or `ascii` stderr raises
+# `UnicodeEncodeError` mid-report, so the failure lands on the explanation of a
+# failure. `|` is not as quiet and is always writable.
+GUTTER = "┃"
+ASCII_GUTTER = "|"
+
+# Where PROSE wraps — every kind of it, so the module has one answer rather than
+# one per writer. FIXED, not `shutil.get_terminal_size()`: the width would then
+# be a property of whoever ran the command — a pipe says 80, a CI runner says 80,
+# this laptop says whatever the window is — and an assertion about wrapped text
+# would be an assertion about the runner, which `tests/conftest.py` already has a
+# paragraph about. It is also the wrong question: this output is read a second
+# time in a Slack code block, where the width it was produced at is gone. 96 is
+# what `quota list`'s footnotes have wrapped at all along.
+PROSE_WIDTH = 96
 
 # How often a long step says it is still going. A terminal gets a line every
 # half-minute; a pipe gets a quarter as many, because nobody is watching a log
@@ -136,8 +177,114 @@ def step(text: str) -> None:
 
 
 def detail(text: str) -> None:
-    """A fact belonging to the step above it."""
-    typer.echo(f"{DETAIL_INDENT}{text}", err=True)
+    """A fact belonging to the step above it.
+
+    One line stays one line, at the indent it has always had — most callers of
+    this hand over a resource row, a command with a `#` note, or a short
+    sentence, and an indent is the right shape for all three.
+
+    PROSE THAT WILL NOT FIT ON A LINE GOES THROUGH `explain`, whether or not it
+    already has a newline in it. Newlines were the first test here and they were
+    the wrong one: a paragraph written as one string is not less of a paragraph
+    for never having been broken, and it is the case that needs breaking MOST —
+    a multi-line string has at least been divided up by whoever wrote it. What
+    is actually being asked is "does this need more than one line", and the
+    answer does not depend on how it was typed.
+
+    `_is_prose` decides, and it is the same predicate `write_fix` uses to tell a
+    sentence from a thing to paste. A COMMAND IS NEVER WRAPPED: `comfy-qat
+    switch comfy-win   # same zone, it may hit the same shortage` runs past 96
+    columns and is the one kind of line that must survive being copied whole.
+    """
+    body = str(text)
+    if "\n" in body or (_is_prose(body) and len(DETAIL_INDENT) + len(body) > PROSE_WIDTH):
+        explain(body)
+        return
+    typer.echo(f"{DETAIL_INDENT}{body}", err=True)
+
+
+def gutter() -> str:
+    """The gutter glyph this stderr can actually write.
+
+    Asked per call rather than fixed at import: `sys.stderr` is replaced by the
+    test runner, by `contextlib.redirect_stderr`, and by whatever a caller
+    embedding this package has done, and an import-time answer would be about a
+    stream that is no longer there.
+    """
+    encoding = getattr(sys.stderr, "encoding", None) or "ascii"
+    try:
+        GUTTER.encode(encoding)
+    except (LookupError, UnicodeEncodeError):
+        return ASCII_GUTTER
+    return GUTTER
+
+
+def wrapped(text: str, *, first: str = "", rest: str | None = None) -> list[str]:
+    """`text`, broken into lines that fit, at `PROSE_WIDTH` including the indent.
+
+    ONE wrapper, because three writers need it and a second implementation is
+    how two of them come to disagree about a width. `auth`'s quota footnote had
+    the only one, at the same 96 columns, and every refusal in the package went
+    without: 112 message literals in `comfy_qa/` are over 96 characters before a
+    single value is interpolated into them, and each one reached a terminal as a
+    single unbroken line for the terminal to fold wherever its window happened
+    to end.
+
+    NOTHING IS BROKEN MID-WORD. `break_long_words` and `break_on_hyphens` are
+    both off, so a 200-character console URL, a `--flag-with-hyphens` and a zone
+    id come out whole on a line of their own and over the width, rather than
+    correctly wrapped and unusable. Over-long is a cosmetic failure; a URL with
+    a newline in the middle is one somebody pastes.
+
+    Existing newlines are kept as paragraph breaks: each line is wrapped on its
+    own and a blank one stays blank.
+    """
+    rest = first if rest is None else rest
+    out: list[str] = []
+    for line in str(text).splitlines() or [""]:
+        if not line.strip():
+            # No indent on a blank line. It is trailing whitespace, invisible in
+            # a terminal and very visible in the diff of a pasted log — `rows`
+            # strips it for the same reason.
+            out.append("")
+            continue
+        # `width` counts the indent, so it is the whole line's width and not the
+        # text's. The first line of the whole block gets `first`; everything
+        # after it, including the first line of a later paragraph, gets `rest`.
+        out += textwrap.wrap(
+            line.rstrip(), width=PROSE_WIDTH,
+            initial_indent=first if not out else rest, subsequent_indent=rest,
+            break_long_words=False, break_on_hyphens=False,
+        )
+    return out
+
+
+def explain(text: str) -> None:
+    """A paragraph belonging to the step above it, bound by a left-hand gutter.
+
+    PROSE, not commands. Every line gets a prefix, so a command inside one of
+    these cannot be copied without editing it out — which is why the things this
+    tool offers you to run go through `write_fix` and `detail` and stay clean at
+    the left. An explanation is read; a fix is pasted.
+
+    Wrapped here rather than by the terminal, and that is the whole reason this
+    is a writer and not a constant. A 170-character sentence with a gutter on
+    its first line only is worse than no gutter: the mark promises the block
+    continues to a line that does not carry it. Soft-wrapping is the terminal's
+    decision and it does not know about the prefix, so the prefix has to be
+    applied to lines this function chose.
+
+    Blank lines keep the gutter and nothing else. They are inside the block —
+    that is what the gutter is for — and a blank line padded out to the prefix
+    width is trailing whitespace, invisible in a terminal and very visible in
+    the diff of a pasted log. `rows` strips it for the same reason.
+    """
+    prefix = f"{STEP_INDENT}{gutter()} "
+    for line in wrapped(text, first=prefix):
+        # A blank line comes back from `wrapped` as the empty string, and inside
+        # a block it still belongs to the block: it gets the mark and stops
+        # there, rather than the mark padded out to the prefix width.
+        typer.echo(line if line else prefix.rstrip(), err=True)
 
 
 def warn(text: str) -> None:
@@ -152,11 +299,18 @@ def warn(text: str) -> None:
 
     with the word that says how to read the sentence stranded a line above it.
     The blank lines come out first and the label stays welded to its text.
+
+    WRAPPED UNDER ITS OWN LABEL, on the rule `write_fix` already applies to
+    `to fix: `: `warning: ` is nine characters, so the rest of the sentence is
+    indented nine and sits under the first line rather than starting at column
+    0 where a new message would. The longest of these is 221 characters before
+    anything is interpolated, and it used to reach the terminal whole.
     """
     body = str(text).lstrip("\n")
     for _ in range(len(str(text)) - len(body)):
         typer.echo("", err=True)
-    typer.echo(f"{WARNING}{body}", err=True)
+    for line in wrapped(body, first=WARNING, rest=" " * len(WARNING)):
+        typer.echo(line, err=True)
 
 
 def error(problem: object, fix: str | None = None, *, blank_line: bool = True) -> None:
@@ -166,10 +320,27 @@ def error(problem: object, fix: str | None = None, *, blank_line: bool = True) -
     That is the whole of the shape that used to be written out at fourteen call
     sites as echo, echo, Exit — with two different streams and two different
     exit codes between them.
+
+    THE PROBLEM IS WRAPPED AND THE FIX IS NOT, and that asymmetry is the whole
+    of it. A refusal is prose — the longest in this package is 372 characters
+    before a card name is put into it, and `comfy-qat create --gpu p100` put
+    every one of them on a single line for the terminal to fold at whatever
+    width the window happened to be, which is the defect we wrote up as a reason
+    not to copy somebody else's tool. A fix is a thing to paste: `write_fix`
+    typesets it, aligns its `#` notes and groups it, and breaking a command
+    across two lines would make the one part of a message that is meant to be
+    copied the one part that cannot be.
+
+    NO GUTTER HERE either, though this is prose. A `to fix:` label beneath it
+    and a blank line above it already say where the block starts and stops, and
+    a refusal is the thing most often quoted verbatim into a bug report, where a
+    mark down the left is something the reader has to strip. The gutter is for
+    prose with no such frame around it.
     """
     if blank_line:
         typer.echo("", err=True)
-    typer.echo(str(problem), err=True)
+    for line in wrapped(problem):
+        typer.echo(line, err=True)
     fix = fix if fix is not None else getattr(problem, "fix", None)
     if fix:
         write_fix(fix)

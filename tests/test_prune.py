@@ -35,6 +35,7 @@ from typer.testing import CliRunner
 from comfy_qa import gcloud as gcloud_module
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.host import app
+from wording import said
 
 # Two projects on purpose. A host list may name several, and reconciling
 # everything against the one gcloud happens to be pointed at would call every
@@ -629,7 +630,7 @@ def test_a_box_the_listing_missed_is_found_by_the_check_and_kept(run):
     assert "comfy-linux-2" in _names(result.hosts), (
         "an entry was removed for a machine the project describes on request"
     )
-    assert "did not confirm they are gone" in result.output
+    assert "did not confirm they are gone" in said(result)
     assert "the listing that did not carry it was incomplete" in result.output
     # And the genuine ghost beside it still goes: this narrows what is removed,
     # it does not stop the command doing its job.
@@ -881,4 +882,4 @@ def test_a_mistyped_zone_is_not_a_confirmed_absence_either(run):
     result = run("--prune", "--yes", gc=gcloud_module.Gcloud(runner=runner))
 
     assert _names(result.hosts) == _names(HOSTS)
-    assert "did not confirm they are gone" in result.output
+    assert "did not confirm they are gone" in said(result)

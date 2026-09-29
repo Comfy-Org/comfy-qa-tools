@@ -724,6 +724,29 @@ most of them, and works — `comfy-qat create --os linux --gpu t4`.
 Two images, one per operating system: Ubuntu 22.04 and Windows Server 2022.
 `ubuntu`, `debian` and `win` are accepted spellings of those two.
 
+**`--os is required and there is no terminal to ask at: linux or windows`** /
+**`--gpu is required and there is no terminal to ask at: a100, a100-80gb, h100, l4, t4`**
+`comfy-qat create` asks for whichever of the two you leave off — but only when
+there is somebody to answer. Both stdin and stderr have to be terminals, which
+is gcloud's own test and the one this tool uses everywhere; in a pipe, a script,
+a CI job or under `2>` redirection, there is nobody there, so the command refuses
+by name instead of stopping to wait. Pass the flag:
+
+```sh
+comfy-qat create --os linux --gpu l4
+```
+
+Run it in a terminal and the same command with no flags will offer you the list
+of each.
+
+**`--gpu p100 cannot be used — asking you instead`**
+You named something `create` will not order, and you are at a terminal, so the
+reason is printed and the menu of cards it *can* order is offered rather than the
+whole invocation being thrown away. The reason is the same sentence the refusal
+would have carried — one of the two entries above this one. In a script there is
+nobody to ask, so the value is refused exactly as before and the exit code is
+unchanged.
+
 **`comfy-win is already taken — a host list entry or an instance on this project has that name. Pick another with --name.`**
 Names are checked against your host list *and* against the instances on the
 project, because either collision ends the same way: two machines you cannot tell

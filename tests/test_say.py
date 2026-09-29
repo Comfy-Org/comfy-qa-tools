@@ -63,6 +63,207 @@ def test_the_answer_goes_to_stdout_and_everything_else_to_stderr(capsys):
     ]
 
 
+# --- the gutter ------------------------------------------------------------
+#
+# A four-space indent says "this belongs to the line above" and stops there. It
+# does not say where the block ends, and it is the same indent a pasted command
+# carries — so a two-sentence explanation and a thing to type looked alike. The
+# gutter says both, on every line, including the blank ones.
+
+
+def gutter_lines(err: str) -> list[str]:
+    return [line for line in err.splitlines() if line.lstrip().startswith(("┃", "|"))]
+
+
+def test_every_line_of_an_explanation_carries_the_gutter(capsys):
+    """Including the blank one. A blank line inside a block is part of the
+    block, and a blank line that drops the mark ends it — which is the reading
+    the four-space indent could not stop."""
+    say.explain("first, a sentence.\n\nsecond, another one.")
+
+    err = capsys.readouterr().err.splitlines()
+    assert err == [
+        "  ┃ first, a sentence.",
+        "  ┃",
+        "  ┃ second, another one.",
+    ]
+
+
+def test_a_paragraph_too_long_for_the_line_carries_the_gutter_all_the_way_down(capsys):
+    """THE DEFECT THIS WRITER EXISTS FOR, and the one a naive gutter reproduces.
+
+    Prefixing the string and handing it to the terminal marks the first line and
+    no other: the terminal soft-wraps where the window ends, knows nothing about
+    the prefix, and the rest of the paragraph comes out flush at column 0 under
+    a mark that promised it would not. The wrap has to happen here, so that
+    every line the reader sees is a line this function printed.
+    """
+    say.explain("gcloud's own warning, which --quiet suppresses: on an account "
+                "that already exists this can lose data encrypted with the old "
+                "password, and there is no way to get it back afterwards.")
+
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) > 1, "the fixture is too short to have wrapped at all"
+    assert lines == gutter_lines("\n".join(lines))
+    assert all(len(line) <= say.PROSE_WIDTH for line in lines), lines
+
+
+def test_a_blank_gutter_line_carries_no_trailing_whitespace(capsys):
+    """Invisible in a terminal, very visible in the diff of a pasted log —
+    which is the second place everything here is read. `rows` strips it for the
+    same reason, and the tool this idea came from does not."""
+    say.explain("above\n\nbelow")
+
+    blank = capsys.readouterr().err.splitlines()[1]
+    assert blank == blank.rstrip(), repr(blank)
+
+
+def test_the_gutter_falls_back_to_ascii_where_the_glyph_cannot_be_written(monkeypatch):
+    """A glyph that cannot be encoded is worse than the indent it replaced:
+    `typer.echo` raises `UnicodeEncodeError` part way through, so the failure
+    lands on the explanation of a failure."""
+    import io
+
+    ascii_only = io.TextIOWrapper(io.BytesIO(), encoding="ascii")
+    monkeypatch.setattr("sys.stderr", ascii_only)
+    assert say.gutter() == "|"
+    say.explain("an ascii terminal still gets a block")
+    ascii_only.flush()
+
+    written = ascii_only.buffer.getvalue().decode("ascii")
+    assert written == "  | an ascii terminal still gets a block\n"
+
+
+# --- prose wraps, things to paste do not -----------------------------------
+#
+# THE DEFECT, live, on the refusal a newcomer is most likely to hit:
+#
+#     $ comfy-qat create --os linux --gpu p100
+#     this tool cannot bring up a P100, so nothing was created. The driver it …
+#
+# — one unbroken 400-character line, for the terminal to fold wherever its
+# window happened to end. It is the same defect we wrote up as a reason NOT to
+# copy the sister tool, whose `plan` command emits a single 330-character row.
+#
+# 112 message literals in `comfy_qa/` are over 96 characters before a single
+# value is interpolated into them, so this is a property of the writer or it is
+# 112 separate corrections that the 113th message does not inherit.
+
+# Long enough to need three lines, with no word anywhere near the width.
+LONG = ("this tool cannot bring up a P100, so nothing was created. The driver it "
+        "installs is the open NVIDIA kernel module, and that needs a GPU System "
+        "Processor — a GSP — which only Turing and newer cards have. Pascal has "
+        "none, so no module loads at all: the box would boot, bill, and never see "
+        "its own GPU.")
+
+
+def test_a_refusal_is_wrapped_rather_than_left_for_the_terminal(capsys):
+    """`say.error`'s problem half, which is every refusal this tool prints."""
+    say.error(LONG, "comfy-qat create --os linux --gpu t4")
+
+    lines = [line for line in capsys.readouterr().err.splitlines() if line]
+    assert len(lines) > 1, "the fixture did not wrap at all"
+    assert all(len(line) <= say.PROSE_WIDTH for line in lines
+               if not line.startswith(say.FIX_LABEL)), lines
+    assert " ".join(" ".join(lines).split()).startswith(LONG[:80])
+
+
+def test_the_fix_under_a_refusal_is_not_wrapped_with_it(capsys):
+    """The asymmetry is the point. A refusal is read and a fix is pasted, and a
+    command broken across two lines is the one part of a message meant to be
+    copied becoming the one part that cannot be."""
+    command = ("comfy-qat create --os linux --gpu t4, the same n1-standard-8 "
+               "machine and the cheapest card that works")
+    say.error(LONG, command)
+
+    fix = [line for line in capsys.readouterr().err.splitlines()
+           if line.startswith(say.FIX_LABEL)]
+    assert fix == [f"{say.FIX_LABEL}{command}"]
+    assert len(fix[0]) > say.PROSE_WIDTH, "the fixture is too short to prove it"
+
+
+def test_a_warning_wraps_under_its_own_label(capsys):
+    """`warning: ` is nine characters, so the rest sits under the first line
+    rather than at column 0 where a new message would start. The rule
+    `write_fix` already applies to `to fix: `."""
+    say.warn("keeping the standing request for NVIDIA-L4-GPUS-per-project-region "
+             "at 8; 1 would lower it, and nothing in this tool can undo a decrease")
+
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0].startswith("warning: ")
+    assert len(lines) > 1, "the fixture did not wrap at all"
+    for line in lines[1:]:
+        assert line.startswith(" " * len("warning: ")), line
+        assert line[len("warning: ")] != " ", "double-indented, not aligned"
+
+
+def test_nothing_is_broken_in_the_middle_of_a_word(capsys):
+    """A console URL is the realistic case, and it is in the messages. Correctly
+    wrapped and unusable is worse than over-long: over-long is cosmetic, a URL
+    with a newline in it is something somebody pastes."""
+    url = ("https://console.cloud.google.com/iam-admin/quotas?project="
+           "stately-timing-504610-p1&pageState=(%22allQuotasTable%22:(%22f%22))")
+    say.error(f"the request was refused, and the console says why: {url}", "wait")
+
+    err = capsys.readouterr().err
+    assert url in err, err
+
+
+def test_a_long_command_offered_as_a_fact_is_left_whole(capsys):
+    """`detail` carries command rows with `#` notes past 96 columns, and those
+    must survive being copied. `_is_prose` is what tells them apart — the same
+    predicate `write_fix` uses."""
+    row = ("comfy-qat switch comfy-win-2   # Windows Server 2022, A100-80GB, "
+           "same zone — it may hit the same shortage")
+    say.detail(row)
+
+    assert capsys.readouterr().err == f"    {row}\n"
+    assert len(row) > say.PROSE_WIDTH, "the fixture is too short to prove it"
+
+
+def test_a_long_sentence_given_to_detail_is_wrapped_and_guttered(capsys):
+    """The other half of the same test. A paragraph is not less of a paragraph
+    for having been written without a newline in it — that is the case that
+    needs breaking most, because nobody has broken it already."""
+    say.detail(LONG)
+
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) > 1
+    assert lines == gutter_lines("\n".join(lines))
+    assert all(len(line) <= say.PROSE_WIDTH for line in lines)
+
+
+def test_one_line_of_detail_is_left_exactly_where_it_was(capsys):
+    """Every existing caller of `detail` hands it one line — a resource row, a
+    command with a `#` note, a sentence — and the gutter is not for those. A
+    command with a mark in front of it cannot be copied without editing."""
+    say.detail("comfy-qat switch comfy-win   # the other box")
+
+    assert capsys.readouterr().err == "    comfy-qat switch comfy-win   # the other box\n"
+
+
+def test_a_paragraph_handed_to_detail_goes_through_the_gutter(capsys):
+    """The caller does not have to know which it is handing over. Before this,
+    a multi-line `detail` printed the newlines raw: the first line at four
+    spaces and the rest at column 0, under nothing."""
+    say.detail("a sentence.\nand the rest of it.")
+
+    assert capsys.readouterr().err.splitlines() == [
+        "  ┃ a sentence.",
+        "  ┃ and the rest of it.",
+    ]
+
+
+def test_an_explanation_writes_no_escape_sequence(capsys):
+    """The gutter is the glyph and not the dimming. The tool this was taken
+    from writes `pc.dim('┃')`, and an SGR escape is the one thing this module
+    forbids: the output is read twice, and the second reading is a Slack code
+    block."""
+    say.explain("a paragraph\n\nwith a gap in it")
+
+    assert "\x1b" not in capsys.readouterr().err
+
+
 def test_a_failing_check_is_the_same_width_as_a_passing_one(capsys):
     say.check(True, "gcloud")
     say.check(False, "gcloud")

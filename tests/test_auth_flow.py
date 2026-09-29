@@ -191,6 +191,130 @@ def test_status_prints_the_fix_for_the_check_that_failed():
     assert "to fix: gcloud auth login" in result.output
 
 
+# --- every failing check, not the first --------------------------------------
+#
+# `status` rendered `next((c for c in checks if not c.ok), None)`: the first
+# failure's fix, and only that one. `run_checks` stops at its first failure
+# today, so no fixture of a real project can put two `fail` rows on the page —
+# which is exactly why these drive the renderer with a check list rather than
+# with a cloud. The defect is in the RENDERER, the renderer is reachable with
+# any list, and a guard that can only see what today's `run_checks` happens to
+# produce is a guard tied to a property of a different function.
+#
+# What holds the two together is `test_status_still_prints_the_rows_from_the_
+# real_run_checks` at the end: the shape these hand over is the shape the real
+# one returns.
+
+
+def statuses(monkeypatch, checks):
+    """Render `status` over exactly these checks."""
+    from comfy_qa import auth
+
+    monkeypatch.setattr(auth, "run_checks", lambda gc: checks)
+    monkeypatch.setattr(auth, "Gcloud", lambda *a, **k: None)
+    return runner.invoke(app, ["status"])
+
+
+def failing(name, fix):
+    from comfy_qa.auth import Check
+
+    return Check(name, False, f"{name} is not ready", fix)
+
+
+def test_status_prints_a_fix_for_every_failing_check_not_only_the_first(monkeypatch):
+    """Three problems and one remedy leaves two problems with no remedy — the
+    one shape `say.error` exists to make unrepresentable, reached by a renderer
+    that went around it."""
+    from comfy_qa.auth import Check
+
+    result = statuses(monkeypatch, [
+        Check("gcloud", True, "on PATH"),
+        failing("account", "gcloud auth login"),
+        failing("project", "gcloud config set project <id>"),
+        failing("numpy", "comfy-qat setup"),
+    ])
+
+    assert result.exit_code == 1
+    fixes = [line for line in result.output.splitlines() if line.startswith("to fix: ")]
+    assert fixes == [
+        "to fix: gcloud auth login",
+        "to fix: gcloud config set project <id>",
+        "to fix: comfy-qat setup",
+    ], result.output
+
+
+def test_status_fixes_come_in_the_order_of_the_rows_they_answer(monkeypatch):
+    """A remedy is read against the row above it. Sorted, deduplicated into a
+    set, or collected in any order but this one, the third `to fix:` would
+    answer the second `fail` and nothing would say so."""
+    result = statuses(monkeypatch, [
+        failing("billing", "link a billing account"),
+        failing("gpu quota", "comfy-qat quota request --gpu l4"),
+    ])
+
+    rows = [line.split()[1] for line in result.output.splitlines()
+            if line.startswith("fail")]
+    fixes = [line for line in result.output.splitlines() if line.startswith("to fix: ")]
+    assert rows == ["billing", "gpu"], result.output
+    assert fixes[0].endswith("link a billing account")
+    assert fixes[1].endswith("comfy-qat quota request --gpu l4")
+
+
+def test_status_prints_a_shared_fix_once(monkeypatch):
+    """An expired session fails the account row and everything under it, and all
+    of them answer `gcloud auth login`. Printed per row it reads as three things
+    to do."""
+    result = statuses(monkeypatch, [
+        failing("account", "gcloud auth login"),
+        failing("project", "gcloud auth login"),
+        failing("billing", "gcloud auth login"),
+    ])
+
+    assert result.output.count("to fix: gcloud auth login") == 1, result.output
+
+
+def test_status_says_nothing_extra_for_a_failure_that_carries_no_fix(monkeypatch):
+    """`Check.fix` is optional. A `to fix:` label with nothing after it is worse
+    than no label, and `next(...)` guarded on this before the loop did."""
+    from comfy_qa.auth import Check
+
+    result = statuses(monkeypatch, [
+        Check("gcloud", False, "not installed", None),
+        failing("account", "gcloud auth login"),
+    ])
+
+    assert "to fix: gcloud auth login" in result.output
+    assert "to fix: \n" not in result.output
+    assert "to fix: None" not in result.output
+
+
+def test_one_failing_check_renders_exactly_as_it_always_did(monkeypatch):
+    """The reachable case today, held byte for byte. Every real `status` run
+    goes through this path, and a change meant to matter only when several
+    checks fail must not move the output when one does."""
+    result = statuses(monkeypatch, [failing("account", "gcloud auth login")])
+
+    assert result.output == (
+        "fail  account    account is not ready\n"
+        "to fix: gcloud auth login\n"
+    ), result.output
+
+
+def test_status_still_prints_the_rows_from_the_real_run_checks():
+    """The seam between the tests above and the command.
+
+    They hand `status` a list built by hand; this is the one that proves the
+    real `run_checks` produces a list of the same shape, through the real
+    command, with a real refusal in it. Without it, the four above could all be
+    passing about a rendering nothing reaches.
+    """
+    result = run(FakeCloud(account=None), "status")
+
+    assert result.exit_code == 1
+    assert "fail  account" in result.output
+    assert "to fix: gcloud auth login" in result.output
+
+
 def test_status_json_is_the_same_facts_in_a_fixed_shape():
     result = run(FakeCloud(quotas=[L4]), "status", "--json")
 

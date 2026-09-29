@@ -39,6 +39,7 @@ from comfy_qa import zones as zones_module
 from comfy_qa.cli import app
 from comfy_qa.create import CARDS, image_for
 from comfy_qa.gcloud import GcloudError
+from wording import said
 
 PROJECT = "stately-timing-504610-p1"
 URL = f"https://www.googleapis.com/compute/v1/projects/{PROJECT}"
@@ -912,7 +913,7 @@ def test_a_name_compute_engine_would_reject_is_refused_here_instead(cli, name):
     """
     result = cli("--os", "linux", "--gpu", "l4", "--name", name, "--yes")
     assert result.exit_code == 2
-    assert "is not a name Compute Engine will take" in result.output
+    assert "is not a name Compute Engine will take" in said(result)
     assert billable(result) == []
 
 
@@ -942,8 +943,8 @@ def test_an_unknown_card_lists_what_there_is_without_contacting_google(cli):
 def test_a_disk_too_small_for_the_image_is_refused_before_anything_exists(cli):
     result = cli("--os", "windows", "--gpu", "l4", "--disk", "20", "--yes")
     assert result.exit_code == 2
-    assert "a 20 GB disk is too small" in result.output
-    assert "at least 50" in result.output
+    assert "a 20 GB disk is too small" in said(result)
+    assert "at least 50" in said(result)
     assert billable(result) == []
 
 
@@ -1089,7 +1090,7 @@ def test_the_command_an_untried_region_stockout_prints_can_be_run(cli, monkeypat
                                refuse={zone: STOCKOUT.format(zone=zone)
                                        for zone in MANY_ZONES}))
 
-    assert "Not tried, and possibly free" in result.output, "not this branch"
+    assert "Not tried, and possibly free" in said(result), "not this branch"
     offered = [parts for parts in _invocations(result.output)
                if parts[1:2] == ["create"]]
     assert offered, "a stockout with somewhere left to try has to say where"

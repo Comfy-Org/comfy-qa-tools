@@ -55,7 +55,7 @@ can build either Windows or Linux on it.
 
 | command | what it does |
 |---|---|
-| `comfy-qat create` | make a GPU box: `--os linux --gpu t4`. The card is the only real decision — the machine type follows from it and the zone is chosen, not typed. `--name`, `--zone`, `--region`, `--disk`, `--yes`, `--dry-run` |
+| `comfy-qat create` | make a GPU box: `--os linux --gpu t4`. The card is the only real decision — the machine type follows from it and the zone is chosen, not typed. Leave `--os` or `--gpu` off and you are asked, at a terminal; in a script the same run refuses and names what to pass. `--name`, `--zone`, `--region`, `--disk`, `--yes`, `--dry-run` |
 | `comfy-qat discover` | find cloud boxes already on your project and add the missing ones. Never touches an entry you have edited. `--dry-run` |
 | `comfy-qat init` | write a starter host list you can edit by hand. `--force` |
 | `comfy-qat list` | every declared machine: what it is, where it answers, and what is up. `--live` asks Google whether each box is running, one call per box |
