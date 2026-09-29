@@ -1886,7 +1886,7 @@ def test_quota_list_does_say_when_cpu_quota_blocks_a_card(monkeypatch):
         result = CliRunner().invoke(app, ["quota", "list"])
 
     assert result.exit_code == 0, result.output
-    t4 = next(l for l in result.output.splitlines() if l.startswith("T4"))
+    t4 = next(ln for ln in result.output.splitlines() if ln.startswith("T4"))
     assert "CPU quota" in t4, t4
 
 
@@ -2178,7 +2178,7 @@ def test_quota_list_does_not_say_request_it_about_a_refused_card(monkeypatch):
     result = quota_list(Cloud(preferences=denied), monkeypatch)
 
     assert result.exit_code == 0, result.output
-    line = next(l for l in result.output.splitlines() if l.startswith("A100 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("A100 "))
     assert "request it" not in line, line
     assert "denied" in line.lower(), line
 
@@ -2187,7 +2187,7 @@ def test_quota_list_still_says_request_it_about_a_card_never_asked_about(monkeyp
     """The guard standing aside. `none` is the only state where that advice is true."""
     result = quota_list(Cloud(preferences=PREFS_NONE), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("A100 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("A100 "))
     assert "request it" in line, line
 
 
@@ -2205,7 +2205,7 @@ def test_quota_list_names_a_grant_that_was_cut(monkeypatch):
                           name="gpus-all-regions-1")]
     result = quota_list(Cloud(preferences=partial), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("any (global)"))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("any (global)"))
     assert "1 granted" in line and "raise to 2 was not" in line, line
     assert line.strip().endswith("was not") or "ready" in line, (
         "a grant you hold must still read as usable")
@@ -2302,8 +2302,8 @@ def test_a_card_with_spot_quota_is_not_reported_denied(monkeypatch):
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
     assert result.exit_code == 0, result.output
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "denied" not in line.lower(), line
     assert "spot" in line.lower(), "the pool that makes it usable must be named"
 
@@ -2355,8 +2355,8 @@ def test_a_card_with_no_quota_in_any_pool_is_still_reported_honestly(monkeypatch
     than being rescued by a pool that is not there."""
     result = quota_list(Cloud(quotas=pooled(), preferences=PREFS_DENIED), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("H100-80GB "))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("H100-80GB "))
     assert "spot" not in line.lower(), line
 
 
@@ -2376,8 +2376,8 @@ def test_a_workstation_allowance_alone_does_not_make_a_card_ready(monkeypatch):
     vws_only = THIS_PROJECT + [quota(VWS_RTX, 1)]
     result = quota_list(Cloud(quotas=vws_only, preferences=DENIED_RTX), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "ready (workstation)" not in line, (
         "a workstation allowance was counted as making the card runnable")
     # Shown in the footnote rather than on the row — same information, read once
@@ -2412,8 +2412,8 @@ def test_a_card_create_cannot_order_is_not_called_plainly_ready(monkeypatch):
     """
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "not creatable by this tool" in line, line
 
 
@@ -2426,7 +2426,7 @@ def test_the_cannot_create_caveat_is_derived_from_the_card_table(monkeypatch):
     """
     result = quota_list(Cloud(quotas=pooled()), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("L4 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("L4 "))
     assert "not creatable" not in line, line
 
 
@@ -2465,8 +2465,8 @@ def test_no_status_cell_runs_away_with_the_row(monkeypatch):
     that behind caveats about pools they cannot use is not a cosmetic problem."""
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
-    rows = [l for l in result.output.splitlines()
-            if l and not l.startswith(("GPU", " ", "note:"))]
+    rows = [ln for ln in result.output.splitlines()
+            if ln and not ln.startswith(("GPU", " ", "note:"))]
     assert rows, "no rows rendered"
     longest = max(rows, key=len)
     assert len(longest) <= MAX_ROW, f"{len(longest)} chars: {longest}"
@@ -2496,8 +2496,8 @@ def test_the_footnotes_are_wrapped_too(monkeypatch):
 
     assert "GPU System Processor" in result.output, (
         "the long footnote this test is about was never printed")
-    notes = [l for l in result.output.splitlines() if l.startswith("note:")
-             or "kernel module" in l or "nvidia-smi" in l]
+    notes = [ln for ln in result.output.splitlines() if ln.startswith("note:")
+             or "kernel module" in ln or "nvidia-smi" in ln]
     assert notes, "no footnotes rendered"
     widest = max(notes, key=len)
     assert len(widest) <= MAX_ROW, f"{len(widest)} chars: {widest}"
@@ -2527,8 +2527,8 @@ def test_the_spot_cost_stays_on_the_row(monkeypatch):
     once, and it is the whole reason Spot is not simply better."""
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "reclaim" in line.lower(), line
 
 
@@ -2540,7 +2540,7 @@ def test_a_denied_row_does_not_restate_the_limit_column(monkeypatch):
                          name="a100-usc1", dimensions={"region": "us-central1"})]
     result = quota_list(Cloud(preferences=denied), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("A100 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("A100 "))
     assert "0 of the 1" not in line, line
     assert "denied" in line, "the state itself must survive the trim"
 
@@ -2551,7 +2551,7 @@ def test_a_cut_raise_still_shows_its_number(monkeypatch):
                           state_detail=DENIED_DETAIL, name="gpus-all-regions-1")]
     result = quota_list(Cloud(preferences=partial), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("any (global)"))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("any (global)"))
     assert "raise to 2" in line, line
 
 
@@ -2569,7 +2569,7 @@ def test_the_caveat_reaches_any_card_absent_from_the_table_not_one_by_name(monke
     spot_mega = "PREEMPTIBLE-NVIDIA-H100-MEGA-GPUS-per-project-region"
     result = quota_list(Cloud(quotas=pooled(quota(spot_mega, 1))), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("H100-MEGA"))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("H100-MEGA"))
     assert "not creatable by this tool" in line, line
 
 
@@ -2583,8 +2583,8 @@ def test_a_pool_allowance_shows_on_a_row_whose_best_pool_is_not_on_demand(monkey
     """
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "ready (Spot)" in line, line
     # AND THE REFUSALS. This test drove `DENIED_RTX` — a fixture whose whole
     # point is that the card was refused twice — and asserted only that the row
@@ -2673,7 +2673,7 @@ def test_a_card_the_tool_cannot_create_is_not_told_to_request_it(monkeypatch):
     result = quota_list(Cloud(quotas=pooled()), monkeypatch)
 
     for card in ("B200", "H200", "H100-MEGA"):
-        line = next(l for l in result.output.splitlines() if l.startswith(card))
+        line = next(ln for ln in result.output.splitlines() if ln.startswith(card))
         assert "request it" not in line, line
         assert "not creatable by this tool" in line, line
 
@@ -2682,7 +2682,7 @@ def test_a_card_the_tool_can_create_is_still_told_to_request_it(monkeypatch):
     """The guard standing aside: "request it" is right for a card `create` takes."""
     result = quota_list(Cloud(quotas=pooled()), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("A100 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("A100 "))
     assert "request it" in line, line
 
 
@@ -2703,8 +2703,8 @@ def test_the_project_ceiling_is_not_described_as_an_uncreatable_card(monkeypatch
     partial = [preference(CEILING, granted=1, preferred=2,
                           state_detail=DENIED_DETAIL, name="gpus-all-regions-1")]
     result = quota_list(Cloud(preferences=partial), monkeypatch)
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("any (global)"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("any (global)"))
     assert "creatable" not in line, line
 
 
@@ -2734,8 +2734,8 @@ def test_json_and_table_reach_the_same_verdict_on_the_same_card(monkeypatch):
     blob = jsonlib.loads(quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX),
                                     monkeypatch, "--json").stdout)
 
-    line = next(l for l in table.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in table.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     record = next(g for g in blob["gpus"] if g["gpu"] == "RTX-PRO-6000")
 
     assert "ready" in line and record["status"] == "ready", (line, record)
@@ -2787,8 +2787,8 @@ def test_a_row_won_by_another_pool_reports_that_pools_numbers(monkeypatch):
     makes it ready spans 43."""
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     fields = line.split()
     assert fields[1] == "1", f"LIMIT column still shows the on-demand 0: {line}"
     # SCOPED TO THE COLUMN, not the line. `"2 regions" not in line` was a
@@ -2834,7 +2834,7 @@ def test_a_card_refused_in_one_region_says_so_and_says_where_it_was_not(monkeypa
     }]
     result = quota_list(Cloud(quotas=spread, preferences=denied_here), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("A100 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("A100 "))
     assert "refused in" in line, line
     assert "never asked" in line, line
 
@@ -3155,10 +3155,10 @@ def test_by_region_does_not_contradict_the_collapsed_table(monkeypatch):
     # row it was meant to select — a filter colliding with new true text, which
     # is the third time that has happened in this suite.
     lines = result.output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     start, stop = header.index("REGION"), header.index("LIMIT")
-    elsewhere = [l for l in lines
-                 if l.startswith("A100 ") and l[start:stop].strip() != "us-central1"]
+    elsewhere = [ln for ln in lines
+                 if ln.startswith("A100 ") and ln[start:stop].strip() != "us-central1"]
     assert elsewhere, "no other-region rows rendered"
     for line in elsewhere:
         assert "refused" in line, (
@@ -3240,8 +3240,8 @@ def test_a_pool_won_row_still_reports_its_refusals(monkeypatch):
     "ready (Spot)" with no GSP warning at all."""
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX), monkeypatch)
 
-    line = next(l for l in result.output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in result.output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "refused" in line, line
 
 
@@ -3252,7 +3252,7 @@ def test_a_pool_won_row_still_warns_about_a_card_the_driver_cannot_load(monkeypa
     quotas = pooled(quota(K80_ZERO, 0), quota(spot_k80, 1))
     result = quota_list(Cloud(quotas=quotas), monkeypatch)
 
-    line = next(l for l in result.output.splitlines() if l.startswith("K80 "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("K80 "))
     assert "cannot drive it" in line, line
 
 
@@ -3264,8 +3264,8 @@ def test_no_card_is_printed_twice_identically(monkeypatch):
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX),
                         monkeypatch, "--by-region")
 
-    rows = [l for l in result.output.splitlines()
-            if l and not l.startswith(("GPU", " ", "note:"))]
+    rows = [ln for ln in result.output.splitlines()
+            if ln and not ln.startswith(("GPU", " ", "note:"))]
     assert len(rows) == len(set(rows)), (
         "the same row is printed more than once: "
         f"{[r for r in rows if rows.count(r) > 1][:2]}")
@@ -3305,11 +3305,10 @@ def test_a_region_filter_relabels_every_row_including_pool_won_ones(monkeypatch)
     result = quota_list(Cloud(quotas=pooled(), preferences=DENIED_RTX),
                         monkeypatch, "--region", "us-central1")
 
-    rows = [l for l in result.output.splitlines()
-            if l and not l.startswith(("GPU", " ", "note:"))]
+    rows = [ln for ln in result.output.splitlines()
+            if ln and not ln.startswith(("GPU", " ", "note:"))]
     assert rows, "no rows rendered"
     for line in rows:
-        where = line[14:].split()[1] if line[14:].split() else ""
         assert "regions" not in line[:42], (
             f"a row kept a pool's own geography under --region: {line}")
 
@@ -3599,8 +3598,8 @@ def test_a_region_view_says_when_the_region_does_not_offer_the_card(monkeypatch)
     cloud = Cloud(quotas=quotas, offered_in={"nvidia-l4": [f"{here}-a"]})
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    rows = {l.split()[0]: l for l in result.output.splitlines()
-            if l[:1].isalnum()}
+    rows = {ln.split()[0]: ln for ln in result.output.splitlines()
+            if ln[:1].isalnum()}
     assert {"L4", "T4"} <= set(rows), f"fixture rendered {sorted(rows)}"
 
     assert "not offered" not in rows["L4"], rows["L4"]
@@ -3681,7 +3680,7 @@ def test_a_card_absent_from_the_region_is_not_told_to_request_it(monkeypatch):
     cloud = Cloud(quotas=quotas, offered_in={"nvidia-l4": [f"{here}-a"]})
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    a100 = next(l for l in result.output.splitlines() if l.startswith("A100 "))
+    a100 = next(ln for ln in result.output.splitlines() if ln.startswith("A100 "))
     assert "request it" not in a100, a100
     assert a100.split("  ")[-1].startswith("not offered here"), a100
 
@@ -3705,8 +3704,8 @@ def test_the_spot_branch_gets_the_availability_check_too(monkeypatch):
     cloud = Cloud(quotas=quotas, accelerators=stocking("us-west4"))
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    row = next(l for l in result.output.splitlines()
-               if l.startswith("RTX-PRO-6000"))
+    row = next(ln for ln in result.output.splitlines()
+               if ln.startswith("RTX-PRO-6000"))
     assert row.split("  ")[-1].startswith("not offered here"), (
         f"a Spot-won row skipped the availability check: {row}")
 
@@ -3733,7 +3732,7 @@ def test_json_and_by_region_carry_the_availability_verdict(monkeypatch):
 
     rows = quota_list(Cloud(quotas=quotas, offered_in=offered), monkeypatch,
                       "--by-region", "--region", here).output
-    a100 = next(l for l in rows.splitlines() if l.startswith("A100 "))
+    a100 = next(ln for ln in rows.splitlines() if ln.startswith("A100 "))
     assert "not offered here" in a100, a100
     assert "request it" not in a100, a100
 
@@ -3757,8 +3756,8 @@ def test_an_unknown_cards_accelerator_id_is_derived_not_skipped(monkeypatch):
                   offered_in={"nvidia-rtx-pro-6000": [f"{here}-a"]})
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    row = next(l for l in result.output.splitlines()
-               if l.startswith("RTX-PRO-6000"))
+    row = next(ln for ln in result.output.splitlines()
+               if ln.startswith("RTX-PRO-6000"))
     assert "not offered here" not in row, (
         f"the derived accelerator id did not find a card that is offered: {row}")
     assert "ready (Spot)" in row, row
@@ -3839,7 +3838,7 @@ def test_a_card_the_region_stocks_is_not_called_absent(card, real_id, monkeypatc
                   accelerators=stocking(here, real_id))
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    row = next(l for l in result.output.splitlines() if l.startswith(card))
+    row = next(ln for ln in result.output.splitlines() if ln.startswith(card))
     assert "not offered here" not in row, (
         f"{card} is stocked in {here} as {real_id} and the tool says otherwise: "
         f"{row}")
@@ -3859,7 +3858,7 @@ def test_a_card_whose_id_cannot_be_resolved_says_the_check_was_not_made(monkeypa
                   accelerators=stocking(here))
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    row = next(l for l in result.output.splitlines() if l.startswith("NEWTHING"))
+    row = next(ln for ln in result.output.splitlines() if ln.startswith("NEWTHING"))
     assert "not offered here" not in row, (
         f"an unresolvable id was reported as a fact about the region: {row}")
 
@@ -3873,7 +3872,7 @@ def test_the_nothing_usable_hint_names_this_project_and_this_region(monkeypatch)
                   accelerators=stocking(here, "nvidia-h100-80gb"))
     result = quota_list(cloud, monkeypatch, "--region", here)
 
-    hint = next(l for l in result.output.splitlines() if "quota request" in l)
+    hint = next(ln for ln in result.output.splitlines() if "quota request" in ln)
     assert "us-central1" not in hint, hint
     assert here in hint, hint
 
@@ -4010,9 +4009,9 @@ def test_by_region_keeps_each_row_its_own_region(monkeypatch):
     result = quota_list(Cloud(quotas=quotas, preferences=DENIED_RTX),
                         monkeypatch, "--by-region")
 
-    rtx = [l for l in result.output.splitlines() if l.startswith("RTX-PRO-6000")]
+    rtx = [ln for ln in result.output.splitlines() if ln.startswith("RTX-PRO-6000")]
     assert len(rtx) > 1, "the per-region view collapsed to one row"
-    regions = {l.split()[1] for l in rtx}
+    regions = {ln.split()[1] for ln in rtx}
     assert "regions" not in " ".join(regions), (
         f"a per-region row is labelled with the card-level geography: {regions}")
     assert len(regions) == len(rtx), f"rows share a region label: {rtx}"
@@ -4563,10 +4562,10 @@ def test_by_region_json_keeps_the_region_it_is_named_after(monkeypatch):
     # not re-parsed by guesswork, which is how the first version of this
     # assertion compared two things it had itself invented.
     lines = quota_list(cloud, monkeypatch, "--by-region").output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     start, stop = header.index("REGION"), header.index("LIMIT")
-    from_table = sorted(l[start:stop].strip() for l in lines
-                        if l.startswith("RTX-PRO-6000"))
+    from_table = sorted(ln[start:stop].strip() for ln in lines
+                        if ln.startswith("RTX-PRO-6000"))
 
     assert sorted(r["region"] for r in rows) == from_table, (rows, from_table)
 
@@ -4597,8 +4596,8 @@ def test_the_counts_say_which_pool_they_are_about(monkeypatch):
     assert card["refused_in_regions"] == 2, card
     assert card["counts_pool"] == "on-demand", card
 
-    line = next(l for l in quota_list(cloud, monkeypatch).output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+    line = next(ln for ln in quota_list(cloud, monkeypatch).output.splitlines()
+                if ln.startswith("RTX-PRO-6000"))
     assert "on-demand refused in 2 regions" in line, line
 
 
@@ -4610,13 +4609,13 @@ def test_json_and_table_order_the_cards_the_same_way(monkeypatch):
     from_json = [r["gpu"] for r in _json_of(cloud, monkeypatch)["gpus"]]
 
     lines = quota_list(cloud, monkeypatch).output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     body = lines[lines.index(header) + 1:]
     # STOP AT THE BLANK LINE. Filtering on `startswith("note")` kept the WRAPPED
     # continuation lines of each footnote, so the "table" this compared against
     # had prose in it.
     body = body[:body.index("")] if "" in body else body
-    from_table = [l[:header.index("LIMIT")].strip() for l in body]
+    from_table = [ln[:header.index("LIMIT")].strip() for ln in body]
     assert from_json == from_table, (from_json, from_table)
 
 
@@ -4651,9 +4650,9 @@ def test_a_card_absent_here_explains_its_limit_whichever_pool_won(monkeypatch):
     # never reached.
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)],
                   accelerators=stocking("us-central1", "nvidia-l4"))
-    line = next(l for l in quota_list(cloud, monkeypatch, "--region",
+    line = next(ln for ln in quota_list(cloud, monkeypatch, "--region",
                                       "africa-south1").output.splitlines()
-                if l.startswith("RTX-PRO-6000"))
+                if ln.startswith("RTX-PRO-6000"))
 
     assert "not offered here" in line, line
     assert "1 of quota held" in line, line
@@ -4673,8 +4672,8 @@ def test_one_card_has_one_name_across_every_command(monkeypatch):
     `quota_aliases=("H100",)`. The name a row is about is the CARD's name.
     """
     cloud = Cloud(quotas=THIS_PROJECT)
-    shown = {l.split()[0] for l in quota_list(cloud, monkeypatch).output.splitlines()
-             if l[:1].isalnum()}
+    shown = {ln.split()[0] for ln in quota_list(cloud, monkeypatch).output.splitlines()
+             if ln[:1].isalnum()}
     planned = {a.label for a in plan_quota(THIS_PROJECT, PREFS_NONE)}
 
     assert "H100-80GB" in shown, sorted(shown)
@@ -4753,10 +4752,10 @@ def test_one_geography_has_one_phrasing(monkeypatch):
 
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)])
     lines = quota_list(cloud, monkeypatch).output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     start, stop = header.index("WHERE"), header.index("STATUS")
-    places = {l[start:stop].strip() for l in lines
-              if l.startswith(("L4 ", "RTX-PRO-6000 ", "H100-80GB "))}
+    places = {ln[start:stop].strip() for ln in lines
+              if ln.startswith(("L4 ", "RTX-PRO-6000 ", "H100-80GB "))}
 
     assert places, "the fixture produced none of the cards under test"
     assert "all regions" not in places, places
@@ -5030,8 +5029,8 @@ def test_the_region_typo_remedy_is_a_command_that_runs(monkeypatch):
                            "--region", "asia-east99", "--dry-run")
 
     assert result.exit_code == 2
-    line = next(l for l in result.output.splitlines()
-                if "quota request" in l and "--region" in l)
+    line = next(ln for ln in result.output.splitlines()
+                if "quota request" in ln and "--region" in ln)
     assert "--gpu l4" in line, line
 
 
@@ -5172,11 +5171,11 @@ def test_the_by_region_view_never_prints_a_count_where_a_region_goes(monkeypatch
     """
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)])
     lines = quota_list(cloud, monkeypatch, "--by-region").output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     start, stop = header.index("REGION"), header.index("LIMIT")
     body = lines[lines.index(header) + 1:]
     body = body[:body.index("")] if "" in body else body
-    places = {l[start:stop].strip() for l in body}
+    places = {ln[start:stop].strip() for ln in body}
 
     assert places, "no rows, so nothing was checked"
     for place in places:
@@ -5231,12 +5230,12 @@ def test_by_region_checks_availability_because_every_row_names_a_region(
                   accelerators=stocking("us-central1", "nvidia-l4"))
     lines = quota_list(cloud, monkeypatch, "--by-region").output.splitlines()
 
-    k80 = [l for l in lines if l.startswith("K80 ")]
+    k80 = [ln for ln in lines if ln.startswith("K80 ")]
     assert len(k80) == 2, k80
     for line in k80:
         assert "not offered here" in line, line
 
-    l4 = next(l for l in lines if l.startswith("L4 "))
+    l4 = next(ln for ln in lines if ln.startswith("L4 "))
     assert "not offered here" not in l4, l4
 
 
@@ -5306,8 +5305,8 @@ def test_a_bucket_row_is_not_given_an_availability_verdict(monkeypatch):
     cloud = Cloud(quotas=[quota(L4, 1, locations=REGIONS_43)],
                   accelerators=stocking("us-central1", "nvidia-l4"))
 
-    line = next(l for l in quota_list(cloud, monkeypatch, "--by-region")
-                .output.splitlines() if l.startswith("L4 ") and "any of" in l)
+    line = next(ln for ln in quota_list(cloud, monkeypatch, "--by-region")
+                .output.splitlines() if ln.startswith("L4 ") and "any of" in ln)
     assert "not offered here" not in line, line
 
     # Without the table flag, for the reason above.
@@ -5331,8 +5330,8 @@ def test_a_row_that_names_no_place_is_not_judged_against_a_region(monkeypatch):
     cloud = Cloud(quotas=[placeless, quota(L4, 1, locations=["us-central1"])],
                   accelerators=stocking("us-central1", "nvidia-l4"))
 
-    line = next(l for l in quota_list(cloud, monkeypatch, "--by-region")
-                .output.splitlines() if l.startswith("K80 "))
+    line = next(ln for ln in quota_list(cloud, monkeypatch, "--by-region")
+                .output.splitlines() if ln.startswith("K80 "))
     assert "global" in line, line
     assert "not offered here" not in line, line
 
@@ -5359,10 +5358,10 @@ def test_a_bucket_is_answered_when_the_card_is_stocked_nowhere_it_is_metered(
                   accelerators=stocking("us-central1", "nvidia-l4"))
     lines = quota_list(cloud, monkeypatch, "--by-region").output.splitlines()
 
-    k80 = next(l for l in lines if l.startswith("K80 ") and "any of" in l)
+    k80 = next(ln for ln in lines if ln.startswith("K80 ") and "any of" in ln)
     assert "not offered here" in k80, k80
 
-    l4 = next(l for l in lines if l.startswith("L4 ") and "any of" in l)
+    l4 = next(ln for ln in lines if ln.startswith("L4 ") and "any of" in ln)
     assert "not offered here" not in l4, l4
 
 
@@ -5381,11 +5380,11 @@ def test_a_spanning_pool_is_relabelled_to_the_region_you_asked_about(monkeypatch
 
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)])
     lines = quota_list(cloud, monkeypatch, "--region", "us-central1").output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     start, stop = header.index("WHERE"), header.index("STATUS")
     body = lines[lines.index(header) + 1:]
     body = body[:body.index("")] if "" in body else body
-    places = {l[start:stop].strip() for l in body}
+    places = {ln[start:stop].strip() for ln in body}
 
     assert places, "no rows, so nothing was checked"
     for place in places - {"global"}:
@@ -5417,8 +5416,8 @@ def test_a_region_view_says_a_card_was_refused_in_another_region(monkeypatch):
     and look up.
     """
     cloud = Cloud(quotas=THIS_PROJECT, preferences=PREFS_DENIED)
-    line = next(l for l in quota_list(cloud, monkeypatch, "--region", "us-central1")
-                .output.splitlines() if l.startswith("A100-80GB"))
+    line = next(ln for ln in quota_list(cloud, monkeypatch, "--region", "us-central1")
+                .output.splitlines() if ln.startswith("A100-80GB"))
 
     assert "request it" not in line, line
     assert "europe-west4" in line, line
@@ -5430,16 +5429,16 @@ def test_the_three_surfaces_agree_about_a_card_refused_elsewhere(monkeypatch):
     minute and none of them may say "request it"."""
     cloud = Cloud(quotas=THIS_PROJECT, preferences=PREFS_DENIED)
 
-    narrowed = next(l for l in quota_list(cloud, monkeypatch, "--region",
+    narrowed = next(ln for ln in quota_list(cloud, monkeypatch, "--region",
                                           "us-central1").output.splitlines()
-                    if l.startswith("A100-80GB"))
-    by_region = [l for l in quota_list(cloud, monkeypatch, "--by-region")
-                 .output.splitlines() if l.startswith("A100-80GB")]
+                    if ln.startswith("A100-80GB"))
+    by_region = [ln for ln in quota_list(cloud, monkeypatch, "--by-region")
+                 .output.splitlines() if ln.startswith("A100-80GB")]
     planned = {a.card: a for a in plan_quota(THIS_PROJECT, PREFS_DENIED,
                                              region="us-central1")}
 
     assert "request it" not in narrowed, narrowed
-    assert all("request it" not in l for l in by_region), by_region
+    assert all("request it" not in ln for ln in by_region), by_region
     assert planned["a100-80gb"].outcome == DENIED, planned["a100-80gb"]
 
 
@@ -5485,9 +5484,9 @@ def test_quota_list_and_create_count_the_same_regions(monkeypatch):
     ]}]
 
     lines = quota_list(Cloud(quotas=spread), monkeypatch).output.splitlines()
-    header = next(l for l in lines if l.startswith("GPU "))
+    header = next(ln for ln in lines if ln.startswith("GPU "))
     start, stop = header.index("WHERE"), header.index("STATUS")
-    where = next(l[start:stop].strip() for l in lines if l.startswith("T4 "))
+    where = next(ln[start:stop].strip() for ln in lines if ln.startswith("T4 "))
 
     from comfy_qa.create import CARDS, card_grant
 
@@ -5639,10 +5638,10 @@ def test_a_bucket_is_checked_against_the_regions_it_actually_covers(monkeypatch)
     cloud = Cloud(quotas=spread, accelerators=stocking("us-central1", "nvidia-tesla-t4"))
 
     lines = quota_list(cloud, monkeypatch, "--by-region").output.splitlines()
-    bucket = next(l for l in lines if l.startswith("T4 ") and "any of" in l)
+    bucket = next(ln for ln in lines if ln.startswith("T4 ") and "any of" in ln)
     assert "not offered here" in bucket, bucket
 
-    here = next(l for l in lines if l.startswith("T4 ") and " us-central1 " in l)
+    here = next(ln for ln in lines if ln.startswith("T4 ") and " us-central1 " in ln)
     assert "not offered here" not in here, here
 
 
@@ -5663,7 +5662,7 @@ def test_the_dry_run_line_names_the_card_not_just_the_raw_id(monkeypatch, tmp_pa
     cloud = Cloud(quotas=THIS_PROJECT)
     p = run(cloud, config_path=tmp_path / "hosts.toml", quota_dry_run=True,
             region="europe-west4")
-    lines = [l for l in p.said if l.startswith("would ask for")]
+    lines = [ln for ln in p.said if ln.startswith("would ask for")]
 
     assert lines, "no dry-run request lines"
     for line in lines:
@@ -5698,7 +5697,6 @@ def test_a_card_at_zero_is_still_metered_and_still_gets_a_region_to_ask_in(
     T4 holds quota and got the useful remedy; H100 did not. The tool was most
     unhelpful precisely where it was most needed.
     """
-    zero_everywhere = [quota(FAMILY, 0, locations=REGIONS_43)]
     family_rows = [family(0, "NVIDIA_H100", locations=REGIONS_43)]
     cloud = Cloud(quotas=family_rows,
                   accelerators=stocking("asia-east1", "nvidia-h100-80gb"))
@@ -5765,9 +5763,9 @@ def test_a_bucket_for_a_card_at_zero_is_still_checked(monkeypatch):
     cloud = Cloud(quotas=spread,
                   accelerators=stocking("us-central1", "nvidia-h100-80gb"))
 
-    bucket = next(l for l in quota_list(cloud, monkeypatch, "--by-region")
+    bucket = next(ln for ln in quota_list(cloud, monkeypatch, "--by-region")
                   .output.splitlines()
-                  if l.startswith("H100-80GB") and "any of" in l)
+                  if ln.startswith("H100-80GB") and "any of" in ln)
     assert "not offered here" in bucket, bucket
 
 
@@ -6145,7 +6143,7 @@ def test_a_setup_remedy_carries_the_region_it_was_planning_for(tmp_path):
     cloud = Cloud(quotas=THIS_PROJECT)
     p = run(cloud, config_path=tmp_path / "hosts.toml", region="europe-west4",
             quota_requests=False)
-    later = [l for l in p.said if "quota request --gpu" in l]
+    later = [ln for ln in p.said if "quota request --gpu" in ln]
 
     assert later, "no remedy printed"
     for line in later:
@@ -6158,7 +6156,7 @@ def test_a_setup_remedy_carries_the_region_when_nothing_is_sent(tmp_path):
     cloud = Cloud(quotas=THIS_PROJECT)
     p = run(cloud, config_path=tmp_path / "hosts.toml", region="europe-west4",
             prompts=prompts(confirm=False))
-    later = [l for l in p.said if "quota request --gpu" in l]
+    later = [ln for ln in p.said if "quota request --gpu" in ln]
 
     assert later, "no remedy printed"
     for line in later:
@@ -6196,8 +6194,8 @@ def test_a_spot_grant_under_the_alias_is_actually_found(monkeypatch):
     spot_h100 = [family(0, "NVIDIA_H100", locations=["us-central1"]),
                  quota("PREEMPTIBLE-NVIDIA-H100-GPUS-per-project-region", 1,
                        locations=["us-central1"])]
-    line = next(l for l in quota_list(Cloud(quotas=spot_h100), monkeypatch)
-                .output.splitlines() if l.startswith("H100-80GB"))
+    line = next(ln for ln in quota_list(Cloud(quotas=spot_h100), monkeypatch)
+                .output.splitlines() if ln.startswith("H100-80GB"))
 
     assert "Spot" in line, line
 
@@ -6455,8 +6453,8 @@ def test_the_two_surfaces_agree_without_the_table_flag(monkeypatch):
     table = quota_list(cloud, monkeypatch, "--by-region").output
 
     for row in [r for r in payload["by_region"] if r["gpu"] == "K80"]:
-        line = next(l for l in table.splitlines()
-                    if l.startswith("K80 ") and row["region"] in l)
+        line = next(ln for ln in table.splitlines()
+                    if ln.startswith("K80 ") and row["region"] in ln)
         assert (row["offered_here"] is False) == ("not offered here" in line), (
             row, line)
 
@@ -7136,7 +7134,7 @@ def test_a_committed_use_allowance_does_not_count_as_runnable():
     """
     from comfy_qa.quota import COMMITTED, pools_for
 
-    committed_only = [{"quotaId": f"COMMITTED-NVIDIA-L4-GPUS-per-project-region",
+    committed_only = [{"quotaId": "COMMITTED-NVIDIA-L4-GPUS-per-project-region",
                        "dimensionsInfos": [
                            {"applicableLocations": ["us-central1"],
                             "details": {"value": "8"}}]}]
@@ -7757,7 +7755,7 @@ def test_the_zero_refusal_names_the_flag_that_is_actually_missing(
                   "--value", "0", *passed])
 
     assert not cloud.submitted, cloud.submitted
-    refusal = next(l for l in result.output.splitlines() if "refusing" in l)
+    refusal = next(ln for ln in result.output.splitlines() if "refusing" in ln)
     assert missing in refusal, refusal
     for already in passed:
         assert already not in refusal, (
@@ -7836,7 +7834,7 @@ def test_an_unlimited_ask_is_not_printed_as_minus_one_or_dropped(monkeypatch):
                           preferences=raise_to_unlimited).gcloud())
         shown = CliRunner().invoke(app, ["quota", "list"])
 
-    line = next(l for l in shown.output.splitlines() if l.startswith("L4"))
+    line = next(ln for ln in shown.output.splitlines() if ln.startswith("L4"))
     assert "-1" not in line, line
     assert "unlimited" in line.lower(), line
 
@@ -7886,7 +7884,7 @@ def test_the_asked_for_number_comes_from_the_request_that_set_the_status(
                                             preferences=mixed).gcloud())
         shown = CliRunner().invoke(app, ["quota", "list"])
 
-    line = next(l for l in shown.output.splitlines() if l.startswith("T4"))
+    line = next(ln for ln in shown.output.splitlines() if ln.startswith("T4"))
     assert "of the 2 asked" not in line, line
     # AND THE REFUSAL MUST NOT VANISH. It is on the same row, and rendering it
     # only under `denied` means a card refused in one region and pending in
@@ -8323,7 +8321,7 @@ def test_the_skipped_remedy_does_not_name_a_region_that_sells_nothing(tmp_path):
                   accelerators=stocking("us-central1", "nvidia-h100-80gb"))
     p = run(cloud, config_path=tmp_path / "hosts.toml", region="africa-south1",
             quota_requests=False)
-    later = next(l for l in p.said if "ask later" in l.lower())
+    later = next(ln for ln in p.said if "ask later" in ln.lower())
 
     assert "--region africa-south1" not in later, later
     assert "africa-south1" in later, (
@@ -8500,7 +8498,7 @@ def test_the_dry_run_command_is_pasteable_with_a_real_justification(monkeypatch)
     result = quota_request(cloud, monkeypatch, "--gpu", "t4", "--region",
                            "us-central1", "--dry-run", "--justification",
                            "QA for Comfy Org")
-    line = next(l for l in result.output.splitlines() if l.startswith("gcloud "))
+    line = next(ln for ln in result.output.splitlines() if ln.startswith("gcloud "))
     parts = shlex.split(line)
 
     assert "--justification=QA for Comfy Org" in parts, parts
@@ -8611,7 +8609,7 @@ def test_setup_does_not_say_nothing_was_missing_when_cards_are_at_zero(tmp_path)
     ]
     cloud = Cloud(quotas=THIS_PROJECT, preferences=settled_all)
     p = run(cloud, config_path=tmp_path / "hosts.toml", quota_requests=False)
-    line = next(l for l in p.said if "no-quota-request" in l)
+    line = next(ln for ln in p.said if "no-quota-request" in ln)
 
     assert "Nothing was missing" not in line, line
     assert "refused" in line.lower() or "denied" in line.lower(), line
@@ -8850,7 +8848,7 @@ def test_the_ask_hint_does_not_offer_a_card_already_pending(monkeypatch):
               if q["quotaId"] != FAMILY else q for q in THIS_PROJECT]
     out = quota_list(Cloud(quotas=zeroed, preferences=pending_h100 + PREFS_DENIED),
                      monkeypatch).output
-    hint = next((l for l in out.splitlines() if "quota request --gpu" in l), "")
+    hint = next((ln for ln in out.splitlines() if "quota request --gpu" in ln), "")
 
     assert hint, out
     assert "h100" not in hint, f"offers a card already pending: {hint}"
@@ -8908,7 +8906,7 @@ def test_an_unlimited_grant_is_not_read_as_no_quota(monkeypatch):
     and `allowance()` knows that while its consumers did not.
     """
     out = quota_list(Cloud(quotas=UNLIMITED_L4), monkeypatch).output
-    line = next(l for l in out.splitlines() if l.startswith("L4 "))
+    line = next(ln for ln in out.splitlines() if ln.startswith("L4 "))
 
     assert "request it" not in line, line
     assert "unlimited" in line.lower(), line
@@ -8935,8 +8933,8 @@ def test_an_unlimited_pool_rescues_a_card(monkeypatch):
     unread — with a sentinel in place of a missing id."""
     spot = [quota(L4, 0, locations=["us-central1"]),
             quota(SPOT_L4, -1, locations=["us-central1"])]
-    line = next(l for l in quota_list(Cloud(quotas=spot), monkeypatch)
-                .output.splitlines() if l.startswith("L4 "))
+    line = next(ln for ln in quota_list(Cloud(quotas=spot), monkeypatch)
+                .output.splitlines() if ln.startswith("L4 "))
 
     assert "Spot" in line, line
 
@@ -9584,9 +9582,9 @@ def test_an_unlimited_row_wins_the_dedupe_against_a_zero(monkeypatch):
         {"details": {"value": "0"}, "applicableLocations": ["us-central1"]},
         {"details": {"value": "-1"}, "applicableLocations": ["us-central1"]},
     ]}]
-    line = next(l for l in quota_list(Cloud(quotas=two_rows), monkeypatch,
+    line = next(ln for ln in quota_list(Cloud(quotas=two_rows), monkeypatch,
                                       "--region", "us-central1")
-                .output.splitlines() if l.startswith("L4 "))
+                .output.splitlines() if ln.startswith("L4 "))
 
     assert "request it" not in line, line
     assert "unlimited" in line, line

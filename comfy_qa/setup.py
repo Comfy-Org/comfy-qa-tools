@@ -769,12 +769,11 @@ def plan_quota(
     """
     from .create import CARDS, drivable_cards, unspendable
     from .quota import (
-        GLOBAL_ALLOWANCE, ON_DEMAND, UNLIMITED, allowance, asks, asks_about,
+        GLOBAL_ALLOWANCE, ON_DEMAND, UNLIMITED, allowance, asks_about,
         best_pool, global_allowance, global_target, pools_for, resolve_target,
     )
 
     where, _why = request_region(quotas, preferences, region)
-    standing = asks(preferences)
 
     def settled(target, label: str) -> QuotaAsk | None:
         """Every reason not to ask again, or None to go ahead.

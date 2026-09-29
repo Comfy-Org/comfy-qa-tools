@@ -311,7 +311,8 @@ def test_the_global_allowance_says_global_not_all_regions():
 #
 # For the record at the time of writing: seven preferences, six of them denied.
 
-from comfy_qa.quota import asks, denied_ids, global_quota_id, pending_ids
+from comfy_qa.quota import (  # noqa: E402  (deliberately below the note above)
+    asks, denied_ids, global_quota_id, pending_ids)
 
 DENIED_PREF = {
     "quotaId": "NVIDIA-A100-80GB-GPUS-per-project-region",

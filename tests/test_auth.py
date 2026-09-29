@@ -6,7 +6,6 @@ than patching subprocess. Nothing here touches the network or a real project.
 
 from __future__ import annotations
 
-import pytest
 
 from comfy_qa.auth import run_checks, wait_for_quota
 from comfy_qa.gcloud import Gcloud, GcloudError, console_quota_url, quota_request_command

@@ -443,8 +443,8 @@ def test_nothing_usable_prints_the_command_that_fixes_it():
     result = run(FakeCloud(quotas=[T4, A100]), "quota", "list")
 
     assert "nothing is usable yet" in result.output
-    hint = next(l for l in result.output.splitlines()
-                if "quota request --gpu" in l)
+    hint = next(ln for ln in result.output.splitlines()
+                if "quota request --gpu" in ln)
     asked = hint.split("--gpu", 1)[1].split()[0].split(",")
 
     # THE CARDS, not the flag. Both fixtures are at zero and neither has been

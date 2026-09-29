@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from functools import reduce
 from dataclasses import dataclass
-from typing import Iterable, Literal
+from typing import Literal
 
 # FOUR STATES, not three, and the mismatch was a live defect. `AskState` has
 # four and this had three, so `denied` and `partial` both collapsed onto `none` —

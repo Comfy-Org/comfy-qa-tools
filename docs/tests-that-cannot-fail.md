@@ -2300,6 +2300,43 @@ Two practices, and the second is the one that actually works:
 > problem. It has a **correctness** problem: it is publishing false failures,
 > and they are indistinguishable from the true ones it exists to find.
 
+### The general form: a measurement of a moving subject is void
+
+Three mechanisms for voiding a measurement are recorded above, and all three are
+the **instrument** lying — a shell that did not word-split, a harness copy that
+lost its control, the interpreter's bytecode cache. This is a fourth, and it is
+different in kind:
+
+> **A full-suite run is a measurement. A measurement taken while another process
+> edits the subject is void, however careful the runner is.** The other three are
+> about the instrument; this one is about the subject moving. The result looks
+> identical either way, and no amount of rerunning distinguishes them — only
+> checking whether anything else is writing does.
+
+It is worth stating separately because the usual defences do not work on it.
+Rerunning does not help: the second run reads a different half-written tree and
+fails differently, which reads as intermittency and sends you hunting for
+process-global pollution. Isolating the test does not help: alone it passes, which
+reads as a test-interaction problem. Both of those are *more* plausible than the
+truth, and both are wrong.
+
+And the cost is not confined to the person running it. The same overlap put a
+live mutant into a commit on a public PR — the tree was captured mid-sweep, and a
+one-line revert of a determinism fix rode along inside a commit whose message was
+about something else entirely. **A tree being edited is not merely unsafe to
+measure; it is unsafe to commit.** `git status` was clean-looking at the moment it
+was taken, because the sweep restores between mutants: the window is one test
+run wide and it is wide enough.
+
+The practice, for both sides:
+
+- **Before measuring:** check that nothing else is writing. A sweep should leave
+  a marker in the repo root for exactly this.
+- **Before committing:** the same check, and read the diff. A one-line change you
+  did not make is what this looks like.
+- **Better than either:** the writer works in a `git worktree`, and the shared
+  tree is never a subject at all.
+
 ## The instrument failed the same way twice in one session
 
 Class 4 is *an instrument with only one branch*. It happened twice on the same

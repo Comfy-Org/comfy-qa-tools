@@ -40,10 +40,7 @@ from .quota import (
     needs_region,
     resolve_target,
     regions_metered,
-    regions_with_quota,
-    matches,
     readiness,
-    resolve,
     summarise,
 )
 from .gcloud import (
@@ -280,7 +277,7 @@ def _match_accelerator(gpu: str, stocked: dict[str, set[str]]) -> list[str]:
 
 
 def _regions_stocking(
-    gc, project: str, names, 
+    gc, project: str, names,
 ) -> dict[str, set[str] | None]:
     """Which regions actually SELL each card. `None` means the check failed.
 
@@ -1415,10 +1412,14 @@ def quota_list_cmd(
         amount = max([len(_shown(e[1])) for e in shown] + [5])
         say.result(f"{'GPU':<14} {'REGION':<{width}} {'LIMIT':>{amount}}  STATUS")
         for row, limit, where, _status, _pool, _qid in shown:
+            # Hoisted out of the f-string: an expression spanning a newline
+            # inside `{}` is PEP 701, which is Python 3.12 and later. This file
+            # has to parse under 3.11, which CI checks and no local run did.
+            shown = status_of(row.gpu, row.status, row.limit, row.asked, row,
+                              limit, _offered_in(row.gpu, row.region))
             say.result(f"{row.gpu:<14} {where:<{width}} "
                        f"{_shown(limit):>{amount}}  "
-                       f"{status_of(row.gpu, row.status, row.limit, row.asked, row,
-                                    limit, _offered_in(row.gpu, row.region))}")
+                       f"{shown}")
         footnote()
         return
 
@@ -1608,7 +1609,7 @@ def quota_request_cmd(
     # `create --gpu p100` still refuses, because the driver installed here is the
     # open kernel module and Pascal has no GSP. Refused at the point of asking,
     # where it costs nothing, rather than after the wait.
-    from .create import card_named, drivable_cards, offered, unspendable
+    from .create import card_named, drivable_cards, offered
 
     # READ BEFORE THE LOOP, because two things need it: the guard against
     # lowering a standing request, and the region derivation that stops a
@@ -2009,7 +2010,7 @@ def quota_request_cmd(
                     f"this project has no {name} quota in {region}",
                     fix=say.fix(
                         where,
-                        f"comfy-qat quota list --by-region  # "
+                        "comfy-qat quota list --by-region  # "
                         + ("the other " + str(len(places) - 1) + " too"
                            if len(places) > 1 else "every region it is metered in")),
                     code=2,
@@ -2329,7 +2330,6 @@ def _current_value(gc: Gcloud, project: str, target: "Target") -> int | None:
     # the project holds without limit.
     from functools import reduce
 
-    from .quota import better_limit
 
     return reduce(better_limit, (row.limit for row in matched))
 
