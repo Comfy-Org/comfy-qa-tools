@@ -728,14 +728,23 @@ class Gcloud:
         info = self.run(["billing", "projects", "describe", project]) or {}
         return bool(info.get("billingEnabled"))
 
-    def gpu_quotas(self, project: str) -> list[dict]:
-        """Every compute quota whose id mentions GPUs, with its current value."""
-        infos = self.run([
+    def compute_quotas(self, project: str) -> list[dict]:
+        """EVERY compute quota this project reports, with its current value.
+
+        The fetch was always this — `gpu_quotas` filtered afterwards — so reading
+        the lot costs nothing extra. An N1 box spends `CPUS-per-project-region`,
+        which is invisible to anything keeping only ids that contain "GPU".
+        """
+        return self.run([
             "quotas", "info", "list",
             f"--service={COMPUTE_SERVICE}",
             f"--project={project}",
         ], timeout=QUOTA_TIMEOUT) or []
-        return [q for q in infos if "GPU" in (q.get("quotaId") or "").upper()]
+
+    def gpu_quotas(self, project: str) -> list[dict]:
+        """Every compute quota whose id mentions GPUs, with its current value."""
+        return [q for q in self.compute_quotas(project)
+                if "GPU" in (q.get("quotaId") or "").upper()]
 
     def region_quotas(self, region: str, project: str) -> dict[str, tuple[float, float]]:
         """Usage and limit per metric for one region, keyed by metric name.
@@ -1213,18 +1222,25 @@ class Gcloud:
             args.append(f"--metadata={metadata}")
         self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
 
-    def accelerator_types(self, project: str, name: str) -> list[dict]:
-        """Every zone that offers one card. `name` is Google's own id, `nvidia-l4`.
+    def accelerator_types(self, project: str, name: str = "") -> list[dict]:
+        """Every zone that offers one card, or all of them when `name` is empty.
+
+        The unfiltered form is 543 rows on this project — one call, small — and
+        it is what `quota list` needs: the accelerator id for a card cannot be
+        CONSTRUCTED, only matched. `nvidia-tesla-a100` and `nvidia-a100-80gb` are
+        the same family; `nvidia-h100-80gb`, `nvidia-h100-mega-80gb` and
+        `nvidia-h200-141gb` share no rule with each other or with `nvidia-l4`.
+        One list beats a guess, and beats one filtered call per card.
 
         Filtered server-side to keep the payload small, and filtered again by the
         caller: gcloud warns on every call that its `=` operator is changing to
         match more than it does today, and the day it does, `nvidia-l4` also
         returns `nvidia-l4-vws`.
         """
-        return self.run([
-            "compute", "accelerator-types", "list",
-            f"--project={project}", f"--filter=name={name}",
-        ]) or []
+        args = ["compute", "accelerator-types", "list", f"--project={project}"]
+        if name:
+            args.append(f"--filter=name={name}")
+        return self.run(args) or []
 
     def machine_types(self, project: str, zones: list[str], name: str) -> list[dict]:
         """Whether these zones offer one machine type. Zone-scoped, so it is quick."""
@@ -1435,23 +1451,181 @@ def _detail_after(lines: list[str], summary: str) -> str:
     return " ".join(part for part in detail if part)
 
 
+# A quota preference id is a resource name under the project. gcloud's own help:
+# "ID of the Quota Preference object, must be unique under its parent." Live ids
+# on this project are lowercase letters, digits and hyphens — `gpus-all-regions-1`,
+# `a100-80-euw4` — and the one gcloud generated when the flag was OMITTED is a
+# random UUID, `a0e3b926-...`, which is the whole problem this exists to fix.
+#
+# Google's own worked example is `example_default-limit_us-central1`: a prefix, the
+# quota, and the dimensions, underscore-separated, with hyphens surviving inside
+# each part. This follows that shape.
+# MEASURED, not assumed. This was 63 — a number nobody checked, carried over
+# from the shape of other GCP resource ids — and it forced a truncation that ate
+# the quota's NAME out of the id, defeating the whole point of deriving a legible
+# one. Probed against the live API with `--validate-only` on 2026-09-17: ids of
+# 63, 64, 100, 200 and 250 characters all validate, exit 0, creating nothing.
+#
+# So the cap is a sanity bound rather than a real limit, set well above any id
+# this builds (the longest realistic one is about 70) and well below the shortest
+# length observed to be accepted. Nothing is truncated in practice, and the full
+# quota id survives into the console where a person reads it.
+_PREFERENCE_ID_MAX = 120
+_PREFERENCE_PREFIX = "comfyqat_"
+
+
+def quota_preference_id(quota_id: str, dimensions: dict[str, str] | None = None) -> str:
+    """A stable id for the request this tool would make, so a re-run cannot duplicate.
+
+    THE DIMENSIONS ARE PART OF THE ID, and that is a correctness requirement
+    rather than tidiness. A preference's dimensions are IMMUTABLE and a
+    preference can never be deleted — "The ability to delete a QuotaPreference is
+    not supported" — so reusing one id across two dimension sets does not migrate
+    the request, it fails. `nvidia-h100` for us-central1 and `nvidia-h100` for
+    europe-west2 have to be two ids or neither works.
+
+    Without any id gcloud mints a random UUID per call, which means every re-run
+    of `setup` would leave another undeletable row on the project. With a derived
+    one, the same inputs address the same preference and a re-run updates it.
+
+    Not a hash: a person reading `quotas preferences list` in the console later
+    should be able to see which rows this tool made and what each one is for.
+    """
+    parts = [quota_id.lower()]
+    parts += [str(value).lower() for _key, value in sorted((dimensions or {}).items())]
+    slug = "_".join(
+        re.sub(r"[^a-z0-9]+", "-", part).strip("-") for part in parts if part)
+    # A backstop that nothing reaches, kept so a quota id from some future
+    # service cannot produce an unbounded resource name. Truncation takes the
+    # TAIL, because that is where the dimensions are and they are what
+    # distinguish one request from another.
+    room = _PREFERENCE_ID_MAX - len(_PREFERENCE_PREFIX)
+    return _PREFERENCE_PREFIX + slug[-room:].lstrip("-_")
+
+
 def quota_request_command(
-    *, project: str, quota_id: str, value: int, region: str | None = None,
-    justification: str | None = None,
+    *, project: str, quota_id: str, value: int, preference_id: str,
+    dimensions: dict[str, str] | None = None, justification: str | None = None,
+    email: str | None = None, allow_missing: bool = True,
+    validate_only: bool = False,
 ) -> list[str]:
-    """Build the quota-increase command. Kept pure so --dry-run can print it."""
+    """Build the quota-increase command. Kept pure so a dry run can print it.
+
+    `update`, NOT `create`, and the difference is the whole of this feature's
+    safety. Three properties `create` does not have, all confirmed against the
+    live API:
+
+      * it is an UPSERT. gcloud's own help: "This command updates an existing or
+        creates a new QuotaPreference", and `--allow-missing` — "If specified and
+        the quota preference is not found, a new one will be created". So a
+        re-run of `setup` is an update rather than a second, permanent, request;
+      * it takes `--validate-only`, which reaches Google, validates the whole
+        request and creates NOTHING. `create` has no such flag, so a `--dry-run`
+        over `create` can only ever print a string and hope;
+      * the preference id is POSITIONAL here and a FLAG on `create`. Easy to get
+        wrong, which is why only one of the two is built anywhere in this tool.
+
+    `--dimensions` is arbitrary rather than region-only. It used to take a region
+    and nothing else, which cannot express the shape every modern card uses:
+    `GPUS-PER-GPU-FAMILY-per-project-region` needs `gpu_family=` AND `region=`,
+    and without the first it is a request about no card in particular.
+    """
     args = [
-        "quotas", "preferences", "create",
+        "quotas", "preferences", "update", preference_id,
         f"--service={COMPUTE_SERVICE}",
         f"--project={project}",
         f"--quota-id={quota_id}",
         f"--preferred-value={value}",
     ]
-    if region:
-        args.append(f"--dimensions=region={region}")
+    if dimensions:
+        args.append("--dimensions=" + ",".join(
+            f"{key}={dimensions[key]}" for key in sorted(dimensions)))
     if justification:
         args.append(f"--justification={justification}")
+    if email:
+        # TWO SOURCES, and they are not saying the same thing, so both are here
+        # rather than whichever one makes the better sentence.
+        #
+        # The API schema, on `contactEmail` (`cloudquotas_v1_messages.py:1228`):
+        # "Input only. An email address that can be used to contact the user, in
+        # case Google Cloud needs more information to make a decision before
+        # additional quota can be granted. When requesting a quota increase, the
+        # email address is required. When requesting a quota decrease, the email
+        # address is optional."
+        #
+        # gcloud's `--email` help calls the FLAG "optional", which is about the
+        # flag and not the field, and then says what the omission costs: "If no
+        # contact email address is provided, or the provided email address does
+        # not have the required quota update permission, the quota preference
+        # request will be denied in case further information is required to make
+        # a decision."
+        #
+        # So the honest reading is CONDITIONAL, not automatic: without a contact
+        # address Google has no way to ask a follow-up question and has to decide
+        # on what it was given — and refuses if that is not enough. Sending one
+        # removes a way to lose that costs nothing.
+        #
+        # AND IT IS NOT THE EXPLANATION FOR A REFUSAL. Two requests were
+        # submitted WITH this set and both were denied within seconds, which
+        # reads as an automatic decision rather than a human one. Whatever the
+        # earlier unattributed denials on this project were about, a missing
+        # contact address is not established as the cause of any of them — the
+        # likelier story is simple ineligibility for those cards. Send it because
+        # the API documents it as required for an increase, not as a remedy.
+        #
+        # Note the second half of gcloud's sentence, which is easy to skim past:
+        # an address whose Google account lacks quota update permission is no
+        # better than none. This passes the signed-in account, which has been
+        # driving gcloud against this project, so it holds in the ordinary case
+        # and is worth knowing about when it does not.
+        args.append(f"--email={email}")
+    if allow_missing:
+        args.append("--allow-missing")
+    if validate_only:
+        # WHAT THIS DOES AND DOES NOT CHECK. Read this before trusting a green
+        # validate, because it is weaker than it looks and it has already cost a
+        # real submission.
+        #
+        # IT DOES NOT CHECK THAT THE REQUEST IS WELL FORMED. A per-card request
+        # missing its required `region` dimension validated exit 0 THREE TIMES
+        # and was then rejected outright on submission with "Dimension values
+        # must be set for all the dimensions ... defined for the quota". So a
+        # green validate does not even mean the API will accept the request.
+        #
+        # It does not check sense either: a family request carrying `region=` and
+        # no `gpu_family=` — about no card in particular — validates exit 0. Nor
+        # obtainability: H200 and B200 validate although Google's
+        # allocation-quota table lists them as having no standard on-demand quota
+        # at all, so they can only ever be refused at review.
+        #
+        # A green validate is evidence of nothing beyond "not obviously
+        # malformed". It is still worth running — it is free and it catches the
+        # collision rules — but it may never stand in for a real submission, and
+        # nothing here should be written as though it can.
+        args.append("--validate-only")
     return args
+
+
+# Google refuses a NEW preference id for a (quota id, dimensions) pair that
+# already has one — "Quota Preference with dimension '{}' already exist for
+# container ..." — and refuses an update whose dimensions differ from the
+# existing preference's — "Location in existing quota preference '...' does not
+# match". Both are INVALID_ARGUMENT, and both mean the same thing to a caller:
+# you addressed the wrong preference, not "the request was bad".
+_ALREADY_THERE = ("already exist", "does not match")
+
+
+def is_already_asked(exc: BaseException) -> bool:
+    """Did this failure mean a preference for this pair already exists?
+
+    Both wordings were read off the live API by a teammate driving
+    `--validate-only`, so they are observed rather than guessed. The match is
+    still arranged to be benign in the direction it can be wrong: a message this
+    does not recognise falls through to "the request was refused: <verbatim>",
+    which is true, non-fatal, and prints the reason.
+    """
+    text = str(exc).lower()
+    return any(phrase in text for phrase in _ALREADY_THERE)
 
 
 def console_quota_url(project: str) -> str:

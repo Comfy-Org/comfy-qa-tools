@@ -104,7 +104,7 @@ class ProbeError(Exception):
         self.fix = fix
 
 
-def _clean(value: object, limit: int = _FIELD_LIMIT) -> str | None:
+def _clean(value: object, cap: int = _FIELD_LIMIT) -> str | None:
     """One field, as text safe to print, paste and read back — or `None`.
 
     Two jobs, and both are load-bearing.
@@ -130,7 +130,7 @@ def _clean(value: object, limit: int = _FIELD_LIMIT) -> str | None:
     text = " ".join(text.split())
     if not text:
         return None
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    return text if len(text) <= cap else text[: cap - 1] + "…"
 
 
 def _mapping(value: object) -> dict:
@@ -174,7 +174,7 @@ def _vram(total: object) -> str | None:
         return None
     if isinstance(total, (int, float)):
         return _gigabytes(total)
-    text = _clean(total, limit=24)
+    text = _clean(total, cap=24)
     if text is None:
         return None
     try:
@@ -266,7 +266,7 @@ class Stamp:
         # line is about, and a stamp that cannot name where it came from is not
         # evidence. Fall back to the url, which at least says where the answer was
         # fetched from; `"?"` is the last resort when even that is unreadable.
-        parts = [_clean(self.host) or _clean(self.url, limit=_LINE_LIMIT) or "?"]
+        parts = [_clean(self.host) or _clean(self.url, cap=_LINE_LIMIT) or "?"]
         if self.deploy_environment:
             parts.append(self.deploy_environment)
         if self.comfyui_version:

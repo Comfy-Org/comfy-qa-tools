@@ -343,6 +343,315 @@ submission. The most common cause is an account with no billing history — quot
 frequently withheld until a project has been billed at least once. Setup continues;
 see [cost.md](cost.md) and ask again later.
 
+**`could not read this project's existing quota requests: ...`**
+`comfy-qat quota request` stops rather than guessing. The list of requests already
+on the project is what says which preference id a given quota and set of
+dimensions already holds — and Google refuses a *new* id for a pair that has one,
+while a request filed under the wrong id is permanent, because a quota preference
+cannot be deleted. So a failed read is a refusal, not a best effort. `--dry-run`
+still works and asks Google for nothing. The usual cause is the same timeout that
+affects `quotas info list`; try again.
+
+**`could not read existing quota requests (...), so nothing was asked for — a
+second request cannot be ruled out without them`**
+Setup asks Google for the GPU quota your project is missing, and the list of
+requests you have already made is the only thing that stops it asking twice. A
+quota request cannot be withdrawn and may be read by a person at Google, so when
+that list cannot be read setup refuses to guess rather than making a best effort.
+Nothing was sent and nothing is wrong with your project; the usual cause is the
+same timeout that affects `quotas info list`. Run setup again, or ask by hand with
+`comfy-qat quota request --gpu l4,t4`.
+
+**`<card>: already requested, nothing sent`**
+Not a failure. A quota preference is keyed on its quota id *and* its dimensions,
+and Google refuses either a new preference id for a pair that already has one, or
+an update whose dimensions differ from the existing preference's. Both mean the
+same thing to you: this card has already been asked for. Watch it with
+`comfy-qat quota`, or on the console link setup prints.
+
+**`quota requests skipped (--no-quota-request). To ask later: comfy-qat
+quota request --gpu l4,t4`**
+You passed `--no-quota-request`, so setup reported what your project holds and
+asked Google for nothing. Ask later with the command it names.
+
+**`... is 0 and <machine-type> needs <n> vCPU, so this card cannot start even with GPU quota`**
+Only ever said about **N1** cards — T4, V100, P100, P4, K80 — which consume the
+generic `CPUS-per-project-region`. Every other family this tool orders (A2, A3,
+G2, G4) needs no CPU quota at all, so a zero `A2-CPUS-per-project-region` is not
+why an A100 will not start, however much it resembles a cause. Raise the generic
+pool for the region you are working in.
+
+**`<card>: refusing to lower the standing request to <n>`**
+You asked for fewer than a request already with Google. Because a quota
+preference is addressed by its own id, sending a smaller number is an **update**
+— it replaces the standing request rather than sitting beside it. Google treats
+the two directions differently (a decrease needs no contact address and gets no
+trace id, and carries its own safety checks), so a smaller number is not simply a
+slower version of a bigger one. So `comfy-qat quota request
+--gpu h100` with no `--value` will never lower a request `setup` filed at 8; a
+number you type and confirm with `--allow-lower` will. The refusal prints both
+commands.
+
+**`no region called '<r>' appears in this project's quota`**
+`comfy-qat quota --region` used to accept a typo and print a nearly empty table,
+which reads as "this project has almost no quota" rather than "you misspelled the
+region". It now refuses, the way `comfy-qat quota request` already did for the
+same flag. `comfy-qat quota` with no region lists every region the project is
+metered in.
+
+**`this project has no <card> quota in <region>`**
+The card is metered on this project, just not where you asked. The fix names a
+region that does have it, and `--by-region` lists the rest. This used to say "it
+is metered in all regions, us-central1" — two API dimension entries printed as
+prose, reading as a two-item region list — and then offered a list of cards when
+the region was the problem.
+
+**`refusing to set <quota> to 0, releasing the <n> this project holds`**
+`--value 0` gives the quota up rather than asking for less of it, and nothing in
+this tool can undo that: `gcloud quotas preferences` exposes create, describe,
+list and update, and no delete verb at all. It needs
+`--release-quota` as well as `--allow-lower`: two flags, because `--allow-lower`
+is a thing somebody may reasonably keep in a script for a legitimate reduction,
+and a `0` typed by accident beside it would destroy a working grant. Nothing in
+QA needs this. The refusal names what would have disappeared.
+
+**`keeping the quota this project holds <quota> at <n>; <m> would lower it`**
+The floor is the larger of two things: the request already with Google, and the
+quota the project actually HOLDS. A card can hold quota with no request behind it
+at all — T4, L4, K80, P100, P4 and V100 are all like that here — so a guard that
+only compared against standing requests left the cards that work today
+unprotected. Pass `--allow-lower` to go below it, or `--value <n>` to keep it.
+
+**`<n> is a lot: <m> is the most any machine this tool creates takes. Asking for headroom is fine; a typo is not, and Google reads the number`**
+A warning, not a refusal. Asking for more quota than one machine needs is
+legitimate — headroom, or several boxes — but `--value 999999` used to go through
+in silence, and the number reaches a human reviewer. The bound comes from the
+card table, so it moves when the table does.
+
+**`<card> is a real card and this tool has no machine type for it, so it cannot create one. This tool can create: ...`**
+Not a typo, which is what "no card called '<card>'" used to say about it while
+`comfy-qat quota list` printed a row for the same card in the same minute. B200,
+H200, H100-MEGA and RTX PRO 6000 are metered by this project and have no machine
+type in this tool's table — the machine type and card count cannot be guessed
+without creating an instance. `quota list` shows what you hold; `create` will not
+order them.
+
+**`<card>: Google has already refused this (<preference id>). Asking again changes nothing unless what a reviewer reads has changed — on a new project that is billing history, not the wording`**
+A warning, not a refusal — you typed the command, so it runs. `setup` declines to
+re-file a refused request automatically and says "Not asked again automatically";
+this is the manual command, and there has to be a way to ask again once something
+has changed. On a new project what changes the answer is billing history, not the
+wording of the justification: six of seven requests on the test project came back
+refused automatically, in under three seconds, with nothing read.
+
+**`no such region '<region>' — this project's quota names <n>, and that is not one of them`**
+A typo, caught before it can turn into a statement about quota. This used to
+report "this project has no l4 quota in not-a-region", which says the region is
+real and the quota is missing — both halves false — and then recommended a region
+from the same bad path. `comfy-qat quota list --by-region` lists the real ones.
+
+**`<id> meters several cards and names which one in a dimension, so a raw id cannot say which you mean`**
+`GPUS-PER-GPU-FAMILY-per-project-region` meters H100, H100-MEGA, H200, B200 and
+RTX PRO 6000 on this project and tells them apart by a `gpu_family` dimension, so
+a raw `--quota-id` cannot say which card you mean. The tool used to file it
+anyway, with `region` alone — a preference for no card in particular, permanent,
+and invisible to the guard that stops a request being lowered. Use
+`--gpu <card>`, which resolves both dimensions.
+
+**`<card>: <region> does not offer this card`**
+Quota and availability are different questions, and this one is availability. The
+project may well be metered for the card in that region, but Google sells no such
+accelerator there, so a granted request would buy a box that can never start —
+and a quota preference cannot be deleted once filed. Nine of the forty-three
+regions in the quota universe stock no NVIDIA accelerator of any kind, among them
+africa-south1, which sorts first alphabetically and was for a while what the tool
+recommended. The fix line names a region that does stock the card.
+
+**`<card>: Google sells it in <n> regions, none of them metered by this project`**
+The card exists in Google's catalogue but nowhere this project holds quota for
+it, so there is no region where a request would give you something you can start
+today. `comfy-qat quota list --by-region` shows what the project meters, and
+`comfy-qat quota list --region <region>` what a region offers.
+
+**`<card>: this project meters it in <n> regions that do`**
+The tail of the message above: the card is metered somewhere you can actually use
+it. `comfy-qat quota list --by-region` lists those regions, and
+`comfy-qat quota list --region <region>` says what any one region offers.
+
+**`could not read existing quota requests, so the preference ids below are the ones this would MINT. Where a request already exists for the same quota and dimensions, the real run uses that preference's own id instead`**
+Printed by `--dry-run` when the preference list cannot be read. The ids shown are
+what the tool WOULD mint; where a request already exists for the same quota and
+dimensions, a real run addresses that record by its own id instead. It goes to
+stderr, because `--dry-run` output is meant to be piped to a shell and the
+apostrophe in this sentence used to open a quote that never closed — breaking the
+whole script rather than one line.
+
+**`the requests were filed. The wait stopped because this project's quota stopped answering`**
+`--wait` polls this project's quota until the request is answered. A read failure
+that waiting cannot fix — an expired sign-in, a revoked credential, a 403, a
+project that is gone — ends the wait instead of being polled through for the
+full thirty minutes and then reported as `still pending`, which is a read failure
+dressed as an absence of approval. **The requests themselves went out**: fix the
+access and run `comfy-qat quota` to see where they stand. Do not re-run `quota
+request` to "retry" — that files against the same preference ids again.
+
+**`names no card`** (as in ``--gpu ',' names no card``)
+`--gpu` was typed and parses to nothing — `,`, `,,,`, spaces. Almost always
+`--gpu "$A,$B"` with the variables unset. It is refused rather than ignored,
+because a flag you typed is one you meant: before this it walked past the guard,
+asked for nothing, and exited 2 with completely empty output — or exited **0**
+under `--dry-run` / `--validate-only`, which reads as "Google says this is
+valid" about no request at all. Name the cards, e.g. `--gpu l4,a100`.
+
+**`--release-quota ignored: it permits --value 0, and this command was given`**
+`--release-quota` only does anything alongside `--value 0` — it is the second
+half of the confirmation for giving up quota this project holds. Passed with any
+other value, or with none, it changes nothing; before this it also said nothing,
+which made the most consequential flag on this command the only one that could
+be silently inert. The message ends `--value N was asked for` or
+`no --value was given`, naming which it saw.
+
+**`<card>: whether <region> offers this card was not checked`**
+Not a refusal and not a verdict. Either `gcloud compute accelerator-types list`
+could not be read, or the card is one this tool has no accelerator id for — so
+the availability question was not answered either way and the request went ahead.
+"I could not look" is not "it is not there", and the tool will not turn one into
+the other; `comfy-qat quota list --region <region>` reports the same distinction
+as "not checked" rather than as absence.
+
+**`<id> is not a GPU quota this project reports — `quota request` asks for GPU quota only`**
+`--quota-id` takes a raw Google quota id, and this command reads only the GPU
+ones. It used to say "this project reports no quota called '<id>'", which was
+false of every CPU, disk and storage quota the project genuinely holds — the list
+it checks against is already filtered, so the sentence described the filter rather
+than the project. Run `comfy-qat quota` to see the ids this command can ask for,
+or use `--gpu <card>` and let the tool resolve it.
+
+**`<card>: not creatable by this tool, whatever quota it holds`**
+Your project meters that card and `comfy-qat quota` shows the row, but
+`comfy-qat create` has no machine type for it, so a quota request would buy
+something unusable. The message lists the cards `create` does accept. See the
+`quota list` note beside the card for what your project already holds.
+
+**`denied — Google refused this; asking again will not help`**
+`comfy-qat quota` says this instead of "none — request it" when a request for
+that card is on the project and was refused. It is the honest answer: the tool
+will not re-file it, and neither should you without changing something a
+reviewer can act on. On a new project with little billing history, refusals
+arrive automatically within seconds and no justification is read — so the thing
+that changes the outcome is usage history, not a better-worded request.
+
+**`ready — <n> granted; a raise to <m> was not`**
+You hold `n` and can use it. A request to raise the limit to `m` was refused or
+trimmed, which is worth seeing before deciding whether to ask again — the
+allowance is real, and so is the ceiling on it.
+
+**`this project meters no <card> quota in <region>, so there is nothing to ask for there`**
+Not every project meters every card in every region. Two shapes exist: per-card
+ids like `NVIDIA-L4-GPUS-per-project-region`, and a shared family quota,
+`GPUS-PER-GPU-FAMILY-per-project-region`, where the card is a `gpu_family`
+dimension. Newer cards use the second. If a project reports neither for a card in
+the region being planned, there is nothing to raise there. Setup reports it and
+carries on.
+
+**THE REGION IS IN THE SENTENCE** because the check is per region and the claim
+used to be about the whole project — "this project does not meter L4 quota",
+printed about a card granted at 1 across forty-three regions, whenever the
+planning region had no row of its own. `comfy-qat quota list --by-region` shows
+where the card IS metered.
+
+**`<id> is metered per region, so a request for it has to name one`**
+An id ending `-per-project-region` defines a region dimension, and Google
+requires every defined dimension to be set — a real submission without one came
+back `INVALID_ARGUMENT: Dimension values must be set for all the dimensions`. The
+tool used to file it anyway, permanently, on the reasoning that naming a region
+you did not type would be inventing one. That is true, and refusing is the third
+option. Add `--region`, or use `--gpu <card>`, which resolves the dimensions for
+you.
+
+**`if Google refuses this as too large a decrease, it wants --allow-high-percentage-quota-decrease, and --allow-quota-decrease-below-usage if the quota is in use. This tool does not add either for you`**
+Printed on the `--release-quota` path, and INFERRED rather than verified —
+confirming it would mean filing an irrevocable request. Both flags exist on
+`gcloud quotas preferences update`, and 1 → 0 is a 100% decrease, so Google may
+well refuse the command this tool prints. The tool does not add them for you:
+they override Google's own safety checks on the one path here that destroys
+something, and the friction is the point. Add them yourself if you mean to.
+
+**`--region <region> ignored: <id> is not metered per region, so a request for it carries no dimensions`**
+`GPUS-ALL-REGIONS-per-project` is genuinely global — it defines no dimensions and
+a request for it must carry none, so a `--region` alongside it has nowhere to go.
+Not an error: the request is correct and goes ahead. It is said out loud because
+this command refuses four other kinds of wrong region and staying mute about an
+ignored one is the odd behaviour.
+
+**`<name> is what `quota list` calls this card; `--gpu` takes <key>`**
+One card has three names and they are not interchangeable: `H100-80GB` is what
+`quota list` shows, and `h100` is what `--gpu` takes. `quota request` used to
+accept the display name while `create` refused it, so the two commands people use
+together disagreed about one card. Both take the key now, and the refusal names
+it rather than saying "no card called", which would be false of a card the tool
+can plainly see.
+
+**`--gpu and --quota-id both name what to ask for, and they disagree here, so this command cannot tell which you meant`**
+Pass one or the other. This used to warn that `--gpu` was "ignored" and then file
+requests for those cards anyway — three permanent preferences from one command,
+two of them for cards it had just said it was ignoring, and one of those by
+updating an existing granted preference. A warning that does not change behaviour
+is worse than none, so the combination is refused instead.
+
+**`'<zone>' is a zone; quota is metered per region`**
+Every `create` and `gcloud` example names a zone, so a zone is the likeliest
+wrong answer to `--region` — and it used to be ACCEPTED. `quota list --region
+us-central1-a` printed an empty table at exit 0 for a project holding six cards,
+which is worse than a refusal because a script believes it. The tool names the
+region the zone is in rather than silently reinterpreting the input.
+
+**`no region called '<region>' — regions are lower case`**
+A region wrong by nothing but case. It used to fall to the generic advice, while
+a zone name — wrong by a whole segment — got an exact suggestion, because the
+nearest-match comparison was case-sensitive.
+
+**`--region was given but empty — if that came from a shell variable, it is unset`**
+`--region ""` used to behave exactly like leaving the flag off, deriving a region
+and, on a real run, filing an irrevocable request into it. Somebody who typed the
+flag has said they care which region. Leave the flag off entirely to have one
+derived.
+
+**`Google already refused <card> in <region>, so asking there again will not help`**
+`create` used to answer a zero-quota card with "ask, then wait for Google" while
+`comfy-qat quota list` said "asking again will not help" about the same card in
+the same minute — and the command it printed derived the refused region. A
+refusal somewhere is not a refusal everywhere, so the remedy is a different
+region; `quota list --by-region` shows where the card is metered.
+
+**`NOTE: <card> needs <n> of this ceiling and it is <m>`**
+`GPUS-ALL-REGIONS` caps every card put together. An `a3-highgpu-8g` is eight GPUs,
+so a granted H100 request under a ceiling of 1 still cannot start a machine. The
+sentence existed but was attached only to the branch that asks for a ceiling
+raise — so on a project whose raise was REFUSED, the case that will not fix itself
+on the next run, it never printed.
+
+**`no such region '<region>'`** (from `setup`)
+The same check `quota list --region` and `quota request --region` make, which
+`setup` did not have: a typo used to plan an irrevocable request into a region
+that does not exist, and report four granted cards as unmetered in the same
+breath. A region counts as real if this project's quota names it or Google sells
+any accelerator there.
+
+**`<region> does not offer <cards> — a granted request there buys a box that can never start, and a quota preference cannot be withdrawn`** (from `setup`)
+Also new to `setup`, and `quota request` has refused it since the fourth pass: a
+granted request in a region that sells no such card buys a box that can never
+start, and a quota preference cannot be withdrawn. `comfy-qat quota list --region
+<region>` says what a region actually offers.
+
+**`Google refused an earlier request`**
+A quota preference is permanent — it cannot be deleted, only lowered — so a
+refusal stays on the project and setup can see it. It is reported with the region
+it was refused in and the preference id, and setup does **not** re-file it: asking
+a human reviewer the same question on every run is how a project gets ignored. Ask
+again deliberately with `comfy-qat quota request --gpu <card> --region <region>`,
+ideally with a `--justification` saying what changed.
+
 **`could not list cloud boxes (...). Add them by hand if needed.`**
 Discovery failed, so nothing was added. Setup finishes anyway; add hosts by hand
 from [hosts.md](hosts.md), or run `comfy-qat discover` later.

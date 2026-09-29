@@ -21,6 +21,20 @@ def gcloud(**responses):
                 if isinstance(value, Exception):
                     raise value
                 return value
+        if key.startswith("compute accelerator-types list"):
+            # `setup` checks that the region it will file into actually sells the
+            # cards it is about to ask for — including the region it DERIVES when
+            # no `--region` is given, which is where three irrevocable requests
+            # were going unchecked. These tests are not about availability, so
+            # the answer is permissive: every card, in the usual regions.
+            from comfy_qa.create import CARDS
+
+            name = next((a.split("=")[-1] for a in args
+                         if a.startswith("--filter=name=")), "")
+            ids = [name] if name else [c.accelerator for c in CARDS.values()]
+            return [{"name": i, "zone": f"https://x/zones/{z}"}
+                    for i in ids
+                    for z in ("us-central1-a", "europe-west4-a", "asia-east1-a")]
         raise AssertionError(f"unexpected gcloud call: {key}")
 
     return Gcloud(runner=runner)
@@ -52,6 +66,10 @@ READY = {
          "dimensionsInfos": [{"details": {"value": "1"},
                               "applicableLocations": ["us-central1"]}]},
     ],
+    # setup reads the standing quota requests before it files any, so that a
+    # card already waiting on Google is not asked for twice. Empty here: this
+    # project has never asked for anything.
+    "quotas preferences list": [],
     "compute instances list": [],
 }
 
@@ -140,7 +158,7 @@ def test_zero_quota_is_reported_but_does_not_stop_setup(tmp_path):
         "quotas info list": [{"quotaId": "NVIDIA-L4-GPUS-per-project-region",
                               "dimensionsInfos": [{"details": {"value": "0"},
                                                    "applicableLocations": ["us-central1"]}]}],
-        "quotas preferences create": {},
+        "quotas preferences update": {},
     })
     p = prompts(confirm=True)
     path = run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
@@ -262,7 +280,8 @@ def test_the_project_wide_allowance_is_not_listed_as_a_card(tmp_path):
 
     Listing it beside L4 and T4 reads as a model nobody has heard of.
     """
-    responses = dict(READY, **{"quotas info list": [
+    responses = dict(READY, **{"quotas preferences update": {},
+        "quotas info list": [
         {"quotaId": "GPUS-ALL-REGIONS-per-project",
          "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["global"]}]},
         {"quotaId": "NVIDIA-L4-GPUS-per-project-region",
@@ -277,7 +296,8 @@ def test_the_project_wide_allowance_is_not_listed_as_a_card(tmp_path):
 
 
 def test_a_global_only_allowance_is_still_reported(tmp_path):
-    responses = dict(READY, **{"quotas info list": [
+    responses = dict(READY, **{"quotas preferences update": {},
+        "quotas info list": [
         {"quotaId": "GPUS-ALL-REGIONS-per-project",
          "dimensionsInfos": [{"details": {"value": "1"}, "applicableLocations": ["global"]}]},
     ]})

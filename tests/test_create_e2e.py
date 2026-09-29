@@ -138,6 +138,9 @@ class FakeGcloud:
                               if accelerators is None else list(accelerators))
         self._machines = ([{"name": "g2-standard-8", "zone": f"{URL}/zones/{zone}"}
                            for zone in ZONES] if machines is None else list(machines))
+        # `create` reads these to know where a card was already refused; the
+        # default is empty, which gives the plain remedy these tests assert.
+        self.preferences: list[dict] = []
         self.refuse = dict(refuse or {})
         self.calls: list[str] = []
         self.created: list[tuple[str, str, dict]] = []
@@ -155,9 +158,10 @@ class FakeGcloud:
         self.calls.append("gpu_quotas")
         return list(self._quotas)
 
-    def accelerator_types(self, project, name):
+    def accelerator_types(self, project, name=""):
         self.calls.append("accelerator_types")
-        return [entry for entry in self._accelerators if entry["name"] == name]
+        return [entry for entry in self._accelerators
+                if not name or entry["name"] == name]
 
     def machine_types(self, project, zone_list, name):
         self.calls.append("machine_types")
@@ -174,7 +178,23 @@ class FakeGcloud:
         if problem is not None:
             raise GcloudError("Could not fetch resource", raw=problem)
 
+    def quota_preferences(self, project):
+        """`create` reads these so its refusal can say where NOT to ask again —
+        `quota list` calls a card denied while `create` said "ask and wait" about
+        the same card. Empty here: these tests are about grants and zones, and an
+        empty list yields the plain remedy they already assert.
+
+        The guard below is why this is a decision rather than an accident."""
+        return list(self.preferences)
+
     def __getattr__(self, item):  # pragma: no cover - the guard, not the path
+        # PUBLIC NAMES ONLY. This guard is about `create` reaching for a gcloud
+        # METHOD nobody expected, and it earned its keep catching exactly that.
+        # It also caught `getattr(gc, "_accelerator_cache", None)` — an attribute
+        # PROBE with a default, which `__getattr__` sees and whose default a
+        # raised AssertionError defeats. Private names are bookkeeping, not API.
+        if item.startswith("_"):
+            raise AttributeError(item)
         raise AssertionError(f"host create asked the fake for {item!r}")
 
 
@@ -192,11 +212,38 @@ def card_cloud(key, *, zones=None, **kwargs):
     where = list(zones or ZONES)
     kwargs.setdefault("accelerators", [offers(zone, card.accelerator) for zone in where])
     kwargs.setdefault("machines", [has_machine(zone, card.machine_type) for zone in where])
-    kwargs.setdefault("quotas", [
-        quota(f"NVIDIA-{card.quota_names[-1]}-GPUS-per-project-region", 8, REGIONS),
-        ceiling(8),
-    ])
+    kwargs.setdefault("quotas", [grant_for(card, 8), ceiling(8)])
     return FakeGcloud(**kwargs)
+
+
+def grant_for(card, value, regions=None):
+    """The quota record a REAL project reports for this card, in its own shape.
+
+    This fake used to synthesise `NVIDIA-H100-GPUS-per-project-region` for every
+    card, including the H100 — **and that row does not exist on a real project.**
+    Google gives the H100 no standard per-model quota at all; its on-demand
+    allowance is the family entry, `GPUS-PER-GPU-FAMILY-per-project-region` with
+    `gpu_family=NVIDIA_H100`. So the H100 path was green in CI and dead in
+    production: every test here proved the tool could read a grant nobody has.
+
+    That is the exact shape `docs/tests-that-cannot-fail.md` is about — a double
+    that answers differently from its subject — and it is why the shape is now
+    DERIVED from `Card.quota_family` rather than assumed. A card the table says is
+    metered by family gets the family record; every other card keeps the per-card
+    one.
+    """
+    where = list(regions if regions is not None else REGIONS)
+    if card.quota_family:
+        return {
+            "quotaId": "GPUS-PER-GPU-FAMILY-per-project-region",
+            "dimensionsInfos": [{
+                "dimensions": {"gpu_family": card.quota_family},
+                "details": {"value": str(value)},
+                "applicableLocations": where,
+            }],
+        }
+    return quota(f"NVIDIA-{card.quota_names[-1]}-GPUS-per-project-region",
+                 value, where)
 
 
 @pytest.fixture(autouse=True)
@@ -265,9 +312,7 @@ def test_a_grant_smaller_than_the_cards_block_is_refused_before_anything_exists(
     """An H100 is sold in eights. A grant of 1 passes a per-card check that counts
     one and then fails at the create, after the zone order has been printed."""
     result = cli("--os", "linux", "--gpu", "h100", "--dry-run",
-                 gc=FakeGcloud(quotas=[
-                     quota("NVIDIA-H100-GPUS-per-project-region", 1, REGIONS),
-                     ceiling(8)]))
+                 gc=FakeGcloud(quotas=[grant_for(CARDS["h100"], 1), ceiling(8)]))
     assert result.exit_code == 2
     assert "H100-80GB needs 8 of this project's GPU allowance and the grant is 1" \
         in result.output
@@ -294,7 +339,7 @@ def test_a_refusal_only_ever_suggests_a_gpu_name_the_tool_accepts(cli):
     result = cli("--os", "linux", "--gpu", "h100", "--dry-run",
                  gc=FakeGcloud(quotas=[ceiling(8)]))
     assert result.exit_code == 2
-    assert "--gpu h100 " in result.output
+    assert "--gpu h100," in result.output
     assert "--gpu h100-80gb" not in result.output
 
 
@@ -368,7 +413,7 @@ def test_both_allowances_are_printed_whether_or_not_the_gate_refuses(cli):
     refused = cli("--os", "linux", "--gpu", "l4", "--dry-run",
                   gc=FakeGcloud(quotas=[L4, ceiling(0)]))
     for result in (allowed, refused):
-        assert "L4: 1, in 5 region(s)" in result.output
+        assert "L4: 1, in 5 regions" in result.output
         assert "GPUS_ALL_REGIONS (every card, project-wide)" in result.output
 
 
@@ -1138,3 +1183,121 @@ def test_no_host_list_at_all_is_still_fine(cli):
     assert result.exit_code == 0
     assert "is up in" in result.output
     assert "[hosts.comfy-linux]" in result.hosts
+
+
+@pytest.mark.parametrize("region, expect", [
+    ("", "unset"),
+    ("us-central1-a", "zone"),
+    ("US-CENTRAL1", "lower case"),
+])
+def test_create_validates_the_region_like_every_other_command(cli, region,
+                                                              expect):
+    """U3. `create` is the command that SPENDS, and it was the one surface with
+    no region check at all.
+
+    An empty `--region` — from `--region "$REGION"` with the variable unset —
+    silently built the box somewhere nobody chose. A zone was reported as an
+    unknown region, and the remedy printed for it exits 2 when pasted. `quota
+    list` and `setup` refuse all three.
+
+    THROUGH THE COMMAND. My first attempt called `region_problem` directly and
+    passed — the function has been right all along; `create` never called it.
+    That is the same function-versus-command mistake as the round's other
+    finding, made while writing the test for it.
+    """
+    result = cli("--os", "linux", "--gpu", "l4", "--region", region, "--dry-run")
+
+    assert result.exit_code == 2, result.output
+    assert expect in result.output, result.output
+    assert not billable(result), billable(result)
+    # AND WITHOUT THE MINUTE-LONG READ where the answer is decidable from the
+    # string. `create` also validates after reading quota, so the refusal alone
+    # cannot tell the cheap check from its absence — a sweep said so by
+    # surviving. Empty and zone-shaped need no API call at all.
+    if expect in {"unset", "zone"}:
+        assert "gpu_quotas" not in result.gc.calls, result.gc.calls
+
+
+def test_the_zone_typo_remedy_does_not_name_an_unvetted_region(cli):
+    """FOUND BY THE COMPOSE SWEEP, not by the report. The zone-typo refusal ends:
+
+        ... or ask for the card there:
+        comfy-qat quota request --gpu l4 --region us-central9
+
+    `region_of` turns the mistyped zone into a region string, and nothing checks
+    that the project meters the card there or that Google sells it there — so the
+    command it hands over exits 2. The comment two lines above this one is about
+    exactly that trap ("asking Google for a region that does not exist is a slow
+    way to learn you mistyped") and the line still names the region.
+
+    Dropping `--region` is the honest fix: `quota request` derives one AND vets
+    it, which is more than this path can do without another API call.
+    """
+    result = cli("--os", "linux", "--gpu", "l4", "--zone", "us-central9-a",
+                 "--dry-run")
+
+    assert result.exit_code == 2, result.output
+    assert "--region us-central9" not in result.output, result.output
+    assert "comfy-qat quota request --gpu l4" in result.output, result.output
+
+
+def test_a_refused_cards_remedy_names_only_stocked_regions(cli):
+    """Q1 THROUGH THE COMMAND. `check_quota` takes `askable` and the unit test
+    proves it is honoured — but a mutation sweep showed the CALLER could stop
+    computing it and nothing failed, because `check_quota` falls back to
+    metered-only. The fallback is correct for a direct caller and wrong for this
+    one, and only a test that drives `create` can tell them apart.
+
+    The card is refused in the nearest region and metered everywhere; only one of
+    the remaining regions stocks it. The remedy must name that one.
+    """
+    stocked_in = "europe-west4"
+    gc = FakeGcloud(quotas=[quota("NVIDIA-L4-GPUS-per-project-region", 0, REGIONS),
+                            CEILING],
+                    accelerators=[{"name": "nvidia-l4",
+                                   "zone": f"{stocked_in}-a"}])
+    gc.preferences = [{
+        "quotaId": "NVIDIA-L4-GPUS-per-project-region",
+        "quotaConfig": {"grantedValue": "0", "preferredValue": "1",
+                        "stateDetail": "Request denied"},
+        "dimensions": {"region": REGIONS[0]},
+        "name": "projects/p/locations/global/quotaPreferences/l4-denied",
+    }]
+    result = cli("--os", "linux", "--gpu", "l4", "--dry-run", gc=gc)
+
+    assert result.exit_code == 2, result.output
+    assert stocked_in in result.output, result.output
+    unstocked = [r for r in REGIONS[1:] if r != stocked_in]
+    for region in unstocked:
+        assert f"--region {region}" not in result.output, (region, result.output)
+
+
+def test_a_zone_shortage_names_the_region_that_was_looked_at(cli):
+    """V1. `create --region us-east5` said:
+
+        nowhere to put comfy-linux: no zone in the regions this project has
+        quota in offers nvidia-l4
+
+    and the same command without `--region` found six zones seconds later. It
+    never names the region the user typed, and states as a PROJECT-WIDE fact
+    something false of eighteen stocked regions out of forty-three metered.
+
+    `create` narrows `regions` to the one `--region` named; the note describes
+    the UNNARROWED set — the derived-set class in prose rather than in data. The
+    sibling no-quota branch names the region, and is the shape copied here.
+    """
+    only_far = [{"name": "nvidia-l4", "zone": f"{REGIONS[0]}-a"}]
+    gc = FakeGcloud(accelerators=only_far)
+    narrowed = REGIONS[1]
+    result = cli("--os", "linux", "--gpu", "l4", "--region", narrowed,
+                 "--dry-run", gc=gc)
+
+    assert result.exit_code == 2, result.output
+    assert "the regions this project has quota in" not in result.output, (
+        result.output)
+    # THE SENTENCE, not the substring. `narrowed in output` is satisfied by
+    # " or us-east5" — a dangling conjunction from the many-regions branch
+    # reached with one region — so it could not tell the phrasing apart. A sweep
+    # said so by surviving.
+    assert f"no zone in {narrowed} offers" in result.output, result.output
+

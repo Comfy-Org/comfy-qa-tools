@@ -95,6 +95,12 @@ quota and writes your host list — saying what it is doing, and asking only whe
 decision is genuinely yours. If something needs you (no billing account, no project),
 it stops and prints the link. Run it again afterwards; it skips what is already done.
 
+It also asks Google for the GPU quota your project is missing, so a fresh install
+ends with every card this tool can drive either granted or with a request in
+flight. The exact list is printed before anything is sent — a quota request cannot
+be withdrawn and may be read by a person at Google — and `--no-quota-request`
+skips it entirely.
+
 It works without prompts too: `--project`, `--region`, `--non-interactive`.
 
 ```sh
@@ -316,6 +322,7 @@ That only ever happens on a declared `gce` host, never locally.
 [troubleshooting](docs/troubleshooting.md) · [cost](docs/cost.md) ·
 [when your session expires](docs/session-expiry.md) ·
 [test criteria](docs/test-criteria.md) ·
+[spot instances](docs/spot-instances.md) ·
 [tests that cannot fail](docs/tests-that-cannot-fail.md)
 
 ## Design

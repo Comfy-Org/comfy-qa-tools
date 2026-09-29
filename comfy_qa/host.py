@@ -781,8 +781,8 @@ def create_cmd(
     off — so the file is read and then rewritten. `--dry-run` writes nothing.
     """
     from .create import (
-        build, check_quota, host_entry, next_steps, nowhere, order_zones,
-        plan, summary, taken_names,
+        _refused_regions, build, check_quota, host_entry, next_steps, nowhere,
+        order_zones, plan, summary, taken_names,
     )
     from .discover import next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
@@ -882,15 +882,69 @@ def create_cmd(
         # completion one line above the refusal explaining that it had not
         # completed. `Slow.__exit__` already makes exactly this distinction:
         # `done()` when nothing was raised, `give_up()` when something was.
+        # U3: THE COMMAND THAT SPENDS WAS THE ONE WITHOUT THIS CHECK. An empty
+        # `--region` — from `--region "$REGION"` with the variable unset — built
+        # the box somewhere nobody chose; a zone read as an unknown region and
+        # the remedy printed for it exits 2. `quota list` and `setup` refuse all
+        # three, and this needs no API call, so it happens before the read.
+        from .auth import _stop_on_region_shape
+
+        _stop_on_region_shape(region)
         with say.slow("reading quota", expect="about a minute"):
             quotas = gc.gpu_quotas(project)
+        # AND THE HALF THAT NEEDS THE RECORDS, now that we have them — so this
+        # command asks the same question as `quota list` and `setup` rather than
+        # a cheaper version of it.
+        from .auth import region_problem
+
+        wrong = region_problem(gc, project, quotas, region, membership=False)
+        if wrong:
+            say.fail(wrong[0],
+                     fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
+                                   f"{gpu} {line}" for line in wrong[1]],
+                                 "comfy-qat quota list --by-region  # every "
+                                 "region this project meters"),
+                     code=2)
     except GcloudError as exc:
         _refused(exc)
 
     try:
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
                          taken=taken_names(hosts, instances))
-        check = check_quota(blueprint.card, quotas, instances)
+        # PREFERENCES TOO, so the refusal can say where NOT to ask. Failing to
+        # read them is not a reason to refuse a create, so it degrades to the
+        # plain remedy rather than stopping.
+        try:
+            preferences = gc.quota_preferences(project)
+        except GcloudError:
+            preferences = None
+        # ASKABLE, NOT MERELY METERED, and computed by the shared function rather
+        # than composed here. `create`'s remedy named `africa-south1` — zero
+        # NVIDIA accelerators, so the command it printed exits 2 — because it
+        # built the list from `regions_metered` alone. Twenty-first second-site,
+        # and the helper that answers this had existed for six rounds.
+        # ONLY WHEN THE REMEDY NEEDS IT. `elsewhere` is read by one branch — the
+        # card was refused somewhere — and fetching the catalogue unconditionally
+        # added an API call to a path whose whole point is refusing before any
+        # lookup, which a test caught immediately. `_refused_regions` is free: it
+        # reads preferences already in hand.
+        from .auth import Availability, _regions_stocking, askable_regions
+
+        refused = _refused_regions(blueprint.card, preferences)
+        askable: list[str] | None = None
+        if refused:
+            try:
+                sells = Availability(
+                    looked=True,
+                    where=_regions_stocking(gc, project,
+                                            set(blueprint.card.quota_names)))
+            except GcloudError:
+                sells = Availability.not_checked()
+            askable = sorted({r for name in blueprint.card.quota_names
+                              for r in askable_regions(name, quotas, sells,
+                                                       refused)})
+        check = check_quota(blueprint.card, quotas, instances, region or "",
+                            preferences=preferences, askable=askable)
         say.result("\nquota checked:")
         for line in check.lines():
             say.result(f"  {line}")
@@ -2505,15 +2559,38 @@ def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
     # The remaining question is whether `len(others) >= ceiling`, and nothing
     # answers that without the read.
     try:
-        from .quota import global_allowance
+        from .quota import global_allowance, meets
 
         ceiling = global_allowance(gc.gpu_quotas(host.gce_project or ""))
     except Exception:
         return None
-    if ceiling is None or ceiling < 0:      # -1 is Google's "unlimited"
+    if ceiling is None:
         return None
-    running = sum(1 for other in others if other.is_remote and other.gpu)
-    return ceiling if running >= ceiling else None
+    # CARDS, NOT BOXES, and `create._cards_running` exists in this repository for
+    # the sole purpose of saying so: "GPUS_ALL_REGIONS is metered in cards, and
+    # an a3-highgpu-8g holds eight of them. Counting boxes says one, which passes
+    # the gate on a ceiling of 8 and is then refused by Google."
+    #
+    # One running H100 read as 1 here against a ceiling metered in cards, so the
+    # gate that exists to refuse before anything bills let it through — the same
+    # unit mismatch the other module names, on the other surface.
+    from .create import card_named
+
+    running = sum(_cards_in(other.gpu, card_named) for other in others
+                  if other.is_remote and other.gpu)
+    # `meets`, NOT `running >= ceiling`. The unlimited case used to be handled
+    # by an early `ceiling < 0` eight lines up — correct, and invisible here: two
+    # magnitudes, a sentinel that is neither, and the only thing keeping them
+    # apart sitting in a different statement. Asked through the predicate the
+    # question is sentinel-safe where it is asked, and the widened sweep can read
+    # it. Identical answers on every input; this is legibility, not a fix.
+    return None if meets(ceiling, running + 1) else ceiling
+
+
+def _cards_in(gpu: str, card_named) -> int:
+    """How many of the ceiling one box of this card holds. Unknown cards count 1."""
+    card = card_named(gpu)
+    return card.count if card is not None and card.count else 1
 
 
 def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:

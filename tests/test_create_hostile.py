@@ -324,8 +324,17 @@ def test_the_name_a_blueprint_carries_is_the_one_that_was_checked():
 
 
 def h100_quota(value):
-    return {"quotaId": "NVIDIA-H100-80GB-GPUS-per-project-region",
-            "dimensionsInfos": [{"details": {"value": str(value)},
+    """The record a real project reports for an H100 grant.
+
+    NOT `NVIDIA-H100-80GB-GPUS-per-project-region`, which is what this said and
+    which exists in NO form anywhere — `create.py`'s own comment records that
+    there is "no `-80GB-` H100 row at all". Google gives the H100 no standard
+    per-model quota; its on-demand allowance is the family entry. A fixture for a
+    grant nobody can hold proves the tool can read something that never arrives.
+    """
+    return {"quotaId": "GPUS-PER-GPU-FAMILY-per-project-region",
+            "dimensionsInfos": [{"dimensions": {"gpu_family": "NVIDIA_H100"},
+                                 "details": {"value": str(value)},
                                  "applicableLocations": REGIONS}]}
 
 
