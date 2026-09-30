@@ -4,7 +4,7 @@ name = "comfy-qa-tools"
 # out of the installed metadata (or out of this file, in a checkout) — never
 # restate it in Python.
 version = "1.2.0"
-description = "QA tooling for testing Comfy — know what you are testing, and record it"
+description = "QA tooling for testing Comfy"
 readme = "README.md"
 requires-python = ">=3.11"  # tomllib
 dependencies = ["typer>=0.12.5"]

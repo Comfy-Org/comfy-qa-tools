@@ -1,4 +1,4 @@
-"""comfy-qa-tools — QA tooling for setting up and running testing across Comfy.
+"""comfy-qa-tools — QA tooling for testing Comfy.
 
 The version lives in exactly one place: `version` in `pyproject.toml`. Installed
 copies read it back out of their own package metadata; a checkout reads it out of
