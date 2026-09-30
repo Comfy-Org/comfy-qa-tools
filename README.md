@@ -1,6 +1,6 @@
 # comfy-qa-tools
 
-**QA tooling for setting up and running testing.**
+**QA tooling for testing Comfy.**
 
 Most testing time is not spent testing. It goes on standing a machine up, getting it
 into a state where a result means something, and working out which box or which build

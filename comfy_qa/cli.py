@@ -18,8 +18,7 @@ from . import auth, commands, host, remove, say
 from . import setup as setup_mod
 
 app = typer.Typer(
-    help="QA tooling for testing Comfy: know which machine you are testing, "
-         "and stamp every result with it.",
+    help="QA tooling for testing Comfy.",
     # Bare `comfy-qat` lists your machines rather than printing help. The
     # question someone has when they type the name of this tool and nothing
     # else is "what have I got, and what is running" — help answers a question
@@ -81,8 +80,7 @@ def root(
         "--version", callback=_version_callback, is_eager=True,
         help="Print the build — version, plus the commit in a checkout — and exit.")] = False,
 ) -> None:
-    """QA tooling for testing Comfy: know which machine you are testing,
-    and stamp every result with it."""
+    """QA tooling for testing Comfy."""
     if ctx.invoked_subcommand is None:
         # No host list yet is the one case where help is the better answer:
         # there is nothing to list and `setup` is what they need.
