@@ -1,5 +1,3 @@
-# comfy-qa-tools
-
 **QA tooling for testing Comfy.**
 
 Most testing time is not spent testing. It goes on standing a machine up, getting it
@@ -9,29 +7,6 @@ wrangling, less doubt about what you are pointed at, more time testing.
 
 Features land one at a time and are documented here when they ship — so what is on
 this page is what the binary does today.
-
----
-
-## Not the same tool as `comfy-qa`
-
-[`Comfy-Org/Comfy-QA`](https://github.com/Comfy-Org/Comfy-QA), maintained by snomiao,
-does AI-driven E2E test runs. The similar names are a coincidence — two different
-projects, neither replacing the other. This one's binary is **`comfy-qat`**, so they
-never collide on `PATH`.
-
----
-
-## Status
-
-**1.1.0. Every command is implemented, tested, and has run against real GCE
-hardware on both Linux and Windows**.
-
-The verbs are at the top level: `comfy-qat go linux`. The `host ...` and
-`auth ...` spellings were a deprecation window rather than a second permanent way
-to type everything, and it closed at 1.1.0 — typing one now exits 2. An old run
-sheet that says `host create` or `auth status` wants the noun taken off.
-
-`env` is carried over from v0, hidden, and awaiting its own release.
 
 
 ## Install
