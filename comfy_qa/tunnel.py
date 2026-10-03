@@ -151,6 +151,11 @@ class TunnelState:
     known: bool = False       # a record says where this tunnel goes
     verified: bool = False    # ...and the process is still the one recorded
     port: int | None = None
+    #: Which machine the record says this tunnel goes to — the identity the
+    #: host's kind supplied, carried through so the answer comes off the record
+    #: rather than off the host list that is asking. `None` when the record does
+    #: not name one, which is never a match: see `_same_machine`.
+    machine: tuple[str, ...] | None = None
     instance: str | None = None
     zone: str | None = None
     project: str | None = None
@@ -370,7 +375,8 @@ def status(host: str, directory: Path | None = None, *, identify=None) -> Tunnel
 
     return TunnelState(
         host=host, pid=pid, alive=alive, known=True, verified=verified,
-        port=record.get("port"), instance=record.get("instance"),
+        port=record.get("port"), machine=_recorded_machine(record),
+        instance=record.get("instance"),
         zone=record.get("zone"), project=record.get("project"),
     )
 
@@ -431,6 +437,13 @@ def command(host: Host) -> list[str]:
         raise TunnelError(
             f"{host.name} is local — there is nothing to tunnel. It is at {host.url}.",
         )
+    # STILL GOOGLE'S, and knowingly. `is_remote` now comes from the host's kind
+    # rather than from `kind == "gce"`, so this is the one place a remote host
+    # that is not a Google instance would reach and get a `gcloud compute ssh`
+    # built around fields it does not have. No such kind is registered — `KINDS`
+    # holds `local` and `gce` — so nothing can reach it today, and the transport
+    # is what a provider protocol replaces rather than what a refusal here
+    # patches. The identity above is what had to be fixed first.
     return [
         "gcloud", "compute", "ssh", host.gce_instance or host.name,
         f"--zone={host.gce_zone}",
@@ -695,22 +708,63 @@ def _cause(kept: list[str]) -> str:
 
 
 def _destination(host: Host) -> dict:
+    """What a record says the tunnel goes to.
+
+    `machine` is the identity the host's kind supplies, and it is what
+    `_same_machine` compares. `instance`, `zone` and `project` are kept because
+    they are what the refusal below prints and what `TunnelState` exposes to
+    callers — and because a record written by an older version carries only
+    those, which `_recorded_machine` reads.
+    """
     return {
         "port": host.port,
+        "machine": host.machine_id,
         "instance": host.gce_instance or host.name,
         "zone": host.gce_zone,
         "project": host.gce_project,
     }
 
 
+def _recorded_machine(record: dict) -> tuple[str, ...] | None:
+    """The machine a record on disk names, or `None` if it does not name one.
+
+    The `instance`/`zone`/`project` branch reads a record written before
+    identity was recorded at all. A record of that shape could only have been a
+    Google instance, because `gce` was the only remote kind there was — and
+    records outlive a release: one is on disk for every tunnel that is open
+    across an upgrade. Without this, the first `up` after one refuses a working
+    tunnel as going somewhere else.
+    """
+    said = record.get("machine")
+    if isinstance(said, list) and said and all(isinstance(part, str) for part in said):
+        return tuple(said)
+    legacy = [record.get(field) for field in ("project", "zone", "instance")]
+    if all(isinstance(part, str) and part for part in legacy):
+        return ("gce", *legacy)
+    return None
+
+
 def _same_machine(state: TunnelState, host: Host) -> bool:
-    wanted = _destination(host)
-    return (
-        state.port == wanted["port"]
-        and state.instance == wanted["instance"]
-        and state.zone == wanted["zone"]
-        and state.project == wanted["project"]
-    )
+    """Is the tunnel recorded under this name the one this host wants?
+
+    IT USED TO COMPARE `(port, instance, zone, project)` WITH THE INSTANCE
+    FALLING BACK TO THE HOST'S NAME, and the fallback is the defect. On GCE a box
+    keeps its identity across a stop and a start, so matching on the instance is
+    right there and must not change. Where destroy-and-recreate is the ordinary
+    operation it is wrong: the near-end port comes from the host list and
+    survives, the host name comes from the host list and survives, so the record
+    left behind by a machine that is gone fits the machine that replaced it — and
+    a tunnel to something that no longer exists is handed back with `running`
+    true and a URL beside it.
+
+    So identity decides, and an identity nobody can state is NOT a match. Both
+    sides have to name a machine and name the same one. Not knowing costs one
+    tunnel reopened; guessing costs a result read off the wrong machine.
+    """
+    if state.port != host.port:
+        return False
+    wanted = host.machine_id
+    return wanted is not None and state.machine == wanted
 
 
 def _claim(host: str, directory: Path, now=time.time) -> Path:

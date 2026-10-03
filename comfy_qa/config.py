@@ -13,9 +13,8 @@ from . import osfamily
 import difflib
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Literal
 
 from .osfamily import DARWIN, FAMILY_WORDS, LINUX, WINDOWS
 
@@ -24,7 +23,12 @@ from .osfamily import DARWIN, FAMILY_WORDS, LINUX, WINDOWS
 # so no remote host may ever claim it.
 COMFYUI_DEFAULT_PORT = 8188
 
-Kind = Literal["local", "gce"]
+# A kind is a registry key, not one of two words. `Kind = Literal["local",
+# "gce"]` is what it was, and the literal was the least of it: what made `kind` a
+# two-valued flag was that everything needing to know WHICH machine an entry
+# meant read Google's three fields off the host and built a tuple of them. See
+# `KINDS` and `Host.machine_id`.
+Kind = str
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "comfy-qa-tools" / "hosts.toml"
 
@@ -34,13 +38,94 @@ class ConfigError(Exception):
 
 
 @dataclass(frozen=True)
+class MachineKind:
+    """One sort of machine, and — the point of this type — what names one.
+
+    **Identity used to be a GCE-shaped tuple read at each consumer.** The host
+    list's same-machine rule built `(gce_project, gce_zone, gce_instance)`, the
+    tunnel matched on `(port, instance, zone, project)`, and both of them read
+    those fields straight off the `Host`. Three things followed, and all three
+    are the wrong-machine failure this tool exists to prevent:
+
+      * every machine that is not a Google instance came out `("", "", "")`, so
+        the SECOND one was refused as a duplicate of the first;
+      * `is_remote` was `kind == "gce"`, which hid that — the rule skipped
+        exactly the hosts it would have broken, so the collapse waited for the
+        day something widened it;
+      * the tunnel's key fell back to the host's NAME, and a name survives a
+        machine being destroyed and recreated.
+
+    So a kind states what names its own machines and every consumer goes through
+    `Host.machine_id`. Adding a provider is an entry in `KINDS` plus the fields
+    it names its machines by; it is not a `kind` comparison at each call site,
+    which is the shape that produced the direct `gce_*` reads in the first place.
+
+    `in_words` is a `str.format` template over the identifying fields, so a
+    refusal can name the machine it means the way a person would. GCE's reads
+    exactly as the hand-written sentence it replaces, because a refusal's wording
+    is part of the tool and troubleshooting.md quotes it.
+    """
+
+    name: str
+    #: Reached through a tunnel on this computer, rather than being this
+    #: computer. Gates tunnelling, `stamp`, `up`, `open` and `down`.
+    remote: bool
+    #: Fields an entry of this kind must carry, beyond `kind` and `port`.
+    requires: tuple[str, ...] = ()
+    #: Further fields an entry of this kind may carry.
+    accepts: tuple[str, ...] = ()
+    #: The fields that, together, name ONE machine — most general first.
+    #:
+    #: EMPTY MEANS "CANNOT NAME ONE", WHICH IS NOT "THEY ARE ALL THE SAME ONE".
+    #: That difference is the whole of `Host.machine_id` returning `None`.
+    #:
+    #: A field here that changes when the machine is destroyed and recreated is
+    #: a feature, not a problem: it is what stops a record outliving its
+    #: machine. GCE's do not change, and must not — a GCE box keeps its identity
+    #: across a stop and a start, and matching on it there is correct.
+    identifies_by: tuple[str, ...] = ()
+    #: How one of its machines is named in a sentence, over `identifies_by`.
+    in_words: str = ""
+
+    @property
+    def fields(self) -> tuple[str, ...]:
+        """Every field this kind's entries may carry, beyond the universal ones."""
+        return (*self.requires, *self.accepts)
+
+
+# Fields every entry may carry whatever its kind. `os` and `gpu` are here rather
+# than on `gce` because they are not Google's: `osfamily` reads `os` for the
+# host's whole life and `stamp` compares against it, and a kind that only ever
+# runs one operating system still has one.
+_UNIVERSAL_FIELDS = ("kind", "port", "os", "gpu")
+
+# The kinds that exist. Two, and the registry is the point rather than the count:
+# `local` and `gce` are the only entries today and nothing here is shaped around
+# there being two.
+#
+# Insertion order is the order the "kind must be ..." refusal names them, so
+# `local` — the one every example and the starter host list teaches — comes
+# first.
+KINDS: dict[str, MachineKind] = {
+    "local": MachineKind(name="local", remote=False),
+    "gce": MachineKind(
+        name="gce",
+        remote=True,
+        requires=("os", "gpu", "gce_instance", "gce_zone", "gce_project"),
+        identifies_by=("gce_project", "gce_zone", "gce_instance"),
+        in_words="instance {gce_instance!r} in {gce_zone} ({gce_project})",
+    ),
+}
+
+
+@dataclass(frozen=True)
 class Host:
-    """One machine, local or in Google Cloud.
+    """One machine: this computer, or one reached through a tunnel.
 
     `port` is where ComfyUI is reached *on this machine*: for a local host that
-    is the port it actually serves on; for a GCE host it is the near end of the
-    SSH tunnel. Keeping them in one field is what lets `list` and `stamp` treat
-    both kinds identically.
+    is the port it actually serves on; for a remote host it is the near end of
+    the SSH tunnel. Keeping them in one field is what lets `list` and `stamp`
+    treat both kinds identically.
     """
 
     name: str
@@ -51,6 +136,16 @@ class Host:
     gce_instance: str | None = None
     gce_zone: str | None = None
     gce_project: str | None = None
+    #: Values for the fields a kind declares that have no attribute here — which
+    #: is everything a provider other than Google needs.
+    #:
+    #: Pairs rather than a mapping because `Host` is frozen, and a frozen
+    #: dataclass with a `dict` field is unhashable. Read it with `declared`.
+    #:
+    #: The alternative was a named field per provider, which is how `gce_*` came
+    #: to be read directly in three hundred places; adding `runpod_*` beside them
+    #: would double that rather than stop it.
+    extra: tuple[tuple[str, str], ...] = ()
 
     @property
     def url(self) -> str:
@@ -58,12 +153,79 @@ class Host:
 
     @property
     def is_remote(self) -> bool:
-        return self.kind == "gce"
+        """Is ComfyUI on another machine, reached through a tunnel from here.
+
+        The kind answers this. It used to be `self.kind == "gce"`, which made
+        every machine of any other provider local — so `up`, `open`, `down`,
+        `stamp` and tunnelling all declined to act on one — and, because the
+        same-machine rule skips what is not remote, hid the collapse described on
+        `MachineKind`.
+        """
+        kind = KINDS.get(self.kind)
+        return bool(kind and kind.remote)
+
+    def declared(self, field: str) -> str | None:
+        """The value this entry gives for one field, wherever it is held."""
+        value = getattr(self, field, None)
+        if value is not None:
+            return value
+        return dict(self.extra).get(field)
+
+    @property
+    def machine_id(self) -> tuple[str, ...] | None:
+        """What names the ONE physical machine this entry points at.
+
+        `None` means this entry does not name a machine. **It does not mean it
+        names the same machine as every other entry that does not** — which is
+        what the old key claimed, by answering `("", "", "")` for all of them.
+        Callers compare identities and an unknown identity matches nothing, not
+        even another unknown one.
+
+        The kind is part of it. Two providers both calling a machine `box-1` is
+        ordinary, neither knows about the other, and an identity made only of the
+        provider's own name for the machine would make those one machine.
+        """
+        kind = KINDS.get(self.kind)
+        if kind is None or not kind.identifies_by:
+            return None
+        values = [self.declared(field) for field in kind.identifies_by]
+        if not all(values):
+            return None
+        return (self.kind, *values)
+
+    @property
+    def machine_in_words(self) -> str:
+        """The machine this entry points at, named the way a person would.
+
+        Empty when there is no machine to name, so a caller can fall back rather
+        than print a sentence about nothing.
+        """
+        kind = KINDS.get(self.kind)
+        if kind is None or self.machine_id is None:
+            return ""
+        values = {field: self.declared(field) for field in kind.identifies_by}
+        if kind.in_words:
+            return kind.in_words.format(**values)
+        return ", ".join(f"{field} {value!r}" for field, value in values.items())
 
 
-_REQUIRED_FOR_GCE = ("os", "gpu", "gce_instance", "gce_zone", "gce_project")
+# The fields `Host` holds itself. A field a kind declares that is not one of
+# these goes into `extra`, so the two can never both hold one field's value and
+# disagree.
+_HOST_ATTRIBUTES = frozenset(field.name for field in fields(Host))
 
-_KNOWN_FIELDS = frozenset({"kind", "port", *_REQUIRED_FOR_GCE})
+
+def _known_fields() -> frozenset[str]:
+    """Every field any entry may carry, across every registered kind.
+
+    Deliberately the union and not the entry's own kind's: the unknown-field
+    check runs BEFORE `kind` is validated, because a typo'd field is the cause of
+    every error underneath it — including `kind` itself being missing.
+    """
+    return frozenset({
+        *_UNIVERSAL_FIELDS,
+        *(field for kind in KINDS.values() for field in kind.fields),
+    })
 
 # The three fields that say which cloud box an entry is. They are what `up`,
 # `open`, `down` and `move` operate on, so an entry carrying them is a machine
@@ -84,8 +246,20 @@ _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 def _named(field: str) -> str:
     """A rejected field, with the field it was probably meant to be."""
-    near = difflib.get_close_matches(field, sorted(_KNOWN_FIELDS), n=1, cutoff=0.6)
+    near = difflib.get_close_matches(field, sorted(_known_fields()), n=1, cutoff=0.6)
     return f"{field!r} (did you mean {near[0]!r}?)" if near else repr(field)
+
+
+def _one_of(words: list[str]) -> str:
+    """`'a'`, `'a' or 'b'`, `'a', 'b' or 'c'` — a list that reads as a sentence.
+
+    The two-word form is byte-identical to what the refusal said when there were
+    only ever two kinds, because troubleshooting.md quotes it.
+    """
+    quoted = [repr(word) for word in words]
+    if len(quoted) < 2:
+        return "".join(quoted)
+    return f"{', '.join(quoted[:-1])} or {quoted[-1]}"
 
 
 def _parse_host(name: str, raw: object) -> Host:
@@ -108,18 +282,19 @@ def _parse_host(name: str, raw: object) -> Host:
     # error underneath it: `gce_zoen` used to be reported as "kind 'gce' requires
     # os, gpu, gce_instance, gce_zone, gce_project", which names five fields that
     # are all present and never mentions the one that is misspelt.
-    unknown = sorted(set(raw) - _KNOWN_FIELDS)
+    unknown = sorted(set(raw) - _known_fields())
     if unknown:
         raise ConfigError(
             f"host {name!r}: unknown field(s) {', '.join(_named(f) for f in unknown)}. "
-            f"Known fields: {', '.join(sorted(_KNOWN_FIELDS))}."
+            f"Known fields: {', '.join(sorted(_known_fields()))}."
         )
 
     kind = raw.get("kind")
-    if kind not in ("local", "gce"):
+    if kind not in KINDS:
         raise ConfigError(
-            f"host {name!r}: kind must be 'local' or 'gce', got {kind!r}"
+            f"host {name!r}: kind must be {_one_of(list(KINDS))}, got {kind!r}"
         )
+    spec = KINDS[kind]
 
     if kind == "local":
         # This one costs money. `comfy-qat down` decides what to stop from `kind`
@@ -135,7 +310,10 @@ def _parse_host(name: str, raw: object) -> Host:
                 "never stopped and keeps billing. Set kind = \"gce\" if it is a cloud "
                 "box, or delete those fields if it is not."
             )
-    if kind == "gce" and name.lower() == LOCAL_NAME:
+    # Any kind that is reached through a tunnel, not `gce` alone: what makes the
+    # name wrong is that the machine is somewhere else, which is true of every
+    # remote kind.
+    if spec.remote and name.lower() == LOCAL_NAME:
         raise ConfigError(
             f"host {name!r}: the name 'local' is reserved for the ComfyUI on this "
             "computer, which is what every example and the starter host list means by "
@@ -143,28 +321,64 @@ def _parse_host(name: str, raw: object) -> Host:
             "e.g. comfy-win or comfy-linux."
         )
 
-    port = raw.get("port", COMFYUI_DEFAULT_PORT if kind == "local" else None)
+    port = raw.get("port", COMFYUI_DEFAULT_PORT if not spec.remote else None)
     if port is None:
-        raise ConfigError(f"host {name!r}: kind 'gce' requires an explicit port")
+        raise ConfigError(f"host {name!r}: kind {kind!r} requires an explicit port")
     if not isinstance(port, int) or isinstance(port, bool):
         raise ConfigError(f"host {name!r}: port must be an integer, got {port!r}")
     if not 1024 <= port <= 65535:
         raise ConfigError(f"host {name!r}: port {port} is outside 1024-65535")
 
-    if kind == "gce":
+    if spec.remote:
         if port == COMFYUI_DEFAULT_PORT:
             raise ConfigError(
                 f"host {name!r}: port {COMFYUI_DEFAULT_PORT} is reserved for the local "
                 "ComfyUI. A tunnel on it would silently point you at the wrong machine — "
                 "pick another port, e.g. 8190."
             )
-        missing = [k for k in _REQUIRED_FOR_GCE if not raw.get(k)]
-        if missing:
-            raise ConfigError(
-                f"host {name!r}: kind 'gce' requires {', '.join(missing)}"
-            )
+    missing = [k for k in spec.requires if not raw.get(k)]
+    # TWO SPELLINGS OF ONE SENTENCE, and the split is about the page rather than
+    # about Google. troubleshooting.md quotes this error verbatim and
+    # tests/test_docs.py matches the page's quotation against the LITERAL text of
+    # the raise that builds it — the run it recognises is `kind 'gce' requires `.
+    # Interpolating the kind into one message leaves `host `, `: kind ` and
+    # ` requires `, none of them long enough to identify anything, so the entry
+    # silently stops being attached to the error it documents while the sentence
+    # on screen does not change by one byte.
+    #
+    # So `gce` keeps the spelling the page quotes, and every other kind gets the
+    # same sentence with its own name in it, which is true rather than
+    # approximately true. The second raise is declared in
+    # `TOO_SHORT_TO_IDENTIFY` with that reasoning. A second kind with required
+    # fields gets this message and its own entry written together, and then
+    # these two collapse back into one.
+    if missing and kind == "gce":
+        raise ConfigError(
+            f"host {name!r}: kind 'gce' requires {', '.join(missing)}"
+        )
+    if missing:
+        raise ConfigError(
+            f"host {name!r}: kind {kind!r} requires {', '.join(missing)}"
+        )
 
     _check_os_is_not_a_typo(name, raw.get("os"))
+
+    # The kind's own fields that `Host` has no attribute for. TOML holds
+    # integers, booleans and dates too, and these values reach a filename, a URL
+    # and a refusal — so they are made text here rather than wherever one of
+    # those happens to be built. Required-and-empty is already refused above,
+    # by the same truthiness check `gce_*` has always used.
+    #
+    # NOT a type refusal, and only because there is nowhere to document one:
+    # every message raised here has to carry a verbatim entry in
+    # troubleshooting.md (tests/test_docs.py walks for them), and that page is
+    # not this change's to edit. A typed refusal and its entry are worth having
+    # together.
+    extra = [
+        (field, str(raw[field]))
+        for field in spec.fields
+        if field not in _HOST_ATTRIBUTES and raw.get(field) is not None
+    ]
 
     return Host(
         name=name,
@@ -175,6 +389,7 @@ def _parse_host(name: str, raw: object) -> Host:
         gce_instance=raw.get("gce_instance"),
         gce_zone=raw.get("gce_zone"),
         gce_project=raw.get("gce_project"),
+        extra=tuple(sorted(extra)),
     )
 
 
@@ -254,16 +469,32 @@ def parse(data: dict) -> list[Host]:
     # every host is its own machine — and two entries for one instance is the
     # wrong-machine failure this whole tool exists to prevent, arriving as a
     # host list that validates.
-    boxes: dict[tuple[str, str, str], str] = {}
+    #
+    # THE KEY IS THE HOST'S IDENTITY, NOT GOOGLE'S THREE FIELDS. It used to be
+    # `(gce_project or "", gce_zone or "", gce_instance or "")`, read off the
+    # host here, and the `if not host.is_remote: continue` above it was the only
+    # reason that never fired wrongly: every machine that is not a Google
+    # instance answers `("", "", "")`, so the SECOND one of any other kind was
+    # refused as the first one over again — `the same machine: instance '' in
+    # None (None)`. The loop skipped exactly the hosts it would have broken, and
+    # `is_remote` being `kind == "gce"` is what did the skipping, so widening one
+    # without fixing the other is the whole defect.
+    #
+    # AN ENTRY THAT NAMES NO MACHINE IS SKIPPED, AND THAT IS NOT THE SAME CLAIM.
+    # `machine_id` is `None` when this entry does not name a machine; it is
+    # never a stand-in value that two of them can share. "I cannot tell which
+    # machine this is" and "these two are one machine" point opposite ways, and
+    # the old key said the second while meaning the first.
+    boxes: dict[tuple[str, ...], str] = {}
     for host in hosts:
-        if not host.is_remote:
+        box = host.machine_id
+        if box is None:
             continue
-        box = (host.gce_project or "", host.gce_zone or "", host.gce_instance or "")
         clash = boxes.get(box)
         if clash is not None:
             raise ConfigError(
-                f"hosts {clash!r} and {host.name!r} are the same machine: instance "
-                f"{host.gce_instance!r} in {host.gce_zone} ({host.gce_project}). Two "
+                f"hosts {clash!r} and {host.name!r} are the same machine: "
+                f"{host.machine_in_words}. Two "
                 "entries, two ports, two tunnels, one box — and a result recorded "
                 "against one of those names says nothing whatever about the other. "
                 "Delete one, or point it at a different instance."

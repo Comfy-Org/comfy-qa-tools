@@ -987,6 +987,25 @@ def test_both_wordings_of_a_refused_move_are_quoted():
 TOO_SHORT_TO_IDENTIFY = {
     "request for": "auth's quota submission: two runs, of 11 and 6 characters",
     "expected": "env --expect's mismatch: two runs, of 6 and 8 characters",
+    # config's required-fields refusal, for a kind that is not `gce`. The
+    # sentence is `host 'x': kind 'y' requires a, b`, so its runs are `host `,
+    # `: kind ` and ` requires ` and the longest is eight characters once the
+    # glue is stripped.
+    #
+    # It is excused rather than reworded because of what rewording it would
+    # cost. `gce` raises the same sentence one line above with the kind spelled
+    # out — which is the form troubleshooting.md quotes and the form this page's
+    # checks recognise as config's — and merging the two into one interpolated
+    # message takes `kind 'gce' requires ` out of config.py, so the page's entry
+    # stops being matched to the error it documents, the quoted-error count
+    # drops, and nothing on screen changes. Measured: three of this file's
+    # guards went red together on that one edit.
+    #
+    # The excuse lasts exactly as long as `gce` is the only kind with required
+    # fields. The second one needs this message in its own words and an entry in
+    # troubleshooting.md, written together, and then both raises collapse into
+    # one and this line goes.
+    "requires": "config's required-fields refusal for a non-gce kind: runs of 5, 7 and 8",
 }
 
 
