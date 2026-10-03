@@ -381,3 +381,83 @@ def test_a_google_machine_absent_from_its_project_is_still_gone():
     states = Gcloud(runner=_google({"proj": LIVE})).instance_statuses([ghost])
 
     assert states[ghost] == GONE
+
+
+# --- the same collapse, at a second site ---------------------------------------
+#
+# `relocate.would_not_load` kept its own copy of the identity — a local helper
+# building `(project or "", zone or "", instance or "")` — and its docstring
+# claimed parity with the loader: "Checked against the identity `config` itself
+# uses ... so this refuses exactly what that would refuse, and no more." Fixing
+# the loader made that sentence false and left the collapse behind the
+# `is_remote` that now admits other kinds, so two machines the loader accepts as
+# distinct were declared one machine before anything was created.
+
+
+def _plan(home: Host, to_zone: str):
+    from comfy_qa.relocate import Plan
+
+    return Plan(host=home, to_zone=to_zone, source_disk="comfy-win-a",
+                new_instance="comfy-win", new_disk=f"comfy-win-{to_zone[-1]}",
+                snapshot="comfy-win-snap", machine_type="g2-standard-8")
+
+
+HOME = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
+            gpu="L4", gce_instance="comfy-win", gce_zone="us-central1-a",
+            gce_project="proj")
+
+
+def test_a_move_does_not_declare_two_machines_of_another_provider_one_machine(pod_kind):
+    """The loader accepts these three; the move check refused them.
+
+    A move does not touch a host it is not moving, so two machines of another
+    provider sitting in the same host list collapsed onto `("", "", "")` here
+    exactly as they did in the loader — and the move was refused, before
+    anything was created, with a sentence naming no machine at all.
+    """
+    from comfy_qa.relocate import would_not_load
+
+    hosts = [HOME, pod("pod-a", 8191, "aaaa"), pod("pod-b", 8192, "bbbb")]
+    assert len({h.machine_id for h in hosts}) == 3, "the loader sees three machines"
+
+    assert would_not_load(hosts, _plan(HOME, "us-central1-b")) is None
+
+
+def test_a_move_still_refuses_a_real_collision_of_another_provider(pod_kind):
+    """The other direction, so this cannot be fixed by deleting the check — and
+    the refusal has to name the machine it means, which the collapsed version
+    could not: it printed `naming one machine —  in  —`."""
+    from comfy_qa.relocate import would_not_load
+
+    hosts = [HOME, pod("pod-a", 8191, "same"), pod("pod-b", 8192, "same")]
+
+    problem = would_not_load(hosts, _plan(HOME, "us-central1-b"))
+
+    assert problem is not None
+    assert "'pod-a'" in str(problem) and "'pod-b'" in str(problem)
+    assert "'same'" in str(problem), (
+        "the refusal names no machine — which is what the empty-string collapse "
+        "produced, and what made it unactionable")
+
+
+def test_the_sentence_a_google_collision_prints_is_unchanged():
+    """A guard, and the reason it is worth one: this sentence is quoted verbatim
+    in troubleshooting.md, so the identity moving underneath it must not change
+    a byte of what a person reads."""
+    from comfy_qa.relocate import would_not_load
+
+    moved_out = [
+        Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
+             gpu="L4", gce_instance="comfy-win", gce_zone="us-central1-b",
+             gce_project="proj"),
+        Host(name="comfy-win-us-central1-a", kind="gce", port=8194,
+             os="Windows Server 2022", gpu="L4", gce_instance="comfy-win",
+             gce_zone="us-central1-a", gce_project="proj"),
+    ]
+    home = moved_out[0]
+
+    problem = would_not_load(moved_out, _plan(home, "us-central1-a"))
+
+    assert problem is not None
+    assert ("naming one machine — comfy-win in us-central1-a — and a host list"
+            in str(problem))

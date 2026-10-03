@@ -86,6 +86,13 @@ class MachineKind:
     identifies_by: tuple[str, ...] = ()
     #: How one of its machines is named in a sentence, over `identifies_by`.
     in_words: str = ""
+    #: The same, short enough to sit inside a longer sentence. Two forms rather
+    #: than one because two of this tool's refusals name a machine two different
+    #: ways — the loader's `instance 'comfy-win' in us-central1-a (proj)` and the
+    #: move check's `comfy-win in us-central1-a` — and troubleshooting.md quotes
+    #: both verbatim, so neither wording is ours to change in passing. Falls back
+    #: to `in_words` when a kind supplies only one.
+    in_brief: str = ""
 
     @property
     def fields(self) -> tuple[str, ...]:
@@ -114,6 +121,7 @@ KINDS: dict[str, MachineKind] = {
         requires=("os", "gpu", "gce_instance", "gce_zone", "gce_project"),
         identifies_by=("gce_project", "gce_zone", "gce_instance"),
         in_words="instance {gce_instance!r} in {gce_zone} ({gce_project})",
+        in_brief="{gce_instance} in {gce_zone}",
     ),
 }
 
@@ -185,13 +193,7 @@ class Host:
         ordinary, neither knows about the other, and an identity made only of the
         provider's own name for the machine would make those one machine.
         """
-        kind = KINDS.get(self.kind)
-        if kind is None or not kind.identifies_by:
-            return None
-        values = [self.declared(field) for field in kind.identifies_by]
-        if not all(values):
-            return None
-        return (self.kind, *values)
+        return machine_identity(self.kind, self.declared)
 
     @property
     def machine_in_words(self) -> str:
@@ -200,19 +202,73 @@ class Host:
         Empty when there is no machine to name, so a caller can fall back rather
         than print a sentence about nothing.
         """
-        kind = KINDS.get(self.kind)
-        if kind is None or self.machine_id is None:
-            return ""
-        values = {field: self.declared(field) for field in kind.identifies_by}
-        if kind.in_words:
-            return kind.in_words.format(**values)
-        return ", ".join(f"{field} {value!r}" for field, value in values.items())
+        return say_machine(self.kind, self.declared)
+
+    @property
+    def machine_in_brief(self) -> str:
+        """The same machine, short enough to sit inside another sentence."""
+        return say_machine(self.kind, self.declared, brief=True)
 
 
 # The fields `Host` holds itself. A field a kind declares that is not one of
 # these goes into `extra`, so the two can never both hold one field's value and
 # disagree.
 _HOST_ATTRIBUTES = frozenset(field.name for field in fields(Host))
+
+
+# --- identity, for a machine that has no `Host` yet --------------------------
+#
+# `Host.machine_id` is the ordinary way in and these two functions are what it
+# is. They exist separately because one caller asks about machines that do not
+# exist as entries yet: `relocate.would_not_load` checks the host list a move is
+# ABOUT to write, two of whose entries have no `Host` behind them, and it used to
+# answer that question with a local copy of Google's three fields collapsed to
+# `("", "", "")`. A second copy of an identity is a second thing to forget: that
+# helper's own docstring claimed it "refuses exactly what `config` would refuse,
+# and no more", and the claim quietly stopped being true the moment the loader's
+# key changed.
+#
+# `declared` is any `field -> value | None` callable, so a `Host` passes
+# `self.declared` and a caller holding loose values passes `some_dict.get`.
+#
+# Named `machine_identity` rather than `identify` deliberately: `tunnel.py` has
+# its own local `identify`, which answers "what does this process look like".
+# Two functions called `identify` in one tool, one about a machine and one about
+# a pid, is a name waiting to be imported into the wrong module.
+
+
+def machine_identity(kind: str, declared) -> tuple[str, ...] | None:
+    """The identity of a machine of `kind` whose identifying fields hold these.
+
+    `None` means these values do not name a machine, which is never the same
+    claim as two of them naming the same one. See `Host.machine_id`.
+    """
+    spec = KINDS.get(kind)
+    if spec is None or not spec.identifies_by:
+        return None
+    values = [declared(field) for field in spec.identifies_by]
+    if not all(values):
+        return None
+    return (kind, *values)
+
+
+def say_machine(kind: str, declared, *, brief: bool = False) -> str:
+    """That machine, in words. Empty when there is no machine to name.
+
+    `brief` is the form that sits inside a longer sentence — `comfy-win in
+    us-central1-a` rather than `instance 'comfy-win' in us-central1-a (proj)`.
+    Both are the kind's to supply, and both exist because this tool has two
+    documented refusals that name a machine two different ways and neither
+    wording is ours to change unilaterally: troubleshooting.md quotes them.
+    """
+    spec = KINDS.get(kind)
+    if spec is None or machine_identity(kind, declared) is None:
+        return ""
+    values = {field: declared(field) for field in spec.identifies_by}
+    template = (spec.in_brief or spec.in_words) if brief else spec.in_words
+    if template:
+        return template.format(**values)
+    return ", ".join(f"{field} {value!r}" for field, value in values.items())
 
 
 def _known_fields() -> frozenset[str]:

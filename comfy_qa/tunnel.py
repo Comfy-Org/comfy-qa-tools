@@ -758,8 +758,16 @@ def _same_machine(state: TunnelState, host: Host) -> bool:
     true and a URL beside it.
 
     So identity decides, and an identity nobody can state is NOT a match. Both
-    sides have to name a machine and name the same one. Not knowing costs one
-    tunnel reopened; guessing costs a result read off the wrong machine.
+    sides have to name a machine and name the same one.
+
+    WHAT NOT KNOWING COSTS, STATED PROPERLY, because the first wording here said
+    "one tunnel reopened" and that is not what happens. A record this cannot
+    stand behind is refused by `open_tunnel`, not replaced — so it costs a
+    `comfy-qat down <name>` by hand, and a kind that declares no
+    `identifies_by` could never reuse a tunnel at all. That is still the right
+    way round: guessing costs a result read off the wrong machine, which is the
+    failure this whole file exists to prevent. Nothing registered today can
+    reach it — `local` is not remote and `gce` always names its machine.
     """
     if state.port != host.port:
         return False
