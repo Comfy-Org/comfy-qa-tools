@@ -132,6 +132,20 @@ GONE = "GONE"
 # is the point; what it is not is a machine that does not exist.
 ELSEWHERE = "ELSEWHERE"
 
+# The entry does not name one instance, in one zone, on one project, so
+# `instances list` was never asked about it. Not a state, not an absence, and
+# above all NOT `GONE`.
+#
+# `GONE` is the one word `discover --prune` acts on, and it means "the project
+# was read and does not hold this name" — a statement about a machine that was
+# looked for. A host that is not a Google instance was never looked for, and
+# answering `GONE` about it offers a live machine up for deletion on evidence
+# nobody gathered. That is exactly the failure the `ELSEWHERE` comment above
+# records costing a billing L4 once already, arriving through a different door:
+# the callers build `(instance, zone, project)` off the host, so the moment any
+# host is not a Google instance it arrives here as `(None, None, None)`.
+UNADDRESSABLE = "UNADDRESSABLE"
+
 # Ordered: the first match wins, so the specific signs come before the vague
 # ones. "reauthentication" is checked before anything else because gcloud wraps
 # it inside a generic "problem refreshing your current auth tokens" sentence that
@@ -817,8 +831,8 @@ class Gcloud:
         return answer
 
     def instance_statuses(
-        self, wanted: list[tuple[str, str, str]],
-    ) -> dict[tuple[str, str, str], str]:
+        self, wanted: list[tuple[str | None, str | None, str | None]],
+    ) -> dict[tuple[str | None, str | None, str | None], str]:
         """The state of several machines, in one call per project rather than one each.
 
         `instance_status` is a whole `gcloud` process per machine, and the two
@@ -868,9 +882,32 @@ class Gcloud:
         list can be wrong about it. A read that FAILS still raises, as the
         per-machine call did; callers that treat not-knowing as survivable catch
         `GcloudError` around this exactly as they did around that.
+
+        AND AN ENTRY THAT IS NOT A GOOGLE ADDRESS IS NOT A QUESTION. Every
+        caller builds these keys as `(host.gce_instance, host.gce_zone,
+        host.gce_project)` off whatever the host list declares remote, so a
+        machine that is not a Google instance arrives as `(None, None, None)`.
+        It gets `UNADDRESSABLE`, and it is taken out BEFORE the projects are
+        grouped rather than after — left in, its empty project became its own
+        `instances list --project=` that cannot succeed, `GcloudError` came out
+        of the WHOLE call, and every caller catches that and leaves EVERY host
+        unreconciled. One host of another kind cost all the Google ones their
+        answer: `list --live` printing `-` for eight boxes because of a ninth it
+        was never going to reach.
+
+        It is answered rather than dropped, because dropping is the quieter bug:
+        the callers read this with `.get`, so a missing key is `None`, `None` is
+        neither `GONE` nor a state, and the host simply stops being reconciled
+        with nothing saying so.
         """
-        out: dict[tuple[str, str, str], str] = {}
-        for project in dict.fromkeys(project for _n, _z, project in wanted):
+        out: dict[tuple[str | None, str | None, str | None], str] = {}
+        askable = []
+        for key in wanted:
+            if all(isinstance(part, str) and part for part in key):
+                askable.append(key)
+            else:
+                out[key] = UNADDRESSABLE
+        for project in dict.fromkeys(project for _n, _z, project in askable):
             found = {}
             # Every name the project holds, whatever zone it holds it in. This is
             # what "the project does not have it" is decided against; `found` only
@@ -882,7 +919,7 @@ class Gcloud:
                 on_the_project.add(name)
                 found[(name, zone)] = (
                     instance.get("status") or self.UNKNOWN_STATE)
-            for name, zone, owner in wanted:
+            for name, zone, owner in askable:
                 if owner != project:
                     continue
                 if (name, zone) in found:
@@ -901,6 +938,7 @@ class Gcloud:
     UNKNOWN_STATE = ""
     GONE = GONE
     ELSEWHERE = ELSEWHERE
+    UNADDRESSABLE = UNADDRESSABLE
 
     def instance_status(self, name: str, zone: str, project: str) -> str:
         """RUNNING, TERMINATED, STAGING... TERMINATED is Google's word for stopped.

@@ -1029,33 +1029,45 @@ def would_not_load(hosts: list[Host], plan: Plan) -> MoveError | None:
     which `config.load` refuses outright. Not the entry: the whole file. Every
     command then exits 2, `down` included, while the box runs and bills.
 
-    Checked against the identity `config` itself uses — project, zone, instance —
-    so this refuses exactly what that would refuse, and no more. Nothing is
-    created, so this costs a snapshot, a disk and an instance less than finding
-    out at the end.
+    THE PROSPECTIVE ENTRIES ARE `Host`S, AND THEY ARE COMPARED BY
+    `Host.machine_id` — the loader's own identity, not a copy of it. This used to
+    keep its own helper, `(project or "", zone or "", instance or "")`, under a
+    docstring claiming it "refuses exactly what `config` would refuse, and no
+    more". The claim was true when Google was the only remote kind and stopped
+    being true the moment the loader's key became the kind's business. What it
+    then refused was MORE than the loader would: every machine that is not a
+    Google instance collapsed onto `("", "", "")`, so two of them in a host list
+    this move does not even touch were declared one machine — with a sentence
+    that named neither, `naming one machine —  in  —`. Parity is now structural
+    rather than asserted, and `tests/test_machine_identity.py` checks it in both
+    directions.
+
+    Nothing is created, so this costs a snapshot, a disk and an instance less
+    than finding out at the end.
     """
-    def identity(project: str, zone: str, instance: str) -> tuple[str, str, str]:
-        return (project or "", zone or "", instance or "")
-
     # Everything the move does not touch, then the two entries it writes: the
-    # box under its own name in the new zone, and the one it left behind.
-    prospective = [
-        (h.name, identity(h.gce_project, h.gce_zone, h.gce_instance))
-        for h in hosts if h.is_remote and h.name != plan.host.name
-    ]
-    prospective.append(
-        (plan.host.name, identity(plan.project, plan.to_zone, plan.new_instance)))
-    prospective.append(
-        (plan.retired_name,
-         identity(plan.project, plan.host.gce_zone, plan.host.gce_instance)))
+    # box under its own name in the new zone, and the one it left behind. Built
+    # with `replace` so neither one names a field — a prospective entry differs
+    # from the host it comes from by what the move changes and by nothing else.
+    prospective = [h for h in hosts
+                   if h.is_remote and h.name != plan.host.name]
+    prospective.append(replace(plan.host, gce_zone=plan.to_zone,
+                               gce_instance=plan.new_instance))
+    prospective.append(replace(plan.host, name=plan.retired_name))
 
-    seen: dict[tuple[str, str, str], str] = {}
-    for name, box in prospective:
+    seen: dict[tuple[str, ...], str] = {}
+    for entry in prospective:
+        box = entry.machine_id
+        # An entry that names no machine cannot be two entries for one, exactly
+        # as in `config.parse`. Skipping it is not a claim that it matches
+        # nothing else; it is the absence of a claim either way.
+        if box is None:
+            continue
         clash = seen.get(box)
         if clash is not None:
             return MoveError(
-                f"this would leave {clash!r} and {name!r} naming one machine — "
-                f"{box[2]} in {box[1]} — and a host list with two entries for one "
+                f"this would leave {clash!r} and {entry.name!r} naming one machine — "
+                f"{entry.machine_in_brief} — and a host list with two entries for one "
                 f"box is one this tool refuses to read, whole. Nothing was created.",
                 fix=output.fix(
                     f"{clash} is what an earlier move left behind. Check what it "
@@ -1063,7 +1075,7 @@ def would_not_load(hosts: list[Host], plan: Plan) -> MoveError | None:
                     "comfy-qat list --live",
                 ),
             )
-        seen[box] = name
+        seen[box] = entry.name
     return None
 
 
