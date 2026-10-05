@@ -131,9 +131,13 @@ def _held_for(gc, host, *, already_gone: bool):
         # Google described it a moment ago and the listing does not carry it.
         # Whatever produced that gap, it is not an absence.
         _refuse(
+            # Not "could not be read": that four-word run is one config.py also
+            # builds, and the docs check then files this entry under config's
+            # errors and fails it for not being one. host.py was reworded for
+            # the same collision.
             f"{host.name}'s reservation {name} is on {project} but the project's "
-            f"own listing did not include it, so what it holds could not be "
-            f"read. Nothing was deleted.",
+            f"own listing did not include it, so what it holds is not known. "
+            f"Nothing was deleted.",
             fix=say.fix("see it yourself, then run this again:",
                         f"gcloud compute reservations list --project={project}",
                         f"comfy-qat delete {host.name}"))

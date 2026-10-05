@@ -23,8 +23,14 @@ never collide on `PATH`.
 
 ## Status
 
-**1.1.0. Every command is implemented, tested, and has run against real GCE
-hardware on both Linux and Windows**.
+**1.3.0. Every command is implemented and tested, and everything up to 1.2.0 has
+run against real GCE hardware on both Linux and Windows**.
+
+What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
+cost columns in `list` — is tested against a fake cloud that keeps state. **It
+has not yet been run against a real project**, so what Google actually does with
+a reservation (how it counts against quota, whether it can be released while a
+stopped box still targets it) is this tool's assumption until it has been.
 
 The verbs are at the top level: `comfy-qat go linux`. The `host ...` and
 `auth ...` spellings were a deprecation window rather than a second permanent way
@@ -202,21 +208,21 @@ becomes something you do on purpose.
 | `comfy-qat quota list` | what cards you can start, and where — `--by-region` |
 | `comfy-qat quota request` | ask Google for cards — `--gpu l4,a100 --region us-central1` |
 | `comfy-qat init` | write a starter host list you can edit |
-| `comfy-qat list` | every declared machine and what is up — `--live` asks Google |
+| `comfy-qat list` | every declared machine, what is up and what is reserved — `--live` asks Google, and adds age and disk |
 | `comfy-qat discover` | find cloud boxes and add them — `--prune` drops the entries Google confirms are gone |
-| `comfy-qat create` | make a GPU box; the zone is chosen, not typed |
-| `comfy-qat delete` | remove a box and its disk, permanently |
+| `comfy-qat create` | make a box; the zone is chosen, not typed — `--reserve` holds its capacity, `--gpu none` has no GPU |
+| `comfy-qat delete` | remove a box and its disk, permanently — and release its reservation, if it has one |
 | `comfy-qat go` | start it, make sure ComfyUI is on it, hand the prompt back |
 | `comfy-qat up` | start a machine, and succeed only if ComfyUI is already serving |
 | `comfy-qat open` | tunnel to a machine already running |
 | `comfy-qat disconnect` | close the tunnel, leave the machine running |
-| `comfy-qat down` | close the tunnel and stop the machine, so it stops costing |
+| `comfy-qat down` | close the tunnel and stop the machine, so it stops costing — a reserved box goes on billing, and `down` says so |
 | `comfy-qat ssh` | a shell on a box, through the tunnel |
 | `comfy-qat rdp` | reset the Windows password and forward RDP |
 | `comfy-qat logs` | follow the ComfyUI log on a box — `--tail N` reads the end and stops |
 | `comfy-qat stamp` | ask a machine what it is, and print the line you paste |
 | `comfy-qat switch` | start the one you want, stop the one you were on |
-| `comfy-qat move` | move a box to a zone with capacity, keeping its ComfyUI |
+| `comfy-qat move` | move a box to a zone with capacity, keeping its ComfyUI — not a reserved one |
 | `comfy-qat --version` | what you are running, with the commit |
 
 **[docs/commands.md](docs/commands.md)** has the flags and which to reach for.
@@ -271,7 +277,7 @@ Unknown fields are rejected rather than ignored, and the message names the typo 
 what it was probably meant to be:
 
 ```
-host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.
 ```
 
 Switching OS means switching host: one box per OS, and nothing is ever reimaged.

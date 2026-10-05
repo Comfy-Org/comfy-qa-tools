@@ -37,10 +37,11 @@ one port is the failure you cannot diagnose from the outside.
 | `kind` | all | `local` for a ComfyUI on this machine, `gce` for a Google Cloud box |
 | `port` | all | where ComfyUI is reached **on your machine**. For `local`, the port it actually serves on. For `gce`, the near end of the tunnel. Defaults to 8188 for `local` |
 | `os` | gce | what the box runs, e.g. `Ubuntu 22.04`. Shown in `list`, and matched by `windows`, `linux`, `ubuntu`, `debian` |
-| `gpu` | gce | the card, e.g. `L4`. Matters as much as the OS — not every GPU can run every model. Matched by `l4`, `a100` |
+| `gpu` | gce | the card, e.g. `L4`, or `none` for a box with no GPU. Matters as much as the OS — not every GPU can run every model. Matched by `l4`, `a100` |
 | `gce_instance` | gce | the instance name in Google Cloud |
 | `gce_zone` | gce | the zone it lives in, e.g. `us-central1-a` |
 | `gce_project` | gce | the project it is billed to |
+| `gce_reservation` | gce, optional | the reservation holding this box's capacity, e.g. `comfy-linux-rsv`. Present means the box is **reserved**: it bills every hour, running or stopped, until it is deleted. `create --reserve` and `discover` write it; leave it out for a box that is not reserved |
 
 Anything else is rejected, so a typo like `gce_zoen` fails loudly instead of being
 silently ignored and leaving you wondering why the box cannot be found. The
@@ -49,7 +50,7 @@ before the fields it makes look missing, which are not the problem:
 
 ```
 host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?).
-Known fields: gce_instance, gce_project, gce_zone, gpu, kind, os, port.
+Known fields: gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.
 ```
 
 `os` and `gpu` are not only labels. They are what you can select a host by:
@@ -89,7 +90,8 @@ depends on a shift key.
 may not take the name. `stamp local` has one obvious meaning and every
 example relies on it.
 
-**A `local` host may not carry `gce_instance`, `gce_zone` or `gce_project`.**
+**A `local` host may not carry `gce_instance`, `gce_zone`, `gce_project` or
+`gce_reservation`.**
 This is the rule that costs money when it is missing: `down` decides what to
 stop from `kind`, so a cloud box declared `local` reads as a successful `down`
 while the GPU keeps billing. `os` and `gpu` are not cloud fields — a local host is

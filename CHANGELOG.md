@@ -3,6 +3,115 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.3.0 — reserved boxes, a limit on them, and a box with no GPU
+
+Three things a box could not be until now, and one column that follows from the
+first. A box can be **reserved** at `create`, so its capacity is held for it and
+it starts again where it was. How many may be reserved is **bounded by the
+project's own GPU allowance**. A box can have **no GPU at all**. And `list` says
+which boxes are reserved, how old each one is and how much disk it has —
+because a reserved box is the first thing this tool makes whose bill does not
+stop when the box does.
+
+That last sentence is most of the work. Until this release, "stop the box" and
+"stop paying" were the same act, and the tool said so in ten closing lines, four
+summaries and twenty-eight failure fixes. Every one of them is false about a
+reserved box, and each now says the reserved form instead.
+
+**None of this has been run against a real project yet.** It is tested against a
+fake cloud that keeps state — a reservation that is made is listed until it is
+released — and three things about Google are assumed rather than observed: that
+a reservation counts against GPU quota as a running box does, that one for a
+card built into its machine type is made without naming the card, and that one
+can be released while a stopped box still targets it. Phase V of
+[the acceptance pack](docs/test-criteria.md) is the run that finds out.
+
+### Added
+
+- **`create --reserve`.** Google holds the capacity for the box in one zone, and
+  bills for it every hour, running or stopped, until the box is deleted. The
+  reservation is made first and the box is bound to it; it is named `<box>-rsv`
+  and described `comfy-qat: held for <box>`. Left off, the choice is asked for at
+  a terminal — with what each answer costs — and with `--yes` or nobody to ask
+  the box is **not** reserved, and the output says so on the line where the
+  question would have been. `--no-reserve` answers it in advance. Every way of
+  stopping between the two calls says what is left billing, and Ctrl-C between
+  them reports the reservation with the command that releases it. Running the
+  same create again finds a reservation an earlier run left and puts the box on
+  it rather than making a second.
+- **A limit on reservations: the project's GPU allowance, in cards.** A
+  reservation holds its card whether its box runs or not, so reserved cards are
+  counted against `GPUS_ALL_REGIONS` and the per-card regional grant — from the
+  project's own `reservations list`, never from the host list, so one made in
+  the console counts too. On a project whose ceiling is 1, one reserved box is
+  the whole allowance: `create --reserve` says so before it asks, and a later
+  `create` is refused naming the reservation and the two commands that release
+  it. `switch` and `move` count the same cards with the same function. If the
+  reservations cannot be read, a reserving create is refused and an ordinary
+  one warns and goes on.
+- **`create --gpu none`**, also spelled `cpu`. An `n1-standard-8` with nothing
+  attached; ComfyUI runs on its CPU. It needs no GPU quota, is not counted
+  against the GPU ceiling, and is checked against the project's vCPU allowance
+  instead — so it can be made while the one GPU slot is in use or reserved. No
+  NVIDIA driver is installed, `go` does not wait for one, a CPU build of torch
+  is installed and left alone, and ComfyUI is started with `--cpu`.
+- **`list` shows RESERVED, and `list --live` adds AGE and DISK.** Plain `list`
+  still asks Google nothing: RESERVED is what the host list says, and the
+  footnote says that is where it came from. `--live` checks it — `yes`, `no`,
+  `missing`, `yes (not in host list)`, or `…, unchecked` when a read failed —
+  and names any reservation on the project that has no box on it at all, with
+  Google's command to release it. Two calls per project, however many boxes.
+- **`gce_reservation`** in the host list: the one optional line that says a box
+  is reserved. `create --reserve` and `discover` write it.
+
+### Changed
+
+- **`delete` releases a reserved box's reservation**, and is the only command
+  that stops its bill. The reservation is released first, so a failure in
+  between leaves a stopped box rather than a reservation billing with nothing on
+  it; a box that was already deleted some other way still has its reservation
+  released; and the entry stays in the host list until both are gone. A
+  reservation other machines share, or that the box has no claim on, is never
+  released — `delete` refuses and says how to delete the box alone.
+- **`down` on a reserved box says it is still billing**, in place of `was
+  billing. Stopped.`, and ends on `comfy-qat delete <name>`. `down --all` no
+  longer prints `Nothing is now.` while a declared box is reserved, and reads
+  the project's reservations before printing it at all.
+- **`up`, `go`, `logs` and `disconnect`** end on that same line for a reserved
+  box, where they end on `comfy-qat down <name>   # stop the box, stop paying`
+  for any other. All of host.py's endings now go through one helper.
+- **`switch`** says, in its plan, that stopping a reserved box frees neither its
+  card nor its bill — and refuses, before anything is started or stopped, when
+  reservations alone hold the GPU ceiling. It used to stop the box you were on
+  first and then fail to start the other.
+- **`move` refuses a reserved box**, before Google is asked anything: a
+  reservation is held in one zone. It prints the three commands that delete the
+  box and make it again elsewhere.
+- **`discover`** adopts a box bound to a reservation with its `gce_reservation`,
+  and says what that box costs when it does.
+- `create`'s sentences about a reserved box are wrapped at 96 columns on
+  stdout, and a menu note that is longer than that continues under its own
+  first word.
+
+### Fixed
+
+- **A box declared `gpu = "none"` was treated as having a card**, because
+  `"none"` is not an empty string. `go` waited fifteen minutes for `nvidia-smi`
+  on it and then reinstalled a CUDA torch on every run; `switch` counted it as
+  one card against the GPU ceiling and could stop the box you were on to make
+  room for nothing; `stamp` let a GPU answer for it. Each now asks the one
+  question, `has_gpu`.
+- `move`'s stockout message said `has no none capacity either` for such a box.
+
+### The suite
+
+Seven new test files — the reservation model, the cloud calls, the build, the
+box with no GPU, the command line, `list` and its two reads — and the same
+rules as before: the oracle for a money sentence is text typed in the test, the
+command is driven, and a printed remedy is pasted back and run. Three new static
+guards hold the reserved bill, none of which the words `comfy-qat down` can
+satisfy.
+
 ## 1.2.0 — every GPU asked for at setup, and a terminal that reads
 
 Two things. `setup` now asks Google for every GPU this project could run, and

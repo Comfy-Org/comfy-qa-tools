@@ -23,6 +23,13 @@ it takes no name, and stops everything you have declared.
 - **Stopped**: only the disk. Cheap — cents per day — which is why keeping one box
   per OS and stopping the idle one is the right pattern rather than deleting and
   recreating.
+- **Reserved**: the machine type plus the GPU, per hour, **whether it is running
+  or stopped**, from the moment it is created until it is deleted. A box made
+  with `create --reserve` has its capacity held by Google, and that is what is
+  billed. Stopping it saves nothing. This is the one kind of box "stop it when
+  you stop testing" does not cover — see below.
+- **No GPU** (`create --gpu none`): the machine type alone, with no card on the
+  bill. The cheapest box this tool makes, and the slowest.
 - **Deleted**: nothing, but you also lose the ComfyUI install and the models on it.
 
 Prices vary by GPU, machine type and region and change over time, so this page does
@@ -34,6 +41,25 @@ gcloud compute machine-types describe <type> --zone <zone>
 ```
 
 and the pricing calculator: https://cloud.google.com/products/calculator
+
+## A reserved box is the exception to the one rule
+
+`comfy-qat down` does not stop a reserved box's bill, and neither does anything
+else short of deleting it. The tool says so every time it would otherwise have
+said "stop paying": `down` ends on `Stopped — but it is reserved, so it is still
+billing`, `go` and `up` end on `comfy-qat delete <name>` in place of `comfy-qat
+down <name>`, and `down --all` does not print `Nothing is now.` while a reserved
+box is declared or a reservation is on the project.
+
+So reserve a box only for as long as you need the place held, and **delete it**
+when you are finished with it — `comfy-qat delete <name>` releases the
+reservation with the box. `comfy-qat list` shows which boxes are reserved, and
+`comfy-qat list --live` also names any reservation on the project that has no box
+at all, which bills exactly the same and appears nowhere else.
+
+That a reservation bills for every hour it exists, used or not, is Google's
+published pricing for reservations. This tool has no way to measure it and has
+not been run against a live reservation yet.
 
 ## Checking what you have spent
 
@@ -54,13 +80,15 @@ What the tool *can* answer is the question underneath — "am I still paying for
 anything":
 
 ```sh
-comfy-qat list --live      # what Google says is running, one call per box
+comfy-qat list --live      # what Google says is running and what is reserved
 comfy-qat down --all       # stop every cloud box you have declared
 ```
 
 `--live` is the honest check: without it, `list` reports only what this machine
-knows, which is whether a tunnel is open. A tunnel closed by a laptop reboot does
-not stop the box, and a box with no tunnel bills exactly the same.
+knows, which is whether a tunnel is open and what your host list says is
+reserved. A tunnel closed by a laptop reboot does not stop the box, and a box
+with no tunnel bills exactly the same. It is two calls per project — instances
+and reservations — however many boxes you have.
 
 ## Quota is not cost
 

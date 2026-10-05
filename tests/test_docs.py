@@ -625,8 +625,20 @@ MESSAGE_FLOOR = {
     # nothing about scope at all after `--zone`, where nothing was ranked. Each
     # carries two identifying runs, so the count is 51 + 4. Raised here, in the
     # commit that added them.
-    "create.py": 55,
-    "gcloud.py": 8,
+    #
+    # 55 until reserved boxes, the reservation limit and the box with no GPU.
+    # The module reads 111: the two refusals for a reserve that cannot be
+    # planned, the limit and its unread twin, the two CPU refusals, the leftover
+    # that cannot be used or is somewhere else, and — the bulk of it — every way
+    # a reserved create can stop between its two calls, each of which says what
+    # is still billing in a sentence of its own. Raised to 105 rather than to
+    # 111, for the reason under WORDING_FLOOR: it leaves room to fall as well as
+    # to rise.
+    "create.py": 105,
+    # 8 until the reservations listing and its by-name absence check arrived —
+    # an empty listing that is not an empty result, and a not-found about
+    # something larger than the reservation asked about. The module reads 14.
+    "gcloud.py": 11,
     # 54 until `--os`/`--gpu` and `down --keep-running` were removed. Six
     # messages went with them — two selector refusals, the note that announced
     # their retirement, the note that announced `--keep-running`'s, and the
@@ -642,7 +654,14 @@ MESSAGE_FLOOR = {
     # one. Raised to 58 rather than to today's 63, for the reason the paragraph
     # under WORDING_FLOOR gives: the count is shared, and a floor pinned to an
     # exact number turns somebody else's honest deletion into a failure here.
-    "host.py": 58,
+    #
+    # 58 until the commands learned about reserved boxes: `create`'s two answers
+    # to a reservations read that failed and its two-things-are-billing error,
+    # `switch`'s refusal to reorder on a ceiling a reservation holds, `move`'s
+    # refusal of a reserved box, and `list --live`'s warning for a project whose
+    # reservations it could not ask about. The module reads 84. Raised to 78, on
+    # the same rule.
+    "host.py": 78,
     "hostfile.py": 13,
     # 65 until the tunnel learned to tell a box that is still booting from one
     # that is broken, and `up` learned to say WHICH of "not installed or not
@@ -658,8 +677,14 @@ MESSAGE_FLOOR = {
     # the refusal for a box whose 3389 never answers. Raised to 78 on the same
     # half-the-distance rule; the module reads 84.
     "lifecycle.py": 78,
-    "relocate.py": 12,
-    "remove.py": 11,
+    # 12 until `move` counted reserved cards against the ceiling and gave a
+    # reservation that holds it a refusal of its own. The module reads 17.
+    "relocate.py": 14,
+    # 11 until `delete` released a reserved box's reservation. Six messages, and
+    # every one is about which half happened: a reservation that could not be
+    # read, one the listing did not carry, one that is somebody else's too, and
+    # the three ways a release and a delete can come apart. The module reads 27.
+    "remove.py": 21,
     "setup.py": 19,
     "stamp.py": 10,
     "tunnel.py": 22,
@@ -722,7 +747,13 @@ MESSAGE_FLOOR = {
 # with nobody to ask, and the warning that a supplied flag is being asked for
 # again — and the rest of the distance is other people's work on the page.
 # Raised to 296, half the distance to today's 302, on the rule above.
-ENTRY_FLOOR = 296
+# 296 until reserved boxes, the reservation limit, the box with no GPU and the
+# cost columns in `list` landed their entries — thirty-one of them, across
+# creating, moving, switching, deleting and listing. The page reads 333. Raised
+# to 327, which is past half the distance and deliberately so: three engineers'
+# messages landed in this one commit, the slack is 12, and half the distance
+# would leave the floor already stale on the day it was set.
+ENTRY_FLOOR = 327
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -748,7 +779,9 @@ ENTRY_FLOOR = 296
 # 336 until `create`'s prompts landed their entries — four quoted wordings, the
 # two required-choice refusals sharing one entry and the invalid-flag warning.
 # Raised to 342, half the distance to today's 349, on the rule above.
-WORDING_FLOOR = 342
+# 342 until the same commit: 386 quoted wordings now. Raised to 380, for the
+# reason given beside ENTRY_FLOOR.
+WORDING_FLOOR = 380
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -1073,6 +1106,10 @@ GCLOUD_BY_DESIGN = {
                "and reset-windows-password, which is credential-bearing",
     "lifecycle.py": "a ComfyUI this run did not start, and add-access-config, which "
                     "changes the box's networking on a hypothesis the tool cannot confirm",
+    "remove.py": "a box whose reservation is not that box's alone to release — shared "
+                 "with other machines, or one this tool did not make for it. Deleting "
+                 "it here would release the reservation from under somebody else, so "
+                 "the instance delete is handed over and the reservation is left alone",
     "relocate.py": "a box the host list cannot name after a failed rewrite; the instance "
                    "delete that destroys an install ('handed over, never run'); and the "
                    "disk and snapshot deletes, which `remove_leftovers` DOES run under "
@@ -1755,6 +1792,125 @@ def test_every_quoted_config_error_is_still_built_that_way(line, quotation):
 
 
 # --- the commands our own messages tell people to run ---------------------
+
+
+# --- quotations of the tool's own output that nothing was reading -------------
+#
+# "A free edit is an unguarded one." Three pages quote the sentence config prints
+# for an unknown field, and two pages quote `list`'s table. One of the first
+# three was test-read — through the config-error check above — and the other two
+# were not, so adding a field to the host list left `docs/hosts.md` and the
+# README quoting a sentence the tool no longer says. The tables were read by
+# nothing at all.
+#
+# Both are derived here from the thing they quote, so the next field and the
+# next column fail a test rather than a reader.
+
+QUOTING_KNOWN_FIELDS = ("docs/troubleshooting.md", "docs/hosts.md", "README.md")
+
+
+def _known_fields_sentence() -> str:
+    """The sentence as the loader builds it today, from the loader."""
+    from comfy_qa import config
+
+    return f"Known fields: {', '.join(sorted(config._known_fields()))}."
+
+
+@pytest.mark.parametrize("page", QUOTING_KNOWN_FIELDS)
+def test_every_quotation_of_the_known_fields_is_what_the_loader_says(page):
+    """Each page that quotes `Known fields: …` quotes today's list, exactly.
+
+    Every occurrence on the page, not "the right one appears somewhere": a stale
+    copy beside a fresh one is still a page telling somebody the wrong fields.
+    """
+    said = _known_fields_sentence()
+    text = (ROOT / page).read_text(encoding="utf-8")
+    quoted = re.findall(r"Known fields: [^.\n]*\.", text)
+
+    assert quoted, f"{page} no longer quotes the sentence — take it out of the list"
+    assert set(quoted) == {said}, (
+        f"{page} quotes {sorted(set(quoted) - {said})}, and the loader says "
+        f"{said!r}")
+
+
+def test_the_known_fields_sentence_is_really_what_the_loader_raises(tmp_path):
+    """The guard on the guard: the sentence above is rebuilt from a private
+    function, and that would go on passing if the loader stopped using it. So
+    the loader is run on a misspelt field and has to say the same thing."""
+    from comfy_qa.config import ConfigError, load
+
+    path = tmp_path / "hosts.toml"
+    path.write_text('[hosts.local]\nkind = "local"\nport = 8188\nprot = 1\n',
+                    encoding="utf-8")
+    with pytest.raises(ConfigError) as refused:
+        load(path)
+
+    assert _known_fields_sentence() in str(refused.value)
+    assert "gce_reservation" in _known_fields_sentence(), (
+        "the field that says a box is reserved has left the host list")
+
+
+def test_no_other_page_quotes_the_known_fields_unread():
+    """And the list of pages is itself guarded: a fourth page that starts
+    quoting the sentence is a fourth page nothing reads."""
+    pages = [*sorted(DOCS.glob("*.md")), ROOT / "README.md", ROOT / "CHANGELOG.md"]
+    quoting = {str(page.relative_to(ROOT)) for page in pages
+               if "Known fields:" in page.read_text(encoding="utf-8")}
+
+    assert quoting == set(QUOTING_KNOWN_FIELDS), (
+        f"{sorted(quoting ^ set(QUOTING_KNOWN_FIELDS))} — a page quotes the "
+        f"sentence and is not checked, or is checked and no longer quotes it")
+
+
+def _list_headings() -> tuple[list[str], list[str]]:
+    """`list`'s column headings, plain and `--live`, read off the command."""
+    import tempfile
+
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    path = Path(tempfile.mkdtemp()) / "hosts.toml"
+    path.write_text('[hosts.local]\nkind = "local"\nport = 8188\n', encoding="utf-8")
+    runner = CliRunner()
+    plain = runner.invoke(app, ["list", "--config", str(path)]).stdout
+    live = runner.invoke(app, ["list", "--live", "--config", str(path)]).stdout
+    return plain.splitlines()[0].split(), live.splitlines()[0].split()
+
+
+def _quoted_list_tables() -> list[tuple[str, list[str]]]:
+    """Every `NAME  KIND  …` heading line quoted in a fenced block in the docs."""
+    found = []
+    for page in [*sorted(DOCS.glob("*.md")), ROOT / "README.md"]:
+        if page.name == "tests-that-cannot-fail.md":
+            continue
+        for line in page.read_text(encoding="utf-8").splitlines():
+            if re.match(r"NAME\s+KIND\s", line):
+                found.append((page.name, line.split()))
+    return found
+
+
+def test_every_list_table_the_docs_show_has_the_columns_list_prints(monkeypatch):
+    """A table in the docs with a column the tool has dropped, or without one it
+    has gained, is the acceptance pack's B3 failing a correct build — which it
+    has done twice. Each quoted heading must be one of the two `list` prints."""
+    from comfy_qa import host as host_module
+
+    # The local "is ComfyUI answering" probe is a loopback GET; whether this
+    # machine happens to be serving is not this test's subject.
+    monkeypatch.setattr(host_module, "_answering", lambda host: False)
+    plain, live = _list_headings()
+    assert plain[-1] == "RESERVED" and live[-2:] == ["AGE", "DISK"], (plain, live)
+
+    tables = _quoted_list_tables()
+    assert len(tables) >= 3, f"only {len(tables)} list tables found in the docs"
+    stale = [f"{page}: {' '.join(heading)}" for page, heading in tables
+             if heading not in (plain, live)]
+    assert not stale, (
+        f"the docs show a `list` table whose columns are not the ones `list` "
+        f"prints ({' '.join(plain)}, or with --live {' '.join(live)}): {stale}")
+    assert any(heading == live for _page, heading in tables), (
+        "no page shows the --live table, so its two extra columns are undocumented")
 
 
 def _command_tree(app) -> dict:
