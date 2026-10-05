@@ -51,6 +51,7 @@ import re
 from dataclasses import dataclass
 
 from . import inflight
+from . import reservation as rsv
 from . import say as output
 from .config import Host
 from .gcloud import Gcloud, GcloudError
@@ -741,6 +742,20 @@ class Blueprint:
         return self.card.machine_type
 
     @property
+    def reservation(self) -> str | None:
+        """The reservation this box is bound to, by name. None if not reserved.
+
+        `<name>-rsv`, always — deterministic, so a rerun of the same create
+        finds what an interrupted one left behind.
+        """
+        return rsv.name_for(self.name) if self.reserve else None
+
+    @property
+    def reservation_accelerator(self) -> str | None:
+        """The `--accelerator` value its reservation is made with, or None."""
+        return _reservation_accelerator(self.card)
+
+    @property
     def metadata(self) -> str | None:
         """The `--metadata` value for this box.
 
@@ -793,7 +808,34 @@ class Blueprint:
         else:
             lines.append("startup script installs the NVIDIA driver on first boot")
         lines.append(f"add {self.name} to the host list on the next free port")
+        if self.reserve:
+            # First, because it is made first — and last, the sentence about
+            # what it costs, so that it is the line a person reads before
+            # answering the confirmation underneath.
+            return [
+                f"reserve the capacity first: reservation {self.reservation} in "
+                f"{zone}, which only this box can use",
+                *lines,
+                rsv.bill(self.name),
+            ]
         return lines
+
+
+def _reservation_accelerator(card: Card) -> str | None:
+    """What `reservations create` is given for this card's `--accelerator`.
+
+    THE ONE PLACE, and it is one place on purpose. The same value the instance
+    create is given: `type=...,count=N` for a card attached to an N1, and
+    nothing for a card that is part of the machine type (G2, A2, A3) — on the
+    reasoning that `--machine-type=g2-standard-8` already says which card.
+
+    That second half is NOT settled against Google. Whether a built-in card's
+    reservation must omit `--accelerator`, may carry it or requires it has not
+    been read off a live project. If it turns out to be required, this is the
+    line that changes, to `f"type={card.accelerator},count={card.count}"` —
+    `reservation.fits` already accepts either read-back.
+    """
+    return card.accelerator_flag
 
 
 # --- turning what somebody typed into a blueprint --------------------------
@@ -957,10 +999,24 @@ def plan(
             fix=f"comfy-qat create --os {image.key} --gpu {gpu} --disk {DEFAULT_DISK_GB}",
             kind=CREATE_FAILED,
         )
-    return Blueprint(
-        name=choose_name(name, image, taken or set()),
-        image=image, card=card, disk_gb=disk_gb,
-    )
+    chosen = choose_name(name, image, taken or set())
+    if reserve and len(chosen) > rsv.MAX_BOX_NAME:
+        # Offline, like every other name rule here. Google's names stop at 63
+        # characters and the reservation is `<name>-rsv`, so the box may use 59
+        # of them. Found at Google instead, this costs the quota read, the zone
+        # ranking and a confirmation, and is answered about a reservation name
+        # the user never typed.
+        raise LifecycleError(
+            f"{chosen} is {len(chosen)} characters, and the name of a reserved box "
+            f"may be at most {rsv.MAX_BOX_NAME}: its reservation is called "
+            f"{chosen}{rsv.SUFFIX}, and Google's names stop at {MAX_NAME_LEN}. "
+            f"Nothing was created.",
+            fix="pick a shorter one with --name, or drop --name and one is "
+                "picked for you",
+            kind=CREATE_FAILED,
+        )
+    return Blueprint(name=chosen, image=image, card=card, disk_gb=disk_gb,
+                     reserve=reserve)
 
 
 # --- will the project allow it -------------------------------------------
@@ -1015,6 +1071,49 @@ class QuotaCheck:
     already refused there it sent somebody to re-file the exact request Google
     denied, in a region they had not asked about.
     """
+    reserved: tuple[tuple[str, str, int, str], ...] = ()
+    """`(name, zone, cards, box)` for each reservation holding a card.
+
+    From the LIVE list, never the host file: a reservation made in the console,
+    or left by a create that stopped half-way, holds the allowance just the
+    same. `box` is "" for one this tool did not make. A leftover being resumed
+    by this very create is not in here — it is the card this box is about to
+    use, not a card in its way.
+    """
+    reserved_cards: int = 0
+    """Cards those reservations hold between them. Part of `held`, not beside it.
+
+    `held` is everything spoken for: these, plus the cards on running boxes
+    that are not consuming one of these. A reserved box that is running is its
+    reservation's card, once.
+    """
+    boxed: tuple[tuple[str, str], ...] = ()
+    """`(name, zone)` of the reservations above that have their own box on them.
+
+    What decides the remedy. `comfy-qat delete <box>` is only a command when
+    there is a box; a reservation with nothing bound to it is released with
+    Google's own.
+    """
+    reserving: bool = False
+    """Is this create going to make a reservation of its own?"""
+    unread: bool = False
+    """Reserving, and the project's reservations could not be read.
+
+    Not the same as read-and-empty, and the difference is a refusal: how many
+    cards are already held is then not known, a refusal is free, and a
+    reservation past the limit bills until somebody notices it.
+    """
+    reusing: tuple[str, str] | None = None
+    """`(name, zone)` of a reservation left by an earlier run and being resumed."""
+    project: str = ""
+    box: str = ""
+    regional: tuple[tuple[str, int], ...] = ()
+    """`(region, limit)`: this card's own allowance, region by region.
+
+    The per-card half of the limit. `card_limit` is the best of these, which is
+    the right number to print and the wrong one to place a box by — a grant of
+    1 in each of two regions is one card in each, not one anywhere.
+    """
 
     def lines(self) -> list[str]:
         """What was checked and what it said — printed by a dry run and a real one."""
@@ -1047,11 +1146,55 @@ class QuotaCheck:
             + (f", in {_where_label(self.regions)}" if self.regions else ""),
             f"GPUS_ALL_REGIONS (every card, project-wide): {ceiling(self.global_limit)}",
         ]
+        if self.reserved:
+            cards = _cards(self.reserved_cards)
+            out.append(f"reserved, and held whether its box runs or not: {cards} of "
+                       f"it — {self._reserved_names}")
         if self.running:
-            cards = "1 card" if self.held == 1 else f"{self.held} cards"
+            # The running boxes that are NOT on one of those reservations. With
+            # no reservations this is `held`, as it always was.
+            cards = _cards(self.held - self.reserved_cards)
             out.append(f"already running and holding {cards} of it: "
                        f"{', '.join(self.running_names)}")
+        if self.reusing is not None:
+            out.append(f"reusing reservation {self.reusing[0]} in {self.reusing[1]} — "
+                       f"left by an earlier run, and already holding its card")
+        elif self.reserving and not self.unread:
+            out.append(self._reserving)
         return out
+
+    @property
+    def _reserved_names(self) -> str:
+        """`a-rsv (us-central1-a), b-rsv (us-east1-b)`."""
+        return ", ".join(f"{name} ({zone})" for name, zone, _cards_held, _box
+                         in self.reserved)
+
+    @property
+    def _reserving(self) -> str:
+        """What reserving takes out of the ceiling, and what that leaves.
+
+        Said on success and under `--dry-run`, because it is the consequence
+        nobody expects: on a ceiling of 1 a reserved box is the whole GPU
+        allowance for as long as it exists, running or not.
+        """
+        from .quota import UNLIMITED
+
+        box = self.box or "this box"
+        took = _cards(self.needed)
+        if self.global_limit is None or self.global_limit == UNLIMITED:
+            return (f"reserving holds {took} from the moment it is made until "
+                    f"{box} is deleted, running or stopped")
+        # The `is not None` is the line above, said again where the arithmetic
+        # is: a subtraction on a limit carries its own guard, so the next edit
+        # to the early return cannot leave this one reading a None.
+        left = (self.global_limit - self.held - self.needed
+                if self.global_limit is not None else 0)
+        already = f", with {self.held} already held" if self.held else ""
+        head = f"reserving takes {self.needed} of the {self.global_limit}{already} — "
+        if left <= 0:
+            return (f"{head}none left. While {box} exists no other GPU box can "
+                    f"start, including a stopped one you already have.")
+        return f"{head}{left} left for other GPU boxes while {box} exists."
 
     @property
     def running_names(self) -> tuple[str, ...]:
@@ -1212,6 +1355,26 @@ class QuotaCheck:
                     "https://console.cloud.google.com/iam-admin/quotas",
                 kind=NO_QUOTA,
             )
+        if (self.reserved and self.global_limit is not None
+                and self.global_limit != UNLIMITED
+                and self.global_limit < self.needed + self.reserved_cards):
+            # BEFORE the "already running" branch, and a different remedy. That
+            # one says "stop the one you are not using", which is right when a
+            # running box holds the ceiling and useless here: a reservation
+            # holds its card whether its box is running or stopped. Reached only
+            # when the reserved cards ALONE leave no room — when stopping a
+            # plain running box would be enough, the branch below says so.
+            count = len(self.reserved)
+            return LifecycleError(
+                f"GPUS_ALL_REGIONS is {self.global_limit} on this project, and "
+                f"{self.reserved_cards} of it is held by {count} "
+                f"reservation{'' if count == 1 else 's'}: {self._reserved_names}. "
+                f"A reservation holds its card whether its box is running or "
+                f"stopped, so stopping a box frees nothing, and {self.needed} more "
+                f"is needed. Nothing was created.",
+                fix=_how_to_release(self.reserved, self.boxed, self.project),
+                kind=NO_QUOTA,
+            )
         if (self.running and self.global_limit is not None
                 and self.global_limit != UNLIMITED
                 and self.global_limit < self.needed + self.held):
@@ -1227,9 +1390,24 @@ class QuotaCheck:
                 )
             return LifecycleError(
                 f"GPUS_ALL_REGIONS is {self.global_limit} and {len(self.running)} GPU "
-                f"boxes are already running on it, holding {self.held} of it between "
+                f"boxes are already running on it, holding "
+                f"{self.held - self.reserved_cards} of it between "
                 f"them: {', '.join(self.running_names)}. Nothing was created.",
                 fix=f"{first} — stop the ones you are not using, then run this again",
+                kind=NO_QUOTA,
+            )
+        if self.unread:
+            # After everything that was READ, by the rule at the top of this
+            # function: a running box holding the ceiling is a fact, and it
+            # refuses whether or not the reservations could be listed. What is
+            # left is a create about to reserve against a number nobody has.
+            listing = "gcloud compute reservations list"
+            return LifecycleError(
+                "could not read this project's reservations, so how many it "
+                "already holds is not known. Nothing was reserved and nothing was "
+                "created.",
+                fix=(f"{listing} --project={self.project}" if self.project
+                     else listing),
                 kind=NO_QUOTA,
             )
         # Last, and read the docstring before moving it: everything above is a
@@ -1268,6 +1446,85 @@ def _stop_the_box(name: str, zone: str) -> str:
         return (f"gcloud compute instances list   # find {name}'s zone, then "
                 f"gcloud compute instances stop {name} --zone=<zone>")
     return f"gcloud compute instances stop {name} --zone={zone}"
+
+
+def _zone_name(instance: dict) -> str:
+    """`.../zones/us-central1-a` -> `us-central1-a`, off an instance record."""
+    return str(instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _cards(count: int) -> str:
+    """`1 card`, `8 cards`."""
+    return "1 card" if count == 1 else f"{count} cards"
+
+
+def _release_command(name: str, zone: str, project: str) -> str:
+    """Google's own command to release one reservation, complete or not at all.
+
+    `reservation.delete_command` is the one place the command is written. With
+    no project in hand the flag is dropped rather than printed empty — gcloud
+    then uses the project it is pointed at, which is the one this tool follows.
+    """
+    command = rsv.delete_command(name, zone, project)
+    return command if project else command.removesuffix(" --project=")
+
+
+def _how_to_release(holders, boxed, project: str) -> str:
+    """The fix for "a reservation holds the card": how to let go of one.
+
+    Two different commands, and which one applies is a fact about the project,
+    not a choice of wording. A reservation this tool made, with its box on it,
+    goes when the box is deleted — `comfy-qat down` then `comfy-qat delete`,
+    because `delete` refuses a box that is running. Anything else has no box
+    this tool can name: somebody else's reservation, or one of ours left with
+    nothing on it by a create that stopped half-way. `comfy-qat delete <box>`
+    about either is a command that cannot run, so those get Google's own.
+    """
+    def ours(name: str, zone: str, box: str) -> bool:
+        return bool(box) and (name, zone) in set(boxed)
+
+    if len(holders) == 1:
+        name, zone, _held, box = holders[0]
+        if ours(name, zone, box):
+            return output.fix("stop it, then delete it to release the card:",
+                              f"comfy-qat down {box}",
+                              f"comfy-qat delete {box}")
+        why = ("nothing is on it" if box else
+               "it was not made by this tool, so check whose it is first")
+        return output.fix(f"release it — {why}:", _release_command(name, zone, project))
+    lines = ["release one of them. A box this tool made is stopped and then "
+             "deleted, and its reservation goes with it; a reservation with no "
+             "such box is released directly:"]
+    for name, zone, _held, box in holders:
+        if ours(name, zone, box):
+            lines += [f"comfy-qat down {box}", f"comfy-qat delete {box}"]
+        else:
+            lines.append(_release_command(name, zone, project))
+    return output.fix(*lines)
+
+
+def _boxed(holders, instances: list[dict]) -> tuple[tuple[str, str], ...]:
+    """Which of these reservations have the box they were made for on them."""
+    on = {(rsv.bound_to(instance), _zone_name(instance), instance.get("name"))
+          for instance in instances or []}
+    return tuple((name, zone) for name, zone, _held, box in holders
+                 if box and (name, zone, box) in on)
+
+
+def _reusable(card: Card, leftover) -> "rsv.Reservation | None":
+    """The leftover, if a box of this card can be put on it. None otherwise.
+
+    One question asked in three places — the limit, the zone order and the
+    build — so that a reservation is "this create's own" by the same test
+    wherever it matters. A leftover that fails it is somebody's reservation
+    that happens to carry this name, and it is counted, refused and left alone
+    like any other.
+    """
+    if leftover is None:
+        return None
+    fits = rsv.fits(leftover, machine_type=card.machine_type,
+                    accelerator=_reservation_accelerator(card))
+    return leftover if fits else None
 
 
 def _gpu_boxes_running(instances: list[dict]) -> list[tuple[str, str]]:
@@ -1362,21 +1619,59 @@ def card_grant(card: Card, quotas: list[dict]) -> tuple[int | None, list[str]]:
 def check_quota(card: Card, quotas: list[dict], instances: list[dict],
                 asked_region: str = "", *,
                 preferences: list[dict] | None = None,
-                askable: "list[str] | None" = None) -> QuotaCheck:
+                askable: "list[str] | None" = None,
+                reservations: "list[rsv.Reservation] | None" = None,
+                reserve: bool = False,
+                leftover: "rsv.Reservation | None" = None,
+                project: str = "", box: str = "") -> QuotaCheck:
     """Read the allowance. Pure — the caller does the gcloud reads.
 
     `preferences` is OPTIONAL and `None` means "could not be read", which must
     not block a create: it only ever removes advice, never adds a refusal.
+
+    `reservations` is the project's live reservations, parsed, and `None` means
+    NOT READ — which is not `[]`, read and empty. Not read, the count below is
+    the running cards only: an under-count by exactly the reserved boxes that
+    are stopped. A plain create goes ahead on that (the caller says so, and
+    Google still refuses what does not fit); a create that is itself about to
+    reserve does not, and `problem()` refuses it.
+
+    `leftover` is a reservation an earlier run of this same create left behind.
+    When this create is reserving and can use it, it is not counted: it is the
+    card this box is about to sit on. `project` and `box` only complete the
+    sentences — the command that releases a reservation, and the name in the
+    line about what reserving leaves.
     """
-    from .quota import global_allowance
+    from functools import reduce
+
+    from .quota import allowance, better_limit, global_allowance
 
     limit, regions = card_grant(card, quotas)
+
+    reuse = _reusable(card, leftover) if reserve else None
+    counted = reservations
+    if counted is not None and reuse is not None:
+        counted = [found for found in counted
+                   if (found.name, found.zone) != (reuse.name, reuse.zone)]
+    holders = rsv.holders(counted or [])
+
+    regional = []
+    for region in regions:
+        granted = [value for value in
+                   (allowance(name, quotas, region=region) for name in card.quota_names)
+                   if value is not None]
+        if granted:
+            regional.append((region, reduce(better_limit, granted)))
+
     return QuotaCheck(
         card=card.name,
         card_limit=limit,
         global_limit=global_allowance(quotas),
         needed=card.count,
-        running=tuple(_gpu_boxes_running(instances)),
+        # The boxes whose cards are NOT already counted through a reservation.
+        # Every non-TERMINATED GPU box when there are no reservations, or none
+        # were read — which is what this always was.
+        running=tuple(_gpu_boxes_running(rsv._outside(instances, counted))),
         regions=tuple(regions),
         key=card.key,
         # THE CARD'S OWN NAME. This was `quota_names[-1]` — the ALIAS — because
@@ -1388,7 +1683,19 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
         elsewhere=tuple(askable if askable is not None
                         else _ask_elsewhere(card, quotas, preferences)),
         asked_region=asked_region or "",
-        held=_cards_running(instances),
+        # CARDS, and all of them: reserved, running or not, plus the running
+        # cards outside any reservation. One function, the same one `switch` and
+        # `move` count with.
+        held=rsv.cards_held(instances, counted),
+        reserved=holders,
+        reserved_cards=sum(cards for _name, _zone, cards, _box in holders),
+        boxed=_boxed(holders, instances),
+        reserving=reserve,
+        unread=reserve and reservations is None,
+        reusing=(reuse.name, reuse.zone) if reuse is not None else None,
+        project=project or "",
+        box=box or "",
+        regional=tuple(regional),
     )
 
 
@@ -1522,6 +1829,8 @@ def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None
         # `--maintenance-policy=TERMINATE` is for a machine that cannot
         # live-migrate, which is a machine with a GPU.
         extra["terminate_on_maintenance"] = False
+    if blueprint.reservation:
+        extra["reservation"] = blueprint.reservation
     gc.create_instance_from_image(
         blueprint.name, zone, project,
         machine_type=blueprint.machine_type,
@@ -1548,9 +1857,228 @@ def _thing(card: Card) -> str:
     return "the card" if card.is_gpu else "the machine"
 
 
+def _instance_in_flight(blueprint: Blueprint, zone: str, project: str):
+    """The registration around the one call that can bring a billing box into being.
+
+    The wording is the OSError branch's in `create_cmd`, which has said the
+    right thing about this exact state since before anything could reach it:
+    the box is not in the host list, so `comfy-qat down` cannot reach it and
+    the raw gcloud stop is the only thing that works.
+    """
+    return inflight.may_leave(
+        f"the instance {blueprint.name} in {zone}",
+        undo=[
+            "stop it now:",
+            f"gcloud compute instances stop {blueprint.name} "
+            f"--zone={zone} --project={project}",
+            "or check first, if you would rather look:",
+            f"gcloud compute instances list --project={project}",
+        ],
+        note="it is in no host list, so `comfy-qat down` cannot reach it "
+             "— `comfy-qat discover` adopts it if you want to keep it",
+    )
+
+
+def _refuse_the_leftover(blueprint: Blueprint, leftover, project: str) -> None:
+    """A reservation under this box's name that this box cannot be put on.
+
+    Not ours, the wrong shape, more than one machine, or already in use. It is
+    refused rather than worked around: making the box unreserved is not what
+    was asked for, a second reservation cannot share the name, and releasing
+    something this tool did not make is not this tool's to do.
+    """
+    raise LifecycleError(
+        f"a reservation called {leftover.name} is already on this project in "
+        f"{leftover.zone}, and {blueprint.name} cannot be put on it: it was not "
+        f"made by this tool for a box of this shape, or something is already "
+        f"using it. Nothing was created.",
+        fix=output.fix(
+            "call this box something else:",
+            f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key} "
+            f"--reserve --name <another-name>",
+            "or release that reservation, if it is yours to release:",
+            rsv.delete_command(leftover.name, leftover.zone, project),
+        ),
+        kind=CREATE_FAILED,
+    )
+
+
+def _reserve_and_create(gc: Gcloud, blueprint: Blueprint, zone: str, project: str,
+                        say, reuse) -> None:
+    """The reservation, then the box on it. One zone, and never a second.
+
+    THE ORDER IS THE POINT. The reservation is made first because it is what
+    holds the capacity: an instance made first could not be bound to a
+    reservation that does not exist yet, and one made unbound would be an
+    ordinary box sitting beside a reservation nothing is using.
+
+    And it is the half that costs. From the moment `create_reservation` returns
+    until the reservation is deleted, Google bills for it at the card's rate
+    with or without a machine on it — so every exit from this function accounts
+    for it out loud:
+
+      * the reservation is refused for lack of capacity -> raised as it came,
+        and the caller tries the next zone. Nothing was made.
+      * it is refused for any other reason -> `_reservation_unaccounted`.
+      * the box is refused -> `_box_unaccounted`, which finds out whether the
+        box exists before it releases anything.
+
+    The registration stays open across BOTH calls. Ctrl-C between them — the
+    reservation exists, the box does not — is the one moment nothing else in
+    this tool knows a reservation is there.
+
+    Raises `GcloudError` only for a stockout at the reservation. Everything
+    else is a `LifecycleError` that already says what is left.
+    """
+    name = blueprint.reservation
+    with inflight.may_leave(
+        f"the reservation {name} in {zone}",
+        undo=["release it:", rsv.delete_command(name, zone, project)],
+        note="it bills until deleted, with or without a box",
+    ):
+        if reuse is not None:
+            say(f"  reusing reservation {name} in {zone} — left by an earlier run")
+        else:
+            say(f"  reserving {name} in {zone}")
+            try:
+                gc.create_reservation(
+                    name, zone, project,
+                    machine_type=blueprint.machine_type,
+                    accelerator=blueprint.reservation_accelerator,
+                    description=rsv.describe_for(blueprint.name),
+                )
+            except GcloudError as exc:
+                if is_capacity_failure(exc.raw):
+                    raise
+                _reservation_unaccounted(gc, blueprint, zone, project, exc)
+        say(f"  creating {blueprint.name} on it")
+        try:
+            with _instance_in_flight(blueprint, zone, project):
+                create_in(gc, blueprint, zone, project)
+        except GcloudError as exc:
+            _box_unaccounted(gc, blueprint, zone, project, exc, say)
+
+
+def _reservation_unaccounted(gc: Gcloud, blueprint: Blueprint, zone: str,
+                             project: str, exc: GcloudError) -> None:
+    """`reservations create` raised, and it was not a stockout. Is one there?
+
+    A create that raised is not a create that did nothing: a timeout or a
+    dropped connection loses the ANSWER, and the request may have landed. So
+    Google is asked, and only its flat "no such reservation" is taken to mean
+    nothing was made. Anything else — it is there, or Google would not say — is
+    reported as a reservation that is still billing, because that is the answer
+    that costs money to be wrong about.
+
+    Nothing is released here. A reservation this function did not see being
+    made is not one it can account for, and the rerun finds it and uses it.
+    """
+    name = blueprint.reservation
+    release = rsv.delete_command(name, zone, project)
+    try:
+        absent = gc.reservation_absent(name, zone, project)
+    except GcloudError:
+        absent = None
+    if absent is True:
+        raise LifecycleError(
+            f"Google refused to reserve {name} in {zone}: {exc}. Nothing was "
+            f"created and nothing is billing.",
+            fix=output.fix(exc.fix,
+                           f"gcloud compute reservations list --project={project}"
+                           f"   # to see for yourself that nothing was left"),
+            kind=CREATE_FAILED,
+        ) from exc
+    found = ("the reservation is on the project anyway" if absent is False else
+             "whether the reservation was made could not be checked")
+    raise LifecycleError(
+        f"Google refused to reserve {name} in {zone}: {exc} — but {found}, and a "
+        f"reservation is still billing whether or not it has a box. "
+        f"{blueprint.name} was not created.",
+        fix=output.fix(
+            "look:",
+            f"gcloud compute reservations list --project={project}",
+            "release it:",
+            release,
+            "or run the same create again — it finds a reservation an earlier "
+            "run left and puts the box on it",
+        ),
+        kind=CREATE_FAILED,
+    ) from exc
+
+
+def _box_unaccounted(gc: Gcloud, blueprint: Blueprint, zone: str, project: str,
+                     exc: GcloudError, say) -> None:
+    """The instance create raised, with its reservation already made.
+
+    Stockout or not, this never moves on to another zone: the capacity was
+    held HERE. What it does depends on one read, because the reservation must
+    not be taken from under a box that exists:
+
+      absent    Google says there is no such instance. The reservation is
+                released, and the refusal says nothing is left billing — or,
+                if the release fails, that it is still billing and how to
+                release it.
+      present   the answer was lost and the box is there. Returns, so the
+                caller records the box: it is running, reserved and billing,
+                and the worst outcome is for it to be in no host list.
+      unknown   Google would not say. Both are left as they are, and the
+                refusal names both and hands over both commands.
+    """
+    name = blueprint.reservation
+    box = blueprint.name
+    release = rsv.delete_command(name, zone, project)
+    try:
+        absent = gc.confirms_absent(box, zone, project)
+    except GcloudError:
+        absent = None
+
+    if absent is False:
+        say(f"  warning: Google's answer was lost ({exc}), but {box} is there in "
+            f"{zone} and on its reservation — carrying on")
+        return
+
+    if absent is None:
+        raise LifecycleError(
+            f"Google refused to create {box} in {zone}: {exc} — and whether the "
+            f"box was made could not be checked. Its reservation ({name}) is still "
+            f"billing, and {box} may exist and be billing too.",
+            fix=output.fix(
+                "look:",
+                f"gcloud compute instances list --project={project}",
+                "stop the box, if it is there:",
+                f"gcloud compute instances stop {box} --zone={zone} "
+                f"--project={project}",
+                "and release the reservation, if the box is not:",
+                release,
+            ),
+            kind=CREATE_FAILED,
+        ) from exc
+
+    try:
+        gc.delete_reservation(name, zone, project)
+    except GcloudError as unreleased:
+        raise LifecycleError(
+            f"Google refused to create {box} in {zone}: {exc}. The reservation "
+            f"made for it ({name}) could not be released ({unreleased}), so it is "
+            f"still billing with no box on it.",
+            fix=output.fix("release it:", release, exc.fix),
+            kind=CREATE_FAILED,
+        ) from exc
+    raise LifecycleError(
+        f"Google refused to create {box} in {zone}: {exc}. The reservation made "
+        f"for it ({name}) was released, so nothing is left billing.",
+        fix=output.fix(
+            exc.fix,
+            f"check the console for a half-made {box} before trying again: "
+            f"gcloud compute instances list --project={project}",
+        ),
+        kind=CREATE_FAILED,
+    ) from exc
+
+
 def build(
     gc: Gcloud, blueprint: Blueprint, ordering: Ordering, project: str, say,
-    *, attempts: int = MAX_ATTEMPTS,
+    *, attempts: int = MAX_ATTEMPTS, leftover: "rsv.Reservation | None" = None,
 ) -> str:
     """Try the zones in order until one has room. Returns the zone that worked.
 
@@ -1580,9 +2108,28 @@ def build(
     fast as it drains: an uncapped fall-through has no end and is a command that
     looks hung. Six attempts is `zones.MAX_ATTEMPTS`, which documented this cap
     long before anything enforced it.
+
+    A RESERVED box is two things made in order — the reservation, then the
+    instance bound to it — and `_reserve_and_create` is where that order and
+    every way of stopping half-way through it are handled. What this loop sees
+    of it is small: a zone with nothing to reserve falls through exactly as a
+    zone with no card free does, and anything else is already a refusal that
+    says what is left billing.
+
+    `leftover` is a reservation an earlier run of this create left behind. A
+    reserved build that is handed one goes to that reservation's zone and
+    nowhere else, whatever the ordering says: a reservation cannot move, and
+    trying the next zone would make a second one under the same name.
     """
     allowed = set(ordering.regions)
     queue = [zone.lower() for zone in ordering.zones]
+    fall_through = ordering.fall_through
+    reuse = leftover if blueprint.reserve else None
+    if reuse is not None:
+        if _reusable(blueprint.card, reuse) is None:
+            _refuse_the_leftover(blueprint, reuse, project)
+        queue = [reuse.zone.lower()]
+        fall_through = False
     tried: list[str] = []
     capped = False
     while queue:
@@ -1609,19 +2156,11 @@ def build(
             # `comfy-qat down` cannot reach it and the raw gcloud stop is the
             # only thing that works. Stopping the bill comes first and adoption
             # second, in that order, for the same reason it does there.
-            with inflight.may_leave(
-                f"the instance {blueprint.name} in {zone}",
-                undo=[
-                    "stop it now:",
-                    f"gcloud compute instances stop {blueprint.name} "
-                    f"--zone={zone} --project={project}",
-                    "or check first, if you would rather look:",
-                    f"gcloud compute instances list --project={project}",
-                ],
-                note="it is in no host list, so `comfy-qat down` cannot reach it "
-                     "— `comfy-qat discover` adopts it if you want to keep it",
-            ):
-                create_in(gc, blueprint, zone, project)
+            if blueprint.reserve:
+                _reserve_and_create(gc, blueprint, zone, project, say, reuse)
+            else:
+                with _instance_in_flight(blueprint, zone, project):
+                    create_in(gc, blueprint, zone, project)
         except GcloudError as exc:
             if not is_capacity_failure(exc.raw):
                 raise LifecycleError(
@@ -1641,8 +2180,20 @@ def build(
                     ),
                     kind=CREATE_FAILED,
                 ) from exc
-            say(f"  {zone} has no {_wanted(blueprint.card)} free right now")
-            if ordering.fall_through:
+            # Only a stockout at the RESERVATION reaches here from a reserved
+            # build, so nothing was reserved in this zone and nothing is left in
+            # it. A stockout at the instance never does: by then the capacity
+            # was held, and moving on would abandon a billing reservation.
+            #
+            # Two whole sentences rather than one with a word swapped in: each
+            # is quoted by its own troubleshooting entry, and a sentence cut in
+            # the middle by an interpolation has nothing left long enough to
+            # find it by.
+            if blueprint.reserve:
+                say(f"  {zone} has no {_wanted(blueprint.card)} to reserve right now")
+            else:
+                say(f"  {zone} has no {_wanted(blueprint.card)} free right now")
+            if fall_through:
                 for named in suggested_zones(exc.raw):
                     # `suggested_zones` lowers what it returns, so this is belt
                     # and braces rather than the repair it once was. Kept because
@@ -1769,6 +2320,7 @@ def host_entry(blueprint: Blueprint, zone: str, project: str):
         gpu=blueprint.card.name if blueprint.card.is_gpu else "",
         gce_instance=blueprint.name, gce_zone=zone, gce_project=project,
         running=True,
+        reservation=blueprint.reservation or "",
     )
 
 
@@ -1806,6 +2358,13 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
             f"script, which reboots it once or twice. `comfy-qat go` waits that "
             f"out.")
     lines.append(f"  comfy-qat go {blueprint.name}     # install ComfyUI and serve it")
+    if blueprint.reserve:
+        # NOT `comfy-qat down ... # stop paying`. For a reserved box that line
+        # is false: `down` stops the machine and the reservation goes on billing
+        # for it. So the bill is stated, and the one command that ends it.
+        lines.append(rsv.bill(blueprint.name))
+        lines.append(rsv.stop_line(blueprint.name))
+        return lines
     lines.append(f"  comfy-qat down {blueprint.name}   # stop the machine, stop paying")
     return lines
 
@@ -1855,6 +2414,9 @@ def order_zones(
     gc: Gcloud, project: str, blueprint: Blueprint, check: QuotaCheck, *,
     zone: str | None = None, region: str | None = None, config=None, probe=None,
     fleet: list[str] | None = None,
+    leftover: "rsv.Reservation | None" = None,
+    instances: list[dict] | None = None,
+    reservations: "list[rsv.Reservation] | None" = None,
 ) -> Ordering:
     """The zones to try, honouring an override. Read-only; nothing is created.
 
@@ -1876,7 +2438,20 @@ def order_zones(
     the regions the grant covers, because all three are applied before it is
     consulted. What it does is stop a laptop's round trip being the only thing
     that speaks for where a box should go.
+
+    `leftover` is a reservation an earlier run of this create left behind, and
+    it settles the question outright: the box goes where its reservation is.
+    Asking for somewhere else is refused rather than quietly overridden.
+
+    `instances` and `reservations` are what the per-card REGIONAL allowance is
+    counted against. A grant of one T4 in each of two regions is one in each,
+    so a region whose T4 is already held — by a reservation, running or not, or
+    by a running box — is left out before anything is ranked, and said so.
+    Handed neither, nothing is left out: not counted is "not asked", and the
+    answer to that is today's ordering, not an invented shortage.
     """
+    from dataclasses import replace
+
     from .zones import choose, zones_offering, zones_with_machine_type
 
     # Google's zone and region names are lowercase, and so is everything read back
@@ -1890,6 +2465,11 @@ def order_zones(
         return _order_without_a_card(gc, project, blueprint, check, zone=zone,
                                      region=region, config=config, probe=probe,
                                      fleet=fleet)
+
+    if blueprint.reserve and leftover is not None:
+        return _where_the_leftover_is(blueprint, leftover, project,
+                                      zone=zone, region=region)
+    full = _full_regions(blueprint.card, check, instances, reservations)
 
     if zone:
         # The same gate `--region` gets — and it says so truthfully only now.
@@ -1955,6 +2535,9 @@ def order_zones(
                      f"request --gpu {blueprint.card.key}"),
                 kind=NO_QUOTA,
             )
+        if region_of(zone) in full:
+            _refuse_full(blueprint, check, full, [region_of(zone)], project,
+                         instances, reservations)
         offered = zones_with_machine_type(
             gc.machine_types(project, [zone], blueprint.machine_type),
             blueprint.machine_type,
@@ -2022,11 +2605,144 @@ def order_zones(
                 kind=NO_QUOTA,
             )
 
-    return choose(
+    # The per-card regional half of the limit. Regions with no room go before
+    # anything is ranked: ranking one and then having Google refuse the create
+    # there is a minute, a confirmation and a quota error for something that
+    # was already known.
+    taken = [name for name in regions if name in full]
+    regions = [name for name in regions if name not in full]
+    if taken and not regions:
+        _refuse_full(blueprint, check, full, taken, project, instances, reservations)
+
+    ordering = choose(
         gc, project,
         accelerator=blueprint.card.accelerator,
         machine_type=blueprint.machine_type,
         regions=regions, config=config, probe=probe, fleet=fleet,
+    )
+    if not taken:
+        return ordering
+    # Said, because a region missing from a numbered list is otherwise
+    # indistinguishable from one that was never in the running.
+    skipped = tuple(
+        f"{name} is left out: its {blueprint.card.name} allowance is already held "
+        f"({_held_words(full[name])})" for name in taken)
+    return replace(ordering, notes=(*ordering.notes, *skipped))
+
+
+def _full_regions(card: Card, check: QuotaCheck, instances: list[dict] | None,
+                  reservations) -> dict[str, tuple[int, int, tuple[str, ...]]]:
+    """Regions where this card's own allowance has no room for one more box.
+
+    `{region: (limit, held, who)}`. Empty when the caller handed over nothing
+    to count against — see `order_zones`.
+
+    Only a region where something is actually HELD is called full. A grant
+    smaller than one box needs, with nothing on it, is a grant that is too
+    small — `QuotaCheck.problem` says that, in its own words, and "full, held
+    by nobody" would be a worse sentence about the same fact.
+    """
+    from .quota import meets
+
+    if instances is None:
+        return {}
+    full = {}
+    for region, limit in check.regional:
+        held = rsv.held_in(region, card.accelerator, instances, reservations)
+        # `meets`, not `<`: an unlimited grant is -1, and -1 is not a small
+        # number. It has room for anything.
+        if held and not meets(limit, held + card.count):
+            full[region] = (limit, held, _who_holds(region, card.accelerator,
+                                                    instances, reservations))
+    return full
+
+
+def _who_holds(region: str, accelerator: str, instances: list[dict],
+               reservations) -> tuple[str, ...]:
+    """The names holding one card's allowance in one region.
+
+    Asked of `reservation.held_in` one holder at a time, so "holds this card
+    here" is decided by the same function that produced the count — a
+    reservation whose card is built into its machine type included.
+    """
+    names = [found.name for found in reservations or []
+             if rsv.held_in(region, accelerator, [], [found])]
+    names += [instance.get("name") or "an unnamed box"
+              for instance in rsv._outside(instances, reservations)
+              if rsv.held_in(region, accelerator, [instance], None)]
+    return tuple(names)
+
+
+def _held_words(entry: tuple[int, int, tuple[str, ...]]) -> str:
+    """`1 of 1, held by comfy-linux-rsv`."""
+    limit, held, who = entry
+    return f"{held} of {limit}, held by {', '.join(who) or 'something unnamed'}"
+
+
+def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str],
+                 project: str, instances, reservations) -> None:
+    """Every region this could go in has its allowance for the card held.
+
+    Names the regions and who holds each, because "no quota" about a project
+    that plainly has quota is the sentence that sends somebody to file a
+    request with Google for something they already hold. The fix is whichever
+    of two things is true: somewhere else has room, or something has to be let
+    go of — and the commands for letting go are the ceiling refusal's own.
+    """
+    card = blueprint.card
+    detail = "; ".join(f"{name} ({_held_words(full[name])})" for name in asked)
+    reserve = " --reserve" if blueprint.reserve else ""
+    lines: list[str] = []
+    roomy = [name for name in check.regions if name not in full]
+    if roomy:
+        lines += ["somewhere with room:",
+                  f"comfy-qat create --os {blueprint.image.key} --gpu {card.key}"
+                  f"{reserve} --region {roomy[0]}"]
+    mine = [found for found in reservations or []
+            if any(rsv.held_in(name, card.accelerator, [], [found]) for name in asked)]
+    holders = rsv.holders(mine)
+    if holders:
+        lines.append(_how_to_release(holders, _boxed(holders, instances), project))
+    for instance in rsv._outside(instances, reservations):
+        if any(rsv.held_in(name, card.accelerator, [instance], None) for name in asked):
+            lines.append(f"{_stop_the_box(instance.get('name') or '', _zone_name(instance))}"
+                         f"   # a running box holding one")
+    raise LifecycleError(
+        f"this project's {card.name} allowance is already held in "
+        f"{'every region it could go' if len(asked) > 1 else 'the region asked for'}: "
+        f"{detail}. Nothing was created.",
+        fix=output.fix(*lines) if lines else None,
+        kind=NO_QUOTA,
+    )
+
+
+def _where_the_leftover_is(blueprint: Blueprint, leftover, project: str, *,
+                           zone: str | None, region: str | None) -> Ordering:
+    """The one zone a resumed create may use: where its reservation already is."""
+    if _reusable(blueprint.card, leftover) is None:
+        _refuse_the_leftover(blueprint, leftover, project)
+    at = leftover.zone
+    asked = zone if zone and zone != at else (
+        region if region and region != region_of(at) else "")
+    if asked:
+        raise LifecycleError(
+            f"{leftover.name} is already on this project in {at} — left by an "
+            f"earlier run of this create — and this asks for {asked}. A "
+            f"reservation cannot be moved. Nothing was created.",
+            fix=output.fix(
+                "carry on where it is:",
+                f"comfy-qat create --os {blueprint.image.key} --gpu "
+                f"{blueprint.card.key} --reserve --name {blueprint.name} --zone {at}",
+                "or release it and start again:",
+                rsv.delete_command(leftover.name, at, project),
+            ),
+            kind=CREATE_FAILED,
+        )
+    return Ordering(
+        zones=(at,), regions=(region_of(at),),
+        notes=(f"reusing reservation {leftover.name} in {at} — left by an earlier "
+               f"run, so this zone or nothing",),
+        fall_through=False,
     )
 
 

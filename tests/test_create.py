@@ -1056,3 +1056,430 @@ def test_the_cap_offers_the_flag_that_widens_the_search_as_well_as_the_one_that_
     assert "stopped after 2 zones" in str(raised.value)
     assert "--region" in raised.value.fix
     assert "--zone" in raised.value.fix
+
+
+# --- the reservation limit: cards a reservation holds, running or not ----------
+#
+# A reservation holds its card from the moment it is made until it is deleted,
+# whether or not its box is running — so the ceiling arithmetic that counted
+# "cards on boxes that are not TERMINATED" undercounts by exactly the reserved
+# boxes that are stopped. On a project whose ceiling is 1 that is the difference
+# between refusing for free and creating something Google then refuses.
+#
+# The reservation records are FIXTURES shaped on the SDK schema, not read live.
+
+from comfy_qa import reservation as rsv  # noqa: E402
+
+T4_CARD = "nvidia-tesla-t4"
+
+
+def held_for(box, zone="us-central1-a", *, machine="n1-standard-8", card=T4_CARD,
+             count=1, ours=True, in_use=None, name=None):
+    """One `reservations list` row, parsed the way the tool parses it."""
+    properties = {"machineType": machine}
+    if card:
+        properties["guestAccelerators"] = [{"acceleratorType": card,
+                                            "acceleratorCount": count}]
+    specific = {"count": "1", "instanceProperties": properties}
+    if in_use is not None:
+        specific["inUseCount"] = str(in_use)
+    (found,) = rsv.parse_all([{
+        "name": name or f"{box}-rsv",
+        "zone": f"https://www.googleapis.com/compute/v1/projects/p/zones/{zone}",
+        "status": "READY",
+        "specificReservationRequired": True,
+        "description": f"comfy-qat: held for {box}" if ours else "held by hand",
+        "specificReservation": specific,
+    }])
+    return found
+
+
+def bound(name, reservation_name, *, running=True, zone="us-central1-a"):
+    """A box that may only consume one reservation, as `instances list` shows it."""
+    return dict(instance(name, running=running, zone=zone),
+                reservationAffinity={"consumeReservationType": "SPECIFIC_RESERVATION",
+                                     "key": "compute.googleapis.com/reservation-name",
+                                     "values": [reservation_name]})
+
+
+def gate(ceiling_value, instances=(), reservations=(), card="t4", **kwargs):
+    quotas = [T4_QUOTA, L4_REGION_QUOTA]
+    if ceiling_value is not None:
+        quotas = quotas + [ceiling(ceiling_value)]
+    return check_quota(CARDS[card], quotas, list(instances),
+                       reservations=None if reservations is None else list(reservations),
+                       project=PROJECT, **kwargs)
+
+
+def test_a_reservation_holding_the_whole_ceiling_refuses_in_the_words_the_design_fixes():
+    """The sentence, and the two commands, typed out. One reservation, made by
+    this tool, with its box running on it."""
+    check = gate(1, [bound("comfy-linux", "comfy-linux-rsv")],
+                 [held_for("comfy-linux", in_use=1)])
+    problem = check.problem()
+
+    assert problem is not None and problem.kind == NO_QUOTA
+    assert str(problem) == (
+        "GPUS_ALL_REGIONS is 1 on this project, and 1 of it is held by 1 "
+        "reservation: comfy-linux-rsv (us-central1-a). A reservation holds its "
+        "card whether its box is running or stopped, so stopping a box frees "
+        "nothing, and 1 more is needed. Nothing was created."
+    )
+    assert problem.fix.splitlines()[0] == "stop it, then delete it to release the card:"
+    assert [line.strip() for line in problem.fix.splitlines()[1:]] == [
+        "comfy-qat down comfy-linux",
+        "comfy-qat delete comfy-linux",
+    ]
+
+
+def test_a_reserved_box_that_is_stopped_still_refuses_the_next_one():
+    """THE CASE THE OLD ARITHMETIC MISSED. The box is TERMINATED, which counts
+    for nothing as a running box — and its reservation still holds the card."""
+    stopped = [bound("comfy-linux", "comfy-linux-rsv", running=False)]
+    held = [held_for("comfy-linux", in_use=0)]
+
+    assert gate(1, stopped, []).problem() is None, (
+        "the fixture: without the reservation this is a project with a free ceiling")
+    problem = gate(1, stopped, held).problem()
+    assert problem is not None
+    assert "held by 1 reservation: comfy-linux-rsv (us-central1-a)" in str(problem)
+    assert "comfy-qat delete comfy-linux" in problem.fix
+
+
+def test_a_reserved_box_that_is_running_holds_its_card_once_not_twice():
+    """Ceiling 2, one reserved box running. One card is held, so there is room
+    for one more — counting the box AND its reservation would refuse it."""
+    check = gate(2, [bound("comfy-linux", "comfy-linux-rsv")],
+                 [held_for("comfy-linux", in_use=1)])
+
+    assert check.held == 1
+    assert check.problem() is None
+
+
+def test_a_reservation_nobody_made_with_this_tool_is_released_with_googles_command():
+    """There is no box to `comfy-qat delete`, and a name read out of somebody
+    else's description is not a command."""
+    theirs = held_for("x", ours=False, name="training-hold", zone="us-east1-b")
+    problem = gate(1, [], [theirs]).problem()
+
+    assert "held by 1 reservation: training-hold (us-east1-b)" in str(problem)
+    assert "comfy-qat" not in problem.fix
+    assert (f"gcloud compute reservations delete training-hold --zone=us-east1-b "
+            f"--project={PROJECT}") in problem.fix
+
+
+def test_our_own_reservation_with_no_box_on_it_is_not_given_a_command_for_a_box():
+    """`comfy-qat delete comfy-linux` cannot work: there is no comfy-linux. A
+    reservation left by a create that stopped half-way is released directly."""
+    orphan = held_for("comfy-linux")
+    problem = gate(1, [], [orphan]).problem()
+
+    assert "comfy-qat down" not in problem.fix and "comfy-qat delete" not in problem.fix
+    assert (f"gcloud compute reservations delete comfy-linux-rsv --zone=us-central1-a "
+            f"--project={PROJECT}") in problem.fix
+
+
+def test_two_reservations_are_counted_in_cards_and_both_named():
+    held = [held_for("a", in_use=1), held_for("b", zone="asia-east1-a")]
+    problem = gate(2, [bound("a", "a-rsv")], held).problem()
+
+    assert "GPUS_ALL_REGIONS is 2 on this project, and 2 of it is held by 2 " \
+           "reservations: a-rsv (us-central1-a), b-rsv (asia-east1-a)." in str(problem)
+    # One of each kind of remedy, so the fixture reaches both: `a` has a box,
+    # `b` does not.
+    assert "comfy-qat down a" in problem.fix and "comfy-qat delete a" in problem.fix
+    assert "gcloud compute reservations delete b-rsv --zone=asia-east1-a" in problem.fix
+
+
+def test_an_h100_reservation_holds_eight_of_the_ceiling():
+    """Cards, not reservations. One reservation, eight cards."""
+    big = held_for("trainer", machine="a3-highgpu-8g", card="nvidia-h100-80gb", count=8)
+    problem = gate(8, [], [big]).problem()
+
+    assert "GPUS_ALL_REGIONS is 8 on this project, and 8 of it is held by 1 " \
+           "reservation: trainer-rsv (us-central1-a)." in str(problem)
+    assert gate(9, [], [big]).problem() is None, "and nine has room for one T4"
+
+
+def test_a_ceiling_with_room_beside_a_reservation_does_not_refuse_and_says_who_holds_what():
+    check = gate(2, [bound("comfy-linux", "comfy-linux-rsv")],
+                 [held_for("comfy-linux", in_use=1)])
+
+    assert check.problem() is None
+    assert ("reserved, and held whether its box runs or not: 1 card of it — "
+            "comfy-linux-rsv (us-central1-a)") in check.lines()
+    assert not [line for line in check.lines() if line.startswith("already running")], (
+        "the reserved box is not ALSO listed as a running one")
+
+
+@pytest.mark.parametrize("ceiling_value", [-1, None], ids=["unlimited", "not-reported"])
+def test_a_ceiling_that_does_not_gate_does_not_gate_with_reservations_either(ceiling_value):
+    """The sentinel and the absence, both: neither is a small number."""
+    held = [held_for("a", in_use=1), held_for("b"), held_for("c")]
+    assert gate(ceiling_value, [bound("a", "a-rsv")], held).problem() is None
+    assert gate(ceiling_value, [bound("a", "a-rsv")], held, reserve=True,
+                box="new").problem() is None
+
+
+def test_one_reserved_and_one_plain_running_box_names_the_one_stopping_would_free():
+    """Mixed, so each branch is reached by something that is really its own.
+    Ceiling 2: the reservation holds one and cannot be freed by stopping; the
+    plain running box holds the other and can. The remedy is to stop THAT one."""
+    instances = [bound("held", "held-rsv", running=False), instance("plain")]
+    check = gate(2, instances, [held_for("held", in_use=0)])
+    problem = check.problem()
+
+    assert check.held == 2
+    assert check.running == (("plain", "us-central1-a"),)
+    assert "plain is already running on it" in str(problem)
+    assert "gcloud compute instances stop plain --zone=us-central1-a" in problem.fix
+    assert "held" not in problem.fix
+
+
+def test_when_the_reservations_alone_fill_the_ceiling_stopping_a_box_is_not_offered():
+    """The same two boxes on a ceiling of 1: the reservation is the whole of it,
+    and "stop the one you are not using" would free nothing."""
+    instances = [bound("held", "held-rsv", running=False), instance("plain")]
+    problem = gate(1, instances, [held_for("held", in_use=0)]).problem()
+
+    assert "held by 1 reservation: held-rsv" in str(problem)
+    assert "instances stop" not in problem.fix
+
+
+def test_reserving_says_what_it_takes_and_what_that_leaves():
+    check = gate(1, [], [], reserve=True, box="comfy-linux")
+    assert check.problem() is None
+    assert ("reserving takes 1 of the 1 — none left. While comfy-linux exists no "
+            "other GPU box can start, including a stopped one you already have."
+            ) in check.lines()
+
+
+def test_reserving_with_room_to_spare_says_how_much_is_left():
+    lines = gate(4, [], [], reserve=True, box="comfy-linux").lines()
+    assert "reserving takes 1 of the 4 — 3 left for other GPU boxes while " \
+           "comfy-linux exists." in lines
+
+
+def test_not_reserving_says_nothing_about_reserving():
+    """The unreserved path prints what it always printed: the two allowance
+    lines and nothing else, whether the reservations were read and empty or
+    not read at all."""
+    plain = check_quota(CARDS["t4"], [T4_QUOTA, CEILING], [])
+    assert gate_lines(reservations=[]) == plain.lines()
+    assert gate_lines(reservations=None) == plain.lines()
+    assert len(plain.lines()) == 2
+
+
+def gate_lines(**kwargs):
+    return check_quota(CARDS["t4"], [T4_QUOTA, CEILING], [], **kwargs).lines()
+
+
+def test_reserving_when_the_reservations_could_not_be_read_is_refused():
+    """NOT READ IS NOT ZERO. A refusal is free; a reservation made past the
+    limit bills until somebody notices. `None` is "not read"."""
+    problem = gate(1, [], None, reserve=True, box="comfy-linux").problem()
+
+    assert problem is not None and problem.kind == NO_QUOTA
+    assert "could not read this project's reservations" in str(problem)
+    assert "Nothing was reserved and nothing was created." in str(problem)
+    assert f"gcloud compute reservations list --project={PROJECT}" in problem.fix
+
+
+def test_reserving_when_the_reservations_were_read_and_empty_is_not_refused():
+    """The pair: `[]` is "read, and there are none"."""
+    assert gate(1, [], [], reserve=True, box="comfy-linux").problem() is None
+
+
+def test_not_reserving_when_the_reservations_could_not_be_read_carries_on():
+    """An optional read is not an optional behaviour — and for a plain create
+    this one only ever adds a refusal, so failing to make it must not add one."""
+    assert gate(1, [], None).problem() is None
+
+
+def test_a_running_box_still_refuses_when_the_reservations_could_not_be_read():
+    """What WAS read still gates. A read that failed removes knowledge; it does
+    not grant permission."""
+    problem = gate(1, [instance("plain")], None, reserve=True).problem()
+    assert "plain is already running on it" in str(problem)
+
+
+def test_a_leftover_being_resumed_is_not_counted_against_the_box_it_was_made_for():
+    """Rerunning a create that stopped half-way finds its own reservation on
+    the project. Counted, it would refuse the box it exists for."""
+    leftover = held_for("comfy-linux")
+
+    counted = gate(1, [], [leftover], reserve=True, box="comfy-linux")
+    assert counted.problem() is not None, "the fixture: it fills the ceiling"
+
+    resumed = gate(1, [], [leftover], reserve=True, box="comfy-linux", leftover=leftover)
+    assert resumed.problem() is None
+    assert resumed.held == 0
+    assert ("reusing reservation comfy-linux-rsv in us-central1-a — left by an "
+            "earlier run, and already holding its card") in resumed.lines()
+    assert not [line for line in resumed.lines() if line.startswith("reserving takes")], (
+        "it takes nothing new")
+
+
+def test_a_leftover_of_the_wrong_shape_is_still_counted():
+    """Only a reservation this create can actually use is its own. An L4
+    reservation under the same name holds a card this box will not get."""
+    wrong = held_for("comfy-linux", machine="g2-standard-8", card="nvidia-l4")
+    assert gate(1, [], [wrong], reserve=True, box="comfy-linux",
+                leftover=wrong).problem() is not None
+
+
+def test_a_leftover_is_not_set_aside_for_a_box_that_is_not_being_reserved():
+    leftover = held_for("comfy-linux")
+    assert gate(1, [], [leftover], leftover=leftover).problem() is not None
+
+
+def test_the_refusal_without_a_project_still_hands_over_a_command_that_parses():
+    """`project` is optional, and a command ending `--project=` is not one."""
+    theirs = held_for("x", ours=False, name="training-hold")
+    check = check_quota(CARDS["t4"], [T4_QUOTA, ceiling(1)], [], reservations=[theirs])
+
+    fix = check.problem().fix
+    assert "gcloud compute reservations delete training-hold --zone=us-central1-a" in fix
+    assert "--project" not in fix
+
+
+# --- where a reserved box may go --------------------------------------------------
+
+T4_BLUEPRINT = Blueprint(name="comfy-linux", image=IMAGES["linux"], card=CARDS["t4"],
+                         reserve=True)
+
+
+def test_a_leftover_pins_the_create_to_the_zone_it_is_in():
+    leftover = held_for("comfy-linux", zone="asia-east1-b")
+    check = gate(1, [], [leftover], reserve=True, leftover=leftover)
+    ordering = order_zones(Cloud(), PROJECT, T4_BLUEPRINT, check, leftover=leftover)
+
+    assert ordering.zones == ("asia-east1-b",)
+    assert ordering.fall_through is False
+    assert ordering.notes == (
+        "reusing reservation comfy-linux-rsv in asia-east1-b — left by an earlier "
+        "run, so this zone or nothing",)
+
+
+@pytest.mark.parametrize("asked", [dict(zone="us-central1-a"), dict(region="us-central1")],
+                         ids=["zone", "region"])
+def test_a_leftover_somewhere_else_than_was_asked_for_is_refused(asked):
+    """A reservation cannot move. Making a second one where the user pointed
+    would leave the first billing under the same name."""
+    leftover = held_for("comfy-linux", zone="asia-east1-b")
+    check = gate(1, [], [leftover], reserve=True, leftover=leftover)
+
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, T4_BLUEPRINT, check, leftover=leftover, **asked)
+
+    message = str(caught.value)
+    assert "comfy-linux-rsv is already on this project in asia-east1-b" in message
+    assert "Nothing was created." in message
+    fix = caught.value.fix
+    assert ("comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux "
+            "--zone asia-east1-b") in fix
+    assert (f"gcloud compute reservations delete comfy-linux-rsv --zone=asia-east1-b "
+            f"--project={PROJECT}") in fix
+
+
+def test_a_leftover_in_the_zone_that_was_asked_for_is_simply_used():
+    leftover = held_for("comfy-linux", zone="asia-east1-b")
+    check = gate(1, [], [leftover], reserve=True, leftover=leftover)
+    ordering = order_zones(Cloud(), PROJECT, T4_BLUEPRINT, check, leftover=leftover,
+                           zone="asia-east1-b")
+    assert ordering.zones == ("asia-east1-b",)
+
+
+def test_a_leftover_that_does_not_fit_is_refused_with_the_command_that_releases_it():
+    wrong = held_for("comfy-linux", ours=False)
+    check = gate(2, [], [wrong], reserve=True, leftover=wrong)
+
+    with pytest.raises(LifecycleError) as caught:
+        order_zones(Cloud(), PROJECT, T4_BLUEPRINT, check, leftover=wrong)
+
+    assert "a reservation called comfy-linux-rsv is already on this project" in str(caught.value)
+    assert (f"gcloud compute reservations delete comfy-linux-rsv --zone=us-central1-a "
+            f"--project={PROJECT}") in caught.value.fix
+    assert "--name" in caught.value.fix, "or call the new box something else"
+
+
+# --- the per-card regional allowance, minus what already holds it ------------------
+#
+# T4_QUOTA grants 1 T4 in asia-east1 and 1 in us-central1.
+
+
+class T4Cloud(Cloud):
+    def accelerator_types(self, project, name):
+        return [{"name": name, "zone": zone}
+                for zone in ("asia-east1-a", "asia-east1-b", "us-central1-a", "us-central1-b")]
+
+
+def ordered(instances, reservations, **kwargs):
+    check = gate(4, instances, reservations)
+    return order_zones(T4Cloud(), PROJECT, T4_BLUEPRINT, check, probe=lambda region: 10.0,
+                       instances=instances, reservations=reservations, **kwargs)
+
+
+def test_a_region_whose_allowance_is_held_by_a_reservation_is_left_out(tmp_path):
+    held = [held_for("other", zone="us-central1-b")]
+    ordering = ordered([], held, config=tmp_path / "hosts.toml")
+
+    assert ordering.zones == ("asia-east1-a", "asia-east1-b")
+    assert any("us-central1" in note and "other-rsv" in note for note in ordering.notes), (
+        ordering.notes)
+
+
+def test_a_region_whose_allowance_is_held_by_a_running_box_is_left_out(tmp_path):
+    running = [dict(instance("plain", zone="asia-east1-a"),
+                    guestAccelerators=[{"acceleratorType": f".../{T4_CARD}",
+                                        "acceleratorCount": 1}])]
+    ordering = ordered(running, [], config=tmp_path / "hosts.toml")
+
+    assert ordering.zones == ("us-central1-a", "us-central1-b")
+    assert any("asia-east1" in note and "plain" in note for note in ordering.notes)
+
+
+def test_a_box_holding_a_different_card_does_not_use_up_this_cards_region(tmp_path):
+    """`instance()` attaches an L4. One L4 in us-central1 is none of the T4s."""
+    ordering = ordered([instance("an-l4", zone="us-central1-a")], [],
+                       config=tmp_path / "hosts.toml")
+    assert set(ordering.zones) == {"asia-east1-a", "asia-east1-b",
+                                   "us-central1-a", "us-central1-b"}
+
+
+def test_every_region_full_is_refused_naming_the_regions_and_who_holds_them(tmp_path):
+    held = [held_for("one", zone="us-central1-b"), held_for("two", zone="asia-east1-a")]
+    instances = [bound("one", "one-rsv", zone="us-central1-b")]
+
+    with pytest.raises(LifecycleError) as caught:
+        ordered(instances, held, config=tmp_path / "hosts.toml")
+
+    message = str(caught.value)
+    assert caught.value.kind == NO_QUOTA
+    assert "asia-east1 (1 of 1, held by two-rsv)" in message
+    assert "us-central1 (1 of 1, held by one-rsv)" in message
+    assert "Nothing was created." in message
+    assert "comfy-qat delete one" in caught.value.fix
+    assert "gcloud compute reservations delete two-rsv --zone=asia-east1-a" in caught.value.fix
+
+
+def test_a_named_zone_in_a_full_region_is_refused_and_points_at_one_with_room(tmp_path):
+    held = [held_for("other", zone="us-central1-b")]
+
+    with pytest.raises(LifecycleError) as caught:
+        ordered([], held, config=tmp_path / "hosts.toml", zone="us-central1-a")
+
+    assert "us-central1 (1 of 1, held by other-rsv)" in str(caught.value)
+    assert "comfy-qat create --os linux --gpu t4 --reserve --region asia-east1" in caught.value.fix
+
+
+def test_without_the_instances_the_regions_are_not_narrowed_at_all(tmp_path):
+    """A caller that hands over nothing to count gets today's ordering. Not
+    counted is not "nothing held" — it is "not asked", and the answer to that
+    is to leave the regions alone rather than to invent room or the lack of it."""
+    held = [held_for("other", zone="us-central1-b")]
+    check = gate(4, [], held)
+    ordering = order_zones(T4Cloud(), PROJECT, T4_BLUEPRINT, check,
+                           probe=lambda region: 10.0, config=tmp_path / "hosts.toml")
+
+    assert {zone.rsplit("-", 1)[0] for zone in ordering.zones} == {"asia-east1", "us-central1"}
