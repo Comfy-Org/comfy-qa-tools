@@ -107,10 +107,14 @@ class Cloud:
 def cli(tmp_path, monkeypatch):
     from comfy_qa import gcloud as gcloud_module
 
-    def invoke(*args, cloud=None, input=None, tty=True):
+    def invoke(*args, cloud=None, input=None, tty=True, declared=HOSTS,
+               keep=False):
         cloud = cloud if cloud is not None else Cloud()
         path = tmp_path / "hosts.toml"
-        path.write_text(HOSTS, encoding="utf-8")
+        # `keep` is for a second run of the same command against the host list
+        # the first one left — the rerun a failure tells the user to make.
+        if not (keep and path.exists()):
+            path.write_text(declared, encoding="utf-8")
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
         monkeypatch.setattr(gcloud_module, "can_prompt", lambda: tty)
         result = CliRunner().invoke(app, [*args, "--config", str(path)], input=input)
@@ -522,3 +526,505 @@ def test_choosing_what_to_destroy_is_sent_to_the_live_listing(cli):
         result = cli(*args)
         assert result.exit_code == 2
         assert "comfy-qat list --live" in result.output, args
+
+
+# --- a reserved box: the reservation goes with it ----------------------------
+#
+# A reserved box has a second thing to destroy, and it is the one that costs.
+# Its reservation bills for the card every hour, running or stopped, until it is
+# released — so a `delete` that removed the box and left the reservation would
+# leave the expensive half of the bill running with nothing in the host list
+# naming it. "Reserved until the box is deleted" is a promise this command
+# keeps or breaks.
+#
+# The fake below keeps STATE, not answers: a reservation that was released is
+# gone the next time anything looks, and one that was not is still there to be
+# found. A flow that skips the release therefore fails here the way it would
+# fail live — by leaving something behind.
+#
+# Every record is a FIXTURE in the shape the SDK's API schema gives a
+# reservation and an instance. None is a recorded live payload: no reserved box
+# had been made on a real project when this was written, and whether Google
+# will release a reservation that a STOPPED box still targets is not yet read
+# off it. `RELEASE_FIRST` is the one line that changes if it will not, and both
+# orders are driven below.
+
+RESERVED = HOSTS.replace(
+    'gce_zone     = "us-central1-c"\ngce_project  = "proj"\n',
+    'gce_zone     = "us-central1-c"\ngce_project  = "proj"\n'
+    'gce_reservation = "comfy-linux-rsv"\n')
+
+RSV = "comfy-linux-rsv"
+RSV_ZONE = "us-central1-c"
+RELEASE = f"gcloud compute reservations delete {RSV} --zone={RSV_ZONE} --project=proj"
+
+
+def held(name=RSV, *, zone=RSV_ZONE, box="comfy-linux", count="1"):
+    """One reservation, as `reservations list` returns it. `box=""` is one this
+    tool did not make: its description is somebody else's sentence."""
+    return {
+        "name": name, "zone": f"https://x/projects/proj/zones/{zone}",
+        "status": "READY", "specificReservationRequired": True,
+        "description": f"comfy-qat: held for {box}" if box else "made in the console",
+        "specificReservation": {"count": count, "instanceProperties": {
+            "machineType": "g2-standard-8"}},
+    }
+
+
+def box(name="comfy-linux", *, zone=RSV_ZONE, bound=RSV):
+    """One instance, as `instances list` returns it, stopped."""
+    row = {"name": name, "zone": f"https://x/projects/proj/zones/{zone}",
+           "status": "TERMINATED"}
+    if bound:
+        row["reservationAffinity"] = {
+            "consumeReservationType": "SPECIFIC_RESERVATION",
+            "key": "compute.googleapis.com/reservation-name", "values": [bound]}
+    return row
+
+
+class Project(Cloud):
+    """`Cloud`, on a project whose reservations and instances are state.
+
+    `release=` is what releasing does instead of succeeding. `unreadable=` names
+    the read that fails — `absent`, `reservations` or `instances` — because a
+    read that failed and a reservation that is not there are the two answers
+    this command must never give the same treatment.
+    """
+
+    def __init__(self, *, reservations=None, instances=None, release=None,
+                 unreadable=None, **kwargs):
+        super().__init__(**kwargs)
+        self.reservations = [held()] if reservations is None else list(reservations)
+        self.instances = [box()] if instances is None else list(instances)
+        self._release = release
+        self._unreadable = unreadable
+
+    def _read(self, which):
+        self.calls.append(f"read {which}")
+        if self._unreadable == which:
+            raise GcloudError("permission denied")
+
+    def reservation_absent(self, name, zone, project):
+        self._read("absent")
+        return not any(row["name"] == name and row["zone"].endswith(f"/{zone}")
+                       for row in self.reservations)
+
+    def list_reservations(self, project):
+        self._read("reservations")
+        return list(self.reservations)
+
+    def list_instances(self, project):
+        self._read("instances")
+        return list(self.instances)
+
+    def delete_reservation(self, name, zone, project):
+        self.calls.append(f"release {name} {zone} {project}")
+        if self._release is not None:
+            raise self._release
+        self.reservations = [row for row in self.reservations
+                             if not (row["name"] == name
+                                     and row["zone"].endswith(f"/{zone}"))]
+
+    def run(self, args, **kwargs):
+        answer = super().run(args, **kwargs)
+        joined = " ".join(str(a) for a in args)
+        if joined.startswith("compute instances delete"):
+            self.instances = [row for row in self.instances if row["name"] != args[3]]
+        return answer
+
+    def released(self):
+        return [call for call in self.calls if call.startswith("release ")]
+
+
+def gone_from_google(cloud: Project) -> Project:
+    """The same project after the box was deleted with Google's own command:
+    the status read is a not-found and the listing does not carry the name."""
+    from comfy_qa.gcloud import GONE
+
+    after = Project(reservations=cloud.reservations, instances=[
+        row for row in cloud.instances if row["name"] != "comfy-linux"],
+        status=GcloudError("The resource 'comfy-linux' was not found"),
+        listing={("comfy-linux", RSV_ZONE, "proj"): GONE})
+    return after
+
+
+def flat(text: str) -> str:
+    """`text` on one line. `say` wraps prose at 96 columns, and a sentence is
+    the same sentence wherever it was broken."""
+    return " ".join(text.split())
+
+
+def entries(tmp_path) -> set[str]:
+    import tomllib
+
+    return set(tomllib.loads((tmp_path / "hosts.toml").read_text(
+        encoding="utf-8"))["hosts"])
+
+
+def test_deleting_a_reserved_box_releases_its_reservation(cli, tmp_path):
+    cloud = Project()
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.released() == [f"release {RSV} {RSV_ZONE} proj"]
+    assert cloud.reservations == [], "the reservation is still on the project"
+    assert cloud.deleted(), "the box was not deleted"
+    assert "comfy-linux" not in entries(tmp_path)
+    # What went, typed out: the box, its disk, and the half that was billing.
+    assert ("comfy-linux and its disk are gone, and it is out of your host list. "
+            "Its reservation comfy-linux-rsv was released, so nothing of it is "
+            "billing.") in flat(result.stdout)
+
+
+def test_the_reservation_is_released_before_the_box_is_deleted(cli):
+    """It is the half that bills at a GPU's rate. Released first, a failure in
+    between leaves a stopped box; the other way round it leaves a reservation
+    billing with nothing in any list of machines."""
+    cloud = Project()
+    cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED, input="comfy-linux\n")
+
+    release = cloud.calls.index(f"release {RSV} {RSV_ZONE} proj")
+    delete = cloud.calls.index(cloud.deleted()[0])
+    assert release < delete, cloud.calls
+
+
+def test_the_other_order_is_one_switch_and_still_releases(cli, tmp_path, monkeypatch):
+    """`RELEASE_FIRST` is the whole of the order. Flipped, the same two calls
+    happen the other way round and nothing else about the command changes —
+    which is what makes it cheap to change once Google has been asked."""
+    from comfy_qa import remove
+
+    monkeypatch.setattr(remove, "RELEASE_FIRST", False)
+    cloud = Project()
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.calls.index(cloud.deleted()[0]) < cloud.calls.index(
+        f"release {RSV} {RSV_ZONE} proj"), cloud.calls
+    assert cloud.reservations == [] and "comfy-linux" not in entries(tmp_path)
+
+
+def test_the_confirmation_names_the_reservation_with_the_box_and_the_disk(cli):
+    """All three go, so all three are named — before the name is typed back.
+    The reservation is the one nobody thinks of, and the one that bills."""
+    result = cli("delete", "comfy-linux", cloud=Project(), declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert ("delete comfy-linux in us-central1-c, its 200 GB boot disk, and its "
+            "reservation comfy-linux-rsv.") in result.stdout
+
+
+def test_nothing_is_released_until_the_name_is_typed_back(cli, tmp_path):
+    """A release is as irreversible as the delete — the capacity it held may not
+    be there to reserve again — so it waits for the same confirmation."""
+    cloud = Project()
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-win\n")
+
+    assert result.exit_code == 2
+    assert cloud.released() == [] and not cloud.deleted()
+    assert len(cloud.reservations) == 1, "it was released on a wrong answer"
+    assert "comfy-linux" in entries(tmp_path)
+
+
+def test_a_box_that_is_not_reserved_is_asked_nothing_about_reservations(cli):
+    """Three reads and a release are for a box that has a reservation. One that
+    does not is deleted exactly as it always was."""
+    cloud = Project()
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.deleted()
+    assert not [call for call in cloud.calls if call.startswith(("read ", "release "))]
+    assert "reservation" not in result.output
+
+
+# --- absent is not the same as unread ----------------------------------------
+
+
+def test_a_reservation_already_released_is_said_and_the_box_still_goes(cli, tmp_path):
+    """Google says there is no such reservation: that is most of the job done,
+    not a reason to refuse. Said in as many words, and nothing is released."""
+    cloud = Project(reservations=[])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert ("its reservation comfy-linux-rsv is not on proj — already released."
+            in result.stdout)
+    assert cloud.released() == []
+    assert cloud.deleted() and "comfy-linux" not in entries(tmp_path)
+    # And the confirmation did not promise to destroy something that is not there.
+    assert "and its reservation" not in result.stdout
+    assert "was released, so nothing" not in result.stdout
+
+
+@pytest.mark.parametrize("read", ["absent", "reservations", "instances"])
+def test_a_reservation_that_cannot_be_read_refuses_before_anything(cli, tmp_path, read):
+    """A read that failed is not an absence. Treated as one, the box would be
+    deleted and its reservation left billing with nothing naming it — so each
+    of the three reads refuses, and refuses before the confirmation."""
+    cloud = Project(unreadable=read)
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2, result.output
+    assert ("could not read comfy-linux's reservation comfy-linux-rsv (permission "
+            "denied), so whether it would be released is not known. Nothing was "
+            "deleted.") in flat(result.output)
+    assert cloud.released() == [] and not cloud.deleted()
+    assert len(cloud.reservations) == 1 and "comfy-linux" in entries(tmp_path)
+    assert "type comfy-linux to confirm" not in result.output
+
+
+# --- the release fails -------------------------------------------------------
+
+
+def test_a_release_that_fails_keeps_the_box_and_the_entry_and_says_still_billing(
+        cli, tmp_path):
+    """Exit 1 — the work started and failed — and the sentence, typed out, that
+    says which half did not happen and what it is costing."""
+    cloud = Project(release=GcloudError("the reservation is in use"))
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 1, result.output
+    assert ("could not release comfy-linux-rsv (the reservation is in use), so "
+            "comfy-linux was not deleted and its reservation is still billing."
+            ) in flat(result.output)
+    assert not cloud.deleted(), "the box was deleted with its reservation still held"
+    assert "comfy-linux" in entries(tmp_path), "the only record of it was removed"
+    # Both commands, each whole on a line of its own.
+    lines = [line.strip() for line in result.output.splitlines()]
+    assert RELEASE in lines
+    assert "comfy-qat delete comfy-linux" in lines
+
+
+def test_the_rerun_a_failed_release_prints_finishes_the_job(cli, tmp_path):
+    """The remedy is two commands, and the second is this tool's own — so it is
+    run. After the first (Google's, done here by taking the reservation out of
+    the project) the same `comfy-qat delete` has to find it gone and carry on."""
+    cloud = Project(release=GcloudError("the reservation is in use"))
+    first = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                input="comfy-linux\n")
+    rerun = next(line.strip() for line in first.output.splitlines()
+                 if line.strip() == "comfy-qat delete comfy-linux")
+
+    after = Project(reservations=[], instances=cloud.instances)
+    second = cli(*rerun.split()[1:], cloud=after, input="comfy-linux\n", keep=True)
+
+    assert second.exit_code == 0, second.output
+    assert after.deleted() and after.released() == []
+    assert "already released" in second.stdout
+    assert "comfy-linux" not in entries(tmp_path)
+
+
+def test_a_release_that_fails_after_the_box_is_gone_says_nothing_is_on_it(
+        cli, tmp_path, monkeypatch):
+    """The other order's failure, which is the worse one and says so: the box
+    is gone, the reservation bills with nothing on it, and the entry is kept as
+    the only thing that still names it."""
+    from comfy_qa import remove
+
+    monkeypatch.setattr(remove, "RELEASE_FIRST", False)
+    cloud = Project(release=GcloudError("timed out"))
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 1, result.output
+    assert cloud.deleted()
+    assert ("comfy-linux and its disk are gone, but its reservation "
+            "comfy-linux-rsv could not be released (timed out), so it is still "
+            "billing with no box on it.") in flat(result.output)
+    assert "comfy-linux" in entries(tmp_path)
+    assert RELEASE in [line.strip() for line in result.output.splitlines()]
+
+
+def test_a_box_that_will_not_delete_after_the_release_says_which_half_happened(
+        cli, tmp_path):
+    """Half of it happened, and it is the half that mattered for the bill. "The
+    delete failed" must not be read as "nothing changed"."""
+    cloud = Project(fail=GcloudError("the instance is locked"))
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 1, result.output
+    assert cloud.reservations == [], "the release did not happen"
+    assert ("comfy-linux's reservation comfy-linux-rsv was released, so it is no "
+            "longer billing for the card — but comfy-linux itself was not "
+            "deleted, and its disk still bills.") in flat(result.output)
+    assert "comfy-linux" in entries(tmp_path)
+    assert "comfy-qat delete comfy-linux" in [
+        line.strip() for line in result.output.splitlines()]
+
+
+# --- the box is already gone -------------------------------------------------
+
+
+def test_a_box_already_gone_still_has_its_reservation_released(cli, tmp_path):
+    """Deleted in the console, and its reservation left behind — which is the
+    half still billing. The path that only used to take the entry out has to
+    release it too."""
+    cloud = gone_from_google(Project())
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert not cloud.deleted(), "there is no instance to delete"
+    assert cloud.released() == [f"release {RSV} {RSV_ZONE} proj"]
+    assert cloud.reservations == []
+    assert "comfy-linux" not in entries(tmp_path)
+    said = flat(result.stdout)
+    assert ("it has already been deleted, so only its reservation comfy-linux-rsv "
+            "and the host list entry are left.") in said
+    assert "Its reservation comfy-linux-rsv was released" in said
+
+
+def test_a_box_already_gone_and_already_released_is_only_the_entry(cli, tmp_path):
+    cloud = gone_from_google(Project(reservations=[]))
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.released() == [] and not cloud.deleted()
+    assert "so only the host list entry is left." in flat(result.stdout)
+    assert "already released" in result.stdout
+    assert "comfy-linux" not in entries(tmp_path)
+
+
+# --- somebody else's capacity ------------------------------------------------
+
+
+SHARED = {
+    "two machines": dict(reservations=[held(count="2")]),
+    "another box": dict(instances=[box(), box("somebody-elses")]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(SHARED))
+def test_a_shared_reservation_is_never_released_and_the_box_is_not_deleted(
+        cli, tmp_path, case):
+    """This tool only ever makes a reservation for one machine. One that holds
+    two, or that another box is sitting on, is somebody else's capacity as well
+    — and releasing it would take it from under them."""
+    cloud = Project(**SHARED[case])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2, result.output
+    assert cloud.released() == [] and not cloud.deleted()
+    assert len(cloud.reservations) == 1 and "comfy-linux" in entries(tmp_path)
+    said = flat(result.output)
+    assert "comfy-linux's reservation comfy-linux-rsv is shared" in said
+    assert ("it holds capacity for 2 machines" if case == "two machines"
+            else "other machines are on it: somebody-elses") in said
+    assert "nothing was deleted" in said
+
+
+def test_a_reservation_this_box_has_no_claim_on_is_refused(cli, tmp_path):
+    """Not made by this tool for this box, and the box is not bound to it. The
+    host list names it and nothing else does — and a name in a file somebody
+    edits is not a reason to release a reservation."""
+    cloud = Project(reservations=[held(box="")], instances=[box(bound=None)])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2, result.output
+    assert cloud.released() == [] and not cloud.deleted()
+    assert ("was not made by this tool for comfy-linux, and comfy-linux is not "
+            "bound to it") in flat(result.output)
+
+
+def test_a_reservation_made_for_another_box_is_not_this_ones_by_name_alone(cli):
+    """`comfy-qat: held for other-box`, under this box's reservation name. The
+    description is the evidence, and it names somebody else."""
+    cloud = Project(reservations=[held(box="other-box")], instances=[box(bound=None)])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2 and cloud.released() == []
+
+
+def test_a_console_made_reservation_the_box_is_bound_to_is_its_own(cli, tmp_path):
+    """Adopted with `discover`: nobody here made the reservation, but the box's
+    own record says it may consume this one and no other, and nothing else is
+    on it. That is this box's reservation, and "released on delete" covers it."""
+    cloud = Project(reservations=[held(box="")])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.released() == [f"release {RSV} {RSV_ZONE} proj"]
+    assert cloud.deleted() and "comfy-linux" not in entries(tmp_path)
+
+
+def test_the_way_out_of_a_shared_reservation_runs_and_leaves_it_alone(cli, tmp_path):
+    """The refusal hands over three lines. The first and last are Google's; the
+    middle one is this tool's, so it is run — after the first has been done —
+    and it has to take the entry out WITHOUT releasing what is not this box's.
+
+    This is the path that must not become a trap: a box deleted by hand whose
+    entry no command can remove was a defect this file already records.
+    """
+    cloud = Project(instances=[box(), box("somebody-elses")])
+    first = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                input="comfy-linux\n")
+    lines = [line.strip() for line in first.output.splitlines()]
+    assert ("gcloud compute instances delete comfy-linux --zone=us-central1-c "
+            "--project=proj --delete-disks=all") in lines
+    rerun = next(line for line in lines if line == "comfy-qat delete comfy-linux")
+
+    after = gone_from_google(cloud)
+    second = cli(*rerun.split()[1:], cloud=after, input="comfy-linux\n", keep=True)
+
+    assert second.exit_code == 0, second.output
+    assert after.released() == [], "it released a reservation another box is on"
+    assert len(after.reservations) == 1
+    assert "comfy-linux" not in entries(tmp_path)
+    said = flat(second.stdout)
+    assert "so it is left alone — it is still on proj and still billing" in said
+    # Said again as the last thing printed, with the command whole on its line.
+    tail = second.stdout.rstrip().splitlines()
+    assert tail[-1].strip() == RELEASE
+
+
+# --- Ctrl-C during the release -----------------------------------------------
+
+
+def test_an_interrupted_release_says_it_may_or_may_not_have_gone(capsys, tmp_path,
+                                                                 monkeypatch):
+    """The request reaches Google before the interrupt reaches gcloud, so the
+    reservation may be gone or may not — and it bills until it is. The report
+    is the only thing that says so: the box has not been touched, and the entry
+    is still in the host list."""
+    from comfy_qa import cli as cli_module
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import inflight
+
+    class Interrupted(Project):
+        def delete_reservation(self, name, zone, project):
+            self.calls.append(f"release {name} {zone} {project}")
+            raise KeyboardInterrupt
+
+    cloud = Interrupted()
+    path = tmp_path / "hosts.toml"
+    path.write_text(RESERVED, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    monkeypatch.setattr("sys.argv", ["comfy-qat", "delete", "comfy-linux", "--yes",
+                                     "--config", str(path)])
+
+    with pytest.raises(SystemExit) as stopped:
+        cli_module.main()
+
+    assert stopped.value.code == inflight.INTERRUPTED
+    printed = capsys.readouterr()
+    tail = (printed.out + printed.err).split("releasing comfy-linux-rsv")[-1]
+    assert "this may or may not have been released:" in tail
+    assert "the reservation comfy-linux-rsv in us-central1-c" in tail
+    assert "gcloud compute reservations list --project=proj" in tail
+    assert "comfy-qat delete comfy-linux" in tail
+    assert "still billing" in tail
+    assert not cloud.deleted(), "the box was deleted after an interrupted release"
+    assert "comfy-linux" in entries(tmp_path)

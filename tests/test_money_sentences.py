@@ -100,6 +100,17 @@ class Cloud:
             raise self._stop
         return ""
 
+    def list_reservations(self, project):
+        """The third question `down --all` asks, and the reason it is here.
+
+        A reservation bills with its box stopped and with no box at all, so the
+        all-clear is not earned until the project's own reservations have been
+        read and there are none. Nothing reserved by default: the tests above
+        this line are about machines, and each of their sentences is the true
+        one only on a project where that is so."""
+        self.calls.append("list_reservations")
+        return []
+
     def __getattr__(self, name):
         def unexpected(*args, **kwargs):
             raise AssertionError(f"{name} was not expected in this test")
@@ -115,7 +126,9 @@ def cli(tmp_path, monkeypatch):
     path = tmp_path / "hosts.toml"
     path.write_text(HOSTS, encoding="utf-8")
 
-    def invoke(*args, cloud=None):
+    def invoke(*args, cloud=None, declared=None):
+        if declared is not None:
+            path.write_text(declared, encoding="utf-8")
         cloud = cloud if cloud is not None else Cloud()
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
         result = CliRunner().invoke(app, [*args, "--config", str(path)])
@@ -571,3 +584,389 @@ def test_what_is_unaccounted_for_is_named_and_not_merely_withheld(cli, why):
     assert "comfy-qat" in out or "gcloud compute instances stop" in out, (
         f"it withheld the all-clear and offered no way to settle it:\n{out}"
     )
+
+
+# --- a reserved box: stopping it does not stop its bill -----------------------
+#
+# Everything above was written when a stopped box was a box that cost nothing
+# but its disk. A RESERVED box breaks that: Google holds its capacity and bills
+# for it every hour, running or stopped, until the box is deleted. So the line
+# every command here ends on — `comfy-qat down <name>   # stop the box, stop
+# paying` — is false about it, and `was billing. Stopped.` and `Nothing is now.`
+# are false with it. Somebody told those three things stops the box, closes the
+# laptop, and pays for a GPU all night.
+#
+# The same two rules. Every sentence below is typed out here, and every one is
+# read off a command that was driven. Where a step of a command is replaced —
+# the boot, the install, the launch — it is replaced by its answer, because the
+# answer is the whole input to the sentence under test.
+
+RESERVED = HOSTS.replace(
+    'gce_project  = "proj"\nport         = 8190',
+    'gce_project  = "proj"\ngce_reservation = "comfy-win-rsv"\nport         = 8190')
+
+# What the reserved box's own record of its bill looks like to Google: one
+# reservation, for one machine, made by this tool for it. A FIXTURE in the SDK
+# schema's shape, not a recorded payload.
+ITS_RESERVATION = {
+    "name": "comfy-win-rsv", "zone": "https://x/projects/proj/zones/us-central1-a",
+    "status": "READY", "description": "comfy-qat: held for comfy-win",
+    "specificReservation": {"count": "1", "instanceProperties": {
+        "machineType": "g2-standard-8"}},
+}
+
+# The two endings, typed. Not `reservation.stop_line(...)` and not
+# `lifecycle.stop_paying(...)`: a test that asserts a value against the thing
+# that produced it cannot fail.
+DELETE_LINE = ("  comfy-qat delete comfy-win   # the only thing that stops a "
+               "reserved box's bill — the box and its disk go too")
+DOWN_LINE = "  comfy-qat down comfy-win   # stop the box, stop paying"
+
+
+class Held(Cloud):
+    """`Cloud`, on a project that has reservations — or cannot say."""
+
+    def __init__(self, *, reservations=(ITS_RESERVATION,), **kwargs):
+        super().__init__(**kwargs)
+        self._reservations = reservations
+
+    def list_instances(self, project):
+        return []
+
+    def list_reservations(self, project):
+        self.calls.append("list_reservations")
+        if isinstance(self._reservations, BaseException):
+            raise self._reservations
+        return list(self._reservations)
+
+
+def test_down_on_a_reserved_box_says_it_is_still_billing_and_how_that_stops(cli):
+    result = cli("down", "comfy-win", cloud=Held(), declared=RESERVED)
+
+    assert result.exit_code == 0, result.output
+    assert ("comfy-win was running. Stopped — but it is reserved, so it is still "
+            "billing.") in result.stdout
+    assert DELETE_LINE in result.stdout.splitlines()
+    assert result.cloud.calls.count("stop_instance") == 1, "and it did stop the machine"
+    # The three things it must not say, each of which the unreserved box hears.
+    assert "stop paying" not in result.stdout
+    assert "was billing. Stopped." not in result.stdout
+    assert "comfy-qat down" not in result.stdout
+
+
+def test_down_on_a_reserved_box_that_was_already_stopped_does_not_say_nothing_was_billing(cli):
+    """The cheerful one. "was not running, so nothing was billing" is true of
+    every other stopped box and false of this one."""
+    result = cli("down", "comfy-win", cloud=Held(status="TERMINATED"),
+                 declared=RESERVED)
+
+    assert ("comfy-win was not running — but it is reserved, so it is still "
+            "billing.") in result.stdout
+    assert DELETE_LINE in result.stdout.splitlines()
+    assert "nothing was billing" not in result.stdout
+
+
+def test_down_on_a_reserved_box_nobody_could_read_says_it_bills_either_way(cli):
+    """"May have been billing" is the honest hedge for an ordinary box. For a
+    reserved one there is nothing to hedge: it bills whichever it was."""
+    result = cli("down", "comfy-win", declared=RESERVED,
+                 cloud=Held(status=GcloudError("timed out")))
+
+    out = result.stdout
+    assert ("comfy-win could not be checked before stopping. It is reserved, so "
+            "it is billing either way.") in out
+    assert "  comfy-qat list --live" in out.splitlines()
+    assert DELETE_LINE in out.splitlines()
+
+
+def test_the_same_three_runs_on_an_ordinary_box_still_say_what_they_always_did(cli):
+    """The control. If the reserved wording had simply replaced the other, the
+    three tests above would pass and every unreserved box would be told its
+    bill had not stopped."""
+    stopped = cli("down", "comfy-win", cloud=Held(reservations=())).stdout
+    idle = cli("down", "comfy-win", cloud=Held(status="TERMINATED",
+                                               reservations=())).stdout
+
+    assert "comfy-win was billing. Stopped." in stopped
+    assert "comfy-win was not running, so nothing was billing." in idle
+    for out in (stopped, idle):
+        assert "reserved" not in out and "comfy-qat delete" not in out
+
+
+def test_down_all_never_gives_the_all_clear_while_a_declared_box_is_reserved(cli):
+    """Both boxes were running and both were stopped — the run that used to end
+    `Stopped. Nothing is now.` One of them is reserved, so something is."""
+    result = cli("down", "--all", cloud=Held(), declared=RESERVED)
+
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert "Nothing is now" not in out
+    assert "nothing was billing" not in out
+    assert "was running: comfy-win, comfy-linux. Stopped." in out
+    assert "still billing, stopped or not — it is reserved: comfy-win." in out
+    assert DELETE_LINE in out.splitlines()
+    assert "comfy-qat delete comfy-linux" not in out, "the other box is not reserved"
+
+
+def test_down_all_names_a_reservation_on_the_project_that_no_host_declares(cli):
+    """Nothing in the host list is reserved, every machine stopped, and the
+    project is still holding a card: a reservation made in the console, or left
+    by a create that stopped half-way. It is in no list of machines, so this
+    summary is the only place somebody closing the laptop can learn of it."""
+    stray = dict(ITS_RESERVATION, name="stray-rsv", description="made in the console")
+    result = cli("down", "--all", cloud=Held(reservations=(stray,)))
+
+    out = result.stdout
+    assert "Nothing is now" not in out
+    assert ("1 reservation on this project is billing and not in your host list: "
+            "stray-rsv (us-central1-a).") in out
+    assert "  comfy-qat list --live   # which of them has no box, and how to release it" \
+        in out.splitlines()
+    # Named, not released: it is not this command's to release.
+    assert "delete_reservation" not in result.cloud.calls
+
+
+def test_down_all_does_not_call_an_unread_project_clear_of_reservations(cli):
+    """A read that failed is not a project with nothing reserved."""
+    result = cli("down", "--all",
+                 cloud=Held(reservations=GcloudError("the API is disabled")))
+
+    out = result.stdout
+    assert "Nothing is now" not in out
+    assert ("the project's reservations could not be checked, and a reservation "
+            "bills with its box stopped — so this is not an all-clear.") in out
+    assert "was billing: comfy-win, comfy-linux. Stopped." in out
+
+
+def test_down_all_still_gives_the_all_clear_when_the_project_has_nothing_reserved(cli):
+    """The other direction. Read, and empty, and nothing declared reserved: the
+    all-clear is earned, and withholding it would teach people to ignore it."""
+    result = cli("down", "--all", cloud=Held(reservations=()))
+
+    assert "was billing: comfy-win, comfy-linux. Stopped. Nothing is now." \
+        in result.stdout
+    assert "list_reservations" in result.cloud.calls, "and it did ask"
+    assert "reserv" not in result.stdout
+
+
+# Every command that ends by saying how to stop the bill, driven to that ending
+# with `comfy-win` as the box. Each entry takes the fixture, pytest's
+# monkeypatch and a host list, and returns what the command printed on stdout.
+
+
+def _stamp():
+    from comfy_qa.stamp import Stamp
+
+    return Stamp(host="comfy-win", url="http://127.0.0.1:8190",
+                 comfyui_version="0.33.0")
+
+
+def _go(cli, monkeypatch, declared, *args, ready=None, launched=0, interrupt=False):
+    """`go`, with the box brought up by its answer and the launch by its exit."""
+    from comfy_qa import host as host_module
+    from comfy_qa import lifecycle
+
+    def launch(*a, **k):
+        if interrupt:
+            raise KeyboardInterrupt
+        return launched
+
+    monkeypatch.setattr(host_module, "_bring_up", lambda *a, **k: ready)
+    for step in ("wait_for_ssh", "ensure_installed"):
+        monkeypatch.setattr(lifecycle, step, lambda *a, **k: None)
+    monkeypatch.setattr(lifecycle, "serve", launch)
+    monkeypatch.setattr(lifecycle, "start_detached", launch)
+    return cli("go", "comfy-win", "--no-browser", *args, declared=declared)
+
+
+def _up(cli, monkeypatch, declared):
+    from comfy_qa import lifecycle
+
+    monkeypatch.setattr(lifecycle, "bring_up", lambda *a, **k: None)
+    return cli("up", "comfy-win", declared=declared)
+
+
+def _logs_interrupted(cli, monkeypatch, declared):
+    from comfy_qa import lifecycle
+
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(lifecycle, "read_logs", interrupted)
+    return cli("logs", "comfy-win", declared=declared)
+
+
+def _down_left_running(cli, monkeypatch, declared):
+    from comfy_qa import lifecycle
+
+    monkeypatch.setattr(lifecycle, "put_away", lambda *a, **k: "billing")
+    return cli("down", "comfy-win", declared=declared)
+
+
+class _Ready:
+    """What `_bring_up` hands back for a box that is already serving."""
+
+    def __init__(self):
+        self.stamp = _stamp()
+
+
+ENDINGS = {
+    "up": _up,
+    "go, already serving": lambda c, m, d: _go(c, m, d, ready=_Ready()),
+    "go, launched": lambda c, m, d: _go(c, m, d),
+    "go --follow, ComfyUI exited": lambda c, m, d: _go(c, m, d, "--follow"),
+    "go, interrupted": lambda c, m, d: _go(c, m, d, interrupt=True),
+    "go --follow, interrupted": lambda c, m, d: _go(c, m, d, "--follow",
+                                                    interrupt=True),
+    "logs, interrupted": _logs_interrupted,
+    "down, left running": _down_left_running,
+}
+
+
+@pytest.mark.parametrize("ending", sorted(ENDINGS))
+def test_no_ending_tells_a_reserved_box_that_down_stops_its_bill(cli, monkeypatch,
+                                                                 ending):
+    """Nine endings used to carry the same line as a string of their own, and
+    each was a place a reserved box could be told the wrong thing. They are
+    driven one at a time, because a helper that is right is no use to an ending
+    that does not call it."""
+    result = ENDINGS[ending](cli, monkeypatch, RESERVED)
+    out = result.stdout
+
+    assert DELETE_LINE in out.splitlines(), f"{ending}:\n{result.output}"
+    assert "stop paying" not in out, f"{ending}:\n{out}"
+    assert "comfy-qat down" not in out, f"{ending}:\n{out}"
+
+
+@pytest.mark.parametrize("ending", sorted(ENDINGS))
+def test_every_ending_still_tells_an_ordinary_box_how_to_stop_paying(cli, monkeypatch,
+                                                                    ending):
+    """The control, per ending, and the reason the test above means something:
+    the same run on the same box, unreserved, ends on the old line. An ending
+    that printed neither would pass a test that only looked for the wrong one."""
+    result = ENDINGS[ending](cli, monkeypatch, HOSTS)
+    out = result.stdout
+
+    assert DOWN_LINE in out.splitlines(), f"{ending}:\n{result.output}"
+    assert "comfy-qat delete" not in out and "reserved" not in out, f"{ending}:\n{out}"
+
+
+def test_the_endings_driven_are_the_endings_there_are():
+    """`ENDINGS` is a hand-typed table, and nothing would notice a tenth ending
+    being added to host.py and not to it. So the count is held against the
+    source: every call to `_stop_line` in host.py, outside the two commands
+    driven on their own above (`down`'s verdicts and `down --all`) and the two
+    that a reserved box is refused from (`move`), is an entry here."""
+    import ast
+    import inspect
+
+    from comfy_qa import host as host_module
+
+    calls: dict[str, int] = {}
+    for node in ast.walk(ast.parse(inspect.getsource(host_module))):
+        if isinstance(node, ast.FunctionDef):
+            count = sum(isinstance(part, ast.Call)
+                        and getattr(part.func, "id", "") == "_stop_line"
+                        for part in ast.walk(node))
+            if count:
+                calls[node.name] = count
+
+    assert calls == {
+        "up_cmd": 1,                 # up
+        "_serve": 4,                 # the five `go` endings; two share a line
+        "logs_cmd": 1,               # logs, interrupted
+        "down_cmd": 2,               # the reserved verdicts, and "left running"
+        "disconnect_cmd": 1,         # driven below
+        "_say_reserved": 1,          # `down --all`, driven above
+        "_zone_with_capacity": 1,    # `move` — refused for a reserved box
+        "move_cmd": 1,               # likewise
+    }, calls
+
+
+def test_disconnect_from_a_reserved_box_says_down_will_not_stop_the_bill(cli):
+    """`disconnect` leaves the box running on purpose and offers `comfy-qat
+    down` for when the work is finished. That line stays — it is how the
+    machine is stopped — and the reserved one follows it, so the first cannot
+    be read as the end of the bill."""
+    result = cli("disconnect", "comfy-win", cloud=Held(), declared=RESERVED)
+
+    lines = result.stdout.splitlines()
+    assert "  comfy-qat down comfy-win   # when the work is finished" in lines
+    assert DELETE_LINE in lines
+    assert lines.index(DELETE_LINE) > lines.index(
+        "  comfy-qat down comfy-win   # when the work is finished")
+    assert result.cloud.calls.count("stop_instance") == 0
+
+
+# --- `create --reserve`: the sentence, where it has to be said ----------------
+
+
+BILL = ("comfy-linux is reserved. Google holds its capacity and bills for it "
+        "every hour — running or stopped — until the box is deleted.")
+
+
+@pytest.fixture
+def create(tmp_path, monkeypatch):
+    """`comfy-qat create` against the create tests' own fake project."""
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import zones as zones_module
+    from comfy_qa.cli import app as root
+
+    import test_create_cli as fixtures
+
+    monkeypatch.setattr(zones_module, "_connect",
+                        lambda region, timeout=None: fixtures.LATENCY.get(region, 500.0))
+
+    def invoke(*args):
+        path = tmp_path / "created.toml"
+        path.write_text(fixtures.HOSTS, encoding="utf-8")
+        cloud = fixtures.FakeGcloud()
+        monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+        result = CliRunner().invoke(
+            root, ["create", "--os", "linux", "--gpu", "l4", *args,
+                   "--config", str(path)])
+        result.cloud = cloud        # type: ignore[attr-defined]
+        return result
+
+    return invoke
+
+
+def _one_line(text: str) -> str:
+    """`say` wraps a sentence at 96 columns; it is the same sentence unwrapped."""
+    return " ".join(text.split())
+
+
+def test_a_reserved_create_ends_on_the_bill_and_the_only_way_to_stop_it(create):
+    """The moment the reservation starts billing is the moment to say so, and
+    to say what ends it. Typed out, both of them."""
+    result = create("--reserve", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "create_reservation" in result.cloud.calls
+    ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
+    assert BILL in _one_line(ending)
+    assert ("  comfy-qat delete comfy-linux   # the only thing that stops a reserved "
+            "box's bill — the box and its disk go too") in ending.splitlines()
+    assert "stop paying" not in ending
+    assert "comfy-qat down" not in ending
+
+
+def test_a_reserved_dry_run_says_the_bill_before_anything_exists(create):
+    """Under `--dry-run` too: the plan is what somebody reads to decide."""
+    result = create("--reserve", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert BILL in _one_line(result.stdout)
+    assert "--dry-run: nothing created" in result.stdout
+    assert "create_reservation" not in result.cloud.calls
+
+
+def test_an_ordinary_create_still_ends_on_stop_paying_and_says_nothing_of_reserving(create):
+    """The control for the two above."""
+    result = create("--yes")
+
+    ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
+    assert "  comfy-qat down comfy-linux   # stop the machine, stop paying" \
+        in ending.splitlines()
+    assert "reserved" not in result.stdout and "comfy-qat delete" not in result.stdout
+    assert "create_reservation" not in result.cloud.calls

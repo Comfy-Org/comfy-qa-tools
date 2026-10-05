@@ -68,6 +68,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from comfy_qa import reservation
 from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.host import VERDICTS, app
@@ -87,6 +88,13 @@ gce_zone     = "us-central1-a"
 gce_project  = "proj"
 port         = 8190
 """
+
+# The same box, reserved. One line more in the host list, and every sentence
+# this tool prints about what it costs has to change with it: its reservation
+# bills for the card every hour, running or stopped, so "stopped" is no longer
+# the end of the bill and `comfy-qat down` is no longer how it is stopped.
+RESERVED_HOSTS = HOSTS.replace(
+    'port         = 8190', 'gce_reservation = "comfy-win-rsv"\nport         = 8190')
 
 WIN = Host(name="comfy-win", kind="gce", os="Windows Server 2022", gpu="L4",
            gce_instance="comfy-win", gce_zone="us-central1-a",
@@ -168,7 +176,12 @@ def _stance(paragraph: str) -> set[str]:
 
 
 def _offers_a_way_to_stop(paragraph: str) -> bool:
+    # The third is the reserved box's: the only command that stops ITS bill is
+    # the one that deletes it. Computed from the same function the tool prints
+    # it with, like the two before it, so rewording the line cannot leave this
+    # looking for a string nothing says.
     return bool(stop_paying(WIN) in paragraph or _raw_stop(WIN) in paragraph
+                or reservation.stop_line(WIN.name).strip() in paragraph
                 or _STOP_ADVICE.search(paragraph))
 
 
@@ -227,9 +240,9 @@ def cli(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tunnel_module, "TUNNEL_DIR", tmp_path / "tunnels")
 
-    def invoke(*args, cloud=None):
+    def invoke(*args, cloud=None, declared=HOSTS):
         path = tmp_path / "hosts.toml"
-        path.write_text(HOSTS, encoding="utf-8")
+        path.write_text(declared, encoding="utf-8")
         monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud or Cloud())
         return CliRunner().invoke(app, [*args, "--config", str(path)])
 
@@ -239,8 +252,9 @@ def cli(tmp_path, monkeypatch):
 class Cloud:
     """Enough gcloud for `down` to reach its summary, and nothing more."""
 
-    def __init__(self, status="RUNNING"):
+    def __init__(self, status="RUNNING", reservations=()):
         self.status = status
+        self.reservations = list(reservations)
 
     def instance_status(self, instance, zone, project):
         if isinstance(self.status, Exception):
@@ -254,6 +268,11 @@ class Cloud:
         # No undeclared machines, so every paragraph in the output belongs to the
         # money summary. The undeclared block is its own paragraph either way.
         return []
+
+    def list_reservations(self, project):
+        # Nothing reserved unless a test says so, for the same reason: a
+        # reservation is its own paragraph under the summary.
+        return list(self.reservations)
 
     def __getattr__(self, name):
         def unexpected(*args, **kwargs):
@@ -285,6 +304,33 @@ def test_each_down_verdict_agrees_with_the_advice_under_it(cli, monkeypatch, ver
         f"the {verdict!r} verdict printed no money answer at all on stdout"
     )
     check_agreement(result.stdout, f"down comfy-win ({verdict})")
+
+
+@pytest.mark.parametrize("verdict", VERDICTS)
+def test_each_down_verdict_about_a_reserved_box_says_it_is_still_billing(
+        cli, monkeypatch, verdict):
+    """The same four verdicts, about a box whose bill does not stop when it does.
+
+    Every one of the four ordinary sentences is false here. "was billing.
+    Stopped." says the bill ended; "not running, so nothing was billing" says
+    there was none. So this holds the reserved four to the rules above AND to
+    the one thing all four must say, whatever happened to the machine: it IS
+    billing, and here is how that stops.
+    """
+    from comfy_qa import lifecycle
+
+    monkeypatch.setattr(lifecycle, "put_away", lambda *a, **k: verdict)
+    result = cli("down", "comfy-win", declared=RESERVED_HOSTS)
+
+    assert result.exit_code == 0, result.output
+    read = check_agreement(result.stdout, f"down comfy-win, reserved ({verdict})")
+    assert BILLING_NOW in read, (
+        f"the {verdict!r} verdict about a reserved box did not say it is "
+        f"billing:\n{result.stdout}")
+    assert NOT_BILLING_NOW not in read
+    assert _offers_a_way_to_stop(result.stdout)
+    assert stop_paying(WIN) not in result.stdout, (
+        "`comfy-qat down` was offered as the way to stop a reserved box's bill")
 
 
 def test_the_verdicts_are_read_from_the_tool_and_not_from_here():
@@ -320,6 +366,26 @@ def test_the_down_all_summary_agrees_with_its_own_advice(cli, case):
     check_agreement(result.stdout, f"down --all ({case})")
 
 
+@pytest.mark.parametrize("case", sorted(ALL_RUNS))
+def test_the_down_all_summary_about_a_reserved_box_agrees_with_itself(cli, case):
+    """The same three runs with the one cloud box reserved, and its reservation
+    really on the project. Whatever the machines did, the summary has to say
+    something is still billing and must not give the all-clear."""
+    args, status = ALL_RUNS[case]
+    held = [{"name": "comfy-win-rsv", "zone": "https://x/zones/us-central1-a",
+             "description": "comfy-qat: held for comfy-win",
+             "specificReservation": {"count": "1", "instanceProperties": {
+                 "machineType": "g2-standard-8"}}}]
+    result = cli(*args, cloud=Cloud(status=status, reservations=held),
+                 declared=RESERVED_HOSTS)
+
+    assert result.exit_code == 0, result.output
+    read = check_agreement(result.stdout, f"down --all, reserved ({case})")
+    assert BILLING_NOW in read, result.stdout
+    assert "Nothing is now" not in result.stdout
+    assert "nothing was billing" not in result.stdout
+
+
 # --- 3. the same rule over the source -----------------------------------------
 
 # `move`'s money line, `go`'s two exit lines, `switch --dry-run`'s plan and
@@ -331,7 +397,13 @@ def test_the_down_all_summary_agrees_with_its_own_advice(cli, case):
 # named for it: "a fix that ends by saying how to stop paying". A paragraph that
 # calls any of them offers a way to stop, so they are looked for as calls rather
 # than as text.
-OFFERING_HELPERS = {"_with_the_bill", "stop_paying", "_raw_stop"}
+#
+# `_stop_line` is host.py's one writer of the stop-the-bill ending, in both its
+# forms: `comfy-qat down` for an ordinary box and `comfy-qat delete` for a
+# reserved one, where `down` stops the machine and not the bill. `stop_line` is
+# the reserved form's own source, `reservation.stop_line`.
+OFFERING_HELPERS = {"_with_the_bill", "stop_paying", "_raw_stop", "_stop_line",
+                    "stop_line"}
 
 # A message and its own remedy in one node. `say.result` has no such pairing —
 # its advice is the next statement — so those are grouped by paragraph instead.
@@ -764,6 +836,10 @@ def _listing(instances):
     def runner(args, mode):
         if " ".join(args).startswith("compute instances list"):
             return instances
+        if " ".join(args).startswith("compute reservations list"):
+            # The second of the two reads `list --live` makes per project. It
+            # answers a different column, so here it holds nothing either way.
+            return []
         raise AssertionError(f"unexpected: {' '.join(args)}")
     return runner
 

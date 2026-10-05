@@ -117,11 +117,13 @@ class Cloud:
     """
 
     def __init__(self, *, disks=(), snapshots=(), instances=(), fail=None,
-                 machine_types=("g2-standard-8",), region=None, quotas=()):
+                 machine_types=("g2-standard-8",), region=None, quotas=(),
+                 reservations=()):
         self.disks = [dict(d) for d in disks]
         self.snapshots = [dict(s) for s in snapshots]
         self.instances = [dict(i) for i in instances]
         self.quotas = list(quotas)
+        self.reservations = [dict(r) for r in reservations]
         self.machine_types = list(machine_types)
         self.region = region
         self.fail = dict(fail or {})
@@ -146,6 +148,13 @@ class Cloud:
             return list(self.snapshots)
         if key.startswith("compute instances list"):
             return list(self.instances)
+        if key.startswith("compute reservations list"):
+            # Read beside the ceiling, whenever the box a move would create
+            # wants a card: a reservation holds its card whether its box runs
+            # or not, so it is part of what is already spoken for. None by
+            # default — a project with nothing reserved is counted exactly as
+            # it was before this read existed.
+            return list(self.reservations)
         if key.startswith("compute instances describe"):
             # What the command calls to learn the box's boot disk and machine type.
             there = self.find_instance(args[3])
@@ -1778,3 +1787,89 @@ def test_the_same_path_reports_the_leftovers_without_clean_and_deletes_none(
     assert "disks delete comfy-win-a-b" in result.output, "with its delete line"
     assert cloud.find_disk("comfy-win-a-b", "us-central1-b"), "and nothing deleted"
     assert cloud.find_snapshot("comfy-win-a-move-b")
+
+
+# --- a reserved box is not moved ----------------------------------------------
+#
+# A reservation is held in one zone and cannot be carried to another, and a
+# reserved box does not meet the stockout `move` exists for — its capacity is
+# the thing that is held. So `move` refuses one. What matters is WHEN: with no
+# `--to`, the first thing `move` does is start the box to ask Google where
+# there is capacity, and a start is billable. The refusal has to come before
+# that, which means before anything is asked of Google at all.
+#
+# That each line of the remedy it prints RUNS — stop, delete, create again
+# reserved in the zone asked for — is driven in `tests/test_reserved_cli.py`
+# (`test_every_line_the_refused_move_of_a_reserved_box_prints_runs`), where the
+# fake project that can be stopped, deleted from and created on lives.
+
+RESERVED_CLI_HOSTS = CLI_HOSTS.replace(
+    "port         = 8190", 'gce_reservation = "comfy-win-rsv"\nport         = 8190')
+
+
+@pytest.mark.parametrize("args", [(), ("--to", "us-central1-b"), ("--dry-run",),
+                                  ("--to", "us-central1-b", "--dry-run"),
+                                  ("--clean", "--yes")],
+                         ids=["bare", "--to", "--dry-run", "--to --dry-run",
+                              "--clean --yes"])
+def test_moving_a_reserved_box_is_refused_before_google_is_asked_anything(
+        tmp_path, monkeypatch, args):
+    """Exit 2 — nothing was changed — and not one gcloud call, whichever way it
+    was asked. The bare form is the one that used to start the box."""
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE])
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", *args,
+                       hosts=RESERVED_CLI_HOSTS)
+
+    assert result.exit_code == 2, result.output
+    assert cloud.calls == [], f"a refused move reached Google: {cloud.calls}"
+    said = " ".join(result.output.split())
+    assert ("comfy-win is reserved, and a reservation is held in one zone — "
+            "us-central1-a — so it cannot be moved.") in said
+    assert "Nothing was changed." in said
+    assert cloud.find_instance("comfy-win")["status"] == "TERMINATED"
+
+
+def test_the_refusal_hands_over_stop_delete_and_create_again_reserved(
+        tmp_path, monkeypatch):
+    """Three commands, in the order they are run, each whole on its own line.
+    The create names the operating system and the card by the words `create`
+    takes — `windows` and `l4`, read off the entry, not `Windows Server 2022`
+    and `L4` — and names the zone that was asked for."""
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE])
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--to",
+                       "us-central1-b", hosts=RESERVED_CLI_HOSTS)
+
+    offered = [line.strip() for line in result.output.splitlines()
+               if line.strip().startswith("comfy-qat ")]
+    assert offered == [
+        "comfy-qat down comfy-win",
+        "comfy-qat delete comfy-win",
+        "comfy-qat create --os windows --gpu l4 --reserve --name comfy-win "
+        "--zone us-central1-b",
+    ]
+    assert "installed afresh" in " ".join(result.output.split()), (
+        "it must say the install does not come with it — that is what `move` "
+        "would have kept")
+
+
+def test_with_no_zone_asked_for_the_create_it_offers_names_none(tmp_path, monkeypatch):
+    """`--zone <zone>` with a placeholder is a command that cannot be run. Left
+    off, `create` chooses — which is what somebody who gave no `--to` asked."""
+    result = _cli_move(tmp_path, monkeypatch, Cloud(disks=[SOURCE], instances=[INSTANCE]),
+                       "comfy-win", hosts=RESERVED_CLI_HOSTS)
+
+    create = next(line.strip() for line in result.output.splitlines()
+                  if line.strip().startswith("comfy-qat create"))
+    assert create == "comfy-qat create --os windows --gpu l4 --reserve --name comfy-win"
+    assert "<" not in create
+
+
+def test_the_same_box_unreserved_is_still_moved(tmp_path, monkeypatch):
+    """The control: the refusal is about the reservation and nothing else."""
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE])
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--to",
+                       "us-central1-b", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "reserved" not in result.output
+    assert cloud.calls, "an ordinary move asks Google what is there"
