@@ -970,3 +970,48 @@ def test_an_ordinary_create_still_ends_on_stop_paying_and_says_nothing_of_reserv
         in ending.splitlines()
     assert "reserved" not in result.stdout and "comfy-qat delete" not in result.stdout
     assert "create_reservation" not in result.cloud.calls
+
+
+# --- and `--help`, which is read before any of the above ----------------------
+
+
+def _help(command: str) -> str:
+    """A command's help as declared, on one line — not as rendered, which is
+    wrapped to whatever width the terminal happens to be."""
+    import typer
+
+    from comfy_qa.cli import app as root
+
+    return " ".join((typer.main.get_command(root).commands[command].help or "").split())
+
+
+def test_the_help_for_down_does_not_promise_a_reserved_box_that_its_bill_stops():
+    """`down --help` opens "so it stops costing money". Found by running it and
+    reading it, after the suite was green: every sentence the command PRINTS had
+    been corrected and the one describing it had not."""
+    said = _help("down")
+
+    assert said.startswith("Close the tunnel and stop the machine")
+    assert ("Except a reserved box. Its reservation bills for the card every hour "
+            "whether the box is running or stopped") in said
+    assert "`comfy-qat delete` is the only thing that ends it" in said
+
+
+def test_the_help_for_delete_says_it_releases_the_reservation():
+    """And `delete --help` said stopping a box "ends the expensive part of the
+    bill" — true of every box but the one whose bill only `delete` ends."""
+    said = _help("delete")
+
+    assert ("A reserved box is the exception to the first half of that: stopping "
+            "it ends nothing") in said
+    assert "Deleting it releases the reservation as well" in said
+
+
+@pytest.mark.parametrize("command, words", [
+    ("move", "A reserved box is not moved."),
+    ("switch", "Stopping a reserved box frees neither its card nor its bill"),
+    ("create", "`comfy-qat down` does not stop that bill, and only `comfy-qat delete` does"),
+    ("list", "a reserved box bills every hour, running or stopped, until it is deleted"),
+])
+def test_each_command_a_reserved_box_changes_says_so_in_its_help(command, words):
+    assert words in _help(command), _help(command)

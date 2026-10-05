@@ -1902,9 +1902,15 @@ def down_cmd(
 ) -> None:
     """Close the tunnel and stop the machine, so it stops costing money.
 
+    Except a reserved box. Its reservation bills for the card every hour whether
+    the box is running or stopped, so `down` stops the machine and says, every
+    time, that it is still billing — and that `comfy-qat delete` is the only
+    thing that ends it.
+
     `--all` exists because the question at the end of a session is never "is
     comfy-win stopped", it is "am I still paying for anything" — and answering
-    that by naming each box in turn is how one gets missed.
+    that by naming each box in turn is how one gets missed. It reads the
+    project's reservations before it says nothing is.
     """
     from .gcloud import Gcloud
     from .lifecycle import put_away
@@ -2894,6 +2900,10 @@ def switch_cmd(
     The target is brought up *first*. If it cannot start — a capacity shortage is
     routine on GPUs — you still have the machine you were on, and you are told
     where you can work instead.
+
+    Stopping a reserved box frees neither its card nor its bill, and the plan
+    says so beside it. If reservations alone hold the project's GPU allowance,
+    the switch is refused before anything is started or stopped.
     """
     from .gcloud import Gcloud, GcloudError
     from .lifecycle import GO_BUDGET, Budget, put_away, running_elsewhere
@@ -3570,6 +3580,10 @@ def move_cmd(
     A GPU stockout cannot be fixed where you are: the zone has none of that card
     and retrying will not change it. Done by hand this is a snapshot, a disk, an
     instance and a config edit — four chances to get it wrong.
+
+    A reserved box is not moved. Its reservation is held in one zone and cannot
+    be carried to another, so `move` refuses it — before asking Google anything
+    — and prints the commands that delete it and make it again elsewhere.
 
     This one writes: that config edit is the fourth step, so your host list — the
     file `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is

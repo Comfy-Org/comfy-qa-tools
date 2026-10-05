@@ -232,6 +232,11 @@ def delete_cmd(
     Stopping a box ends the expensive part of the bill; its disk keeps costing a
     few pounds a month. Deleting removes both, and the install with them.
 
+    A reserved box is the exception to the first half of that: stopping it ends
+    nothing, because its reservation bills for the card every hour whether the
+    box runs or not. Deleting it releases the reservation as well, and is the
+    only thing that stops that bill.
+
     This one writes: the box's entry goes out of your host list — the file
     `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
     off — so the file is read and then rewritten, with a backup left beside it.
