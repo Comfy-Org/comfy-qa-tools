@@ -1678,9 +1678,9 @@ def _say_reserved(hosts: list[Host], reservations) -> None:
             say.result(_stop_line(host))
 
     if reservations is None:
-        say.result("\nthe project's reservations could not be checked, and a "
-                   "reservation bills with its box stopped — so this is not an "
-                   "all-clear.")
+        _prose("\nthe project's reservations could not be checked, and a "
+               "reservation bills with its box stopped — so this is not an "
+               "all-clear.")
         say.result("  comfy-qat list --live")
         return
 
@@ -1689,7 +1689,7 @@ def _say_reserved(hosts: list[Host], reservations) -> None:
               if (found.name, found.zone) not in declared]
     if others:
         one = len(others) == 1
-        say.result(
+        _prose(
             f"\n{say.count(len(others), 'reservation')} on this project "
             f"{'is' if one else 'are'} billing and not in your host list: "
             f"{', '.join(f'{found.name} ({found.zone})' for found in others)}.")
@@ -3556,8 +3556,8 @@ def _refuse_to_move_a_reserved_box(host: Host, to: str | None) -> None:
         f"of capacity there either: its capacity is what is held. Nothing was "
         f"changed.",
         fix=say.fix(
-            "to have it somewhere else, delete it and make it again there. Its "
-            "disk goes with it, so the ComfyUI on it is installed afresh:",
+            "to have it somewhere else, delete it and make it again there.",
+            "Its disk goes with it, so the ComfyUI on it is installed afresh:",
             f"comfy-qat down {host.name}",
             f"comfy-qat delete {host.name}",
             again),

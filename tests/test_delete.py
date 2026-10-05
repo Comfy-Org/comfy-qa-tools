@@ -675,6 +675,9 @@ def test_deleting_a_reserved_box_releases_its_reservation(cli, tmp_path):
     assert ("comfy-linux and its disk are gone, and it is out of your host list. "
             "Its reservation comfy-linux-rsv was released, so nothing of it is "
             "billing.") in flat(result.stdout)
+    # A sentence, so it is held to the width sentences are: it is 150
+    # characters with these names in it, and reached the terminal unbroken.
+    assert max(len(line) for line in result.stdout.splitlines()) <= 96, result.stdout
 
 
 def test_the_reservation_is_released_before_the_box_is_deleted(cli):
@@ -713,7 +716,7 @@ def test_the_confirmation_names_the_reservation_with_the_box_and_the_disk(cli):
                  input="comfy-linux\n")
 
     assert ("delete comfy-linux in us-central1-c, its 200 GB boot disk, and its "
-            "reservation comfy-linux-rsv.") in result.stdout
+            "reservation comfy-linux-rsv.") in flat(result.stdout)
 
 
 def test_nothing_is_released_until_the_name_is_typed_back(cli, tmp_path):
@@ -753,7 +756,7 @@ def test_a_reservation_already_released_is_said_and_the_box_still_goes(cli, tmp_
 
     assert result.exit_code == 0, result.output
     assert ("its reservation comfy-linux-rsv is not on proj — already released."
-            in result.stdout)
+            in flat(result.stdout))
     assert cloud.released() == []
     assert cloud.deleted() and "comfy-linux" not in entries(tmp_path)
     # And the confirmation did not promise to destroy something that is not there.

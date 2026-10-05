@@ -76,6 +76,19 @@ def _refuse(message: str, fix: str | None = None) -> None:
     say.fail(message, fix=fix, code=2)
 
 
+def _prose(text: str) -> None:
+    """A sentence that is part of the answer, on stdout, broken at the prose width.
+
+    `say.result` prints what it is given, which is right for a command and
+    wrong for a sentence that names a box, a zone and a reservation and is over
+    a hundred characters once it has. `say.wrapped` is the one wrapper and
+    never breaks inside a word. The same helper, under the same name, as
+    `host._prose`.
+    """
+    for line in say.wrapped(text):
+        say.result(line)
+
+
 def _held_for(gc, host, *, already_gone: bool):
     """This box's reservation, as the project has it: `(reservation, lines)`.
 
@@ -330,22 +343,22 @@ def delete_cmd(
         say.result(f"{host.gce_instance} is not on {host.gce_project} — it has "
                    f"already been deleted, so {left}.")
         if held is not None:
-            say.result(f"its reservation {held.name} in {held.zone} is still "
-                       f"billing, and releasing it is the only way to stop that "
-                       f"— so it will be released.")
+            _prose(f"its reservation {held.name} in {held.zone} is still "
+                   f"billing, and releasing it is the only way to stop that "
+                   f"— so it will be released.")
     elif held is not None:
         # All three named, because all three go. The reservation is the one a
         # person will not think of, and it is the one that bills.
-        say.result(f"delete {host.gce_instance} in {host.gce_zone}, "
-                   f"{_boot_disk_phrase(gc, host)}, and its reservation "
-                   f"{held.name}.")
+        _prose(f"delete {host.gce_instance} in {host.gce_zone}, "
+               f"{_boot_disk_phrase(gc, host)}, and its reservation "
+               f"{held.name}.")
         say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
     else:
         say.result(f"delete {host.gce_instance} in {host.gce_zone}, and "
                    f"{_boot_disk_phrase(gc, host)}.")
         say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
     for line in not_released:
-        say.result(line)
+        _say_not_released(line)
 
     if not yes:
         if not can_prompt():
@@ -379,7 +392,17 @@ def delete_cmd(
         # they are not: it is still billing.
         say.result("")
         for line in not_released:
-            say.result(line)
+            _say_not_released(line)
+
+
+def _say_not_released(line: str) -> None:
+    """One line of "there is nothing to release, and why": a sentence is
+    wrapped, and a command — indented, as every offered command is — is left
+    whole so it can be pasted."""
+    if line.startswith(" "):
+        say.result(line)
+    else:
+        _prose(line)
 
 
 def _destroy(gc, host, config, held) -> None:
@@ -579,8 +602,8 @@ def _forget_the_entry(config, host, hosts, *, already_gone: bool,
     also = (f" Its reservation {released.name} was released, so nothing of it "
             f"is billing." if released is not None else "")
     if already_gone:
-        say.result(f"\n{host.name} was already deleted, and it is now out of your "
-                   f"host list too.{also}")
+        _prose(f"\n{host.name} was already deleted, and it is now out of your "
+               f"host list too.{also}")
         return
-    say.result(f"\n{host.name} and its disk are gone, and it is out of your host "
-               f"list.{also}")
+    _prose(f"\n{host.name} and its disk are gone, and it is out of your host "
+           f"list.{also}")

@@ -425,9 +425,18 @@ def _is_an_offer(node: ast.AST) -> bool:
             or bool(_STOP_ADVICE.search(_literals(node))))
 
 
+# What writes a sentence of the ANSWER. `say.result`, and `_prose` — the local
+# helper host.py and remove.py use for a sentence too long to print unbroken,
+# which is `say.result` over `say.wrapped`. Named here because a reader that
+# knew only the first would have stopped seeing every sentence moved to the
+# second, in silence, and the sentences that moved are the ones about a
+# reserved box's bill.
+RESULT_WRITERS = {"say.result", "_prose"}
+
+
 def _a_result_call(statement: ast.stmt) -> ast.Call | None:
     if (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
-            and ast.unparse(statement.value.func) == "say.result"):
+            and ast.unparse(statement.value.func) in RESULT_WRITERS):
         return statement.value
     return None
 
@@ -578,6 +587,17 @@ def test_the_source_readers_find_the_claims_that_are_there():
         f"the source readers found only {sorted(read)}; every kind of claim the "
         f"rules turn on must be one they can see"
     )
+
+
+def test_the_source_reader_sees_a_sentence_written_through_the_wrapping_helper():
+    """Non-vacuity for `_prose`, and the reason it is in `RESULT_WRITERS`: the
+    one money sentence in the package that only that helper writes has to be
+    among the paragraphs the reader found."""
+    found = [text for where, text, _ in _written_paragraphs()
+             if where.startswith("host.py")]
+
+    assert any("reservation bills with its box stopped" in text for text in found), (
+        "the reader no longer sees sentences written through `_prose`")
 
 
 def test_the_reader_tells_the_six_inversions_from_what_is_written():

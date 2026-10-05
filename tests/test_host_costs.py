@@ -1424,8 +1424,10 @@ MAKES_A_RESERVATION = frozenset({"create_reservation"})
 RESERVED_BILL_TOKENS = ("rsv.bill(", "rsv.stop_line(")
 
 
-def _names_the_reserved_bill(body: str) -> bool:
-    return any(token in _on_the_ordinary_path(body) for token in RESERVED_BILL_TOKENS)
+def _reserved_tokens_in(body: str) -> set[str]:
+    """Which of the reserved-bill tokens this body says on its ordinary path."""
+    said = _on_the_ordinary_path(body)
+    return {token for token in RESERVED_BILL_TOKENS if token in said}
 
 
 def _reaches(name: str, targets: frozenset[str],
@@ -1456,6 +1458,13 @@ def test_every_command_that_can_reserve_says_the_reserved_bill_when_it_works():
     that set is cleared — by its own ordinary path or one hop from it — but
     with a vocabulary of its own, because the one that guard accepts is the
     wrong sentence here.
+
+    BOTH tokens, each of them, and not either. The first version asked for any
+    one and was cleared by the PLAN: `Blueprint.steps` says the bill before
+    anything exists, under `--dry-run` as well, so with both sentences deleted
+    from the lines printed after the box is made this stayed green. What only
+    the ending says is how the bill is STOPPED, so that is asked for by name —
+    found by deleting the ending and watching which tests noticed.
     """
     import inspect
 
@@ -1477,16 +1486,19 @@ def test_every_command_that_can_reserve_says_the_reserved_bill_when_it_works():
     silent = []
     for name in reserving:
         node = commands[name]
-        if _names_the_reserved_bill(ast.get_source_segment(source, node) or ""):
-            continue
-        if not any(_names_the_reserved_bill(body)
-                   for call in ast.walk(node) if isinstance(call, ast.Call)
-                   for body in bodies.get(_called_name(call), [])):
-            silent.append(name)
+        said = _reserved_tokens_in(ast.get_source_segment(source, node) or "")
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call):
+                for body in bodies.get(_called_name(call), []):
+                    said |= _reserved_tokens_in(body)
+        unsaid = sorted(set(RESERVED_BILL_TOKENS) - said)
+        if unsaid:
+            silent.append(f"{name} (never reaches {', '.join(unsaid)})")
 
     assert not silent, (
-        f"{', '.join(silent)} can make a reservation and does not say, where it "
-        f"succeeds, that the box bills every hour until it is deleted.")
+        f"{'; '.join(silent)} — it can make a reservation and does not say, "
+        f"where it succeeds, both that the box bills every hour until it is "
+        f"deleted and what stops that.")
 
 
 def test_the_reserved_vocabularies_are_real_and_cannot_clear_themselves():

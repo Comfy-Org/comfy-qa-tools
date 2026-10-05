@@ -732,7 +732,7 @@ def test_down_all_names_a_reservation_on_the_project_that_no_host_declares(cli):
     out = result.stdout
     assert "Nothing is now" not in out
     assert ("1 reservation on this project is billing and not in your host list: "
-            "stray-rsv (us-central1-a).") in out
+            "stray-rsv (us-central1-a).") in _one_line(out)
     assert "  comfy-qat list --live   # which of them has no box, and how to release it" \
         in out.splitlines()
     # Named, not released: it is not this command's to release.
@@ -747,7 +747,9 @@ def test_down_all_does_not_call_an_unread_project_clear_of_reservations(cli):
     out = result.stdout
     assert "Nothing is now" not in out
     assert ("the project's reservations could not be checked, and a reservation "
-            "bills with its box stopped — so this is not an all-clear.") in out
+            "bills with its box stopped — so this is not an all-clear."
+            ) in _one_line(out)
+    assert max(len(line) for line in out.splitlines()) <= 96, out
     assert "was billing: comfy-win, comfy-linux. Stopped." in out
 
 
