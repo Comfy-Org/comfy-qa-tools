@@ -1609,3 +1609,311 @@ def test_a_linux_box_is_not_told_that_windows_is_slow(tmp_path):
                      tunnel_dir=tmp_path)
         said_windows = any("Windows takes" in line for line in lines)
         assert said_windows is expected, (host.name, lines)
+
+
+# --- a box with no GPU ---------------------------------------------------------
+#
+# The host list says `gpu = "none"` for a box with no card: `discover` writes it
+# and so does `create --gpu none`. `"none"` is a non-empty string, so every
+# `if host.gpu:` read that box as one WITH a card. Each test below is one place
+# that did, and fails on the code as it was.
+
+LINUX_CPU = Host(name="comfy-cpu", kind="gce", port=8196, os="Ubuntu 22.04",
+                 gpu="none", gce_instance="comfy-cpu", gce_zone="us-central1-a",
+                 gce_project="proj")
+WIN_CPU = Host(name="comfy-cpu-win", kind="gce", port=8197, os="Windows Server 2022",
+               gpu="none", gce_instance="comfy-cpu-win", gce_zone="us-central1-a",
+               gce_project="proj")
+
+
+def test_a_box_with_no_gpu_is_not_waited_on_for_a_driver_it_will_never_have(tmp_path):
+    """THE DEFECT: fifteen minutes of `nvidia-smi` on a machine with no NVIDIA
+    hardware, billing throughout, ending in "still has no working GPU driver".
+
+    The clock is the witness. On the old code this box is probed, every probe
+    fails, and the loop runs the clock out to DRIVER_TIMEOUT before giving up.
+    """
+    from comfy_qa.lifecycle import DRIVER_TIMEOUT, POLL_SECONDS, wait_for_driver
+
+    probes: list[str] = []
+    elapsed = [0.0]
+
+    def no_nvidia_here(args, mode):
+        probes.append(" ".join(args))
+        raise GcloudError("nvidia-smi: command not found", raw="exit status 127")
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+
+    lines, say = said()
+    wait_for_driver(Gcloud(runner=no_nvidia_here), LINUX_CPU, say, sleep=sleep,
+                    now=lambda: elapsed[0], tunnel_dir=tmp_path)
+
+    assert probes == [], "a box with no GPU was asked for `nvidia-smi`"
+    assert elapsed[0] == 0, f"waited {elapsed[0]:.0f}s of a possible {DRIVER_TIMEOUT}s"
+    assert lines == []
+    assert POLL_SECONDS > 0, "the clock above only moves if the loop sleeps"
+
+
+def test_the_driver_wait_still_runs_its_clock_out_on_a_box_that_has_a_card(tmp_path):
+    """The pair, and the proof the test above can fail: the same dead box,
+    declared WITH a card, is waited on for the whole fifteen minutes."""
+    from comfy_qa.lifecycle import DRIVER_TIMEOUT, wait_for_driver
+
+    elapsed = [0.0]
+
+    def no_nvidia_here(args, mode):
+        raise GcloudError("nvidia-smi: command not found", raw="exit status 127")
+
+    def sleep(seconds):
+        elapsed[0] += seconds
+
+    _, say = said()
+    with pytest.raises(LifecycleError):
+        wait_for_driver(Gcloud(runner=no_nvidia_here), LINUX_GPU, say, sleep=sleep,
+                        now=lambda: elapsed[0], tunnel_dir=tmp_path)
+    assert elapsed[0] >= DRIVER_TIMEOUT
+
+
+@pytest.fixture
+def no_real_waiting(monkeypatch):
+    """Time that moves only when the code sleeps.
+
+    `ensure_installed` takes no clock of its own, and on the code as it was a
+    box with no GPU sleeps its way through the whole fifteen-minute driver wait
+    — for real. That is the defect, and a test of it must not take fifteen
+    minutes to say so.
+    """
+    from comfy_qa import lifecycle
+
+    elapsed = [0.0]
+    monkeypatch.setattr(lifecycle, "_clock", lambda: elapsed[0])
+    monkeypatch.setattr(lifecycle, "_pause",
+                        lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds))
+    return elapsed
+
+
+def _box(*, installed: bool, torch: str = "READY"):
+    """A box that answers the on-box scripts, and keeps everything it was sent."""
+    sent: list[str] = []
+
+    def runner(args, mode):
+        key = " ".join(args)
+        sent.append(key)
+        if mode != "output":
+            return 0
+        if "nvidia-smi" in key:
+            raise GcloudError("nvidia-smi: command not found", raw="exit status 127")
+        if "INSTALLED" in key and "MISSING" in key:
+            # Not there the first time it is asked, there once the install ran.
+            return "INSTALLED" if installed or any("git clone" in s for s in sent) \
+                else "MISSING"
+        if "import torch" in key or "pip show torch" in key:
+            # `TORCH_NO_CUDA` models a box whose torch is the CPU build, and
+            # such a box says so only when ASKED about CUDA. Asked merely
+            # whether torch is there, it is ready. A fake that gave the old
+            # answer to the new question would be a box that does not exist.
+            if torch == "TORCH_NO_CUDA" and "TORCH_NO_CUDA" not in key:
+                return "READY"
+            return torch
+        return ""
+
+    return Gcloud(runner=runner), sent
+
+
+@pytest.mark.parametrize("host", [LINUX_CPU, WIN_CPU], ids=["linux", "windows"])
+def test_installing_onto_a_box_with_no_gpu_never_asks_for_nvidia_smi(host, tmp_path, no_real_waiting):
+    from comfy_qa.lifecycle import ensure_installed
+
+    gc, sent = _box(installed=False)
+    _, say = said()
+    ensure_installed(gc, host, say, tunnel_dir=tmp_path)
+
+    assert not [command for command in sent if "nvidia-smi" in command]
+    (install,) = [command for command in sent if "git clone" in command]
+    assert "--index-url https://download.pytorch.org/whl/cpu" in install
+    assert "/whl/cu1" not in install, "a CUDA build, on a machine with no CUDA"
+
+
+def test_installing_onto_a_gpu_box_still_asks_the_driver_which_cuda_it_runs(tmp_path, no_real_waiting):
+    """The pair. `LINUX` has an L4, so both questions are still asked."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    sent: list[str] = []
+
+    def runner(args, mode):
+        key = " ".join(args)
+        sent.append(key)
+        if mode != "output":
+            return 0
+        if "nvidia-smi -L" in key:
+            return "GPU 0: NVIDIA L4"
+        if "nvidia-smi" in key:
+            return "CUDA Version: 13.0"
+        if "INSTALLED" in key and "MISSING" in key:
+            return "INSTALLED" if any("git clone" in s for s in sent) else "MISSING"
+        return ""
+
+    _, say = said()
+    ensure_installed(Gcloud(runner=runner), LINUX, say, tunnel_dir=tmp_path)
+
+    assert [command for command in sent if "nvidia-smi -L" in command]
+    (install,) = [command for command in sent if "git clone" in command]
+    assert "--index-url https://download.pytorch.org/whl/cu130" in install
+
+
+@pytest.mark.parametrize("host", [LINUX_CPU, WIN_CPU], ids=["linux", "windows"])
+def test_a_cpu_torch_on_a_box_with_no_gpu_is_not_repaired(host, tmp_path, no_real_waiting):
+    """THE DEFECT: verify answers "torch cannot see the card", and the repair
+    force-reinstalls the CUDA build — on every `go`, on a machine with no card
+    to see. `TORCH_NO_CUDA` is what the OLD check prints about this box."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    gc, sent = _box(installed=True, torch="TORCH_NO_CUDA")
+    lines, say = said()
+    ensure_installed(gc, host, say, tunnel_dir=tmp_path)
+
+    assert not [command for command in sent if "--force-reinstall" in command]
+    assert not [command for command in sent if "pip install" in command], (
+        "nothing needed installing")
+    assert not [line for line in lines if "CUDA build" in line]
+    (verify,) = [command for command in sent
+                 if "import torch" in command or "pip show torch" in command]
+    assert "TORCH_NO_CUDA" not in verify, "the question was not asked about CUDA"
+
+
+def test_a_cpu_torch_on_a_gpu_box_is_still_repaired(tmp_path, no_real_waiting):
+    """The pair: the same answer about a box that does have a card."""
+    from comfy_qa.lifecycle import ensure_installed
+
+    gc, sent = _box(installed=True, torch="TORCH_NO_CUDA")
+    _, say = said()
+    ensure_installed(gc, WIN, say, tunnel_dir=tmp_path)
+
+    assert [command for command in sent if "--force-reinstall" in command]
+
+
+def test_a_box_with_no_gpu_and_no_torch_gets_the_cpu_build(tmp_path, no_real_waiting):
+    from comfy_qa.lifecycle import ensure_installed
+
+    gc, sent = _box(installed=True, torch="NO_TORCH")
+    lines, say = said()
+    ensure_installed(gc, LINUX_CPU, say, tunnel_dir=tmp_path)
+
+    (repair,) = [command for command in sent if "pip install" in command]
+    assert "--index-url https://download.pytorch.org/whl/cpu" in repair
+    assert "--force-reinstall" not in repair
+    assert not [command for command in sent if "nvidia-smi" in command]
+    assert any("installing torch from cpu" in line for line in lines), lines
+
+
+def test_a_stockout_on_a_box_with_no_gpu_does_not_say_google_has_no_none(tmp_path):
+    from comfy_qa.lifecycle import STOCKOUT
+
+    _, say = said()
+    gc = gcloud(["TERMINATED"], fail=GcloudError(
+        "The zone does not have enough resources available to fulfill the request. "
+        "'NULL:0/NULL:0/NULL:0 (state:STOCKOUT, sub-state:STOCKOUT, resource type:compute)'."
+    ))
+    with pytest.raises(LifecycleError) as caught:
+        bring_up(gc, LINUX_CPU, say, tunnel_dir=tmp_path, sleep=lambda _: None)
+
+    assert caught.value.kind == STOCKOUT
+    assert "Google has no machine capacity in us-central1-a right now" in str(caught.value)
+    assert "none" not in str(caught.value)
+    assert "comfy-cpu cannot start" in str(caught.value)
+
+
+# --- a reserved box: the bill does not stop with the machine --------------------
+#
+# `_with_the_bill` ends twenty-eight failure fixes with "stop paying for it:
+# comfy-qat down <name>". For a reserved box that sentence is false: `down`
+# stops the machine and the reservation goes on billing until the box is
+# deleted. One helper, so one change — and these tests reach it both directly
+# and through a failure that really happens.
+
+RESERVED = Host(name="comfy-linux-2", kind="gce", port=8194, os="Ubuntu 22.04",
+                gpu="L4", gce_instance="comfy-linux-2", gce_zone="europe-west4-c",
+                gce_project="proj",
+                extra=(("gce_reservation", "comfy-linux-2-rsv"),))
+
+RESERVED_TAIL = ("stop the box: comfy-qat down comfy-linux-2 — it is reserved, so "
+                 "the bill only stops with: comfy-qat delete comfy-linux-2")
+
+
+def test_the_fix_for_a_reserved_box_says_what_actually_stops_its_bill():
+    from comfy_qa.lifecycle import _with_the_bill
+
+    assert RESERVED.reservation == "comfy-linux-2-rsv", "the fixture is a reserved box"
+    assert _with_the_bill(RESERVED) == RESERVED_TAIL
+    fix = _with_the_bill(RESERVED, "look at the log:", "comfy-qat logs comfy-linux-2")
+    assert fix.splitlines()[-1].strip() == "or " + RESERVED_TAIL
+    assert "stop paying for it" not in fix, (
+        "`down` does not stop a reserved box's bill, so it must not be offered as "
+        "the way to stop paying")
+
+
+def test_the_fix_for_an_unreserved_box_is_the_sentence_it_always_was():
+    from comfy_qa.lifecycle import _with_the_bill
+
+    assert LINUX_GPU.reservation is None
+    assert _with_the_bill(LINUX_GPU) == "stop paying for it: comfy-qat down comfy-linux-2"
+    fix = _with_the_bill(LINUX_GPU, "look at the log:")
+    assert fix.splitlines()[-1].strip() == (
+        "or stop paying for it: comfy-qat down comfy-linux-2")
+    assert "delete" not in fix
+
+
+def test_a_real_failure_on_a_reserved_box_carries_the_reserved_sentence(tmp_path):
+    """Through a caller, not only the helper: the driver wait giving up."""
+    from comfy_qa.lifecycle import wait_for_driver
+
+    clock = iter([0, 1, 10_000, 10_001, 10_002])
+    dropped = GcloudError("Broken pipe", raw="closed by remote host")
+    _, say = said()
+
+    with pytest.raises(LifecycleError) as caught:
+        wait_for_driver(_driver([dropped, dropped, dropped]), RESERVED, say,
+                        sleep=lambda _: None, now=lambda: next(clock),
+                        tunnel_dir=tmp_path)
+
+    assert "running and billing" in str(caught.value)
+    assert RESERVED_TAIL in caught.value.fix
+    assert "stop paying for it" not in caught.value.fix
+
+
+def test_every_failure_fix_in_this_module_still_goes_through_the_one_helper():
+    """The reserved sentence is only everywhere because the unreserved one is
+    written in exactly one place. A fix that spells `stop paying for it` itself
+    would be right for every box except a reserved one, and silently.
+
+    Counted two ways and compared, so the walk cannot quietly see less than the
+    file holds: the helper's call sites, by syntax tree, against a plain text
+    count of the same name.
+    """
+    import ast
+    import inspect
+
+    from comfy_qa import lifecycle
+
+    source = inspect.getsource(lifecycle)
+    tree = ast.parse(source)
+    helper = next(node for node in ast.walk(tree)
+                  if isinstance(node, ast.FunctionDef) and node.name == "_with_the_bill")
+    spelled_out = [
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        and "stop paying for it" in node.value
+        and not (helper.lineno <= node.lineno <= helper.end_lineno)
+        # Docstrings and the module's own prose are not fixes.
+        and not any(isinstance(parent, ast.Expr) and parent.value is node
+                    for parent in ast.walk(tree) if isinstance(parent, ast.Expr))
+    ]
+    assert spelled_out == [], (
+        f"lifecycle.py:{spelled_out} writes the stop-paying sentence itself")
+
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "_with_the_bill"]
+    assert len(calls) >= 28, f"only {len(calls)} failure fixes name the bill"
+    code_only = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
+    assert code_only.count("_with_the_bill(") - 1 >= len(calls) > 0

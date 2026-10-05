@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 
-from .config import Host
+from .config import Host, declares_no_gpu
 from .osfamily import is_windows
 from .tunnel import COMFYUI_PORT
 
@@ -296,8 +296,29 @@ def torch_index_for(reported: str | None) -> str:
     return TORCH_INDEX
 
 
+# For a box declared to have no GPU. The CUDA builds above carry two gigabytes
+# of runtime for a card that is not there; this one is torch and nothing else.
+CPU_TORCH_INDEX = "https://download.pytorch.org/whl/cpu"
+
+
+def torch_index(host: Host, reported: str | None = None) -> str:
+    """The PyTorch index THIS box should install from.
+
+    Asked of the box's declaration before its driver. `torch_index_for` reads
+    `nvidia-smi`'s answer and falls back to a CUDA index when there is none —
+    which is the right fallback for a GPU box that could not be asked and the
+    wrong one for a box with no GPU, where there is never an answer.
+    """
+    if declares_no_gpu(host):
+        return CPU_TORCH_INDEX
+    return torch_index_for(reported)
+
+
 def torch_install(python: str, host: Host, index: str | None = None) -> str:
     """Install torch so that it can see the card the box was rented for."""
+    if declares_no_gpu(host):
+        return (f"{python} -m pip install torch torchvision torchaudio "
+                f"--index-url {CPU_TORCH_INDEX}")
     if is_windows(host):
         return (f"{python} -m pip install torch torchvision torchaudio "
                 f"--index-url {index or TORCH_INDEX}")
@@ -328,7 +349,14 @@ def verify_command(host: Host) -> str:
     reading that costs nothing where `torch.cuda.is_available()` initialises a
     context. On Linux the PyPI wheel carries CUDA and does not carry the `+cu`
     marker, so there the question has to be asked directly.
+
+    A box declared to have no GPU is asked a question it can pass: is torch
+    there at all. Asked the other one it answers "torch cannot see the card"
+    every time — true, and read by the caller as "wrong torch, reinstall the
+    CUDA build", on every `go`, for a card the machine does not have.
     """
+    if declares_no_gpu(host):
+        return _verify_without_a_card(host)
     if is_windows(host):
         return (
             "powershell -NoProfile -NonInteractive -Command \""
@@ -348,6 +376,29 @@ def verify_command(host: Host) -> str:
         + '[ -n "$py" ] || py=python3; '
         + f"\"$py\" -c \"import torch, sys; "
         f"sys.stdout.write('{READY}' if torch.cuda.is_available() else '{TORCH_NO_CUDA}')\" "
+        f"2>/dev/null || echo {NO_TORCH}"
+    )
+
+
+def _verify_without_a_card(host: Host) -> str:
+    """`verify_command` for a box with no GPU: READY when torch is installed."""
+    if is_windows(host):
+        return (
+            "powershell -NoProfile -NonInteractive -Command \""
+            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
+            f"{{ Write-Output '{NO_COMFYUI}'; exit 0 }}; "
+            f"Set-Location '{WINDOWS_ROOT}'; "
+            + windows_python_search("'python'")
+            + "$v = (& $py -m pip show torch 2>$null | Select-String '^Version:'); "
+            f"if (-not $v) {{ Write-Output '{NO_TORCH}' }} "
+            f"else {{ Write-Output '{READY}' }}\""
+        )
+    return (
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo {NO_COMFYUI}; exit 0; fi; "
+        f"cd {LINUX_ROOT}; "
+        + linux_python_search()
+        + '[ -n "$py" ] || py=python3; '
+        + f"\"$py\" -c \"import torch, sys; sys.stdout.write('{READY}')\" "
         f"2>/dev/null || echo {NO_TORCH}"
     )
 
@@ -503,6 +554,13 @@ def repair_command(host: Host, *, force_torch: bool = False,
     """
     force = "--force-reinstall --no-deps " if force_torch else ""
     index = index or TORCH_INDEX
+    # A box with no GPU gets the CPU build whatever index it was handed, on
+    # both operating systems: an index chosen for a CUDA version is an answer to
+    # a question this box was never the subject of.
+    cpu_only = declares_no_gpu(host)
+    if cpu_only:
+        index = CPU_TORCH_INDEX
+    what = "the CPU build of torch" if cpu_only else "torch for this GPU"
     if is_windows(host):
         python = windows_python_search("'python'")
         return (
@@ -525,7 +583,7 @@ def repair_command(host: Host, *, force_torch: bool = False,
             f"{{ Write-Output '{NOTHING_TO_REPAIR}'; exit 1 }}; "
             f"Set-Location '{WINDOWS_ROOT}'; "
             + python
-            + "Write-Output 'installing torch for this GPU (the slow part)'; "
+            + f"Write-Output 'installing {what} (the slow part)'; "
             f"& $py -m pip install {force}torch torchvision torchaudio "
             f"--index-url {index}; "
             "Write-Output 'installing the rest of the requirements'; "
@@ -542,8 +600,9 @@ def repair_command(host: Host, *, force_torch: bool = False,
         f"cd {LINUX_ROOT} || exit 1; "
         + linux_python_search()
         + '[ -n "$py" ] || py=python3; '
-        + f'"$py" -m pip install {force}torch torchvision torchaudio && '
-        + '"$py" -m pip install -r requirements.txt'
+        + f'"$py" -m pip install {force}torch torchvision torchaudio'
+        + (f" --index-url {index}" if cpu_only else "")
+        + ' && "$py" -m pip install -r requirements.txt'
     )
 
 
@@ -554,7 +613,11 @@ def install_command(host: Host, index: str | None = None) -> str:
     box with `cuda_command` and passes the answer. Without one the documented
     fallback is used, which installs and runs — just not always as fast as the
     card could.
+
+    A box declared to have no GPU installs the CPU build, whatever was passed.
     """
+    if declares_no_gpu(host):
+        index = CPU_TORCH_INDEX
     if is_windows(host):
         # winget is present on Server 2022 images; git and python come from there.
         return (
@@ -657,8 +720,12 @@ def launch_command(host: Host) -> str:
     nothing is exposed on any interface, no firewall rule is involved, and the
     line ComfyUI prints — `To see the GUI go to http://127.0.0.1:8188` — is a
     true statement about the machine it is printed on.
+
+    A box declared to have no GPU is started with `--cpu`. Without it ComfyUI
+    looks for a CUDA device at startup and exits when there is none.
     """
     listen = "127.0.0.1"
+    cpu = _cpu_flag(host)
     if is_windows(host):
         return (
             "powershell -NoProfile -NonInteractive -Command \""
@@ -667,15 +734,26 @@ def launch_command(host: Host) -> str:
                 "(Get-Command python -ErrorAction SilentlyContinue).Source")
             + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
             + "Write-Output ('using ' + $py); "
-            + f"& $py main.py --listen {listen} --port {COMFYUI_PORT}\""
+            + f"& $py main.py --listen {listen} --port {COMFYUI_PORT}{cpu}\""
         )
     return (
         f"cd {LINUX_ROOT}; "
         + linux_python_search()
         + f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
         + "echo \"using $py\"; "
-        + f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}"
+        + f"\"$py\" main.py --listen {listen} --port {COMFYUI_PORT}{cpu}"
     )
+
+
+def _cpu_flag(host: Host) -> str:
+    """` --cpu` for a box declared to have no GPU, and nothing otherwise.
+
+    One place, because there are two launch commands and each is on two
+    operating systems. It goes on the END of the command line: `alive_command`
+    recognises a running ComfyUI by `main.py --listen`, and that has to stay
+    the start of what follows `main.py`.
+    """
+    return " --cpu" if declares_no_gpu(host) else ""
 
 
 def launch_detached_command(host: Host) -> str:
@@ -707,6 +785,7 @@ def launch_detached_command(host: Host) -> str:
     conflating them is exactly the "a booted VM is up" mistake one level down.
     """
     listen = "127.0.0.1"
+    cpu = _cpu_flag(host)
     if is_windows(host):
         return (
             "powershell -NoProfile -NonInteractive -Command \""
@@ -717,7 +796,7 @@ def launch_detached_command(host: Host) -> str:
             + "Write-Output ('using ' + $py); "
             + "$q = [char]34; "
             + "$inner = '& ' + $q + $py + $q + "
-            + f"' main.py --listen {listen} --port {COMFYUI_PORT} *> ' + $q + "
+            + f"' main.py --listen {listen} --port {COMFYUI_PORT}{cpu} *> ' + $q + "
             + f"'{WINDOWS_LOG}' + $q; "
             + "Start-Process -FilePath 'powershell' "
             + "-ArgumentList '-NoProfile', '-NonInteractive', '-Command', $inner "
@@ -729,7 +808,7 @@ def launch_detached_command(host: Host) -> str:
         + linux_python_search()
         + f"if [ -z \"$py\" ]; then echo NO_PYTHON; exit {NO_PYTHON_EXIT}; fi; "
         + "echo \"using $py\"; "
-        + f"nohup \"$py\" main.py --listen {listen} --port {COMFYUI_PORT} "
+        + f"nohup \"$py\" main.py --listen {listen} --port {COMFYUI_PORT}{cpu} "
         + f"> {LINUX_LOG} 2>&1 < /dev/null & "
         + f"echo {STARTED}"
     )

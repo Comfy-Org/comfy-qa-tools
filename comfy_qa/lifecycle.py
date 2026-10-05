@@ -39,7 +39,7 @@ from typing import Callable
 
 from . import inflight
 from . import say as output
-from .config import Host
+from .config import Host, declares_no_gpu, has_gpu
 from .gcloud import GONE, Gcloud, GcloudError
 from .osfamily import family, is_windows
 from .stamp import ProbeError, Stamp, fetch, mismatch
@@ -391,6 +391,16 @@ def _with_the_bill(host: Host, *advice: str) -> str:
     comment went with them: the label already says what the command is for.
     """
     lines = [line for line in advice if line]
+    if getattr(host, "reservation", None):
+        # A RESERVED BOX IS THE ONE THIS SENTENCE WAS FALSE ABOUT. `down` stops
+        # the machine and the reservation goes on billing for it, every hour,
+        # until the box is deleted — so "stop paying for it: comfy-qat down"
+        # tells somebody the bill has stopped when it has not. Both commands,
+        # in the order they are run, and which of them the bill answers to.
+        tail = (f"{'or ' if lines else ''}stop the box: {stop_paying(host)} — it "
+                f"is reserved, so the bill only stops with: comfy-qat delete "
+                f"{host.name}")
+        return output.fix(*lines, tail)
     tail = f"{'or ' if lines else ''}stop paying for it: {stop_paying(host)}"
     return output.fix(*lines, tail)
 
@@ -410,6 +420,18 @@ def _raw_stop(host: Host) -> str:
     """
     return (f"gcloud compute instances stop {host.gce_instance} "
             f"--zone={host.gce_zone} --project={host.gce_project}")
+
+
+def _card_word(host: Host) -> str:
+    """What a sentence calls this box's card: its name, or a word that is true.
+
+    `host.gpu or 'GPU'` printed "none" for a box declared to have no GPU —
+    "Google has no none capacity" — because `"none"` is not empty. For that box
+    the thing Google is out of is the machine itself.
+    """
+    if declares_no_gpu(host):
+        return "machine"
+    return host.gpu or "GPU"
 
 
 def is_auth_failure(exc: GcloudError) -> bool:
@@ -641,7 +663,7 @@ def bring_up(
                     # sake: without it people spend an hour auditing their quota
                     # and billing for a shortage that has nothing to do with
                     # either. It changes the next action, so it stays.
-                    f"Google has no {host.gpu or 'GPU'} capacity in {host.gce_zone} "
+                    f"Google has no {_card_word(host)} capacity in {host.gce_zone} "
                     f"right now, so {host.name} cannot start. This is not a fault on "
                     "your side, and retrying in the same zone will not help.",
                     kind=STOCKOUT,
@@ -1130,7 +1152,11 @@ def wait_for_driver(
     Windows is skipped: its driver is installed by hand, deliberately, because
     Google documents no unattended method. A box with no GPU is skipped too.
     """
-    if is_windows(host) or not host.gpu or host.kind == "local":
+    # `has_gpu`, not `host.gpu`. A box with no card is declared `gpu = "none"`,
+    # which is a non-empty string — so `not host.gpu` was False for it, and it
+    # was probed for `nvidia-smi` every five seconds for the full fifteen
+    # minutes, billing, and then told its GPU driver had not come up.
+    if is_windows(host) or not has_gpu(host) or host.kind == "local":
         return
 
     # A card no driver this tool installs can bring up, answered in a second
@@ -1234,7 +1260,7 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                      budget: Budget | None = None) -> None:
     """Make sure ComfyUI exists on the box, installing it if it does not."""
     from .provision import (
-        check_command, cuda_command, install_command, root_for, torch_index_for,
+        check_command, cuda_command, install_command, root_for, torch_index,
     )
 
     # Before anything is asked of the box. An install started during the driver's
@@ -1281,9 +1307,14 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     # them is four wheels being fetched with no per-file progress — which is the
     # point at which a person decides it has hung and presses Ctrl-C. The `still
     # going` lines below are the clock; nothing else in that stretch is one.
-    say("  what follows is the box's own output — apt, git, then pip. The quiet "
-        "stretch is torch, torchvision, torchaudio and the CUDA runtime, which "
-        "download without progress lines.")
+    if declares_no_gpu(host):
+        say("  what follows is the box's own output — apt, git, then pip. The "
+            "quiet stretch is torch, torchvision and torchaudio, which download "
+            "without progress lines.")
+    else:
+        say("  what follows is the box's own output — apt, git, then pip. The quiet "
+            "stretch is torch, torchvision, torchaudio and the CUDA runtime, which "
+            "download without progress lines.")
     # `finally`, not three `give_up()` calls on the paths we thought of. This
     # ticker runs on a THREAD — the only two in this module that do; every other
     # `output.slow` here passes background=False and has nothing to stop. So an
@@ -1308,15 +1339,19 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     #
     # `give_up()` after `done()` is a no-op, so one cleanup covers every exit.
     try:
-        try:
-            reported = gc.ssh_output(host.gce_instance, host.gce_zone,
-                                     host.gce_project, cuda_command(host))
-        except GcloudError:
-            reported = None
+        # A box with no GPU is not asked which CUDA its driver runs. There is no
+        # driver, `nvidia-smi` is not on it, and the answer would not be used.
+        reported = None
+        if not declares_no_gpu(host):
+            try:
+                reported = gc.ssh_output(host.gce_instance, host.gce_zone,
+                                         host.gce_project, cuda_command(host))
+            except GcloudError:
+                reported = None
         try:
             installed = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                                install_command(host,
-                                               torch_index_for(str(reported or ""))),
+                                               torch_index(host, str(reported or ""))),
                                stream=True)
         except GcloudError as exc:
             raise give_up(
@@ -1489,7 +1524,7 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     """
     from .provision import (
         NO_COMFYUI, NO_TORCH, READY, TORCH_NO_CUDA, cuda_command, repair_command,
-        root_for, torch_index_for, verify_command,
+        root_for, torch_index, verify_command,
     )
 
     try:
@@ -1518,19 +1553,26 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     else:
         return
 
+    # Reached by a box with no GPU only when it has no torch at all: its verify
+    # never answers TORCH_NO_CUDA. It gets the CPU build, and is not asked for a
+    # CUDA version it cannot have.
+    cpu_only = declares_no_gpu(host)
+
     # Which CUDA the box's driver supports decides which torch to fetch. Pinning
     # that number is how an L4 was told it "needs pytorch with cu130 or higher to
     # use optimized CUDA operations" — installed, working, and quietly slower
     # than the hardware allows.
-    try:
-        reported = gc.ssh_output(host.gce_instance, host.gce_zone,
-                                 host.gce_project, cuda_command(host))
-    except GcloudError:
-        reported = None
-    index = torch_index_for(str(reported or ""))
+    reported = None
+    if not cpu_only:
+        try:
+            reported = gc.ssh_output(host.gce_instance, host.gce_zone,
+                                     host.gce_project, cuda_command(host))
+        except GcloudError:
+            reported = None
+    index = torch_index(host, str(reported or ""))
     fetching = output.slow(
         f"installing torch from {index.rsplit('/', 1)[-1]}, which is what this "
-        "box's driver supports",
+        + ("box needs with no GPU" if cpu_only else "box's driver supports"),
         expect="several minutes", emit=say, every=STREAM_TICK_SECONDS).start()
 
     # The same `finally` as the install above, and for the same reason — this is
@@ -1539,7 +1581,9 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
     try:
         try:
             code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                          repair_command(host, force_torch=TORCH_NO_CUDA in state,
+                          repair_command(host,
+                                         force_torch=(TORCH_NO_CUDA in state
+                                                      and not cpu_only),
                                          index=index),
                           stream=True)
         except GcloudError as exc:

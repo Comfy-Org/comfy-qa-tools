@@ -207,6 +207,17 @@ class Card:
         return self.architecture in GSP_ARCHITECTURES
 
     @property
+    def is_gpu(self) -> bool:
+        """Is there a card at all? False only for `NO_GPU`, below the table.
+
+        Asked wherever a line was written when a box and a card were the same
+        thing: the driver, the accelerator flag, the GPU quota, the zones a card
+        is sold in. `has_gsp` is not this question — a box with no card has no
+        GSP either, and is not a card this tool cannot drive.
+        """
+        return bool(self.accelerator)
+
+    @property
     def accelerator_flag(self) -> str | None:
         """The `--accelerator` value, or None when the machine type carries it."""
         if self.attached:
@@ -267,6 +278,31 @@ CARDS: dict[str, Card] = {
                  attached=True, architecture="Hopper", count=8,
                  quota_aliases=("H100",), quota_family="NVIDIA_H100", vcpus=208),
 }
+
+# NO GPU AT ALL, and deliberately NOT a row in the table above. `setup`,
+# `quota list` and the driver tests all read `CARDS` as "the cards Google
+# meters", so a row for "none" there would be looked up in the quota records
+# and asked for at Google. It is a `Card` only so that everything which carries
+# a blueprint's card can carry this one, and every place that must treat it
+# differently asks `is_gpu`.
+#
+# The machine is the T4's — `n1-standard-8`, 8 vCPU and 30 GB — with nothing
+# attached to it: the one machine type in this file already proved on a live
+# create, and the one whose CPU quota path `quota.py` documents (N1 falls back
+# to the general `CPUS-per-project-region` pool). `count=0` is the fact the
+# ceiling arithmetic needs: this box holds none of the GPU allowance.
+# `attached=True` reads oddly and is only there so `accelerator_flag` is None.
+NO_GPU = Card("none", "none", accelerator="", machine_type="n1-standard-8",
+              attached=True, architecture="", count=0, vcpus=8)
+
+# What a person may type to mean it. `none` is also how a host list says it.
+_NO_GPU_SPELLINGS = frozenset({"none", "cpu"})
+
+# The note beside it in a menu: the three things a person choosing needs to
+# know about it that the word "none" does not say.
+_NO_GPU_NOTE = (f"{NO_GPU.machine_type} — no GPU; ComfyUI on the CPU, slow, and "
+                f"not counted against GPU quota")
+
 
 # FOUR CARDS THIS PROJECT METERS AND THIS TABLE DELIBERATELY DOES NOT CARRY, so
 # that their absence is a recorded decision rather than an oversight. All four are
@@ -527,6 +563,16 @@ def gpu_menu() -> list[tuple[str, str]]:
     return [(key, CARDS[key].machine_type) for key in drivable_cards()]
 
 
+def gpu_choices() -> list[tuple[str, str]]:
+    """Everything `create --gpu` will take: the cards, then no card at all.
+
+    `gpu_menu` beside it stays the drivable cards and nothing else, because that
+    is the question the card lists ask. This is the question the PROMPT asks —
+    what may I answer — and "none" is an answer.
+    """
+    return [*gpu_menu(), (NO_GPU.key, _NO_GPU_NOTE)]
+
+
 def card_named(name: str) -> Card | None:
     """The card a QUOTA's friendly name means — `P100`, `H100`, `A100-80GB`.
 
@@ -685,6 +731,10 @@ class Blueprint:
     image: Image
     card: Card
     disk_gb: int = DEFAULT_DISK_GB
+    # Is the capacity held for this box, and billed, until the box is deleted?
+    # The flag, the prompt's answer and a leftover reservation being resumed all
+    # become this one field before anything reads it.
+    reserve: bool = False
 
     @property
     def machine_type(self) -> str:
@@ -703,13 +753,32 @@ class Blueprint:
         `--metadata` on commas, so a value containing one would be read as two
         keys and rejected — the script has none, and `test_create.py` holds it
         to that rather than trusting it.
+
+        A Linux box with no GPU gets none at all. The script is the NVIDIA
+        installer, and on a machine with no NVIDIA hardware it has nothing to
+        install onto.
         """
         if self.image.windows:
             return "enable-windows-ssh=TRUE"
+        if not self.card.is_gpu:
+            return None
         return f"startup-script={LINUX_DRIVER}"
 
     def steps(self, zone: str) -> list[str]:
         """The plan, in the words `--dry-run` prints and the real run follows."""
+        if not self.card.is_gpu:
+            # Its own wording rather than the card's with the card left out:
+            # "none (), built into the machine type" is three false things.
+            lines = [
+                f"create {self.name} in {zone}: {self.image.os}, no GPU — ComfyUI "
+                f"will run on the CPU",
+                f"machine type {self.machine_type} — nothing attached to it",
+                f"{self.disk_gb} GB pd-balanced boot disk from {self.image.family}",
+            ]
+            if self.image.windows:
+                lines.append("metadata enable-windows-ssh=TRUE, so this tool can reach it")
+            lines.append(f"add {self.name} to the host list on the next free port")
+            return lines
         card = f"{self.card.name} ({self.card.accelerator})"
         how = ("built into the machine type" if self.card.attached
                else f"attached with --accelerator={self.card.accelerator_flag}")
@@ -736,6 +805,8 @@ def card_for(gpu: str) -> Card:
     key = key.removeprefix("nvidia-").removeprefix("tesla-")
     if key in CARDS:
         return CARDS[key]
+    if key in _NO_GPU_SPELLINGS:
+        return NO_GPU
     if (gpu or "").strip().lower() in KNOWN_ELSEWHERE:
         # M8: A REAL CARD, AND THIS TOOL HAS NO MACHINE TYPE FOR IT. Answering
         # "no card called 'b200'" said the card does not exist, in the same
@@ -839,6 +910,7 @@ def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
 def plan(
     *, os_choice: str, gpu: str, name: str | None = None,
     disk_gb: int = DEFAULT_DISK_GB, taken: set[str] | None = None,
+    reserve: bool = False,
 ) -> Blueprint:
     """Everything decided before anything is contacted. Offline, and total."""
     image = image_for(os_choice)
@@ -846,8 +918,28 @@ def plan(
     # BEFORE the disk checks, and long before the quota read: a card this tool
     # cannot drive is not a detail of the box, it is the box. `plan` is the last
     # thing that runs while a create is still free.
-    if not card.has_gsp:
+    #
+    # `card.is_gpu and`, because no card at all has no GSP either and is not a
+    # card this tool cannot drive — there is no driver in a box with no GPU.
+    if card.is_gpu and not card.has_gsp:
         raise undrivable(card, image)
+    if reserve and not card.is_gpu:
+        # The limit on reservations is counted in GPU cards: it is the project's
+        # GPU allowance. A reservation that holds no card is bounded by nothing
+        # this tool reads, and would bill at machine rate with no ceiling on
+        # how many of them a typo could make.
+        raise LifecycleError(
+            "a box with no GPU cannot be reserved. A reservation is held "
+            "against the project's GPU allowance, and this box uses none of it. "
+            "Nothing was created.",
+            fix=output.fix(
+                "make it without a reservation:",
+                f"comfy-qat create --os {image.key} --gpu {card.key}",
+                "or reserve a box that has a card:",
+                f"comfy-qat create --os {image.key} --gpu t4 --reserve",
+            ),
+            kind=CREATE_FAILED,
+        )
     if disk_gb < MIN_DISK_GB:
         raise LifecycleError(
             f"a {disk_gb} GB disk is too small — the image will not fit and models "
@@ -1300,11 +1392,136 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
     )
 
 
+# --- the allowance a box with no GPU actually spends -------------------------
+
+
+@dataclass(frozen=True)
+class CpuCheck:
+    """What the project's CPU allowance says about a box with no GPU.
+
+    The sibling of `QuotaCheck`, with the same three things a caller reads —
+    `lines()`, `problem()` and `regions` — and none of its inputs. GPU quota
+    and the GPU ceiling are not read into this at all: a box with no card
+    spends neither, and routing it through the card's gate is how a project
+    with one L4 in use came to refuse a machine that needs no GPU.
+
+    Everything here is a LIMIT. The quota records carry no usage, so `200` is
+    what the project may hold in a region and not what is free in it, and the
+    output says so in as many words. Google's own refusal at the create is
+    what catches a pool that is actually full, and nothing bills when it does.
+    """
+
+    machine_type: str
+    needed: int
+    # The largest allowance any one region reports. None when the project
+    # reports no CPU quota record for this machine at all — which is "not
+    # read", and is neither a refusal nor a zero.
+    limit: int | None
+    # `CPUS-ALL-REGIONS-per-project`. None when not reported; never gates then.
+    ceiling: int | None
+    # Regions whose allowance has room for the machine. Empty when `limit` is
+    # None, and the caller then searches everywhere the machine is sold.
+    regions: tuple[str, ...] = ()
+    quota_id: str = ""
+
+    @property
+    def family(self) -> str:
+        """`n1`, as the quota is named for people."""
+        return self.machine_type.partition("-")[0]
+
+    def lines(self) -> list[str]:
+        """What was checked and what it said — printed by a dry run and a real one."""
+        from .quota import UNLIMITED
+        from .quota import where_label as _where_label
+
+        def amount(value: int | None) -> str:
+            return "unlimited" if value == UNLIMITED else str(value)
+
+        out = ["GPU quota: not used — this box has no GPU"]
+        if self.limit is None:
+            out.append(f"CPUS ({self.family}): not reported by this project, so it "
+                       f"was not checked — Google decides at the create")
+        else:
+            where = f" in {_where_label(self.regions)}" if self.regions else ""
+            out.append(f"CPUS ({self.family}): {amount(self.limit)}{where} — a limit, "
+                       f"not what is free")
+        if self.ceiling is None:
+            out.append("CPUS_ALL_REGIONS (every machine, project-wide): not reported "
+                       "by this project")
+        else:
+            out.append(f"CPUS_ALL_REGIONS (every machine, project-wide): "
+                       f"{amount(self.ceiling)} — a limit, not what is free")
+        out.append(f"{self.machine_type} needs {self.needed} vCPU")
+        return out
+
+    def problem(self) -> LifecycleError | None:
+        """The reason this cannot be created, or None. Nothing has happened yet.
+
+        Only what was READ can refuse. A limit that was not reported does not
+        gate, exactly as the GPU ceiling does not when it is not reported — and
+        the comparisons go through `meets`, because an unlimited allowance is
+        -1 and `-1 >= 8` is False.
+        """
+        from .quota import meets
+
+        raise_it = ("raise it at https://console.cloud.google.com/iam-admin/quotas "
+                    "— the quota is ")
+        if self.ceiling is not None and not meets(self.ceiling, self.needed):
+            return LifecycleError(
+                f"CPUS_ALL_REGIONS is {self.ceiling} on this project — the ceiling "
+                f"on vCPU across every region — and {self.machine_type} needs "
+                f"{self.needed} vCPU. Nothing was created.",
+                fix=f"{raise_it}CPUS-ALL-REGIONS-per-project",
+                kind=NO_QUOTA,
+            )
+        if self.limit is not None and not self.regions:
+            return LifecycleError(
+                f"{self.machine_type} needs {self.needed} vCPU, and the most this "
+                f"project may hold in any one region is {self.limit}. Nothing was "
+                f"created.",
+                fix=f"{raise_it}{self.quota_id}",
+                kind=NO_QUOTA,
+            )
+        return None
+
+
+def check_cpu(card: Card, quotas: list[dict]) -> CpuCheck:
+    """Read the CPU allowance for a box with no GPU. Pure, like `check_quota`.
+
+    `quotas` is `Gcloud.compute_quotas(project)` — every compute quota record,
+    not the GPU subset `gpu_quotas` filters it down to, which holds no CPU
+    quota at all.
+    """
+    from .quota import cpu_allowance, cpu_ceiling, cpu_regions, cpu_target
+
+    target = cpu_target(card.machine_type, quotas)
+    return CpuCheck(
+        machine_type=card.machine_type,
+        needed=card.vcpus,
+        limit=cpu_allowance(card.machine_type, quotas),
+        ceiling=cpu_ceiling(quotas),
+        regions=tuple(cpu_regions(card.machine_type, quotas, card.vcpus)),
+        quota_id=target.quota_id if target is not None else "",
+    )
+
+
 # --- the part that spends money -------------------------------------------
 
 
 def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None:
-    """One attempt, in one zone. Raises GcloudError exactly as gcloud refused it."""
+    """One attempt, in one zone. Raises GcloudError exactly as gcloud refused it.
+
+    An ordinary GPU box is created with the six keywords it always was. The two
+    newer ones are passed only for the boxes that need them, which is not
+    thrift: every double of `create_instance_from_image` in the suite is a
+    second site, and a keyword sent on every call is a keyword each of them has
+    to have been told about.
+    """
+    extra: dict = {}
+    if not blueprint.card.is_gpu:
+        # `--maintenance-policy=TERMINATE` is for a machine that cannot
+        # live-migrate, which is a machine with a GPU.
+        extra["terminate_on_maintenance"] = False
     gc.create_instance_from_image(
         blueprint.name, zone, project,
         machine_type=blueprint.machine_type,
@@ -1313,7 +1530,22 @@ def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None
         disk_gb=blueprint.disk_gb,
         accelerator=blueprint.card.accelerator_flag,
         metadata=blueprint.metadata,
+        **extra,
     )
+
+
+def _wanted(card: Card) -> str:
+    """What a zone is out of, as a word for a sentence: the card, or the machine.
+
+    A stockout for a box with no GPU is a stockout of its machine type, and
+    "no none free" names a card that does not exist.
+    """
+    return card.name if card.is_gpu else card.machine_type
+
+
+def _thing(card: Card) -> str:
+    """`the card` or `the machine`, for the same sentences."""
+    return "the card" if card.is_gpu else "the machine"
 
 
 def build(
@@ -1409,7 +1641,7 @@ def build(
                     ),
                     kind=CREATE_FAILED,
                 ) from exc
-            say(f"  {zone} has no {blueprint.card.name} free right now")
+            say(f"  {zone} has no {_wanted(blueprint.card)} free right now")
             if ordering.fall_through:
                 for named in suggested_zones(exc.raw):
                     # `suggested_zones` lowers what it returns, so this is belt
@@ -1436,7 +1668,7 @@ def build(
     if capped:
         say(f"stopping after {len(tried)} zones — each attempt takes about a minute")
         raise LifecycleError(
-            f"stopped after {attempts} zones, all out of {blueprint.card.name} capacity: "
+            f"stopped after {attempts} zones, all out of {_wanted(blueprint.card)} capacity: "
             f"{', '.join(tried)}. Nothing was created and nothing is billing — this is "
             f"a cap, not the whole world, so there may be room somewhere untried.",
             # `--region` first, because it is the flag that matches what this
@@ -1462,9 +1694,10 @@ def build(
 
     if untried:
         raise LifecycleError(
-            f"every zone tried is out of {blueprint.card.name} capacity: "
+            f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
             f"{', '.join(tried)}. That is {len(searched)} of the "
-            f"{len(ordering.offering)} regions this project can use the card in, the "
+            f"{len(ordering.offering)} regions this project can use "
+            f"{_thing(blueprint.card)} in, the "
             f"nearest ones — not everywhere. Nothing was created and nothing is "
             f"billing. Not tried, and possibly free: {_a_few(untried)}.",
             # `image.key`, never `image.os`. `--os` takes the key — `linux`,
@@ -1487,12 +1720,16 @@ def build(
 
     if ordering.offering:
         raise LifecycleError(
-            f"every zone tried is out of {blueprint.card.name} capacity: "
-            f"{', '.join(tried)}. That is every region this project can use the card "
+            f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
+            f"{', '.join(tried)}. That is every region this project can use "
+            f"{_thing(blueprint.card)} "
             f"in, so there is nowhere left to try right now. Nothing was created and "
             f"nothing is billing.",
             fix=("wait and run the same command again — a stockout is usually minutes "
-                 "to hours — or ask for a different card: comfy-qat quota list"),
+                 "to hours — or ask for a different card: comfy-qat quota list"
+                 if blueprint.card.is_gpu else
+                 "wait and run the same command again — a stockout is usually "
+                 "minutes to hours"),
             kind=EXHAUSTED,
         )
 
@@ -1500,7 +1737,7 @@ def build(
     # and must not guess. `--zone` is the case: one zone, by request, and a
     # sentence about how many regions were considered would be an invention.
     raise LifecycleError(
-        f"every zone tried is out of {blueprint.card.name} capacity: "
+        f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
         f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
         f"is billing.",
         fix=("wait and run the same command again — a stockout is usually minutes to "
@@ -1526,7 +1763,10 @@ def host_entry(blueprint: Blueprint, zone: str, project: str):
     from .discover import Discovered
 
     return Discovered(
-        name=blueprint.name, os=blueprint.image.os, gpu=blueprint.card.name,
+        name=blueprint.name, os=blueprint.image.os,
+        # Empty for no GPU, which is what discovery reads off an instance with
+        # no accelerator. `to_toml` writes it as `none`.
+        gpu=blueprint.card.name if blueprint.card.is_gpu else "",
         gce_instance=blueprint.name, gce_zone=zone, gce_project=project,
         running=True,
     )
@@ -1548,7 +1788,12 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
     night.
     """
     lines = []
-    if blueprint.image.windows:
+    if not blueprint.card.is_gpu:
+        # No driver on either operating system, so neither driver paragraph.
+        lines.append(
+            f"{blueprint.name} has no GPU, so there is no driver to wait for. "
+            f"ComfyUI will run on its CPU, which is slow.")
+    elif blueprint.image.windows:
         lines.append(
             f"{blueprint.name} has no NVIDIA driver yet, and ComfyUI will run on its "
             f"CPU until it has one. Google documents one way to install it on Windows "
@@ -1640,6 +1885,11 @@ def order_zones(
     # does not exist.
     zone = zone.strip().lower() if zone else zone
     region = region.strip().lower() if region else region
+
+    if not blueprint.card.is_gpu:
+        return _order_without_a_card(gc, project, blueprint, check, zone=zone,
+                                     region=region, config=config, probe=probe,
+                                     fleet=fleet)
 
     if zone:
         # The same gate `--region` gets — and it says so truthfully only now.
@@ -1780,8 +2030,93 @@ def order_zones(
     )
 
 
+def _order_without_a_card(
+    gc: Gcloud, project: str, blueprint: Blueprint, check, *,
+    zone: str | None, region: str | None, config, probe, fleet,
+) -> Ordering:
+    """`order_zones` for a box with no GPU: the machine type is the whole question.
+
+    The same three moves as the card path — refuse a zone or region outside
+    what the quota covers, check a named zone against what Google offers there,
+    otherwise rank — with the card half of each taken out. There is no
+    accelerator to look for, so `accelerator-types` is never asked, and the
+    refusals say "CPU quota" and name the machine, because "no none quota"
+    names a card that does not exist and a `quota request --gpu` for it is a
+    command that cannot run.
+
+    `check` is a `CpuCheck`. Its region set is EMPTY in one case that is not a
+    refusal: the project reported no CPU quota record at all, so there is
+    nothing to narrow by. Then the search is everywhere the machine type is
+    sold, not nowhere — not read is not zero.
+    """
+    from .zones import choose, zones_with_machine_type
+
+    machine = blueprint.machine_type
+    regions = list(check.regions)
+
+    # ONE refusal for "outside where the CPU quota has room", reached from
+    # `--zone` and from `--region`. The card path has this sentence twice, sixty
+    # lines apart, and its own comment records the two drifting.
+    outside: tuple[str, str, str, str] | None = None
+    if zone and regions and region_of(zone) not in set(regions):
+        outside = (region_of(zone), f"in {zone}", "zone",
+                   f"zones list --filter=name={zone}")
+    elif not zone and region and regions and region not in set(regions):
+        outside = (region, "there", "region", f"regions list --filter=name={region}")
+    if outside is not None:
+        place, where, flag, listing = outside
+        raise LifecycleError(
+            f"this project has no CPU quota for {machine} in {place}, so nothing "
+            f"can start {where}. It has room for it in {_grant_reaches(check)}. "
+            f"Nothing was created.",
+            fix=(f"check the {flag} name first — a typo reads as somewhere this "
+                 f"project has no quota in: gcloud compute {listing}; then drop "
+                 f"--{flag} and let this pick"),
+            kind=NO_QUOTA,
+        )
+
+    if zone:
+        offered = zones_with_machine_type(
+            gc.machine_types(project, [zone], machine), machine)
+        if not offered:
+            raise LifecycleError(
+                f"{zone} does not offer {machine}, so {blueprint.name} cannot be "
+                f"made there. Nothing was created.",
+                fix=(f"drop --zone and let this pick one, or pick a zone that has it: "
+                     f"gcloud compute machine-types list "
+                     f"--filter=name={machine} --project={project}"),
+                kind=NO_ZONE,
+            )
+        return Ordering(zones=(zone,), regions=(region_of(zone),),
+                        notes=("--zone was given, so there is no fall-through: this "
+                               "zone or nothing",),
+                        fall_through=False)
+
+    if not regions:
+        # Nothing to narrow by, so everywhere Google sells the machine. Asked
+        # here rather than left to `choose`, which reads no regions as "ask
+        # nothing" — the right reading for a card and the wrong one for this.
+        sold = zones_with_machine_type(gc.machine_type_zones(project, machine), machine)
+        regions = sorted({region_of(place) for place in sold})
+    if region:
+        regions = [name for name in regions if name == region]
+
+    return choose(gc, project, accelerator=None, machine_type=machine,
+                  regions=regions, config=config, probe=probe, fleet=fleet)
+
+
 def nowhere(blueprint: Blueprint, ordering: Ordering, project: str) -> LifecycleError:
     """No zone at all fits, which is a refusal rather than a failed attempt."""
+    if not blueprint.card.is_gpu:
+        detail = ordering.notes[0] if ordering.notes else (
+            f"no region this project has CPU quota in offers {blueprint.machine_type}")
+        return LifecycleError(
+            f"nowhere to put {blueprint.name}: {detail}. Nothing was created.",
+            fix=(f"gcloud compute machine-types list --project={project} "
+                 f"--filter=name={blueprint.machine_type} — where Google offers the "
+                 f"machine at all"),
+            kind=NO_ZONE,
+        )
     detail = ordering.notes[0] if ordering.notes else (
         f"no region this project has {blueprint.card.name} quota in offers "
         f"{blueprint.machine_type}"
