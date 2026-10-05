@@ -552,6 +552,19 @@ def mismatch(host, stamp: Stamp) -> str | None:
         )
 
     accelerators = [d for d in stamp.devices if not d.lower().startswith("cpu")]
+    # DECLARED TO HAVE NONE, AND ONE ANSWERED. Not the same declaration as
+    # leaving `gpu` out, which is an optional field saying nothing: `none` is
+    # what `discover` and `create --gpu none` write about a machine they know
+    # has no card, and a machine built without one cannot grow one. So a card
+    # answering on this port is some other machine answering on it.
+    #
+    # Still fails open where it cannot be sure. A ComfyUI that lists no devices
+    # at all proves nothing either way, and `cpu` is what the right box says.
+    if accelerators and str(getattr(host, "gpu", None) or "").strip().lower() == "none":
+        return (
+            f"{host.name} is declared with no GPU, but {stamp.url} answered with "
+            f"{', '.join(accelerators)}. That port is not reaching {host.name}."
+        )
     if accelerators and _gpu_contradicts(getattr(host, "gpu", None), accelerators):
         return (
             f"{host.name} is declared with a {host.gpu}, but {stamp.url} answered with "

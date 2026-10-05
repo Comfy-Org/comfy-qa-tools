@@ -119,6 +119,11 @@ KINDS: dict[str, MachineKind] = {
         name="gce",
         remote=True,
         requires=("os", "gpu", "gce_instance", "gce_zone", "gce_project"),
+        # The reservation holding this box's capacity, when it has one. It is
+        # something the box HAS, not part of what it IS: `identifies_by` below
+        # does not name it, so a reserved box and the same box with the line
+        # taken out are one machine.
+        accepts=("gce_reservation",),
         identifies_by=("gce_project", "gce_zone", "gce_instance"),
         in_words="instance {gce_instance!r} in {gce_zone} ({gce_project})",
         in_brief="{gce_instance} in {gce_zone}",
@@ -178,6 +183,16 @@ class Host:
         if value is not None:
             return value
         return dict(self.extra).get(field)
+
+    @property
+    def reservation(self) -> str | None:
+        """The reservation holding this box's capacity, or None if it has none.
+
+        A reserved box bills every hour, running or stopped, until it is
+        deleted — so this is the field every sentence about stopping the bill
+        has to read before it says `comfy-qat down`.
+        """
+        return self.declared("gce_reservation")
 
     @property
     def machine_id(self) -> tuple[str, ...] | None:
@@ -285,8 +300,50 @@ def _known_fields() -> frozenset[str]:
 
 # The three fields that say which cloud box an entry is. They are what `up`,
 # `open`, `down` and `move` operate on, so an entry carrying them is a machine
-# that costs money whatever its `kind` says.
-_CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project")
+# that costs money whatever its `kind` says. The fourth says its capacity is
+# reserved, which costs money whether or not the machine is even running.
+_CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project", "gce_reservation")
+
+# How a host list says a box has no card. `discover` writes it for an instance
+# with no accelerator and `create --gpu none` writes it for one made that way.
+NO_GPU_WORD = "none"
+
+
+def has_gpu(host) -> bool:
+    """Does this box have a GPU, as far as its host list entry says?
+
+    THE PREDICATE, because `"none"` is a non-empty string. `if host.gpu:` reads
+    a box declared to have no card as a box that has one, and each place that
+    asked it that way was its own defect: fifteen minutes waiting for
+    `nvidia-smi` on a machine with no NVIDIA hardware, a CUDA torch
+    force-installed on every `go`, and a box with no card counted as one card
+    against the project's GPU ceiling.
+
+    False for no declaration at all (`None`, `""`) and for `none` in any case.
+    Takes a `Host`, or the bare `gpu` word for a caller holding a record that is
+    not a host yet, or nothing.
+    """
+    return _declared_gpu(host) not in ("", NO_GPU_WORD)
+
+
+def declares_no_gpu(host) -> bool:
+    """Does the entry SAY the box has no GPU — the word `none`, in any case?
+
+    Not `not has_gpu(host)`. That is also True for an entry that says nothing
+    about its card, which is every local machine and any machine of a kind whose
+    entries need not name one — and such a machine may have a card. So "is
+    there a card to wait for" asks `has_gpu`, and anything that would actively
+    put a machine on its CPU asks this: launching ComfyUI with `--cpu` and
+    installing the CPU build of torch are things to do because a box was
+    declared to have no card, never because nobody wrote one down.
+    """
+    return _declared_gpu(host) == NO_GPU_WORD
+
+
+def _declared_gpu(host) -> str:
+    """The `gpu` word, lowered and trimmed. Empty for none given or no host."""
+    declared = host if isinstance(host, str) else getattr(host, "gpu", None)
+    return (declared or "").strip().lower()
 
 # The one name this tool reserves. The starter host list teaches it, every
 # example uses it, and `comfy-qat stamp local` has exactly one obvious meaning.

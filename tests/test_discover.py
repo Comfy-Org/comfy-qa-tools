@@ -329,3 +329,66 @@ def test_an_append_to_a_crlf_host_list_is_still_crlf(tmp_path):
     data = path.read_bytes()
     assert b"[hosts.comfy-linux]" in data
     assert data.count(b"\r\n") == data.count(b"\n"), "a lone LF reached a CRLF file"
+
+
+# --- a box bound to a reservation --------------------------------------------
+#
+# The affinity record is shaped on the SDK's API schema (`reservationAffinity
+# {consumeReservationType, key, values}`). It is a FIXTURE: nobody has read one
+# off a live instance yet.
+
+BOUND = dict(COMFY_WIN, reservationAffinity={
+    "consumeReservationType": "SPECIFIC_RESERVATION",
+    "key": "compute.googleapis.com/reservation-name",
+    "values": ["comfy-win-rsv"],
+})
+
+
+def test_a_box_bound_to_a_reservation_is_found_with_it():
+    assert parse(BOUND, "p").reservation == "comfy-win-rsv"
+
+
+@pytest.mark.parametrize("affinity", [
+    None,
+    {},
+    {"consumeReservationType": "ANY_RESERVATION"},
+    {"consumeReservationType": "NO_RESERVATION"},
+    {"consumeReservationType": "SPECIFIC_RESERVATION", "values": []},
+], ids=["absent", "empty", "any", "none", "specific-but-unnamed"])
+def test_a_box_bound_to_nothing_is_found_with_no_reservation(affinity):
+    """Only a SPECIFIC affinity that names a reservation makes a box reserved.
+    `ANY_RESERVATION` is Google's default and is on every ordinary instance."""
+    instance = dict(COMFY_WIN)
+    if affinity is not None:
+        instance["reservationAffinity"] = affinity
+    assert parse(instance, "p").reservation == ""
+
+
+def test_a_reserved_box_is_written_with_its_reservation():
+    import tomllib
+
+    entry = tomllib.loads(to_toml(parse(BOUND, "p"), 8190))["hosts"]["comfy-win"]
+    assert entry == {
+        "kind": "gce", "os": "Windows Server 2022", "gpu": "L4",
+        "gce_instance": "comfy-win", "gce_zone": "us-central1-a",
+        "gce_project": "p", "gce_reservation": "comfy-win-rsv", "port": 8190,
+    }
+
+
+def test_a_box_with_no_reservation_is_written_without_the_line():
+    """Absent, not `gce_reservation = ""`. An empty value there would be a
+    declaration that reads as "reserved under no name"."""
+    assert "gce_reservation" not in to_toml(parse(COMFY_WIN, "p"), 8190)
+
+
+def test_an_adopted_reserved_box_loads_as_reserved():
+    """The whole point of reading it: `discover` on a box `create --reserve`
+    made, or one bound in the console, yields an entry whose `down` and `delete`
+    know the bill does not stop with the machine."""
+    import tomllib
+
+    from comfy_qa.config import parse as parse_config
+
+    text = '[hosts.local]\nkind = "local"\nport = 8188\n' + to_toml(parse(BOUND, "p"), 8190)
+    hosts = {host.name: host for host in parse_config(tomllib.loads(text))}
+    assert hosts["comfy-win"].reservation == "comfy-win-rsv"

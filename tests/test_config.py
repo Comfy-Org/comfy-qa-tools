@@ -232,3 +232,117 @@ def test_a_local_host_declaring_no_os_is_untouched():
     """`local` usually declares no `os` at all, and must keep loading."""
     (host,) = parse({"hosts": {"local": {"kind": "local"}}})
     assert host.os is None
+
+
+# --- a reserved box, and a box with no GPU -----------------------------------
+#
+# One new field, `gce_reservation`, and one new predicate, `has_gpu`. The field
+# is the only record this tool keeps that a box's capacity is held — and billed —
+# whether the box is running or not. The predicate exists because "none" is a
+# non-empty string: every `if host.gpu:` in the package read a box with no GPU
+# as a box with one.
+
+RESERVED = dict(GCE, gce_reservation="comfy-linux-rsv")
+
+
+def test_a_reserved_box_carries_its_reservation():
+    (host,) = parse({"hosts": {"comfy-linux": dict(RESERVED)}})
+    assert host.reservation == "comfy-linux-rsv"
+    assert host.declared("gce_reservation") == "comfy-linux-rsv"
+
+
+def test_a_box_that_declares_no_reservation_has_none_rather_than_an_empty_one():
+    """`None`, not `""`: nothing was declared, which is what every caller that
+    asks "is this box reserved" has to be able to tell from a name."""
+    (host,) = parse({"hosts": {"comfy-linux": dict(GCE)}})
+    assert host.reservation is None
+
+
+def test_a_machine_on_this_computer_may_not_carry_a_reservation():
+    """The same rule as the three fields that say which cloud box an entry is,
+    and for the same reason: `down` decides what to do from `kind`, and an entry
+    holding a reservation is one that bills."""
+    with pytest.raises(ConfigError, match="kind 'local' cannot carry gce_reservation"):
+        parse({"hosts": {"local": {"kind": "local", "gce_reservation": "x-rsv"}}})
+
+
+def test_the_list_of_known_fields_names_the_reservation():
+    """The refusal for a typo'd field lists what may be written, and three docs
+    quote that list. It is derived from the registry, so this is the registry."""
+    with pytest.raises(ConfigError) as refusal:
+        parse({"hosts": {"box": dict(GCE, gce_reservaton="x")}})
+    assert ("Known fields: gce_instance, gce_project, gce_reservation, gce_zone, "
+            "gpu, kind, os, port.") in str(refusal.value)
+    assert "did you mean 'gce_reservation'?" in str(refusal.value)
+
+
+def test_a_reservation_survives_another_host_being_taken_out_of_the_file():
+    """`delete` rewrites the host list with one block removed. The block beside
+    it must come through whole — a reserved box that lost this line would be
+    listed as not reserved while its reservation went on billing."""
+    import tomllib
+
+    from comfy_qa import hostfile
+
+    text = (
+        '[hosts.local]\nkind = "local"\nport = 8188\n'
+        '\n[hosts.keep]\nkind = "gce"\nos = "Ubuntu 22.04"\ngpu = "T4"\n'
+        'gce_instance = "keep"\ngce_zone = "us-central1-a"\ngce_project = "proj"\n'
+        'gce_reservation = "keep-rsv"\nport = 8191\n'
+        '\n[hosts.gone]\nkind = "gce"\nos = "Ubuntu 22.04"\ngpu = "T4"\n'
+        'gce_instance = "gone"\ngce_zone = "us-central1-b"\ngce_project = "proj"\n'
+        'gce_reservation = "gone-rsv"\nport = 8192\n'
+    )
+    left = hostfile.without(text, "gone")
+    hosts = {host.name: host for host in parse(tomllib.loads(left))}
+
+    assert set(hosts) == {"local", "keep"}
+    assert hosts["keep"].reservation == "keep-rsv"
+    # And the block that went took its own reservation line with it, rather than
+    # leaving it to be read as the last line of the block above.
+    assert "gone-rsv" not in left
+
+
+@pytest.mark.parametrize("gpu", [None, "", "none", "None", "NONE", " none ", "  "])
+def test_a_box_with_no_card_declared_has_no_gpu(gpu):
+    from comfy_qa.config import Host, has_gpu
+
+    host = Host(name="comfy-cpu", kind="gce", port=8191, os="Ubuntu 22.04", gpu=gpu)
+    assert has_gpu(host) is False
+
+
+@pytest.mark.parametrize("gpu", ["L4", "T4", "H100-80GB", "l4", "nonesuch"])
+def test_a_box_with_a_card_declared_has_a_gpu(gpu):
+    """`nonesuch` is here on purpose: the word is compared whole, so a card whose
+    name merely starts with `none` is still a card."""
+    from comfy_qa.config import Host, has_gpu
+
+    host = Host(name="comfy-linux", kind="gce", port=8191, os="Ubuntu 22.04", gpu=gpu)
+    assert has_gpu(host) is True
+
+
+def test_has_gpu_answers_for_no_host_at_all_and_for_the_bare_word():
+    """Two callers hold something other than a `Host`: one may hold nothing, and
+    one holds the `gpu` string off a record that is not a host yet."""
+    from comfy_qa.config import has_gpu
+
+    assert has_gpu(None) is False
+    assert has_gpu("none") is False
+    assert has_gpu("L4") is True
+
+
+@pytest.mark.parametrize("gpu,expected", [
+    ("none", True), ("None", True), (" NONE ", True),
+    (None, False), ("", False), ("  ", False), ("L4", False), ("nonesuch", False),
+])
+def test_saying_none_is_not_the_same_as_saying_nothing(gpu, expected):
+    """`has_gpu` is False for both, and that is right for "is there a card to
+    wait for". It is wrong for "start ComfyUI with --cpu": an entry that says
+    nothing about its card — every local machine, and any machine of a provider
+    whose entries need not name one — may well have a GPU, and must not be run
+    on its CPU because nobody wrote the card down. So the positive claim has
+    its own predicate."""
+    from comfy_qa.config import Host, declares_no_gpu
+
+    host = Host(name="box", kind="gce", port=8191, os="Ubuntu 22.04", gpu=gpu)
+    assert declares_no_gpu(host) is expected

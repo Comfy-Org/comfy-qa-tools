@@ -103,11 +103,50 @@ def test_a_cpu_entry_is_not_an_accelerator():
         ["cuda:0 NVIDIA L4 (22GB)", "cpu"])) is None
 
 
-@pytest.mark.parametrize("gpu", ["", "none", "None", "  "])
+@pytest.mark.parametrize("gpu", ["", "  ", None])
 def test_a_host_that_declares_no_card_has_nothing_to_contradict(gpu):
-    """`discover` writes an empty `gpu` for a box with no accelerator, and people
-    write `none` by hand. `config` treats both as "no card declared" already."""
+    """An entry that says nothing about its card has made no claim to check.
+
+    `none` used to be in this list and is not any more — see the two tests
+    below. Saying nothing and saying "none" are different declarations: the
+    first is an optional field left out, the second is what `discover` and
+    `create --gpu none` write about a machine they know has no card.
+    """
     assert mismatch(declared(gpu), answered("cuda:0 NVIDIA L4 (22GB)")) is None
+
+
+@pytest.mark.parametrize("gpu", ["none", "None", " NONE "])
+def test_a_box_declared_with_no_gpu_that_answers_with_one_is_the_wrong_machine(gpu):
+    """A machine built without a card cannot grow one. If a card answers on its
+    port, the port is reaching some other machine — the wrong-machine failure
+    this refusal exists for, arriving from the one declaration that used to be
+    exempt from it."""
+    complaint = mismatch(declared(gpu), answered("cuda:0 NVIDIA L4 (22GB)"))
+
+    assert complaint is not None
+    assert "comfy-linux is declared with no GPU" in complaint
+    assert "cuda:0 NVIDIA L4 (22GB)" in complaint
+    assert "That port is not reaching comfy-linux." in complaint
+
+
+@pytest.mark.parametrize("devices", [
+    ["cpu"],
+    ["CPU"],
+    [],
+], ids=["cpu", "CPU", "no-devices"])
+def test_a_box_declared_with_no_gpu_that_answers_on_its_cpu_is_itself(devices):
+    """The right machine, describing itself the way a box with no card does —
+    and a ComfyUI too old to list devices at all, which proves nothing either
+    way and so has to pass."""
+    assert mismatch(declared("none"), answered(devices)) is None
+
+
+def test_the_no_gpu_complaint_names_every_card_that_answered_and_not_the_cpu():
+    complaint = mismatch(declared("none"), answered(
+        ["cuda:0 Tesla T4 (15GB)", "cpu", "cuda:1 Tesla T4 (15GB)"]))
+
+    assert "cuda:0 Tesla T4 (15GB), cuda:1 Tesla T4 (15GB)" in complaint
+    assert "cpu" not in complaint.replace("comfy-linux", "")
 
 
 # --- and it still has to catch the thing it exists for ------------------------
