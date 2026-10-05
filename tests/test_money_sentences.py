@@ -708,6 +708,19 @@ def test_down_all_never_gives_the_all_clear_while_a_declared_box_is_reserved(cli
     assert "comfy-qat delete comfy-linux" not in out, "the other box is not reserved"
 
 
+def test_down_all_gives_no_all_clear_for_a_declared_reserved_box_whatever_the_project_says(cli):
+    """The host list says reserved and the project's reservations came back
+    empty. The two disagree, and an all-clear is not what a disagreement earns:
+    both conditions have to hold, and this is the one where only the second
+    does. `list --live` is where that box reads `missing`."""
+    result = cli("down", "--all", cloud=Held(reservations=()), declared=RESERVED)
+
+    out = result.stdout
+    assert "Nothing is now" not in out
+    assert "still billing, stopped or not — it is reserved: comfy-win." in out
+    assert "list_reservations" in result.cloud.calls
+
+
 def test_down_all_names_a_reservation_on_the_project_that_no_host_declares(cli):
     """Nothing in the host list is reserved, every machine stopped, and the
     project is still holding a card: a reservation made in the console, or left

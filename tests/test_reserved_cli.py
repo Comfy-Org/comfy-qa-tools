@@ -512,6 +512,15 @@ def test_a_reservation_of_that_name_this_tool_did_not_make_is_not_taken_over(run
     assert result.exit_code == 2, result.output
     assert mutating(cloud) == []
     assert len(cloud._reservations) == 1
+    # What it SAID, not only what it did not do: the three assertions above are
+    # also true of a build that does not know the flag at all. It was counted as
+    # a holder, named where it is, and handed Google's command — not adopted.
+    said = flat(result.output)
+    assert "1 of it is held by 1 reservation: comfy-linux-rsv (us-central1-b)" in said
+    assert (f"gcloud compute reservations delete comfy-linux-rsv "
+            f"--zone=us-central1-b --project={PROJECT}") in result.output
+    assert "reusing reservation" not in result.output
+    assert offered(result.output) == [], "it offered `comfy-qat delete` for a stranger's"
 
 
 def test_a_leftover_in_another_zone_than_the_one_asked_for_is_refused(run):
