@@ -1925,3 +1925,160 @@ def test_every_create_remedy_in_the_package_modules_this_file_covers_is_listed()
     assert sites(create_module) == CREATE_REMEDIES
     for module in (config, discover, lifecycle, provision, quota, stamp, zones):
         assert sites(module) == {}, f"{module.__name__} hands back a create command"
+
+
+# --- final check: "nothing is on it" only when nothing is ---------------------------
+#
+# The remedy looked for the instance NAMED in the reservation's description. A
+# reservation whose description says `comfy-linux` while a running box called
+# `renamed-box` is bound to it was therefore told "release it — nothing is on
+# it", with the command that takes the capacity from under that box. `list
+# --live` and `down --all` ask whether ANY instance is bound; this now asks the
+# same question of the same records.
+
+B_DELETE = (f"gcloud compute instances delete renamed-box --zone=us-central1-a "
+            f"--project={PROJECT} --delete-disks=all")
+
+
+def bound_by_another_name(**kwargs):
+    """`comfy-linux-rsv` says it is held for comfy-linux; `renamed-box` is on it."""
+    return gate(1, [bound("renamed-box", "comfy-linux-rsv")],
+                [held_for("comfy-linux", in_use=1)], **kwargs).problem()
+
+
+def test_a_reservation_with_a_differently_named_box_on_it_is_not_called_empty():
+    fix = bound_by_another_name(hosts=[]).fix
+    lines = [line.strip() for line in fix.splitlines()]
+
+    assert "nothing is on it" not in fix
+    assert "renamed-box is on it" in lines[0]
+    assert lines[1:] == [B_DELETE, RAW_RELEASE], (
+        "the box that is really there, then the reservation — never the "
+        "reservation alone, and never the name in the description")
+    assert "instances delete comfy-linux " not in fix
+
+
+def test_the_box_that_is_really_on_it_is_named_by_its_own_host_list_entry():
+    fix = bound_by_another_name(hosts=[entry("my-label", instance_name="renamed-box")]).fix
+    assert [line.strip() for line in fix.splitlines()] == [
+        "stop it, then delete it to release the card:",
+        "comfy-qat down my-label",
+        "comfy-qat delete my-label",
+    ]
+
+
+def test_an_entry_for_the_box_in_the_description_is_not_offered_for_the_box_on_it():
+    """The list holds `comfy-linux` — the name in the description — and that
+    machine is NOT the one on the reservation. Deleting it frees nothing."""
+    fix = bound_by_another_name(hosts=[entry("comfy-linux")]).fix
+    assert "comfy-qat" not in fix
+    assert B_DELETE in fix
+
+
+def test_somebody_elses_reservation_with_a_box_on_it_is_not_released_from_under_it():
+    theirs = held_for("x", ours=False, name="training-hold", in_use=1)
+    fix = gate(1, [bound("trainer", "training-hold")], [theirs], hosts=[]).problem().fix
+    lines = [line.strip() for line in fix.splitlines()]
+
+    assert "trainer is on it" in lines[0]
+    assert lines[1].startswith("gcloud compute instances delete trainer ")
+    assert lines[2].startswith("gcloud compute reservations delete training-hold ")
+
+
+def test_with_several_holders_each_is_judged_by_what_is_bound_to_it():
+    held = [held_for("comfy-linux", in_use=1), held_for("empty", zone="asia-east1-a")]
+    fix = gate(2, [bound("renamed-box", "comfy-linux-rsv")], held, hosts=[]).problem().fix
+    lines = [line.strip() for line in fix.splitlines()]
+
+    assert B_DELETE in lines
+    assert lines.index(B_DELETE) < lines.index(RAW_RELEASE)
+    assert "instances delete empty" not in fix
+
+
+def test_a_reservation_nothing_is_bound_to_is_still_called_empty():
+    """The pair: the sentence is still said when it is true."""
+    fix = gate(1, [instance("unrelated")], [held_for("comfy-linux")], hosts=[]).problem().fix
+    assert fix.splitlines()[0] == "release it — nothing is on it:"
+
+
+def test_when_the_instances_were_not_read_nothing_is_claimed_about_what_is_on_it():
+    """NOT READ IS NOT EMPTY. `None` for the instances means nobody looked."""
+    from comfy_qa.create import _boxed, _how_to_release
+
+    holders = rsv.holders([held_for("comfy-linux")])
+    assert _boxed(holders, None) is None
+    assert _boxed(holders, []) == ()
+
+    fix = _how_to_release(holders, _boxed(holders, None), PROJECT)
+    assert "nothing is on it" not in fix
+    assert "could not be read" in fix
+    assert f"gcloud compute instances list --project={PROJECT}" in fix
+    assert RAW_RELEASE in fix
+
+    several = rsv.holders([held_for("a"), held_for("b")])
+    assert "could not be read" in _how_to_release(several, None, PROJECT)
+
+
+def test_the_full_region_refusal_names_the_box_that_is_really_on_it(tmp_path):
+    """The second caller of the same remedy."""
+    held = [held_for("one", zone="us-central1-b")]
+    instances = [bound("another-name", "one-rsv", zone="us-central1-b")]
+
+    with pytest.raises(LifecycleError) as caught:
+        ordered(instances, held, config=tmp_path / "hosts.toml", zone="us-central1-a")
+
+    assert "nothing is on it" not in caught.value.fix
+    assert (f"gcloud compute instances delete another-name --zone=us-central1-b "
+            f"--project={PROJECT} --delete-disks=all") in caught.value.fix
+
+
+# --- review: one set of words for "no GPU", not two ---------------------------------
+
+
+def test_what_create_takes_as_no_gpu_is_what_the_host_list_reads_as_no_gpu(monkeypatch):
+    """There were two sets, in two modules, that happened to be equal. A word
+    added to the host list's set is now a word `--gpu` takes, with nothing
+    else edited."""
+    from comfy_qa import config, create
+
+    assert not hasattr(create, "_NO_GPU_SPELLINGS"), "the second copy is back"
+    monkeypatch.setattr(config, "NO_GPU_WORDS", config.NO_GPU_WORDS | {"headless"})
+
+    assert create.card_for("headless") is create.NO_GPU
+    assert config.declares_no_gpu("headless") is True
+
+
+@pytest.mark.parametrize("word", ["none", "cpu", "None", " CPU ", "no", "nogpu", "null",
+                                  "off", "0", "", "t4", "l4", "n1"])
+def test_the_two_readings_of_a_word_never_disagree(word):
+    """Both ways. Every word the host list reads as no-GPU makes a no-GPU box,
+    and nothing else does."""
+    from comfy_qa import config, create
+
+    try:
+        made = create.card_for(word)
+    except LifecycleError:
+        made = None
+    assert (made is create.NO_GPU) is config.declares_no_gpu(word)
+
+
+def test_every_no_gpu_word_the_host_list_knows_is_accepted_by_create():
+    from comfy_qa import config, create
+
+    assert config.NO_GPU_WORDS, "the set this walks is empty"
+    for word in config.NO_GPU_WORDS:
+        assert create.card_for(word) is create.NO_GPU
+
+
+# --- review: one helper for a zone's name, and E1's public name for `outside` -------
+
+
+def test_this_module_keeps_no_copy_of_helpers_the_reservation_module_exports():
+    import inspect
+
+    from comfy_qa import create
+
+    assert not hasattr(create, "_zone_name")
+    source = inspect.getsource(create)
+    assert "rsv._outside" not in source and "rsv._tail" not in source
+    assert "rsv.outside(" in source and "rsv.zone_of(" in source

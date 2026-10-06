@@ -50,6 +50,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import config as host_list
 from . import inflight
 from . import reservation as rsv
 from . import say as output
@@ -296,8 +297,11 @@ CARDS: dict[str, Card] = {
 NO_GPU = Card("none", "none", accelerator="", machine_type="n1-standard-8",
               attached=True, architecture="", count=0, vcpus=8)
 
-# What a person may type to mean it. `none` is also how a host list says it.
-_NO_GPU_SPELLINGS = frozenset({"none", "cpu"})
+# What a person may type to mean it is NOT written here. It is
+# `config.NO_GPU_WORDS`, the same set the host list is read with, looked up when
+# `card_for` is asked: there were two sets, one in each module, that happened to
+# be equal, and a word added to one would have made a box `create` builds as
+# having no GPU and every later command reads as having a card.
 
 # The note beside it in a menu: the three things a person choosing needs to
 # know about it that the word "none" does not say.
@@ -851,7 +855,7 @@ def card_for(gpu: str) -> Card:
     key = key.removeprefix("nvidia-").removeprefix("tesla-")
     if key in CARDS:
         return CARDS[key]
-    if key in _NO_GPU_SPELLINGS:
+    if key in host_list.NO_GPU_WORDS:
         return NO_GPU
     if (gpu or "").strip().lower() in KNOWN_ELSEWHERE:
         # M8: A REAL CARD, AND THIS TOOL HAS NO MACHINE TYPE FOR IT. Answering
@@ -1116,18 +1120,18 @@ class QuotaCheck:
     that are not consuming one of these. A reserved box that is running is its
     reservation's card, once.
     """
-    boxed: tuple[tuple[str, str], ...] = ()
+    boxed: "tuple[tuple[str, str, str], ...] | None" = ()
+    """`(reservation, zone, instance)` for every instance bound to one of them.
+
+    What decides the remedy, with `named` below. A reservation with a box on
+    it is not released from under that box; one with nothing bound to it is
+    released with Google's own command. None when the instances were not read.
+    """
     named: tuple[tuple[str, str, str], ...] = ()
     """`(reservation, zone, label)` where the host list holds that box.
 
     The only thing that lets the remedy say `comfy-qat down <label>`. See
     `declared_boxes`.
-    """
-    """`(name, zone)` of the reservations above that have their own box on them.
-
-    What decides the remedy. `comfy-qat delete <box>` is only a command when
-    there is a box; a reservation with nothing bound to it is released with
-    Google's own.
     """
     reserving: bool = False
     """Is this create going to make a reservation of its own?"""
@@ -1500,11 +1504,6 @@ def _stop_the_box(name: str, zone: str) -> str:
     return f"gcloud compute instances stop {name} --zone={zone}"
 
 
-def _zone_name(instance: dict) -> str:
-    """`.../zones/us-central1-a` -> `us-central1-a`, off an instance record."""
-    return str(instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
-
-
 def _cards(count: int) -> str:
     """`1 card`, `8 cards`."""
     return "1 card" if count == 1 else f"{count} cards"
@@ -1524,38 +1523,56 @@ def _release_command(name: str, zone: str, project: str) -> str:
 def _how_to_release(holders, boxed, project: str, named=()) -> str:
     """The fix for "a reservation holds the card": how to let go of one.
 
-    Three cases, and which applies is a fact about the project AND the host
+    Four cases, and which applies is a fact about the project AND the host
     list, not a choice of wording:
 
-      * its box is in the host list — `comfy-qat down` then `comfy-qat delete`,
-        under the ENTRY'S OWN LABEL, because `delete` refuses a box that is
-        running and takes the reservation with the box;
-      * its box is on the project and in no entry — Google's commands for the
-        box and then the reservation;
-      * nothing is on it — Google's command for the reservation.
+      * a box is on it and is in the host list — `comfy-qat down` then
+        `comfy-qat delete`, under the ENTRY'S OWN LABEL, because `delete`
+        refuses a box that is running and takes the reservation with the box;
+      * a box is on it and is in no entry — Google's commands for the box and
+        then the reservation;
+      * nothing is on it — Google's command for the reservation;
+      * nobody could look — say so, and how to look, before the command.
 
-    `named` is `(reservation, zone, label)` for the first case, from
-    `declared_boxes`. It is the ONLY thing that puts a `comfy-qat` command in
-    this fix. The name in a reservation's description is the INSTANCE's, and a
-    host list is a hand-maintained file: the box may not be in it — a create
-    that died before the entry was written, a teammate's box — and then both
-    commands exit 2 while the reservation bills. Worse, the list may hold an
-    entry of that name for a DIFFERENT machine, and `comfy-qat delete <name>`
-    pasted back deletes that one. So with nothing in `named`, which is what a
-    caller that knows no host list passes, no `comfy-qat` command is printed.
+    "ON IT" MEANS BOUND TO IT, by the instance's own record. It used to mean
+    "the instance NAMED in the reservation's description is bound to it", so a
+    reservation described as held for one box with a differently named box
+    running on it was told "nothing is on it" and handed the command that
+    releases the capacity from under that box. `boxed` is `_boxed`'s answer:
+    `(reservation, zone, instance)` for every instance bound, whatever it is
+    called — or None when the instances were not read, which is not "none".
+
+    `named` is `(reservation, zone, label)`, from `declared_boxes`. It is the
+    ONLY thing that puts a `comfy-qat` command in this fix. A host list is a
+    hand-maintained file: the box may not be in it, and then both commands exit
+    2 while the reservation bills. Worse, the list may hold an entry of that
+    name for a DIFFERENT machine, and `comfy-qat delete <name>` pasted back
+    deletes that one. So with nothing in `named`, which is what a caller that
+    knows no host list passes, no `comfy-qat` command is printed.
     """
     labels = {(name, zone): label for name, zone, label in named}
-    on_the_project = set(boxed)
+    unread = boxed is None
+    on: dict[tuple[str, str], list[str]] = {}
+    for found in boxed or ():
+        # Pairs are what this took before it asked the right question. One of
+        # those carries no instance name, so the box is unknown rather than
+        # assumed to be the one in the description.
+        name, zone, *instance = found
+        on.setdefault((name, zone), []).extend(instance)
 
-    def box_commands(name: str, zone: str, box: str) -> list[str]:
+    def box_commands(name: str, zone: str) -> list[str]:
         # `--delete-disks=all` IS NOT OPTIONAL, and it is in the same string as
         # the command so the two cannot be parted. This tool makes boot disks
         # that do not auto-delete: without the flag the box goes, the card is
         # freed, and 200 GB bills on with nothing attached to it. `delete` and
         # `remove.py`'s own printed command both carry it.
         where = f"--zone={zone} --project={project}" if project else f"--zone={zone}"
-        return [f"gcloud compute instances delete {box} {where} --delete-disks=all",
+        return [*(f"gcloud compute instances delete {box} {where} --delete-disks=all"
+                  for box in on[(name, zone)]),
                 _release_command(name, zone, project)]
+
+    look = "gcloud compute instances list"
+    look = f"{look} --project={project}" if project else look
 
     if len(holders) == 1:
         name, zone, _held, box = holders[0]
@@ -1564,60 +1581,94 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
             return output.fix("stop it, then delete it to release the card:",
                               f"comfy-qat down {label}",
                               f"comfy-qat delete {label}")
-        if box and (name, zone) in on_the_project:
+        if on.get((name, zone)):
+            there = " and ".join(on[(name, zone)])
             return output.fix(
-                f"{box} is on it and is not in your host list, so this tool "
+                f"{there} is on it and is not in your host list, so this tool "
                 f"cannot name it. Check whose it is, then delete the box and "
                 f"release the reservation with Google's own commands:",
-                *box_commands(name, zone, box))
+                *box_commands(name, zone))
+        if unread or (name, zone) in on:
+            return output.fix(
+                "whether a box is on it could not be read, so look before "
+                "releasing it — a reservation released from under a running box "
+                "takes its capacity away:",
+                look,
+                _release_command(name, zone, project))
         why = ("nothing is on it" if box else
-               "it was not made by this tool, so check whose it is first")
+               "nothing is on it, and it was not made by this tool, so check "
+               "whose it is first")
         return output.fix(f"release it — {why}:", _release_command(name, zone, project))
     lines = ["release one of them. A box in your host list is stopped and then "
              "deleted, and its reservation goes with it; anything else is "
              "released with Google's own commands — check whose it is first:"]
-    for name, zone, _held, box in holders:
+    if unread:
+        lines = ["release one of them — but which have a box on them could not "
+                 "be read, so look first:", look]
+    for name, zone, _held, _box in holders:
         if (name, zone) in labels:
             label = labels[(name, zone)]
             lines += [f"comfy-qat down {label}", f"comfy-qat delete {label}"]
-        elif box and (name, zone) in on_the_project:
-            lines += box_commands(name, zone, box)
+        elif on.get((name, zone)):
+            lines += box_commands(name, zone)
         else:
             lines.append(_release_command(name, zone, project))
     return output.fix(*lines)
 
 
-def _boxed(holders, instances: list[dict]) -> tuple[tuple[str, str], ...]:
-    """Which of these reservations have the box they were made for on them.
+def _boxed(holders, instances: list[dict] | None,
+           ) -> "tuple[tuple[str, str, str], ...] | None":
+    """`(reservation, zone, instance)` for every instance bound to one of these.
 
-    A fact about the PROJECT. Whether this tool can name that box is a
-    different one — see `declared_boxes`.
+    THE QUESTION IS "IS ANYTHING BOUND TO IT", asked of each instance's own
+    record with `reservation.bound_to` — the question `list --live` and
+    `down --all` ask. Not "is the instance named in its description bound to
+    it": a box renamed, re-made or bound by hand in the console is on the
+    reservation just the same, and a remedy that misses it releases the
+    capacity from under a running machine.
+
+    None when `instances` is None. Not read is not "nothing bound", and the
+    caller must not say "nothing is on it" about a project nobody looked at.
+
+    A fact about the PROJECT. Whether this tool can name a box is a different
+    one — see `declared_boxes`.
     """
-    on = {(rsv.bound_to(instance), _zone_name(instance), instance.get("name"))
-          for instance in instances or []}
-    return tuple((name, zone) for name, zone, _held, box in holders
-                 if box and (name, zone, box) in on)
+    if instances is None:
+        return None
+    wanted = {(name, zone) for name, zone, _held, _box in holders}
+    return tuple((rsv.bound_to(instance), rsv.zone_of(instance),
+                  instance.get("name") or "")
+                 for instance in instances
+                 if (rsv.bound_to(instance), rsv.zone_of(instance)) in wanted
+                 and instance.get("name"))
 
 
-def declared_boxes(holders, instances: list[dict], hosts, project: str,
+def declared_boxes(holders, instances: list[dict] | None, hosts, project: str,
                    ) -> tuple[tuple[str, str, str], ...]:
     """`(reservation, zone, label)` for each holder whose box the host list holds.
 
-    "Holds" is the host list's own rule for one machine: an entry whose
-    `machine_id` — kind, project, zone, instance — is that instance. Never the
-    entry's name. The label returned is what the user called the machine,
-    which is what `comfy-qat down` and `delete` take, and it need not be the
-    instance's name at all.
+    "Its box" is the instance BOUND to it, as `_boxed` finds it — not the name
+    in the description. "Holds" is the host list's own rule for one machine: an
+    entry whose `machine_id` — kind, project, zone, instance — is that
+    instance. Never the entry's name. The label returned is what the user
+    called the machine, which is what `comfy-qat down` and `delete` take, and
+    it need not be the instance's name at all.
 
-    Empty when there is no host list to ask (`None`) or no project to complete
-    an identity with: an identity that cannot be established is not a match.
+    Empty when there is no host list to ask (`None`), no project to complete
+    an identity with, or no instances read: an identity that cannot be
+    established is not a match. A reservation with more than one instance on
+    it is not named either — one `comfy-qat delete` would not empty it.
     """
     if not hosts or not project:
         return ()
+    bound: dict[tuple[str, str], list[str]] = {}
+    for name, zone, instance in _boxed(holders, instances) or ():
+        bound.setdefault((name, zone), []).append(instance)
     found = []
-    for name, zone in _boxed(holders, instances):
-        box = next(box for held, at, _cards, box in holders if (held, at) == (name, zone))
-        wanted = ("gce", project, zone, box)
+    for (name, zone), boxes in bound.items():
+        if len(boxes) != 1:
+            continue
+        wanted = ("gce", project, zone, boxes[0])
         label = next((host.name for host in hosts if host.machine_id == wanted), None)
         if label:
             found.append((name, zone, label))
@@ -1665,7 +1716,7 @@ def _gpu_boxes_running(instances: list[dict]) -> list[tuple[str, str]]:
         if name:
             # `zone` arrives as a URL — .../zones/us-central1-a — and the tail is
             # what gcloud takes.
-            zone = str(instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+            zone = rsv.zone_of(instance)
             found.append((name, zone))
     return found
 
@@ -1791,7 +1842,7 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
         # The boxes whose cards are NOT already counted through a reservation.
         # Every non-TERMINATED GPU box when there are no reservations, or none
         # were read — which is what this always was.
-        running=tuple(_gpu_boxes_running(rsv._outside(instances, counted))),
+        running=tuple(_gpu_boxes_running(rsv.outside(instances, counted))),
         regions=tuple(regions),
         key=card.key,
         # THE CARD'S OWN NAME. This was `quota_names[-1]` — the ALIAS — because
@@ -2847,7 +2898,7 @@ def _who_holds(region: str, accelerator: str, instances: list[dict],
     names = [found.name for found in reservations or []
              if rsv.held_in(region, accelerator, [], [found])]
     names += [instance.get("name") or "an unnamed box"
-              for instance in rsv._outside(instances, reservations)
+              for instance in rsv.outside(instances, reservations)
               if rsv.held_in(region, accelerator, [instance], None)]
     return tuple(names)
 
@@ -2884,9 +2935,9 @@ def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str]
         lines.append(_how_to_release(
             holders, _boxed(holders, instances), project,
             declared_boxes(holders, instances, hosts, project)))
-    for instance in rsv._outside(instances, reservations):
+    for instance in rsv.outside(instances, reservations):
         if any(rsv.held_in(name, card.accelerator, [instance], None) for name in asked):
-            lines.append(f"{_stop_the_box(instance.get('name') or '', _zone_name(instance))}"
+            lines.append(f"{_stop_the_box(instance.get('name') or '', rsv.zone_of(instance))}"
                          f"   # a running box holding one")
     raise LifecycleError(
         f"this project's {card.name} allowance is already held in "
