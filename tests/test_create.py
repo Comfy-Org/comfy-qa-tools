@@ -1477,7 +1477,8 @@ def test_a_named_zone_in_a_full_region_is_refused_and_points_at_one_with_room(tm
         ordered([], held, config=tmp_path / "hosts.toml", zone="us-central1-a")
 
     assert "us-central1 (1 of 1, held by other-rsv)" in str(caught.value)
-    assert "comfy-qat create --os linux --gpu t4 --reserve --region asia-east1" in caught.value.fix
+    assert ("comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux "
+            "--region asia-east1") in caught.value.fix
 
 
 def test_without_the_instances_the_regions_are_not_narrowed_at_all(tmp_path):
@@ -1660,3 +1661,267 @@ def test_reserving_what_does_not_fit_is_not_announced_as_taking_it():
 
     assert check.problem() is not None
     assert not [text for text in check.lines() if text.startswith("reserving takes")]
+
+
+# --- recheck: Google's delete for a box takes its disk with it ----------------------
+#
+# This tool makes boot disks that do NOT auto-delete, so `gcloud compute
+# instances delete <box>` alone frees the card and leaves 200 GB billing with
+# nothing attached to it. `delete` passes `--delete-disks=all`; the remedy that
+# hands the same command to a person has to as well. Checked at every refusal
+# in this module that reaches it.
+
+WITH_ITS_DISK = (f"gcloud compute instances delete comfy-linux --zone=us-central1-a "
+                 f"--project={PROJECT} --delete-disks=all")
+
+
+def test_the_limit_refusal_deletes_an_undeclared_box_with_its_disk():
+    problem = refused_by_one_reservation(hosts=[])
+    assert WITH_ITS_DISK in [line.strip() for line in problem.fix.splitlines()]
+
+
+def test_the_limit_refusal_with_several_holders_deletes_an_undeclared_box_with_its_disk():
+    held = [held_for("comfy-linux", in_use=1), held_for("b", zone="asia-east1-a")]
+    problem = gate(2, [bound("comfy-linux", "comfy-linux-rsv")], held, hosts=[]).problem()
+    assert WITH_ITS_DISK in [line.strip() for line in problem.fix.splitlines()]
+
+
+def test_the_limit_refusal_with_no_project_still_takes_the_disk():
+    check = check_quota(CARDS["t4"], [T4_QUOTA, ceiling(1)],
+                        [bound("comfy-linux", "comfy-linux-rsv")],
+                        reservations=[held_for("comfy-linux", in_use=1)])
+    assert ("gcloud compute instances delete comfy-linux --zone=us-central1-a "
+            "--delete-disks=all") in [line.strip() for line in check.problem().fix.splitlines()]
+
+
+@pytest.mark.parametrize("asked", [dict(zone="us-central1-a"), dict(region="us-central1"), {}],
+                         ids=["zone", "region", "every-region"])
+def test_the_full_region_refusal_deletes_an_undeclared_box_with_its_disk(asked, tmp_path):
+    held = [held_for("one", zone="us-central1-b"), held_for("two", zone="asia-east1-a")]
+    if not asked:
+        instances = [bound("one", "one-rsv", zone="us-central1-b")]
+    else:
+        held = held[:1]
+        instances = [bound("one", "one-rsv", zone="us-central1-b")]
+
+    with pytest.raises(LifecycleError) as caught:
+        ordered(instances, held, config=tmp_path / "hosts.toml", **asked)
+
+    assert (f"gcloud compute instances delete one --zone=us-central1-b "
+            f"--project={PROJECT} --delete-disks=all") in [
+                line.strip() for line in caught.value.fix.splitlines()]
+
+
+def test_no_instance_delete_this_module_hands_over_leaves_the_disk():
+    """The sweep, kept. Every `instances delete` written in create.py carries
+    the flag in the same string, so a new one cannot be added without it."""
+    import inspect
+
+    from comfy_qa import create as module
+
+    lines = [line for line in inspect.getsource(module).splitlines()
+             if "compute instances delete" in line and not line.strip().startswith("#")]
+    assert lines, "the remedy this guards has gone, or moved out of this module"
+    assert all("--delete-disks=all" in line for line in lines), lines
+
+
+# --- recheck: the full-region refusal on the --zone path is handed the host list -----
+
+
+def test_a_named_zone_in_a_full_region_names_a_declared_box_by_its_entry(tmp_path):
+    """`order_zones` reaches `_refuse_full` from two places. The `--region` and
+    every-region path was pinned; this one could drop `hosts` with the suite
+    green — safe, since it falls back to Google's commands, but not held."""
+    held = [held_for("one", zone="us-central1-b")]
+    instances = [bound("one", "one-rsv", zone="us-central1-b")]
+
+    with pytest.raises(LifecycleError) as caught:
+        ordered(instances, held, config=tmp_path / "hosts.toml", zone="us-central1-a",
+                hosts=[entry("box-one", instance_name="one", zone="us-central1-b")])
+
+    lines = [line.strip() for line in caught.value.fix.splitlines()]
+    assert "comfy-qat down box-one" in lines and "comfy-qat delete box-one" in lines
+    assert not [line for line in lines if line.startswith("gcloud compute instances delete")]
+
+
+# --- recheck: every `comfy-qat create` this module hands back is the box asked for ---
+#
+# A remedy that rewrites the command and drops `--reserve` makes, pasted back
+# under `--yes`, an unreserved box. One site was fixed for that and its siblings
+# were not. So each site that prints a `comfy-qat create` is driven here for a
+# reserved build, and one test at the end counts the sites in the source so a
+# new one cannot arrive unlisted.
+
+
+def _creates(fix):
+    """Every `comfy-qat create …` in a fix, each cut where its prose begins."""
+    import re
+
+    return [found.strip() for found in
+            re.findall(r"comfy-qat create[^,;\n]*", fix or "")]
+
+
+def _plan_refusal(**kwargs):
+    with pytest.raises(LifecycleError) as caught:
+        plan(os_choice="linux", reserve=True, **kwargs)
+    return caught.value
+
+
+@pytest.mark.parametrize("disk", [5, 99999], ids=["too-small", "too-large"])
+def test_the_disk_size_remedy_for_a_reserved_build_still_reserves(disk):
+    assert _creates(_plan_refusal(gpu="l4", disk_gb=disk, name="mybox").fix) == [
+        "comfy-qat create --os linux --gpu l4 --reserve --name mybox --disk 200"]
+    assert _creates(_plan_refusal(gpu="l4", disk_gb=disk).fix) == [
+        "comfy-qat create --os linux --gpu l4 --reserve --disk 200"], (
+        "no --name when none was given: one is picked")
+
+
+@pytest.mark.parametrize("disk", [5, 99999], ids=["too-small", "too-large"])
+def test_the_disk_size_remedy_for_a_plain_build_is_unchanged(disk):
+    with pytest.raises(LifecycleError) as caught:
+        plan(os_choice="linux", gpu="l4", disk_gb=disk, name="mybox")
+    assert caught.value.fix == "comfy-qat create --os linux --gpu l4 --disk 200"
+
+
+def test_the_card_that_cannot_be_driven_remedy_for_a_reserved_build_still_reserves():
+    fix = _plan_refusal(gpu="p100", name="mybox").fix
+    assert _creates(fix) == ["comfy-qat create --os linux --gpu t4 --reserve --name mybox"]
+    assert fix.startswith("comfy-qat create --os linux --gpu t4 --reserve --name mybox, "), (
+        "the comma still ends the command, for whoever parses it")
+
+
+def test_the_card_that_cannot_be_driven_remedy_for_a_plain_build_is_unchanged():
+    with pytest.raises(LifecycleError) as caught:
+        plan(os_choice="linux", gpu="p100", name="mybox")
+    assert caught.value.fix.startswith(
+        "comfy-qat create --os linux --gpu t4, the same n1-standard-8 machine")
+
+
+def test_the_unknown_os_remedy_for_a_reserved_build_still_reserves():
+    with pytest.raises(LifecycleError) as caught:
+        plan(os_choice="plan9", gpu="t4", reserve=True, name="mybox")
+    assert _creates(caught.value.fix) == [
+        "comfy-qat create --os linux --gpu l4 --reserve --name mybox"]
+    with pytest.raises(LifecycleError) as plain:
+        plan(os_choice="plan9", gpu="t4")
+    assert plain.value.fix == "comfy-qat create --os linux --gpu l4"
+
+
+def test_the_no_gpu_remedy_offers_a_reserved_box_under_the_name_asked_for():
+    """One of its two commands is deliberately NOT reserved — that is the
+    alternative being offered. The other is, and both keep the name."""
+    with pytest.raises(LifecycleError) as caught:
+        plan(os_choice="linux", gpu="none", reserve=True, name="mybox")
+    assert _creates(caught.value.fix) == [
+        "comfy-qat create --os linux --gpu none --name mybox",
+        "comfy-qat create --os linux --gpu t4 --reserve --name mybox",
+    ]
+
+
+class _NothingToReserve(Cloud):
+    def create_reservation(self, name, zone, project, **kwargs):
+        raise GcloudError("Could not fetch resource", raw=STOCKOUT)
+
+    def reservation_absent(self, name, zone, project):
+        return True
+
+
+@pytest.mark.parametrize("ordering,attempts,expected", [
+    (Ordering(zones=("us-central1-a",), regions=("us-central1", "us-east1"),
+              offering=("us-central1", "us-east1")), 6,
+     ["comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux --region us-east1"]),
+    (Ordering(zones=("us-central1-a", "us-east1-b"), regions=("us-central1", "us-east1")), 1,
+     ["comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux --region <region>",
+      "comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux --zone <zone>"]),
+    (Ordering(zones=("us-central1-a",), regions=("us-central1",), fall_through=False), 6,
+     ["comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux"]),
+], ids=["untried-regions", "capped", "named-zone"])
+def test_every_stockout_ending_hands_back_a_reserved_create(ordering, attempts, expected):
+    with pytest.raises(LifecycleError) as caught:
+        build(_NothingToReserve(), T4_BLUEPRINT, ordering, PROJECT, lambda _line: None,
+              attempts=attempts)
+    assert _creates(caught.value.fix) == expected
+
+
+@pytest.mark.parametrize("ordering,attempts,expected", [
+    (Ordering(zones=("us-central1-a", "us-east1-b"), regions=("us-central1", "us-east1")), 1,
+     ["comfy-qat create --region <region>", "comfy-qat create --zone <zone>"]),
+    (Ordering(zones=("us-central1-a",), regions=("us-central1",), fall_through=False), 6,
+     ["comfy-qat create"]),
+], ids=["capped", "named-zone"])
+def test_the_stockout_endings_for_a_plain_build_are_unchanged(ordering, attempts, expected):
+    refuse = {"us-central1-a": STOCKOUT, "us-east1-b": STOCKOUT}
+    with pytest.raises(LifecycleError) as caught:
+        build(Cloud(refuse=refuse), LINUX_T4, ordering, PROJECT, lambda _line: None,
+              attempts=attempts)
+    assert _creates(caught.value.fix) == expected
+
+
+def test_the_full_region_remedy_keeps_the_name_as_well_as_the_reservation(tmp_path):
+    with pytest.raises(LifecycleError) as caught:
+        ordered([], [held_for("other", zone="us-central1-b")],
+                config=tmp_path / "hosts.toml", zone="us-central1-a")
+    assert _creates(caught.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux --region asia-east1"]
+
+
+def test_the_two_leftover_remedies_are_reserved_creates(tmp_path):
+    leftover = held_for("comfy-linux", zone="asia-east1-b")
+    check = gate(1, [], [leftover], reserve=True, leftover=leftover)
+    with pytest.raises(LifecycleError) as elsewhere:
+        order_zones(Cloud(), PROJECT, T4_BLUEPRINT, check, leftover=leftover,
+                    zone="us-central1-a")
+    assert _creates(elsewhere.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --reserve --name comfy-linux --zone asia-east1-b"]
+
+    wrong = held_for("comfy-linux", ours=False)
+    with pytest.raises(LifecycleError) as misfit:
+        order_zones(Cloud(), PROJECT, T4_BLUEPRINT, gate(2, [], [wrong], reserve=True),
+                    leftover=wrong)
+    assert _creates(misfit.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --reserve --name <another-name>"]
+
+
+# The sites, by the function each is written in. A string in the source that
+# builds a `comfy-qat create` and is in none of these fails the test below, so
+# a new remedy has to be added here — beside a test above that drives it for a
+# reserved build.
+CREATE_REMEDIES = {
+    "undrivable": 1,              # the card that cannot be driven
+    "image_for": 1,               # no such operating system
+    "plan": 4,                    # no-GPU-and-reserve (two), disk too small, too large
+    "_refuse_the_leftover": 1,    # a reservation of this name that does not fit
+    "build": 4,                   # plain: capped (two) and named zone; untried regions
+    "_same_box": 1,               # reserved: capped (two) and named zone go through this
+    "_refuse_full": 1,            # the region's allowance is held
+    "_where_the_leftover_is": 1,  # the leftover is somewhere else
+}
+
+
+def test_every_create_remedy_in_the_package_modules_this_file_covers_is_listed():
+    """Counted from the syntax tree — string constants in code, so comments and
+    docstrings do not count — and compared with the list above BOTH ways."""
+    import ast
+    import inspect
+
+    from comfy_qa import config, discover, lifecycle, provision, quota, stamp, zones
+    from comfy_qa import create as create_module
+
+    def sites(module):
+        tree = ast.parse(inspect.getsource(module))
+        found: dict[str, int] = {}
+        for function in ast.walk(tree):
+            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            docstring = ast.get_docstring(function, clean=False)
+            for node in ast.walk(function):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and "comfy-qat create" in node.value
+                        and node.value != docstring):
+                    found[function.name] = (found.get(function.name, 0)
+                                            + node.value.count("comfy-qat create"))
+        return found
+
+    assert sites(create_module) == CREATE_REMEDIES
+    for module in (config, discover, lifecycle, provision, quota, stamp, zones):
+        assert sites(module) == {}, f"{module.__name__} hands back a create command"

@@ -594,13 +594,17 @@ def card_named(name: str) -> Card | None:
     return None
 
 
-def undrivable(card: Card, image: Image | None = None) -> LifecycleError:
+def undrivable(card: Card, image: Image | None = None,
+               asked: str = "") -> LifecycleError:
     """Why a real card with real quota is still refused, before anything exists.
 
     Raised by `plan`, which runs offline and before the quota read, so this
     costs a second and no money. The alternative — the behaviour this replaced —
     is a created, billing instance whose GPU never initialises and a run that
     reported success.
+
+    `asked` is what else the refused command asked for — ` --reserve`, a name —
+    as `_asked_for` builds it, so the command handed back is for the same box.
     """
     os_key = image.key if image else "linux"
     return LifecycleError(
@@ -613,7 +617,7 @@ def undrivable(card: Card, image: Image | None = None) -> LifecycleError:
         # The comma is load-bearing: a fix line is read as a command up to the
         # first comma or semicolon, so prose after an em-dash would be parsed as
         # more flags. `tests/test_create_e2e.py::_invocations` is what reads it.
-        fix=(f"comfy-qat create --os {os_key} --gpu t4, the same n1-standard-8 "
+        fix=(f"comfy-qat create --os {os_key} --gpu t4{asked}, the same n1-standard-8 "
              f"machine and the cheapest card that works"),
         kind=NO_DRIVER,
     )
@@ -874,7 +878,26 @@ def card_for(gpu: str) -> Card:
     )
 
 
-def image_for(os_choice: str) -> Image:
+def _asked_for(reserve: bool, name: str | None) -> str:
+    """` --reserve` and ` --name <name>`, for a remedy `plan` hands back.
+
+    A REMEDY THAT REWRITES THE COMMAND REWRITES THE BOX. Each refusal in `plan`
+    prints a corrected `comfy-qat create`, and each of them printed it without
+    `--reserve`: pasted back under `--yes`, the fix for "that disk is too
+    small" was a different box from the one asked for, with a different bill.
+    The name goes with it for a reserved box, because a reservation is found
+    again by its box's name.
+
+    Nothing at all for a build that is not reserved, so those lines stay what
+    they have always been. The name only when one was given: with none, one is
+    picked, and it is picked again.
+    """
+    if not reserve:
+        return ""
+    return " --reserve" + (f" --name {_clean(name)}" if name else "")
+
+
+def image_for(os_choice: str, asked: str = "") -> Image:
     """`linux` or `windows`, plus the spellings people actually type."""
     key = (os_choice or "").strip().lower()
     key = ALIASES.get(key, key)
@@ -882,7 +905,7 @@ def image_for(os_choice: str) -> Image:
         return IMAGES[key]
     raise LifecycleError(
         f"no operating system called {os_choice!r}. Say --os linux or --os windows.",
-        fix="comfy-qat create --os linux --gpu l4",
+        fix=f"comfy-qat create --os linux --gpu l4{asked}",
         kind=NO_ZONE,
     )
 
@@ -955,7 +978,8 @@ def plan(
     reserve: bool = False,
 ) -> Blueprint:
     """Everything decided before anything is contacted. Offline, and total."""
-    image = image_for(os_choice)
+    asked = _asked_for(reserve, name)
+    image = image_for(os_choice, asked)
     card = card_for(gpu)
     # BEFORE the disk checks, and long before the quota read: a card this tool
     # cannot drive is not a detail of the box, it is the box. `plan` is the last
@@ -964,7 +988,7 @@ def plan(
     # `card.is_gpu and`, because no card at all has no GSP either and is not a
     # card this tool cannot drive — there is no driver in a box with no GPU.
     if card.is_gpu and not card.has_gsp:
-        raise undrivable(card, image)
+        raise undrivable(card, image, asked)
     if reserve and not card.is_gpu:
         # The limit on reservations is counted in GPU cards: it is the project's
         # GPU allowance. A reservation that holds no card is bounded by nothing
@@ -976,9 +1000,12 @@ def plan(
             "Nothing was created.",
             fix=output.fix(
                 "make it without a reservation:",
-                f"comfy-qat create --os {image.key} --gpu {card.key}",
+                # Not reserved, on purpose: that is the alternative on offer.
+                # The name is still the one asked for.
+                f"comfy-qat create --os {image.key} --gpu {card.key}"
+                f"{asked.removeprefix(' --reserve')}",
                 "or reserve a box that has a card:",
-                f"comfy-qat create --os {image.key} --gpu t4 --reserve",
+                f"comfy-qat create --os {image.key} --gpu t4{asked}",
             ),
             kind=CREATE_FAILED,
         )
@@ -986,7 +1013,8 @@ def plan(
         raise LifecycleError(
             f"a {disk_gb} GB disk is too small — the image will not fit and models "
             f"will not either. Ask for at least {MIN_DISK_GB}.",
-            fix=f"comfy-qat create --os {image.key} --gpu {gpu} --disk {DEFAULT_DISK_GB}",
+            fix=(f"comfy-qat create --os {image.key} --gpu {gpu}{asked} "
+                 f"--disk {DEFAULT_DISK_GB}"),
             kind=CREATE_FAILED,
         )
     if disk_gb > MAX_DISK_GB:
@@ -996,7 +1024,8 @@ def plan(
             f"whether or not anything is written to it, so a typo here is expensive "
             f"and silent. Ask for at most {MAX_DISK_GB}, or make a disk that size "
             f"deliberately in the console.",
-            fix=f"comfy-qat create --os {image.key} --gpu {gpu} --disk {DEFAULT_DISK_GB}",
+            fix=(f"comfy-qat create --os {image.key} --gpu {gpu}{asked} "
+                 f"--disk {DEFAULT_DISK_GB}"),
             kind=CREATE_FAILED,
         )
     chosen = choose_name(name, image, taken or set())
@@ -1519,8 +1548,13 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
     on_the_project = set(boxed)
 
     def box_commands(name: str, zone: str, box: str) -> list[str]:
-        gone = f"gcloud compute instances delete {box} --zone={zone}"
-        return [f"{gone} --project={project}" if project else gone,
+        # `--delete-disks=all` IS NOT OPTIONAL, and it is in the same string as
+        # the command so the two cannot be parted. This tool makes boot disks
+        # that do not auto-delete: without the flag the box goes, the card is
+        # freed, and 200 GB bills on with nothing attached to it. `delete` and
+        # `remove.py`'s own printed command both carry it.
+        where = f"--zone={zone} --project={project}" if project else f"--zone={zone}"
+        return [f"gcloud compute instances delete {box} {where} --delete-disks=all",
                 _release_command(name, zone, project)]
 
     if len(holders) == 1:
@@ -1939,6 +1973,12 @@ def _as_reserved(blueprint: Blueprint) -> str:
     return f" --reserve --name {blueprint.name}" if blueprint.reserve else ""
 
 
+def _same_box(blueprint: Blueprint) -> str:
+    """`comfy-qat create` for this reserved box, complete up to where it goes."""
+    return (f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key}"
+            f"{_as_reserved(blueprint)}")
+
+
 def _wanted(card: Card) -> str:
     """What a zone is out of, as a word for a sentence: the card, or the machine.
 
@@ -2342,9 +2382,17 @@ def build(
             # message says. The advice used to offer `--zone` alone, which asks
             # someone who has just been told a whole neighbourhood is short to
             # name one machine room in it.
+            #
+            # Two spellings. The plain one is a template and has always been;
+            # for a reserved build a template that leaves the reservation out is
+            # the command for a different box, so that one is written in full.
             fix=("wait and run the same command again, ask for a region this did not "
                  "reach: comfy-qat create --region <region>, or name a zone yourself: "
-                 "comfy-qat create --zone <zone>"),
+                 "comfy-qat create --zone <zone>"
+                 if not blueprint.reserve else
+                 f"wait and run the same command again, ask for a region this did "
+                 f"not reach: {_same_box(blueprint)} --region <region>, or name a "
+                 f"zone yourself: {_same_box(blueprint)} --zone <zone>"),
             kind=EXHAUSTED,
         )
 
@@ -2414,7 +2462,10 @@ def build(
         f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
         f"is billing.",
         fix=("wait and run the same command again — a stockout is usually minutes to "
-             "hours — or drop --zone and let this pick: comfy-qat create"),
+             "hours — or drop --zone and let this pick: comfy-qat create"
+             if not blueprint.reserve else
+             f"wait and run the same command again — a stockout is usually minutes "
+             f"to hours — or drop --zone and let this pick: {_same_box(blueprint)}"),
         kind=EXHAUSTED,
     )
 
@@ -2819,7 +2870,7 @@ def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str]
     """
     card = blueprint.card
     detail = "; ".join(f"{name} ({_held_words(full[name])})" for name in asked)
-    reserve = " --reserve" if blueprint.reserve else ""
+    reserve = _as_reserved(blueprint)
     lines: list[str] = []
     roomy = [name for name in check.regions if name not in full]
     if roomy:
