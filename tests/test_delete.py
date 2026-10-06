@@ -1169,19 +1169,153 @@ def test_a_box_whose_record_cannot_be_read_is_deleted_as_its_entry_describes_it(
         "type comfy-linux to confirm")
 
 
-def test_a_gone_box_with_no_reservation_line_is_not_cleared_in_silence(cli):
-    """Already deleted, and the entry says nothing about a reservation. There
-    is no record left to ask, so this cannot know — and it used to say only
-    that the box was gone, which reads as "and nothing of it is left"."""
+# --- gone, and the entry has no reservation line -------------------------------
+#
+# The box has no record left to ask, and `delete` used to stop there: one line
+# saying the check was not made, and then "it has already been deleted, so only
+# the host list entry is left" — a sentence about the PROJECT, printed without
+# reading it. The project still knows: a reservation this tool made carries the
+# box's name. Every entry below is the plain one, `HOSTS`, with no
+# `gce_reservation` line.
+
+ONLY_THE_ENTRY = "only the host list entry is left"
+
+
+def test_a_gone_box_with_no_reservation_line_has_its_own_reservation_released(
+        cli, tmp_path):
+    """This tool's own reservation for the box, in the entry's zone, with
+    nothing bound to it: released, by the rules a declared one is released by,
+    and said to be there before the name is typed back."""
     cloud = gone_from_google(Project(reservations=[held()]))
-    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")  # HOSTS
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    said = flat(result.stdout)
+    assert ("comfy-linux's host list entry has no reservation line, but "
+            "comfy-linux-rsv is on proj: this tool made it for comfy-linux, and "
+            "it bills every hour with or without the box.") in said
+    assert ("it has already been deleted, so only its reservation "
+            "comfy-linux-rsv and the host list entry are left.") in said
+    assert ONLY_THE_ENTRY not in said
+    assert said.index("has no reservation line") < said.index(
+        "type comfy-linux to confirm")
+    assert cloud.released() == [f"release {RSV} {RSV_ZONE} proj"]
+    assert cloud.reservations == []
+    assert "Its reservation comfy-linux-rsv was released" in said
+    assert "comfy-linux" not in entries(tmp_path)
+
+
+def test_that_entry_is_kept_while_its_reservation_could_not_be_released(cli, tmp_path):
+    """The entry is the only thing in this tool that still names what is
+    billing, so it stays until the reservation is gone — as it does for a
+    reservation the entry declares."""
+    cloud = gone_from_google(Project(reservations=[held()]))
+    cloud._release = GcloudError("the reservation is in use")
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code != 0, result.output
+    assert cloud.reservations != [], "the fake released it anyway"
+    assert "comfy-linux" in entries(tmp_path)
+    assert ONLY_THE_ENTRY not in flat(result.output)
+    assert RELEASE in result.output
+
+
+def test_a_gone_box_does_not_release_its_reservation_from_under_another_box(
+        cli, tmp_path):
+    """Made by this tool for this box — and another machine is bound to it
+    now. Named, with Google's command, and left alone."""
+    cloud = gone_from_google(Project(
+        reservations=[held()], instances=[box("somebody-else")]))
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    said = flat(result.stdout)
+    assert cloud.released() == []
+    assert ("its reservation comfy-linux-rsv is shared — other machines are on "
+            "it: somebody-else, so it is left alone") in said
+    assert f"  {RELEASE}" in result.stdout.splitlines()
+    assert ONLY_THE_ENTRY not in said
+    assert ("so its host list entry is left, and a reservation this command "
+            "does not release.") in said
+
+
+def test_a_gone_box_does_not_release_a_reservation_that_only_has_its_name(
+        cli, tmp_path):
+    """`comfy-linux-rsv`, made in the console: the name is not a claim —
+    anybody can call a reservation that. Named, with Google's own command, not
+    released; and the entry goes, since nothing here is this tool's to wait
+    for."""
+    cloud = gone_from_google(Project(reservations=[held(box="")]))
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    said = flat(result.stdout)
+    assert cloud.released() == [] and cloud.reservations != []
+    assert ("comfy-linux-rsv (us-central1-c) is on proj and may have been "
+            "comfy-linux's, but nothing establishes that it was — it is not one "
+            "this tool made for comfy-linux in us-central1-c — so it is left "
+            "alone, and it is still billing. Check whose it is, then release "
+            "it:") in said
+    assert f"  {RELEASE}" in result.stdout.splitlines()
+    assert ONLY_THE_ENTRY not in said
+    assert "comfy-qat delete" not in result.stdout
+    assert "comfy-linux" not in entries(tmp_path)
+    # Said again as the last thing printed: it is what is still billing.
+    assert result.stdout.rstrip().splitlines()[-1] == f"  {RELEASE}"
+
+
+def test_this_tools_reservation_for_the_box_in_another_zone_is_named_not_released(cli):
+    """The mark says it was made for a box of this name; the zone says not the
+    one this entry points at. Not established, so not released."""
+    cloud = gone_from_google(Project(reservations=[held(zone="us-east1-b")]))
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.released() == []
+    assert ("  gcloud compute reservations delete comfy-linux-rsv "
+            "--zone=us-east1-b --project=proj") in result.stdout.splitlines()
+    assert ONLY_THE_ENTRY not in flat(result.stdout)
+
+
+def test_a_gone_box_whose_project_cannot_list_reservations_is_not_called_clear(
+        cli, tmp_path):
+    """Not read is not none. It says the check could not be made and prints
+    the command that makes it — and does not say only the entry is left."""
+    cloud = gone_from_google(Project(reservations=[held()]))
+    cloud._unreadable = "reservations"
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
 
     assert result.exit_code == 0, result.output
     said = flat(result.stdout)
     assert ("whether comfy-linux had a reservation was not checked — it is gone, "
-            "and its record with it.") in said
+            "and the project's reservations could not be listed. One left behind "
+            "bills with nothing on it; look:") in said
     assert "  gcloud compute reservations list --project=proj" in result.stdout.splitlines()
+    assert ONLY_THE_ENTRY not in said
+    assert ("so its host list entry is left — and whether a reservation is too "
+            "is not known.") in said
     assert cloud.released() == [], "it released on a guess"
+    assert "comfy-linux" not in entries(tmp_path)
+
+
+@pytest.mark.parametrize("reservations", [
+    [],
+    [held("other-rsv", box="other")],
+], ids=["none at all", "only another box's"])
+def test_only_the_entry_is_left_is_said_when_that_was_read(cli, tmp_path, reservations):
+    """The control, and the one case the sentence is true in: the project's
+    reservations were read and none of them is this box's."""
+    cloud = gone_from_google(Project(reservations=reservations))
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    said = flat(result.stdout)
+    assert ("comfy-linux is not on proj — it has already been deleted, so only "
+            "the host list entry is left.") in said
+    assert "read reservations" in cloud.calls, "said without looking"
+    assert "was not checked" not in said and "left alone" not in said
+    assert cloud.released() == []
+    assert "comfy-linux" not in entries(tmp_path)
 
 
 def test_a_box_that_was_asked_and_is_bound_to_nothing_is_told_nothing_of_the_kind(cli):

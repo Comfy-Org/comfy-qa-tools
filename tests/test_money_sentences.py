@@ -83,10 +83,28 @@ class Cloud:
     something to answer plausibly.
     """
 
-    def __init__(self, *, status="RUNNING", stop=None):
+    def __init__(self, *, status="RUNNING", stop=None, bound=None):
         self.calls: list[str] = []
         self._status = status
         self._stop = stop
+        self._bound = bound
+
+    def describe_instance(self, instance, zone, project):
+        """What `down <name>` asks before it says anything about money: which
+        reservation the box's OWN record binds it to. `bound` is a reservation
+        name, None for a box bound to nothing, or the error the read ends in —
+        and the answer is in the SDK's shape, so the code under test reads it
+        the way it reads Google's."""
+        self.calls.append("describe_instance")
+        if isinstance(self._bound, BaseException):
+            raise self._bound
+        record = {"name": instance, "status": "TERMINATED"}
+        if self._bound:
+            record["reservationAffinity"] = {
+                "consumeReservationType": "SPECIFIC_RESERVATION",
+                "key": "compute.googleapis.com/reservation-name",
+                "values": [self._bound]}
+        return record
 
     def instance_status(self, instance, zone, project):
         self.calls.append("instance_status")
@@ -691,6 +709,106 @@ def test_the_same_three_runs_on_an_ordinary_box_still_say_what_they_always_did(c
     assert "comfy-win was not running, so nothing was billing." in idle
     for out in (stopped, idle):
         assert "reserved" not in out and "comfy-qat delete" not in out
+
+
+# --- `down <name>` asks the box, not only the host list -----------------------
+#
+# `gce_reservation` is one line in a file people edit. A box adopted before the
+# field existed, reserved in the console, or left by a `create --reserve` that
+# could not write its entry is reserved all the same, and `down <name>` told
+# every one of them "was billing. Stopped." The entry in every test below is
+# the PLAIN one — `HOSTS`, no `gce_reservation` — unless it says otherwise.
+
+
+def test_down_on_a_box_bound_to_a_reservation_its_entry_does_not_declare(cli):
+    result = cli("down", "comfy-win", cloud=Cloud(bound="comfy-win-rsv"))
+
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert ("comfy-win was running. Stopped — but it is reserved, so it is still "
+            "billing.") in out
+    assert ("its host list entry does not say so: comfy-win is bound to the "
+            "reservation comfy-win-rsv, which bills every hour whether the box "
+            "runs or not.") in _one_line(out)
+    assert out.splitlines()[-1] == DELETE_LINE
+    assert "was billing. Stopped." not in out
+    assert "stop paying" not in out and "comfy-qat down" not in out
+    assert result.cloud.calls.count("stop_instance") == 1
+
+
+def test_down_on_an_undeclared_reserved_box_that_was_already_stopped(cli):
+    """The cheerful sentence again — "was not running, so nothing was billing"
+    — about a box whose reservation has been billing the whole time."""
+    result = cli("down", "comfy-win",
+                 cloud=Cloud(status="TERMINATED", bound="comfy-win-rsv"))
+
+    out = result.stdout
+    assert ("comfy-win was not running — but it is reserved, so it is still "
+            "billing.") in out
+    assert "bound to the reservation comfy-win-rsv" in _one_line(out)
+    assert out.splitlines()[-1] == DELETE_LINE
+    assert "nothing was billing" not in out
+    assert "stop_instance" not in result.cloud.calls
+
+
+def test_down_on_a_declared_reserved_box_says_nothing_about_its_entry(cli):
+    """Declared: the reserved wording, as before, and not one word about an
+    entry that does say so. Nothing is asked either — the entry already
+    answered."""
+    result = cli("down", "comfy-win", cloud=Held(), declared=RESERVED)
+
+    assert result.stdout == (
+        "\ncomfy-win was running. Stopped — but it is reserved, so it is still "
+        "billing.\n" + DELETE_LINE + "\n")
+    assert "describe_instance" not in result.cloud.calls
+
+
+def test_down_on_a_box_google_says_is_bound_to_nothing_is_word_for_word_what_it_was(cli):
+    """The control, and the half that must not move: asked, answered, not
+    reserved. Typed out whole, because "byte-identical" is a claim about every
+    byte."""
+    stopped = cli("down", "comfy-win", cloud=Cloud())
+    idle = cli("down", "comfy-win", cloud=Cloud(status="TERMINATED"))
+
+    assert stopped.stdout == "\ncomfy-win was billing. Stopped.\n"
+    assert idle.stdout == "\ncomfy-win was not running, so nothing was billing.\n"
+    assert "describe_instance" in stopped.cloud.calls, (
+        "the all-clear was given without asking the box what it is bound to")
+
+
+@pytest.mark.parametrize("status, machine", [
+    ("RUNNING", "comfy-win was running. Stopped — but whether it is reserved "
+                "could not be checked, and a reservation bills with its box "
+                "stopped."),
+    ("TERMINATED", "comfy-win was not running — but whether it is reserved "
+                   "could not be checked, and a reservation bills with its box "
+                   "stopped."),
+])
+def test_down_does_not_say_the_bill_stopped_when_the_reservation_read_fails(
+        cli, status, machine):
+    """Not read is not "not reserved". The two sentences that say the bill
+    ended are the two that cannot be said, and what replaces them ends on the
+    command that shows what was not read."""
+    result = cli("down", "comfy-win",
+                 cloud=Cloud(status=status, bound=GcloudError("timed out")))
+
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert machine in _one_line(out)
+    assert out.splitlines()[-1] == "  gcloud compute reservations list --project=proj"
+    assert "was billing. Stopped." not in out
+    assert "nothing was billing" not in out
+    assert "stop paying" not in out
+
+
+def test_a_local_machine_is_not_asked_what_it_is_bound_to(cli):
+    """It has no record on Google to ask. `Cloud` raises on anything it was
+    not told to expect, so a read here would fail the run."""
+    result = cli("down", "local", cloud=Cloud(), declared=LOCAL_ONLY)
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == "\nlocal was not running, so nothing was billing.\n"
+    assert result.cloud.calls == []
 
 
 def test_down_all_never_gives_the_all_clear_while_a_declared_box_is_reserved(cli):

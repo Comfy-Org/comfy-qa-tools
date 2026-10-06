@@ -477,6 +477,17 @@ comfy-linux was running. Stopped — but it is reserved, so it is still billing.
   comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
 ```
 
+`down <name>` asks the box itself, not only your host list. A box bound to a
+reservation its entry does not declare gets the same two lines, and one more
+saying which reservation and that the entry does not say so. If that read fails,
+`down` does not claim the bill stopped:
+
+```
+comfy-linux was running. Stopped — but whether it is reserved could not be checked, and a
+reservation bills with its box stopped.
+  gcloud compute reservations list --project=<project>
+```
+
 `down --all` does not end on `Nothing is now.` while any box you have declared is
 reserved — or while the project holds a reservation nobody declared, which it
 reads for and names.

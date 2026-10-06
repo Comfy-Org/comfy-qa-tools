@@ -160,10 +160,6 @@ def shape(found: rsv.Reservation) -> str:
     return found.machine_type or found.accelerator or "unknown shape"
 
 
-def _zone(record: dict) -> str:
-    return str(record.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
-
-
 def _reserved(host: Host, instance: dict | None,
               reservations: list[rsv.Reservation] | None, *, boxes_read: bool) -> str:
     """The RESERVED cell for one box, from whichever of the two reads came back.
@@ -235,7 +231,7 @@ def survey(gc, hosts: list[Host], *, now: datetime | None = None) -> Survey:
         boxes_read = project in listings
         instance = next(
             (row for row in listings.get(project, [])
-             if row.get("name") == host.gce_instance and _zone(row) == host.gce_zone),
+             if row.get("name") == host.gce_instance and rsv.zone_of(row) == host.gce_zone),
             None)
         if not boxes_read:
             aged = sized = UNKNOWN

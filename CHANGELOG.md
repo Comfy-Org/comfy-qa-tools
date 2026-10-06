@@ -110,6 +110,23 @@ can be released while a stopped box still targets it. Phase V of
 
 ### Fixed
 
+- `down <name>` trusted the host list alone, and told a box that was reserved
+  without a `gce_reservation` line `was billing. Stopped.` It now reads the
+  instance's own record, as `delete` does: bound to a reservation, it gets the
+  reserved wording and the `delete` line; if the read fails it says the
+  reservation could not be checked, with the command that shows it.
+- `delete` on a box that was already gone, from an entry with no
+  `gce_reservation` line, said `only the host list entry is left` without
+  looking. It reads the project's reservations: its own reservation for that box
+  is released (and the entry kept until it is), one that only carries the name is
+  named with Google's command and left alone, and a read that fails is said to be
+  that.
+- `switch` printed `comfy-qat list --live` as the whole remedy when the instances
+  could not be read. It and `move` now hand "not read" to the same remedy `create`
+  prints, which says so and never says `nothing is on it` about a reservation
+  nobody looked at.
+- `create --reserve` had two wordings for "could not read this project's
+  reservations". There is one now, printed under the quota lines.
 - **A box declared `gpu = "none"` was treated as having a card**, because
   `"none"` is not an empty string. `go` waited fifteen minutes for `nvidia-smi`
   on it and then reinstalled a CUDA torch on every run; `switch` counted it as

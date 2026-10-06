@@ -913,7 +913,8 @@ def _reservation(name, *, box="", zone="us-central1-a", machine="g2-standard-8")
                 "machineType": machine}}}
 
 
-def _gate(ceiling, *, reservations=(), instances=(), fail_reservations=False):
+def _gate(ceiling, *, reservations=(), instances=(), fail_reservations=False,
+          fail_instances=False):
     """A `Gcloud` that answers the reads the gate makes, and records them."""
     calls: list[str] = []
 
@@ -929,6 +930,8 @@ def _gate(ceiling, *, reservations=(), instances=(), fail_reservations=False):
                 raise GcloudError("the reservations could not be listed")
             return list(reservations)
         if key.startswith("compute instances list"):
+            if fail_instances:
+                raise GcloudError("the instances could not be listed")
             return list(instances)
         raise AssertionError(f"unexpected: {key}")
 
@@ -1146,6 +1149,26 @@ def test_without_a_host_list_the_refusal_prints_no_comfy_qat_command(capsys):
 
     assert "comfy-qat down" not in said and "comfy-qat delete" not in said
     assert "gcloud compute reservations delete held-rsv" in said
+
+
+def test_the_refusal_does_not_say_nothing_is_on_it_when_the_boxes_were_not_read(capsys):
+    """The reservations came back and the instances did not. Whether a box is
+    on the reservation is then NOT KNOWN, and "release it — nothing is on it"
+    is the guess that takes a reservation from under somebody's running box.
+    Not read is handed to the remedy as not read: it says so, and leads with
+    the command that shows what is there."""
+    target = _host("target")
+    held = _host("held", reservation="held-rsv")
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               fail_instances=True)
+
+    said = _refusal(capsys, gc, target, [held], [target, held])
+
+    assert "nothing is on it" not in " ".join(said.split())
+    assert "whether a box is on it could not be read" in " ".join(said.split())
+    assert f"gcloud compute instances list --project={P}" in said
+    # Not a `comfy-qat` command either: which box is on it is what was not read.
+    assert "comfy-qat down" not in said and "comfy-qat delete" not in said
 
 
 def test_switch_hands_the_host_list_to_the_gate(cli, monkeypatch):

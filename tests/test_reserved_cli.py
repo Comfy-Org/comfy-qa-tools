@@ -433,9 +433,15 @@ def test_reserving_is_refused_when_the_reservations_cannot_be_read(run):
                  cloud=cloud)
 
     assert result.exit_code == 2, result.output
-    assert ("could not read this project's reservations (the Compute Engine API is "
-            "disabled), so how many it already holds is not known. Nothing was "
-            "reserved and nothing was created.") in flat(result.output)
+    # Said ONCE, in the words `QuotaCheck.problem()` gives it. `create` had a
+    # second copy of this refusal with its own wording, printed before the
+    # quota lines; the count is what catches a second one coming back.
+    said = flat(result.output)
+    assert said.count("could not read this project's reservations") == 1
+    assert ("could not read this project's reservations, so how many it "
+            "already holds is not known. Nothing was reserved and nothing was "
+            "created.") in said
+    assert "quota checked:" in result.output
     assert f"gcloud compute reservations list --project={PROJECT}" in result.output
     assert mutating(cloud) == []
     assert result.hosts == HOSTS

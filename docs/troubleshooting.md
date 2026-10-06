@@ -935,13 +935,13 @@ either is touched, under `--dry-run` as well, and exit 2 says nothing changed.
 Switching **to** a reserved box is never refused this way and never reorders: its
 own reservation already holds its card.
 
-**`could not read this project's reservations (<error>), so how many it already holds is not known. Nothing was reserved and nothing was created.`** / **`could not read this project's reservations, so how many it already holds is not known. Nothing was reserved and nothing was created.`**
+**`could not read this project's reservations, so how many it already holds is not known. Nothing was reserved and nothing was created.`**
 
 `create --reserve` could not list the project's reservations, so it does not know
 how much of the GPU allowance is already held — and it refuses. A refusal is
 free; a reservation made past the limit bills until somebody notices it. The
-brackets carry gcloud's own reason, which is usually an expired login or a
-project where the Compute Engine API is off. Read the list yourself, then run the
+usual cause is an expired login or a project where the Compute Engine API is off,
+and running the list yourself shows which, in gcloud's own words. Then run the
 same create again:
 
 ```sh
@@ -2546,21 +2546,53 @@ the reservation comfy-linux-rsv, which bills every hour whether the box runs or 
 
 It is then released like any other, and held to the same refusals.
 
-Two cases it cannot ask about, and it says so rather than deleting in silence:
-the box is **already gone**, so there is no record left to read, or Google would
-not describe the box. Then, for an entry with no `gce_reservation` line, you see
+A box that is **already gone** has no record left to read, so for an entry with
+no `gce_reservation` line `delete` reads the project's reservations instead. What
+it does next depends on what it finds:
+
+- **One this tool made for that box, in the entry's zone.** It says so, and
+  releases it by the same rules as a declared one — the entry stays in your host
+  list until the reservation is gone:
+
+  ```
+  comfy-linux's host list entry has no reservation line, but comfy-linux-rsv is on <project>:
+  this tool made it for comfy-linux, and it bills every hour with or without the box.
+  ```
+
+- **One that only carries the box's name, or was made for it in another zone.**
+  Nothing establishes it as this box's, so it is named and left alone, with
+  Google's own command to release it once you have checked whose it is:
+
+  ```
+  comfy-linux-rsv (us-central1-c) is on <project> and may have been comfy-linux's, but nothing
+  establishes that it was — it is not one this tool made for comfy-linux in us-central1-c — so
+  it is left alone, and it is still billing. Check whose it is, then release it:
+    gcloud compute reservations delete comfy-linux-rsv --zone=us-central1-c --project=<project>
+  ```
+
+- **None.** Only then does it say `so only the host list entry is left.`
+
+Two cases it cannot check, and it says so rather than deleting in silence: the
+box is gone and the project's reservations would not list, or the box is there
+and Google would not describe it. You see one of
 
 ```
-whether comfy-linux had a reservation was not checked — it is gone, and its record with it.
-One left behind bills with nothing on it; look:
+whether comfy-linux had a reservation was not checked — it is gone, and the project's
+reservations could not be listed. One left behind bills with nothing on it; look:
+  gcloud compute reservations list --project=<project>
+```
+
+```
+whether comfy-linux had a reservation was not checked — its own record could not be read. One
+left behind bills with nothing on it; look:
   gcloud compute reservations list --project=<project>
 ```
 
 and the delete goes ahead. If that listing shows one for the box, release it
 with `gcloud compute reservations delete <name> --zone=<zone> --project=<project>`. Add the
-`gce_reservation` line to such an entry when you find one: until it is there,
-`down`, `list` and every other sentence about that box's bill is working from a
-host list that says it is not reserved.
+`gce_reservation` line to an entry whose box is reserved when you find one:
+`down <name>` and `delete` ask the box itself and are not misled, but `list`
+without `--live` and the other commands read the host list.
 
 **`could not read comfy-linux's reservation comfy-linux-rsv (<error>), so whether it would be released is not known. Nothing was deleted.`**
 

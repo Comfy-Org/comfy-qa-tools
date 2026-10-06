@@ -602,7 +602,11 @@ class Found:
     # because the two are let go of differently: a running box is stopped, and
     # a reservation holds its card whether its box runs or not.
     reserved: tuple[tuple[str, str, int, str], ...] = ()
-    reserved_boxed: tuple[tuple[str, str], ...] = ()
+    # `(reservation, zone, instance)` for each instance bound to one of them,
+    # or `None` when the instances were not read. `None` IS THE DEFAULT: an
+    # empty tuple means "read, and nothing is bound", and the remedy turns that
+    # into "release it — nothing is on it".
+    reserved_boxed: tuple[tuple[str, str, str], ...] | None = None
     # `(reservation, zone, label)` for those whose box the HOST LIST holds —
     # the only ones `comfy-qat down/delete` may be printed for, and under the
     # label the list gives the box, not the instance name in the description.
@@ -828,7 +832,7 @@ def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
     # stop does not free.
     holders = tuple(
         (i.get("name") or "", _tail(i.get("zone")))
-        for i in rsv._outside(instances, reservations)
+        for i in rsv.outside(instances, reservations)
         if i.get("status") != "TERMINATED" and i.get("guestAccelerators")
     )
     try:

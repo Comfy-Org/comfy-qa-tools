@@ -474,3 +474,25 @@ def test_nothing_is_unsorted_when_both_reads_worked_or_nothing_is_reserved(hosts
     assert inventory.survey(everything(), hosts(), now=NOW).unsorted == ()
     none_reserved = Cloud(instances=GcloudError("denied"), reservations=[])
     assert inventory.survey(none_reserved, hosts(), now=NOW).unsorted == ()
+
+
+# --- one zone helper -----------------------------------------------------------
+
+
+def test_the_zone_of_a_record_is_read_by_the_one_helper():
+    """`reservation.zone_of` is where "the bare zone off a record or a URL" is
+    written. `inventory`, `remove` and `host` each had a private copy of the
+    same line, and `relocate` reached into `reservation._outside`; a copy is a
+    place the next change to that line does not reach."""
+    import inspect
+
+    from comfy_qa import host, inventory, relocate, remove
+
+    for module in (inventory, remove, host):
+        source = inspect.getsource(module)
+        assert "def _zone(" not in source, module.__name__
+        assert "def _tail_zone(" not in source, module.__name__
+        assert "rsv.zone_of(" in source, module.__name__
+    moving = inspect.getsource(relocate)
+    assert "rsv._outside" not in moving
+    assert "rsv.outside(" in moving

@@ -274,6 +274,12 @@ class Cloud:
         # reservation is its own paragraph under the summary.
         return list(self.reservations)
 
+    def describe_instance(self, instance, zone, project):
+        # What `down <name>` asks before it says anything about money: the
+        # box's own record, bound to no reservation, so the four sentences
+        # read here are the ordinary ones.
+        return {"name": instance}
+
     def __getattr__(self, name):
         def unexpected(*args, **kwargs):
             raise AssertionError(f"{name} was not expected here")

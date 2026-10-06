@@ -818,6 +818,32 @@ def test_a_reservation_with_no_box_is_released_with_googles_own_command():
     assert "comfy-qat down" not in problem.fix
 
 
+def test_a_move_refusal_does_not_say_nothing_is_on_it_when_the_boxes_were_not_read():
+    """What `Found` holds before anybody has said which instances are bound is
+    NOT READ, and the remedy has to be told that. Left as an empty tuple it
+    read as "looked, nothing bound" and the refusal printed "release it —
+    nothing is on it" about a reservation nobody had looked at."""
+    from dataclasses import replace
+
+    from comfy_qa.relocate import Found
+
+    gc = _Reserving([STOPPED_SOURCE], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    read = survey_with(gc)
+    unread = replace(read, reserved_boxed=Found().reserved_boxed)
+
+    problem = blocked(moving(), unread)
+    assert problem is not None
+    fix = " ".join(problem.fix.split())
+    assert "nothing is on it" not in fix
+    assert "whether a box is on it could not be read" in fix
+    assert "gcloud compute instances list --project=" in problem.fix
+    # The control: the same refusal with the instances READ and nothing bound
+    # does say it, so the assertion above is about the unread case and not
+    # about a sentence that is never printed.
+    assert "nothing is on it" in " ".join(blocked(moving(), read).fix.split())
+
+
 def test_reservations_that_cannot_be_read_refuse_nothing():
     """Not read is not zero — and it is not a refusal either. The count is then
     the running cards alone, exactly as it was before reservations existed."""

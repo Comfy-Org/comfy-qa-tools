@@ -123,6 +123,51 @@ def _bound_on_google(gc, host):
     return rsv.bound_to(instance or {})
 
 
+def _left_behind(gc, host):
+    """What a box that is already gone left on the project: `(name, lines)`.
+
+    For an entry with no `gce_reservation` line, whose instance has no record
+    left to ask. The project's own list is asked instead, and it answers one
+    of four ways:
+
+      (name, [])      this tool's own reservation for this box, in the entry's
+                      zone — the caller hands it to `_held_for`, so it is
+                      released, or left alone and named, or refused over, by
+                      exactly the rules a declared one is.
+      (None, lines)   a reservation that carries the box's name, or this
+                      tool's mark for it somewhere else, and that nothing
+                      establishes as this box's. Named, with Google's own
+                      command, and not released.
+      (None, [])      read, and nothing of the kind. The only answer after
+                      which "only the host list entry is left" is true.
+      UNREAD          the list did not come back. Not an absence.
+    """
+    from . import reservation as rsv
+    from .gcloud import GcloudError
+
+    zone, project, box = host.gce_zone, host.gce_project, host.gce_instance
+    try:
+        listed = rsv.parse_all(gc.list_reservations(project))
+    except GcloudError:
+        return UNREAD
+    own = next((entry for entry in listed
+                if entry.ours and entry.box == box and entry.zone == zone), None)
+    if own is not None:
+        return own.name, []
+    lines: list[str] = []
+    for entry in listed:
+        if not (entry.name == rsv.name_for(box)
+                or (entry.ours and entry.box == box)):
+            continue
+        lines += [
+            f"{entry.name} ({entry.zone}) is on {project} and may have been "
+            f"{host.name}'s, but nothing establishes that it was — it is not "
+            f"one this tool made for {box} in {zone} — so it is left alone, "
+            f"and it is still billing. Check whose it is, then release it:",
+            f"  {rsv.delete_command(entry.name, entry.zone, project)}"]
+    return None, lines
+
+
 def _held_for(gc, host, name: str, *, already_gone: bool):
     """This box's reservation, as the project has it: `(reservation, lines)`.
 
@@ -189,11 +234,9 @@ def _held_for(gc, host, name: str, *, already_gone: bool):
                         f"gcloud compute reservations list --project={project}",
                         f"comfy-qat delete {host.name}"))
 
-    def _zone(instance: dict) -> str:
-        return str(instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
-
     on_it = [str(instance.get("name") or "") for instance in instances
-             if rsv.bound_to(instance) == name and _zone(instance) == zone]
+             if rsv.bound_to(instance) == name
+             and rsv.zone_of(instance) == zone]
     others = [box for box in on_it if box != host.gce_instance]
     ours = found.ours and found.box == host.gce_instance
     mine = ours or host.gce_instance in on_it
@@ -383,6 +426,7 @@ def delete_cmd(
     held, not_released = None, []
     reserved_as = host.reservation
     undeclared = False
+    left_behind = False
     unasked = ""
     if not reserved_as and not already_gone:
         reserved_as = _bound_on_google(gc, host)
@@ -390,7 +434,17 @@ def delete_cmd(
             reserved_as, unasked = None, "its own record could not be read"
         undeclared = bool(reserved_as)
     elif not reserved_as:
-        unasked = "it is gone, and its record with it"
+        # GONE, AND THE ENTRY DOES NOT SAY. The box has no record left to ask,
+        # but the project still does: a reservation this tool made for it is
+        # marked with its name. This used to print "only the host list entry
+        # is left" without looking.
+        found = _left_behind(gc, host)
+        if found is UNREAD:
+            unasked = ("it is gone, and the project's reservations could not "
+                       "be listed")
+        else:
+            reserved_as, not_released = found
+            left_behind = bool(reserved_as)
     if unasked:
         # NOT CHECKED, and said. Two ways an entry with no `gce_reservation`
         # line cannot be asked about: the box is already gone, or Google would
@@ -405,6 +459,11 @@ def delete_cmd(
     if reserved_as:
         held, not_released = _held_for(gc, host, reserved_as,
                                        already_gone=already_gone)
+    if left_behind:
+        _prose(f"{host.name}'s host list entry has no reservation line, but "
+               f"{reserved_as} is on {host.gce_project}: this tool made it for "
+               f"{host.gce_instance}, and it bills every hour with or without "
+               f"the box.")
     if undeclared:
         # Said before the confirmation, because it changes what a yes destroys
         # and the host list gave no warning of it.
@@ -414,11 +473,23 @@ def delete_cmd(
                f"not.")
 
     if already_gone:
-        left = (f"only its reservation {held.name} and the host list entry are "
-                f"left" if held is not None
-                else "only the host list entry is left")
-        say.result(f"{host.gce_instance} is not on {host.gce_project} — it has "
-                   f"already been deleted, so {left}.")
+        # "ONLY the host list entry is left" is a claim about the project, and
+        # it is made in exactly one case: the reservations were read and none
+        # of them is this box's. Anything else names what is — or may be —
+        # still there.
+        if held is not None:
+            left = (f"only its reservation {held.name} and the host list entry "
+                    f"are left")
+        elif len(not_released) > 1:
+            left = ("its host list entry is left, and a reservation this "
+                    "command does not release")
+        elif unasked:
+            left = ("its host list entry is left — and whether a reservation "
+                    "is too is not known")
+        else:
+            left = "only the host list entry is left"
+        _prose(f"{host.gce_instance} is not on {host.gce_project} — it has "
+               f"already been deleted, so {left}.")
         if held is not None:
             _prose(f"its reservation {held.name} in {held.zone} is still "
                    f"billing, and releasing it is the only way to stop that "
