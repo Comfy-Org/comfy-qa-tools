@@ -489,7 +489,7 @@ _CARD_NOISE = frozenset({
 
 # A host that declares no card, or declares it has none, has nothing to compare.
 # `config` already treats those two the same way when selecting a host by card.
-_NO_CARD = frozenset({"", "none"})
+_NO_CARD = frozenset({"", "none", "cpu"})
 
 
 def _card_tokens(text: str | None) -> list[str]:
@@ -560,7 +560,8 @@ def mismatch(host, stamp: Stamp) -> str | None:
     #
     # Still fails open where it cannot be sure. A ComfyUI that lists no devices
     # at all proves nothing either way, and `cpu` is what the right box says.
-    if accelerators and str(getattr(host, "gpu", None) or "").strip().lower() == "none":
+    if accelerators and str(getattr(host, "gpu", None) or "").strip().lower() in (
+            "none", "cpu"):
         return (
             f"{host.name} is declared with no GPU, but {stamp.url} answered with "
             f"{', '.join(accelerators)}. That port is not reaching {host.name}."

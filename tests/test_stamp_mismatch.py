@@ -291,3 +291,12 @@ def test_discover_writes_the_os_strings_these_cases_assume():
     assert wrote("sles-15") == "sles-15"
     # No disks to read at all.
     assert operating_system([]) == "unknown"
+
+
+@pytest.mark.parametrize("gpu", ["cpu", "CPU"])
+def test_cpu_declared_is_no_gpu_declared(gpu):
+    """The same word `create --gpu cpu` takes. A card answering for it is the
+    wrong machine; its own CPU answering is itself."""
+    assert mismatch(declared(gpu), answered(["cpu"])) is None
+    complaint = mismatch(declared(gpu), answered("cuda:0 NVIDIA L4 (22GB)"))
+    assert complaint is not None and "is declared with no GPU" in complaint

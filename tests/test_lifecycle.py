@@ -1917,3 +1917,145 @@ def test_every_failure_fix_in_this_module_still_goes_through_the_one_helper():
     assert len(calls) >= 28, f"only {len(calls)} failure fixes name the bill"
     code_only = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
     assert code_only.count("_with_the_bill(") - 1 >= len(calls) > 0
+
+
+# --- audit: three sentences that were still wrong ----------------------------------
+
+
+def test_an_interrupted_start_of_a_reserved_box_does_not_offer_down_as_the_fix(tmp_path, capsys):
+    """Under "this may exist and be billing", `comfy-qat down` alone says the
+    bill stops with the machine. For a reserved box it does not."""
+    from comfy_qa import inflight
+
+    def runner(args, mode):
+        key = " ".join(args)
+        if key.startswith("compute instances describe"):
+            return {"status": "TERMINATED"}
+        if key.startswith("compute instances start"):
+            raise KeyboardInterrupt
+        return ""
+
+    inflight.clear()
+    _, say = said()
+    with pytest.raises(inflight.Interrupted):
+        bring_up(Gcloud(runner=runner), RESERVED, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None)
+
+    report = capsys.readouterr().err
+    assert "comfy-qat down comfy-linux-2" in report, "stopping it is still the first step"
+    assert "comfy-qat delete comfy-linux-2" in report
+    assert "it is reserved" in report
+    assert report.index("comfy-qat down comfy-linux-2") < report.index(
+        "comfy-qat delete comfy-linux-2")
+
+
+def test_an_interrupted_start_of_a_plain_box_reports_what_it_always_did(tmp_path, capsys):
+    from comfy_qa import inflight
+
+    def runner(args, mode):
+        key = " ".join(args)
+        if key.startswith("compute instances describe"):
+            return {"status": "TERMINATED"}
+        if key.startswith("compute instances start"):
+            raise KeyboardInterrupt
+        return ""
+
+    inflight.clear()
+    _, say = said()
+    with pytest.raises(inflight.Interrupted):
+        bring_up(Gcloud(runner=runner), LINUX_GPU, say, tunnel_dir=tmp_path,
+                 sleep=lambda _: None)
+
+    report = capsys.readouterr().err
+    assert "comfy-qat down comfy-linux-2" in report
+    assert "delete" not in report and "reserved" not in report
+
+
+class _Gone:
+    """A project that no longer has the box: the stop is a 404, and so is it."""
+
+    def __init__(self):
+        self.asked = 0
+
+    def instance_status(self, name, zone, project):
+        self.asked += 1
+        if self.asked == 1:
+            return "RUNNING"
+        raise GcloudError(f"The resource '{name}' was not found")
+
+    def stop_instance(self, name, zone, project):
+        raise GcloudError(f"The resource '{name}' was not found")
+
+    def instance_statuses(self, keys):
+        from comfy_qa.gcloud import GONE
+        return {key: GONE for key in keys}
+
+
+def test_a_reserved_box_that_is_gone_is_not_called_nothing_billing(tmp_path):
+    """The box was deleted in the console. Its reservation was not, and it
+    bills on. "Nothing is billing … discover --prune" removes the only record
+    that names the reservation and says the opposite of the truth."""
+    lines, say = said()
+    put_away(_Gone(), RESERVED, say, tunnel_dir=tmp_path)
+    text = "\n".join(lines)
+
+    assert "the box no longer exists" in text
+    assert "nothing is billing" not in text
+    assert "discover --prune" not in text
+    assert "its reservation comfy-linux-2-rsv is still billing" in text
+    assert "comfy-qat delete comfy-linux-2" in text
+
+
+def test_a_plain_box_that_is_gone_is_still_told_nothing_is_billing(tmp_path):
+    lines, say = said()
+    put_away(_Gone(), LINUX_GPU, say, tunnel_dir=tmp_path)
+    text = "\n".join(lines)
+
+    assert "so nothing is billing for it" in text
+    assert "comfy-qat discover --prune" in text
+    assert "delete" not in text
+
+
+def test_a_failed_torch_install_on_a_box_with_no_gpu_does_not_mention_its_gpu(
+        tmp_path, no_real_waiting):
+    from comfy_qa.lifecycle import ensure_installed
+
+    sent: list[str] = []
+
+    def runner(args, mode):
+        key = " ".join(args)
+        sent.append(key)
+        if mode != "output":
+            return 1
+        if "INSTALLED" in key and "MISSING" in key:
+            return "INSTALLED"
+        if "import torch" in key or "pip show torch" in key:
+            return "NO_TORCH"
+        return ""
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        ensure_installed(Gcloud(runner=runner), LINUX_CPU, say, tunnel_dir=tmp_path)
+
+    assert "torch could not be installed on comfy-cpu (exit 1)" in str(caught.value)
+    assert "GPU" not in str(caught.value)
+    assert "so ComfyUI cannot start" in str(caught.value)
+
+
+def test_a_failed_torch_install_on_a_gpu_box_still_says_what_it_cost(tmp_path, no_real_waiting):
+    from comfy_qa.lifecycle import ensure_installed
+
+    def runner(args, mode):
+        key = " ".join(args)
+        if mode != "output":
+            return 1
+        if "INSTALLED" in key and "MISSING" in key:
+            return "INSTALLED"
+        if "pip show torch" in key:
+            return "NO_TORCH"
+        return ""
+
+    _, say = said()
+    with pytest.raises(LifecycleError) as caught:
+        ensure_installed(Gcloud(runner=runner), WIN, say, tunnel_dir=tmp_path)
+    assert "so ComfyUI cannot use its GPU. Its log is above." in str(caught.value)

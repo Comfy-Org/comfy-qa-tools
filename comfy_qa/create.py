@@ -1088,6 +1088,12 @@ class QuotaCheck:
     reservation's card, once.
     """
     boxed: tuple[tuple[str, str], ...] = ()
+    named: tuple[tuple[str, str, str], ...] = ()
+    """`(reservation, zone, label)` where the host list holds that box.
+
+    The only thing that lets the remedy say `comfy-qat down <label>`. See
+    `declared_boxes`.
+    """
     """`(name, zone)` of the reservations above that have their own box on them.
 
     What decides the remedy. `comfy-qat delete <box>` is only a command when
@@ -1159,7 +1165,9 @@ class QuotaCheck:
         if self.reusing is not None:
             out.append(f"reusing reservation {self.reusing[0]} in {self.reusing[1]} — "
                        f"left by an earlier run, and already holding its card")
-        elif self.reserving and not self.unread:
+        elif self.reserving and not self.unread and self._fits:
+            # Only when it is going to happen. Above a refusal, "reserving
+            # takes 1 of the 1" describes a reservation nobody is making.
             out.append(self._reserving)
         return out
 
@@ -1168,6 +1176,14 @@ class QuotaCheck:
         """`a-rsv (us-central1-a), b-rsv (us-east1-b)`."""
         return ", ".join(f"{name} ({zone})" for name, zone, _cards_held, _box
                          in self.reserved)
+
+    @property
+    def _fits(self) -> bool:
+        """Is there room under the ceiling for what this create needs?"""
+        from .quota import meets
+
+        return self.global_limit is None or meets(self.global_limit,
+                                                   self.held + self.needed)
 
     @property
     def _reserving(self) -> str:
@@ -1191,6 +1207,12 @@ class QuotaCheck:
                 if self.global_limit is not None else 0)
         already = f", with {self.held} already held" if self.held else ""
         head = f"reserving takes {self.needed} of the {self.global_limit}{already} — "
+        if left <= 0 and self.reserved_cards:
+            # Another reserved box is the exception to "no other GPU box can
+            # start": its own reservation holds its card, running or not.
+            return (f"{head}none left. While {box} exists no GPU box without a "
+                    f"reservation can start — a box with a reservation of its own "
+                    f"can still start.")
         if left <= 0:
             return (f"{head}none left. While {box} exists no other GPU box can "
                     f"start, including a stopped one you already have.")
@@ -1372,7 +1394,8 @@ class QuotaCheck:
                 f"A reservation holds its card whether its box is running or "
                 f"stopped, so stopping a box frees nothing, and {self.needed} more "
                 f"is needed. Nothing was created.",
-                fix=_how_to_release(self.reserved, self.boxed, self.project),
+                fix=_how_to_release(self.reserved, self.boxed, self.project,
+                                    self.named),
                 kind=NO_QUOTA,
             )
         if (self.running and self.global_limit is not None
@@ -1469,46 +1492,102 @@ def _release_command(name: str, zone: str, project: str) -> str:
     return command if project else command.removesuffix(" --project=")
 
 
-def _how_to_release(holders, boxed, project: str) -> str:
+def _how_to_release(holders, boxed, project: str, named=()) -> str:
     """The fix for "a reservation holds the card": how to let go of one.
 
-    Two different commands, and which one applies is a fact about the project,
-    not a choice of wording. A reservation this tool made, with its box on it,
-    goes when the box is deleted — `comfy-qat down` then `comfy-qat delete`,
-    because `delete` refuses a box that is running. Anything else has no box
-    this tool can name: somebody else's reservation, or one of ours left with
-    nothing on it by a create that stopped half-way. `comfy-qat delete <box>`
-    about either is a command that cannot run, so those get Google's own.
+    Three cases, and which applies is a fact about the project AND the host
+    list, not a choice of wording:
+
+      * its box is in the host list — `comfy-qat down` then `comfy-qat delete`,
+        under the ENTRY'S OWN LABEL, because `delete` refuses a box that is
+        running and takes the reservation with the box;
+      * its box is on the project and in no entry — Google's commands for the
+        box and then the reservation;
+      * nothing is on it — Google's command for the reservation.
+
+    `named` is `(reservation, zone, label)` for the first case, from
+    `declared_boxes`. It is the ONLY thing that puts a `comfy-qat` command in
+    this fix. The name in a reservation's description is the INSTANCE's, and a
+    host list is a hand-maintained file: the box may not be in it — a create
+    that died before the entry was written, a teammate's box — and then both
+    commands exit 2 while the reservation bills. Worse, the list may hold an
+    entry of that name for a DIFFERENT machine, and `comfy-qat delete <name>`
+    pasted back deletes that one. So with nothing in `named`, which is what a
+    caller that knows no host list passes, no `comfy-qat` command is printed.
     """
-    def ours(name: str, zone: str, box: str) -> bool:
-        return bool(box) and (name, zone) in set(boxed)
+    labels = {(name, zone): label for name, zone, label in named}
+    on_the_project = set(boxed)
+
+    def box_commands(name: str, zone: str, box: str) -> list[str]:
+        gone = f"gcloud compute instances delete {box} --zone={zone}"
+        return [f"{gone} --project={project}" if project else gone,
+                _release_command(name, zone, project)]
 
     if len(holders) == 1:
         name, zone, _held, box = holders[0]
-        if ours(name, zone, box):
+        if (name, zone) in labels:
+            label = labels[(name, zone)]
             return output.fix("stop it, then delete it to release the card:",
-                              f"comfy-qat down {box}",
-                              f"comfy-qat delete {box}")
+                              f"comfy-qat down {label}",
+                              f"comfy-qat delete {label}")
+        if box and (name, zone) in on_the_project:
+            return output.fix(
+                f"{box} is on it and is not in your host list, so this tool "
+                f"cannot name it. Check whose it is, then delete the box and "
+                f"release the reservation with Google's own commands:",
+                *box_commands(name, zone, box))
         why = ("nothing is on it" if box else
                "it was not made by this tool, so check whose it is first")
         return output.fix(f"release it — {why}:", _release_command(name, zone, project))
-    lines = ["release one of them. A box this tool made is stopped and then "
-             "deleted, and its reservation goes with it; a reservation with no "
-             "such box is released directly:"]
+    lines = ["release one of them. A box in your host list is stopped and then "
+             "deleted, and its reservation goes with it; anything else is "
+             "released with Google's own commands — check whose it is first:"]
     for name, zone, _held, box in holders:
-        if ours(name, zone, box):
-            lines += [f"comfy-qat down {box}", f"comfy-qat delete {box}"]
+        if (name, zone) in labels:
+            label = labels[(name, zone)]
+            lines += [f"comfy-qat down {label}", f"comfy-qat delete {label}"]
+        elif box and (name, zone) in on_the_project:
+            lines += box_commands(name, zone, box)
         else:
             lines.append(_release_command(name, zone, project))
     return output.fix(*lines)
 
 
 def _boxed(holders, instances: list[dict]) -> tuple[tuple[str, str], ...]:
-    """Which of these reservations have the box they were made for on them."""
+    """Which of these reservations have the box they were made for on them.
+
+    A fact about the PROJECT. Whether this tool can name that box is a
+    different one — see `declared_boxes`.
+    """
     on = {(rsv.bound_to(instance), _zone_name(instance), instance.get("name"))
           for instance in instances or []}
     return tuple((name, zone) for name, zone, _held, box in holders
                  if box and (name, zone, box) in on)
+
+
+def declared_boxes(holders, instances: list[dict], hosts, project: str,
+                   ) -> tuple[tuple[str, str, str], ...]:
+    """`(reservation, zone, label)` for each holder whose box the host list holds.
+
+    "Holds" is the host list's own rule for one machine: an entry whose
+    `machine_id` — kind, project, zone, instance — is that instance. Never the
+    entry's name. The label returned is what the user called the machine,
+    which is what `comfy-qat down` and `delete` take, and it need not be the
+    instance's name at all.
+
+    Empty when there is no host list to ask (`None`) or no project to complete
+    an identity with: an identity that cannot be established is not a match.
+    """
+    if not hosts or not project:
+        return ()
+    found = []
+    for name, zone in _boxed(holders, instances):
+        box = next(box for held, at, _cards, box in holders if (held, at) == (name, zone))
+        wanted = ("gce", project, zone, box)
+        label = next((host.name for host in hosts if host.machine_id == wanted), None)
+        if label:
+            found.append((name, zone, label))
+    return tuple(found)
 
 
 def _reusable(card: Card, leftover) -> "rsv.Reservation | None":
@@ -1623,7 +1702,8 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
                 reservations: "list[rsv.Reservation] | None" = None,
                 reserve: bool = False,
                 leftover: "rsv.Reservation | None" = None,
-                project: str = "", box: str = "") -> QuotaCheck:
+                project: str = "", box: str = "",
+                hosts: "list[Host] | None" = None) -> QuotaCheck:
     """Read the allowance. Pure — the caller does the gcloud reads.
 
     `preferences` is OPTIONAL and `None` means "could not be read", which must
@@ -1641,6 +1721,12 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
     card this box is about to sit on. `project` and `box` only complete the
     sentences — the command that releases a reservation, and the name in the
     line about what reserving leaves.
+
+    `hosts` is the declared host list, and what it buys is one thing: a remedy
+    may say `comfy-qat down <label>` / `comfy-qat delete <label>` about a
+    reserved box only when an entry here IS that machine (project, zone,
+    instance), and then by that entry's label. Not passed, or with no
+    `project`, the remedy is Google's own commands.
     """
     from functools import reduce
 
@@ -1690,6 +1776,7 @@ def check_quota(card: Card, quotas: list[dict], instances: list[dict],
         reserved=holders,
         reserved_cards=sum(cards for _name, _zone, cards, _box in holders),
         boxed=_boxed(holders, instances),
+        named=declared_boxes(holders, instances, hosts, project or ""),
         reserving=reserve,
         unread=reserve and reservations is None,
         reusing=(reuse.name, reuse.zone) if reuse is not None else None,
@@ -1843,6 +1930,15 @@ def create_in(gc: Gcloud, blueprint: Blueprint, zone: str, project: str) -> None
     )
 
 
+def _as_reserved(blueprint: Blueprint) -> str:
+    """` --reserve --name <name>` for a reserved build, and nothing otherwise.
+
+    For any remedy that hands back a `comfy-qat create`: the box that was asked
+    for was a reserved one, and a command that drops that is a different box.
+    """
+    return f" --reserve --name {blueprint.name}" if blueprint.reserve else ""
+
+
 def _wanted(card: Card) -> str:
     """What a zone is out of, as a word for a sentence: the card, or the machine.
 
@@ -1948,7 +2044,15 @@ def _reserve_and_create(gc: Gcloud, blueprint: Blueprint, zone: str, project: st
                     description=rsv.describe_for(blueprint.name),
                 )
             except GcloudError as exc:
-                if is_capacity_failure(exc.raw):
+                # A STOCK-OUT IS READ BACK TOO. "Nothing was reserved" was a
+                # belief about Google, true in every test because the fakes
+                # made it so. One read turns it into a reading: only Google's
+                # flat "no such reservation" lets this fall through to the next
+                # zone and, at the end, say nothing is billing. If it is there
+                # or Google will not say, it is still billing, and moving on
+                # would abandon it and make a second one.
+                if is_capacity_failure(exc.raw) and _nothing_was_reserved(
+                        gc, blueprint, zone, project):
                     raise
                 _reservation_unaccounted(gc, blueprint, zone, project, exc)
         say(f"  creating {blueprint.name} on it")
@@ -1957,6 +2061,18 @@ def _reserve_and_create(gc: Gcloud, blueprint: Blueprint, zone: str, project: st
                 create_in(gc, blueprint, zone, project)
         except GcloudError as exc:
             _box_unaccounted(gc, blueprint, zone, project, exc, say)
+
+
+def _nothing_was_reserved(gc: Gcloud, blueprint: Blueprint, zone: str,
+                          project: str) -> bool:
+    """Does Google say, flatly, that the reservation is not there?
+
+    False for "it is there" and for "Google would not say" alike.
+    """
+    try:
+        return gc.reservation_absent(blueprint.reservation, zone, project) is True
+    except GcloudError:
+        return False
 
 
 def _reservation_unaccounted(gc: Gcloud, blueprint: Blueprint, zone: str,
@@ -2262,8 +2378,14 @@ def build(
             # ordinary stockout branch, not a corner, because `choose` returns at
             # most six zones against a cap of six, so the queue drains, `capped`
             # stays False and this is what a real shortage lands on.
+            #
+            # AND WHAT WAS ASKED FOR, for a reserved build. Without `--reserve`
+            # this line, pasted back, makes an unreserved box — under `--yes`,
+            # without a question. The name goes with it so the rerun is the same
+            # box. Its siblings in `order_zones` already carried the flag.
             fix=(f"try somewhere this did not reach: comfy-qat create "
-                 f"--os {blueprint.image.key} --gpu {blueprint.card.key} --region "
+                 f"--os {blueprint.image.key} --gpu {blueprint.card.key}"
+                 f"{_as_reserved(blueprint)} --region "
                  f"{untried[0]}; or wait and run the same command again — a stockout "
                  f"is usually minutes to hours"),
             kind=EXHAUSTED,
@@ -2417,6 +2539,7 @@ def order_zones(
     leftover: "rsv.Reservation | None" = None,
     instances: list[dict] | None = None,
     reservations: "list[rsv.Reservation] | None" = None,
+    hosts: "list[Host] | None" = None,
 ) -> Ordering:
     """The zones to try, honouring an override. Read-only; nothing is created.
 
@@ -2449,6 +2572,10 @@ def order_zones(
     by a running box — is left out before anything is ranked, and said so.
     Handed neither, nothing is left out: not counted is "not asked", and the
     answer to that is today's ordering, not an invented shortage.
+
+    `hosts` is the declared host list, for the one refusal here that hands
+    over a way to let go of a reserved box. As in `check_quota`: a `comfy-qat`
+    command only for a box an entry holds, by that entry's label.
     """
     from dataclasses import replace
 
@@ -2537,7 +2664,7 @@ def order_zones(
             )
         if region_of(zone) in full:
             _refuse_full(blueprint, check, full, [region_of(zone)], project,
-                         instances, reservations)
+                         instances, reservations, hosts)
         offered = zones_with_machine_type(
             gc.machine_types(project, [zone], blueprint.machine_type),
             blueprint.machine_type,
@@ -2612,7 +2739,8 @@ def order_zones(
     taken = [name for name in regions if name in full]
     regions = [name for name in regions if name not in full]
     if taken and not regions:
-        _refuse_full(blueprint, check, full, taken, project, instances, reservations)
+        _refuse_full(blueprint, check, full, taken, project, instances,
+                     reservations, hosts)
 
     ordering = choose(
         gc, project,
@@ -2680,7 +2808,7 @@ def _held_words(entry: tuple[int, int, tuple[str, ...]]) -> str:
 
 
 def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str],
-                 project: str, instances, reservations) -> None:
+                 project: str, instances, reservations, hosts=None) -> None:
     """Every region this could go in has its allowance for the card held.
 
     Names the regions and who holds each, because "no quota" about a project
@@ -2702,7 +2830,9 @@ def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str]
             if any(rsv.held_in(name, card.accelerator, [], [found]) for name in asked)]
     holders = rsv.holders(mine)
     if holders:
-        lines.append(_how_to_release(holders, _boxed(holders, instances), project))
+        lines.append(_how_to_release(
+            holders, _boxed(holders, instances), project,
+            declared_boxes(holders, instances, hosts, project)))
     for instance in rsv._outside(instances, reservations):
         if any(rsv.held_in(name, card.accelerator, [instance], None) for name in asked):
             lines.append(f"{_stop_the_box(instance.get('name') or '', _zone_name(instance))}"

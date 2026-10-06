@@ -405,6 +405,30 @@ def _with_the_bill(host: Host, *advice: str) -> str:
     return output.fix(*lines, tail)
 
 
+def _undo_a_start(host: Host) -> list[str]:
+    """What to run after a start was interrupted, under "may exist and be billing".
+
+    `comfy-qat down` undoes the start, and for an ordinary box that is the whole
+    of the bill. For a reserved box it is not: the heading says "billing", the
+    reservation bills whether the machine is on or off, and `down` printed alone
+    beneath that heading says the bill stops with it.
+    """
+    if getattr(host, "reservation", None):
+        return [
+            f"comfy-qat down {host.name}",
+            "it is reserved, so stopping it does not stop its bill — that only "
+            "stops with:",
+            f"comfy-qat delete {host.name}",
+            "or check first, if you would rather look:",
+            "comfy-qat list --live",
+        ]
+    return [
+        f"comfy-qat down {host.name}",
+        "or check first, if you would rather look:",
+        "comfy-qat list --live",
+    ]
+
+
 def _raw_stop(host: Host) -> str:
     """gcloud's own stop, for when THIS TOOL'S path is the thing that just failed.
 
@@ -635,11 +659,7 @@ def bring_up(
             # it, and `list --live` settles whether it needs to.
             with inflight.may_leave(
                 f"{host.name} ({host.gce_instance} in {host.gce_zone}), started",
-                undo=[
-                    f"comfy-qat down {host.name}",
-                    "or check first, if you would rather look:",
-                    "comfy-qat list --live",
-                ],
+                undo=_undo_a_start(host),
             ):
                 gc.start_instance(host.gce_instance, host.gce_zone, host.gce_project)
         except GcloudError as exc:
@@ -1589,6 +1609,12 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
         except GcloudError as exc:
             raise give_up(f"could not install torch on {host.name}: {exc}",
                           egress=True) from exc
+        if code != 0 and cpu_only:
+            # Its own sentence. The one below is about a card this box does
+            # not have.
+            raise give_up(
+                f"torch could not be installed on {host.name} (exit {code}), so "
+                "ComfyUI cannot start. Its log is above.", egress=True)
         if code != 0:
             raise give_up(
                 f"torch could not be installed on {host.name} (exit {code}), so "
@@ -2702,6 +2728,19 @@ def put_away(
         # for trust. A tool that cries "may still be billing" about a machine
         # that is not there is a tool people stop reading, and the true warning
         # goes unread with it. That is the whole reason to fix an over-report.
+        if after is None and is_gone(gc, host) and getattr(host, "reservation", None):
+            # THE BOX IS GONE AND ITS RESERVATION IS NOT. Deleted in the console,
+            # say: the instance went, the reservation was never released, and it
+            # bills at the card's rate with nothing on it. The sentence below
+            # this branch says "nothing is billing" and offers `discover
+            # --prune`, which removes the one record that names the reservation.
+            # `comfy-qat delete` on a box that is already gone releases it.
+            say(f"could not stop {host.name} ({exc}), and the project does not "
+                f"have it — the box no longer exists, but its reservation "
+                f"{host.reservation} is still billing unless it was released "
+                f"too. Release it and clear the entry: comfy-qat delete "
+                f"{host.name}")
+            return "idle"
         if after is None and is_gone(gc, host):
             # `{exc}` first, so the sentence after it is one uninterrupted run
             # a troubleshooting entry can quote. Interpolating mid-sentence is

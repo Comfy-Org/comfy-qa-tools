@@ -308,6 +308,12 @@ _CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project", "gce_reservation")
 # with no accelerator and `create --gpu none` writes it for one made that way.
 NO_GPU_WORD = "none"
 
+# Every spelling that means it. `cpu` is what `create --gpu` also takes and the
+# docs advertise; written by hand in a host file it used to read as a CARD
+# called "cpu" — a driver wait, a CUDA torch and no `--cpu` at launch. No card
+# is called that, so there is nothing for the second reading to be right about.
+NO_GPU_WORDS = frozenset({NO_GPU_WORD, "cpu"})
+
 
 def has_gpu(host) -> bool:
     """Does this box have a GPU, as far as its host list entry says?
@@ -323,7 +329,8 @@ def has_gpu(host) -> bool:
     Takes a `Host`, or the bare `gpu` word for a caller holding a record that is
     not a host yet, or nothing.
     """
-    return _declared_gpu(host) not in ("", NO_GPU_WORD)
+    declared = _declared_gpu(host)
+    return bool(declared) and declared not in NO_GPU_WORDS
 
 
 def declares_no_gpu(host) -> bool:
@@ -337,7 +344,7 @@ def declares_no_gpu(host) -> bool:
     installing the CPU build of torch are things to do because a box was
     declared to have no card, never because nobody wrote one down.
     """
-    return _declared_gpu(host) == NO_GPU_WORD
+    return _declared_gpu(host) in NO_GPU_WORDS
 
 
 def _declared_gpu(host) -> str:
@@ -776,7 +783,11 @@ def _check_os_is_not_a_typo(name: str, declared: str | None) -> None:
 
 def describe(host: Host) -> str:
     """How a host reads in a one-line answer: what it runs, and on what card."""
-    detail = ", ".join(part for part in (host.os, host.gpu) if part and part != "none")
+    # `has_gpu`, not `!= "none"`: that comparison was case-sensitive, so a box
+    # declared `gpu = "None"` read "Ubuntu 22.04, None" in the refusals that ask
+    # which machine was meant.
+    card = host.gpu if has_gpu(host) else None
+    detail = ", ".join(part for part in (host.os, card) if part)
     return detail or ("local install" if host.kind == "local" else host.kind)
 
 
@@ -795,9 +806,9 @@ def _matches_os(host: Host, keyword: str) -> bool:
 
 def _matches_gpu(host: Host, token: str) -> bool:
     """`a100` finds an `A100-80GB`, because nobody types the full SKU."""
-    declared = (host.gpu or "").lower()
-    if declared in ("", "none"):
+    if not has_gpu(host):
         return False
+    declared = (host.gpu or "").strip().lower()
     return declared == token or declared.startswith(token)
 
 
@@ -811,8 +822,8 @@ def _matching(hosts: list[Host], part: str) -> list[Host]:
 def _selector_for(host: Host) -> str:
     """The shortest description that would have picked this host on its own."""
     parts = [word for word in _BY_SPECIFICITY if _matches_os(host, word)][:1]
-    if host.gpu and host.gpu.lower() != "none":
-        parts.append(host.gpu.lower())
+    if has_gpu(host):
+        parts.append(host.gpu.strip().lower())
     return SEPARATOR.join(parts) or host.name
 
 
@@ -910,7 +921,7 @@ def _inventory(hosts: list[Host]) -> str:
 
 
 def _cards(hosts: list[Host]) -> str:
-    cards = sorted({h.gpu for h in hosts if h.gpu and h.gpu.lower() != "none"})
+    cards = sorted({h.gpu for h in hosts if has_gpu(h)})
     return ", ".join(card.lower() for card in cards) or "none declared"
 
 

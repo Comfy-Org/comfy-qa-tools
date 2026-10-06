@@ -346,3 +346,38 @@ def test_saying_none_is_not_the_same_as_saying_nothing(gpu, expected):
 
     host = Host(name="box", kind="gce", port=8191, os="Ubuntu 22.04", gpu=gpu)
     assert declares_no_gpu(host) is expected
+
+
+# --- audit: the no-GPU word, in any case and in either spelling ----------------------
+
+
+@pytest.mark.parametrize("gpu", ["none", "None", " NONE ", "cpu", "CPU"])
+def test_a_box_with_no_gpu_is_described_by_its_os_alone(gpu):
+    """`describe` feeds the "which machine did you mean" refusals, and compared
+    the word case-sensitively: `gpu = "None"` read `Ubuntu 22.04, None`."""
+    from comfy_qa.config import Host, describe
+
+    host = Host(name="comfy-cpu", kind="gce", port=8191, os="Ubuntu 22.04", gpu=gpu)
+    assert describe(host) == "Ubuntu 22.04"
+
+
+@pytest.mark.parametrize("gpu", ["cpu", "CPU", " Cpu "])
+def test_cpu_in_a_host_file_means_no_gpu_as_it_does_after_create_gpu(gpu):
+    """`create --gpu cpu` is accepted and documented. Written by hand in a host
+    file the same word read as a CARD: a 900 s driver wait, a CUDA torch, and
+    no `--cpu` at launch."""
+    from comfy_qa.config import Host, declares_no_gpu, has_gpu
+
+    host = Host(name="comfy-cpu", kind="gce", port=8191, os="Ubuntu 22.04", gpu=gpu)
+    assert has_gpu(host) is False
+    assert declares_no_gpu(host) is True
+
+
+def test_a_box_with_no_gpu_is_not_found_by_asking_for_a_card_called_cpu_or_none():
+    from comfy_qa.config import Host, _cards, _matches_gpu, _selector_for
+
+    for word in ("cpu", "None"):
+        host = Host(name="comfy-cpu", kind="gce", port=8191, os="Ubuntu 22.04", gpu=word)
+        assert _matches_gpu(host, word.lower()) is False
+        assert _selector_for(host) == "ubuntu", "the OS alone, no card after it"
+        assert _cards([host]) == "none declared"

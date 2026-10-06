@@ -621,3 +621,38 @@ def test_the_plan_for_a_reserved_box_says_what_it_costs_before_it_is_made():
 def test_the_plan_for_a_box_that_is_not_reserved_says_nothing_about_reserving():
     plain = Blueprint(name="comfy-linux", image=IMAGES["linux"], card=CARDS["t4"])
     assert "reserv" not in "\n".join(plain.steps(A))
+
+
+# --- audit: a stock-out at the reservation is checked, not believed -----------------
+
+
+def test_a_stockout_that_left_a_reservation_anyway_is_not_called_nothing_billing():
+    """"A stock-out leaves nothing behind" was true only because the fakes made
+    it so. If Google answers stock-out and the reservation is there, moving on
+    to the next zone abandons it and ends on "nothing is billing"."""
+    cloud = Cloud()
+
+    def stocked_out_but_made():
+        cloud.hold("comfy-linux-rsv", A, PROJECT, machine_type="n1-standard-8",
+                   accelerator="type=nvidia-tesla-t4,count=1",
+                   description="comfy-qat: held for comfy-linux")
+        raise stockout()
+
+    cloud.reserve = stocked_out_but_made
+    problem = refusal(cloud)
+
+    assert "still billing" in str(problem)
+    assert "nothing is billing" not in str(problem)
+    assert (f"gcloud compute reservations delete comfy-linux-rsv --zone={A} "
+            f"--project={PROJECT}") in problem.fix
+    assert cloud.mutations() == [("create_reservation", "comfy-linux-rsv", A)], (
+        "it did not go on to make a second one in the next zone")
+
+
+def test_a_stockout_that_left_nothing_is_read_before_it_falls_through():
+    cloud = Cloud(reserve=in_turn(stockout(), None))
+    zone, _ = build(cloud)
+
+    assert zone == B
+    verbs = cloud.verbs()
+    assert verbs.index("reservation_absent") < verbs.index("create_reservation", 1)
