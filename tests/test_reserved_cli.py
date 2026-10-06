@@ -201,8 +201,12 @@ def mutating(cloud) -> list[str]:
 
 def offered(output: str) -> list[str]:
     """Every `comfy-qat ...` line a refusal handed over, in order, as printed."""
-    return [line.strip().split("   #")[0].strip() for line in output.splitlines()
-            if line.strip().startswith("comfy-qat ")]
+    # A fix block whose FIRST line is a command prints it after the label, so
+    # the label is taken off: `to fix: comfy-qat create …` is an offer too, and
+    # a reader that only saw indented lines never saw that one.
+    lines = [line.strip().removeprefix("to fix:").strip() for line in output.splitlines()]
+    return [line.split("  #")[0].strip() for line in lines
+            if line.startswith("comfy-qat ")]
 
 
 def test_the_set_of_mutating_calls_is_derived_and_knows_about_reservations():
@@ -562,10 +566,21 @@ def test_a_reserved_box_that_could_not_be_recorded_says_two_things_are_billing(
             "reservation comfy-linux-rsv — which bills whether the box is running "
             "or stopped") in said
     lines = [line.strip() for line in result.output.splitlines()]
-    assert (f"gcloud compute instances stop comfy-linux --zone=europe-west4-a "
-            f"--project={PROJECT}") in " ".join(lines)
-    assert (f"gcloud compute reservations delete comfy-linux-rsv "
-            f"--zone=europe-west4-a --project={PROJECT}") in lines
+    stop = (f"gcloud compute instances stop comfy-linux --zone=europe-west4-a "
+            f"--project={PROJECT}")
+    gone = (f"gcloud compute instances delete comfy-linux --zone=europe-west4-a "
+            f"--project={PROJECT} --delete-disks=all")
+    release = (f"gcloud compute reservations delete comfy-linux-rsv "
+               f"--zone=europe-west4-a --project={PROJECT}")
+    assert stop in " ".join(lines)
+    # ALL of what ends both bills, in the order it has to be run. The fix used
+    # to say the reservation is released "after the box is deleted" and print
+    # no command that deletes the box.
+    assert gone in lines and release in lines
+    assert lines.index(gone) < lines.index(release)
+    # And the line somebody adding the entry by hand has to add, named — or the
+    # entry they write describes a box whose bill `down` would say it stopped.
+    assert 'gce_reservation = "comfy-linux-rsv"' in said
 
 
 # --- a box with no GPU --------------------------------------------------------
@@ -712,3 +727,286 @@ def test_every_line_the_refused_move_of_a_reserved_box_prints_runs(run):
     assert [row["zone"].rsplit("/", 1)[-1] for row in cloud._reservations] == [
         "europe-west4-b"], "the old reservation was not released, or the new not made"
     assert 'gce_zone     = "europe-west4-b"' in again.hosts
+
+
+# --- the remedy is only for a box the host list holds (audit-v1 F4) -----------
+#
+# The limit refusal used to print `comfy-qat down <box>` / `comfy-qat delete
+# <box>` from the name in the reservation's description — the INSTANCE's name —
+# without asking the host list. Two ways that goes wrong, and the second
+# destroys a machine.
+
+
+def test_a_reserved_box_that_is_in_no_host_list_gets_googles_commands_not_ours(run):
+    """On the project, bound to its reservation, and not in the host list: a
+    create that died before the entry was written, or a teammate's box. Both
+    `comfy-qat` commands would exit 2 while the reservation bills."""
+    cloud = a_project_holding_one_reserved_box()
+    result = run("create", "--os", "linux", "--gpu", "l4", "--name", "second",
+                 "--reserve", "--yes", cloud=cloud)          # declared=HOSTS: local only
+
+    assert result.exit_code == 2, result.output
+    assert mutating(cloud) == []
+    assert offered(result.output) == [], "a comfy-qat command for a box it cannot name"
+    lines = [line.strip() for line in result.output.splitlines()]
+    box = (f"gcloud compute instances delete comfy-linux --zone=us-central1-a "
+           f"--project={PROJECT}")
+    release = (f"gcloud compute reservations delete {RSV} --zone=us-central1-a "
+               f"--project={PROJECT}")
+    assert box in lines and release in lines
+    assert lines.index(box) < lines.index(release), "the box goes before its reservation"
+
+
+NAMESAKE = HOSTS + f"""
+[hosts.comfy-linux]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "my-own-instance"
+gce_zone     = "europe-west4-a"
+gce_project  = "{PROJECT}"
+port         = 8190
+"""
+
+
+def test_an_entry_of_that_name_for_another_machine_is_never_offered_for_deletion(run):
+    """THE DATA-LOSS CASE. The host list has an entry called `comfy-linux` that
+    points at `my-own-instance`; the reservation was made for an instance
+    called `comfy-linux`. The old remedy printed `comfy-qat delete
+    comfy-linux`, and pasted back that deleted `my-own-instance` and left the
+    reservation billing. So nothing this refusal prints may be a `comfy-qat`
+    command — and running everything it DOES offer through this CLI (which is
+    nothing) leaves that machine where it was."""
+    mine = box("my-own-instance", zone="europe-west4-a", bound=None)
+    cloud = Project(instances=[box(), mine], reservations=[ours()],
+                    quotas=[grant(2), ceiling(1)])
+    result = run("create", "--os", "linux", "--gpu", "l4", "--name", "second",
+                 "--reserve", "--yes", cloud=cloud, declared=NAMESAKE)
+
+    assert result.exit_code == 2, result.output
+    assert "held by 1 reservation: comfy-linux-rsv" in flat(result.output)
+    assert offered(result.output) == [], result.output
+    for line in offered(result.output):                       # pasted back: none
+        run(*shlex.split(line)[1:], cloud=cloud, tty=True, answer="comfy-linux\n")
+    assert cloud._box("my-own-instance") is not None, "the wrong machine was deleted"
+    assert "instances delete" not in cloud.calls
+    assert "gcloud compute instances delete comfy-linux --zone=us-central1-a" \
+        in result.output
+
+
+def test_a_box_declared_under_another_label_is_named_by_that_label_and_it_runs(run):
+    """The entry is called `gpu-box` and points at the instance `comfy-linux`.
+    The remedy takes the label, and pasted back it frees the card."""
+    declared = WITH_A_RESERVED_BOX.replace("[hosts.comfy-linux]", "[hosts.gpu-box]")
+    cloud = a_project_holding_one_reserved_box()
+    refused = run("create", "--os", "linux", "--gpu", "l4", "--name", "second",
+                  "--reserve", "--yes", cloud=cloud, declared=declared)
+
+    assert offered(refused.output) == ["comfy-qat down gpu-box",
+                                       "comfy-qat delete gpu-box"]
+    for line in offered(refused.output):
+        again = run(*shlex.split(line)[1:], cloud=cloud, tty=True, answer="gpu-box\n")
+        assert again.exit_code == 0, f"`{line}` did not run:\n{again.output}"
+    assert cloud._instances == [] and cloud._reservations == []
+
+
+# --- the wrong-region remedy keeps --reserve (audit-v1 F14) -------------------
+
+
+def test_the_remedy_for_a_region_that_is_not_one_still_reserves(run):
+    """`--region US-CENTRAL1`: regions are lower case. The refusal rewrites the
+    command, and a rewritten command without `--reserve` makes, in a script, an
+    unreserved box. The line it offers has to carry the flag — and, pasted
+    back, has to plan a RESERVED box."""
+    cloud = Project()
+    result = run("create", "--os", "linux", "--gpu", "l4", "--reserve",
+                 "--region", "US-CENTRAL1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 2, result.output
+    assert "regions are lower case" in result.output
+    creates = [line for line in offered(result.output) if line.startswith("comfy-qat create")]
+    assert creates == ["comfy-qat create --os linux --gpu l4 --reserve --region us-central1"]
+    assert mutating(cloud) == []
+    assert "list_reservations" not in cloud.calls, "refused before the limit was read"
+
+    again = run(*shlex.split(creates[0])[1:], "--dry-run", cloud=cloud)
+    assert again.exit_code == 0, again.output
+    assert "reservation comfy-linux-rsv in us-central1-a" in flat(again.stdout)
+
+
+def test_the_same_remedy_for_an_ordinary_box_says_nothing_of_reserving(run):
+    result = run("create", "--os", "linux", "--gpu", "l4", "--region", "US-CENTRAL1",
+                 "--yes", cloud=Project())
+
+    creates = [line for line in offered(result.output) if line.startswith("comfy-qat create")]
+    assert creates == ["comfy-qat create --os linux --gpu l4 --region us-central1"]
+
+
+# --- a box with no GPU: the vCPU check is made, and obeyed (audit-v2 F11) -----
+
+
+def cpus(per_region, everywhere, regions=None):
+    return [
+        {"quotaId": "CPUS-per-project-region",
+         "dimensionsInfos": [{"details": {"value": str(per_region)},
+                              "applicableLocations": list(regions or REGIONS)}]},
+        {"quotaId": "CPUS-ALL-REGIONS-per-project",
+         "dimensionsInfos": [{"details": {"value": str(everywhere)},
+                              "applicableLocations": []}]},
+    ]
+
+
+def test_a_box_with_no_gpu_is_refused_when_the_vcpu_ceiling_is_too_small(run):
+    """The DECISION, not the call. `compute_quotas` being read proves nothing
+    about what was done with it: a command that read it and threw the answer
+    away passes every assertion about calls."""
+    cloud = Project(compute=cpus(200, 4))
+    result = run("create", "--os", "linux", "--gpu", "none", "--yes", cloud=cloud)
+
+    assert result.exit_code == 2, result.output
+    assert ("CPUS_ALL_REGIONS is 4 on this project — the ceiling on vCPU across "
+            "every region — and n1-standard-8 needs 8 vCPU. Nothing was created."
+            ) in flat(result.output)
+    assert mutating(cloud) == []
+    assert result.hosts == HOSTS
+
+
+def test_a_box_with_no_gpu_is_refused_when_no_region_has_room_for_it(run):
+    cloud = Project(compute=cpus(4, 32))
+    result = run("create", "--os", "linux", "--gpu", "none", "--yes", cloud=cloud)
+
+    assert result.exit_code == 2, result.output
+    assert ("n1-standard-8 needs 8 vCPU, and the most this project may hold in "
+            "any one region is 4.") in flat(result.output)
+    assert mutating(cloud) == []
+
+
+def test_a_box_with_no_gpu_goes_only_where_the_vcpu_allowance_reaches(run):
+    """What the check decided is what the zone order is built from. The nearer
+    region has no vCPU allowance here, so the box must not go to it — which it
+    would, by latency, if the check's regions were dropped on the way."""
+    cloud = Project(compute=cpus(200, 32, regions=["us-central1"]))
+    result = run("create", "--os", "linux", "--gpu", "none", "--yes", cloud=cloud)
+
+    assert result.exit_code == 0, result.output
+    assert cloud.created[1] == "us-central1-a"
+    assert "europe-west4" not in result.stdout[result.stdout.index("zone order"):]
+    assert "CPUS (n1): 200 in us-central1" in result.stdout
+
+
+def test_what_the_vcpu_check_read_is_printed_as_what_it_read(run):
+    """And the numbers on screen are the project's, not a default's."""
+    result = run("create", "--os", "linux", "--gpu", "none", "--dry-run",
+                 cloud=Project(compute=cpus(96, 24)))
+
+    assert "CPUS (n1): 96 in 2 regions — a limit, not what is free" in result.stdout
+    assert ("CPUS_ALL_REGIONS (every machine, project-wide): 24 — a limit, not what "
+            "is free") in result.stdout
+
+
+def test_a_box_with_no_gpu_and_a_region_still_reads_nothing_about_gpus(run):
+    """`--region` used to bring the accelerator catalogue back in: the region
+    check builds its list of regions from where cards are sold. The promise is
+    that nothing about GPUs is read for this box, with the flag or without."""
+    cloud = Project()
+    result = run("create", "--os", "linux", "--gpu", "none", "--region",
+                 "us-central1", "--dry-run", cloud=cloud)
+
+    assert result.exit_code == 0, result.output
+    for never in ("accelerator_types", "gpu_quotas", "list_reservations",
+                  "quota_preferences"):
+        assert never not in cloud.calls, f"a box with no GPU asked for {never}"
+    assert "compute_quotas" in cloud.calls
+    assert "us-central1-a" in result.stdout and "europe-west4" not in result.stdout[
+        result.stdout.index("zone order"):]
+
+
+def test_a_region_outside_the_vcpu_allowance_is_still_refused_for_such_a_box(run):
+    """Taking the GPU-catalogue check away must not take the refusal away."""
+    cloud = Project()
+    result = run("create", "--os", "linux", "--gpu", "none", "--region", "me-west1",
+                 "--yes", cloud=cloud)
+
+    assert result.exit_code == 2, result.output
+    assert "this project has no CPU quota for n1-standard-8 in me-west1" in flat(
+        result.output)
+    assert mutating(cloud) == [] and "accelerator_types" not in cloud.calls
+
+
+# --- discover --prune and a reserved box that is gone (audit-v3 D2) -----------
+
+A_GHOST = HOSTS + f"""
+[hosts.plain-ghost]
+kind         = "gce"
+os           = "Ubuntu 22.04"
+gpu          = "L4"
+gce_instance = "plain-ghost"
+gce_zone     = "us-central1-a"
+gce_project  = "{PROJECT}"
+port         = 8191
+"""
+
+
+def test_prune_does_not_drop_a_reserved_box_whose_reservation_may_still_bill(run):
+    """The box was deleted in the console; its reservation was not. The entry
+    is the last thing on this machine that names that reservation, and
+    `comfy-qat delete` — the command that releases it — needs the entry. Prune
+    used to remove it without a word about the reservation."""
+    cloud = Project(reservations=[ours()])          # the reservation, and no box
+    result = run("discover", "--prune", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+
+    assert result.exit_code == 0, result.output
+    assert "[hosts.comfy-linux]" in result.hosts, "a reserved ghost was pruned"
+    said = flat(result.stdout)
+    assert ("not on the project any more, and reserved — the box is gone, but its "
+            "reservation may still be billing, so the entry was kept:") in said
+    assert f"reservation {RSV})" in said
+    assert ("  comfy-qat delete comfy-linux   # releases the reservation if it is "
+            "still there, and takes the entry out") in result.stdout.splitlines()
+    assert len(cloud._reservations) == 1, "prune is not what releases it"
+
+
+def test_the_command_prune_offers_for_a_reserved_ghost_releases_it(run):
+    """Pasted back: the reservation goes, and so does the entry."""
+    cloud = Project(reservations=[ours()])
+    pruned = run("discover", "--prune", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+    (line,) = [line for line in offered(pruned.output) if " delete " in line]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=True, answer="comfy-linux\n")
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == [], "the reservation is still billing"
+    assert "[hosts.comfy-linux]" not in again.hosts
+    assert "Its reservation comfy-linux-rsv was released" in flat(again.stdout)
+
+
+def test_prune_still_removes_an_ordinary_ghost_beside_a_reserved_one(run):
+    """The control, and the mixed case: the unreserved ghost goes exactly as it
+    always did, and only the reserved one is kept."""
+    declared = WITH_A_RESERVED_BOX + A_GHOST.split(HOSTS)[1]
+    cloud = Project(reservations=[ours()])
+    result = run("discover", "--prune", "--yes", cloud=cloud, declared=declared)
+
+    assert result.exit_code == 0, result.output
+    assert "[hosts.plain-ghost]" not in result.hosts
+    assert "[hosts.comfy-linux]" in result.hosts
+    assert "removed 1 entry" in result.stdout
+
+
+def test_prune_with_only_an_ordinary_ghost_says_nothing_of_reservations(run):
+    result = run("discover", "--prune", "--yes", cloud=Project(), declared=A_GHOST)
+
+    assert "[hosts.plain-ghost]" not in result.hosts
+    assert "reserv" not in result.stdout
+
+
+def test_a_dry_run_prune_names_the_reserved_ghost_and_writes_nothing(run):
+    cloud = Project(reservations=[ours()])
+    result = run("discover", "--prune", "--dry-run", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+
+    assert result.hosts == WITH_A_RESERVED_BOX
+    assert "comfy-qat delete comfy-linux" in result.stdout
+    assert mutating(cloud) == []

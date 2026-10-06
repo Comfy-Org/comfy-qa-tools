@@ -37,7 +37,7 @@ one port is the failure you cannot diagnose from the outside.
 | `kind` | all | `local` for a ComfyUI on this machine, `gce` for a Google Cloud box |
 | `port` | all | where ComfyUI is reached **on your machine**. For `local`, the port it actually serves on. For `gce`, the near end of the tunnel. Defaults to 8188 for `local` |
 | `os` | gce | what the box runs, e.g. `Ubuntu 22.04`. Shown in `list`, and matched by `windows`, `linux`, `ubuntu`, `debian` |
-| `gpu` | gce | the card, e.g. `L4`, or `none` for a box with no GPU. Matters as much as the OS — not every GPU can run every model. Matched by `l4`, `a100` |
+| `gpu` | gce | the card, e.g. `L4`, or `none` for a box with no GPU (`cpu` is read as `none`). Matters as much as the OS — not every GPU can run every model. Matched by `l4`, `a100` |
 | `gce_instance` | gce | the instance name in Google Cloud |
 | `gce_zone` | gce | the zone it lives in, e.g. `us-central1-a` |
 | `gce_project` | gce | the project it is billed to |

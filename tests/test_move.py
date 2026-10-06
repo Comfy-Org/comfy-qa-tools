@@ -1873,3 +1873,26 @@ def test_the_same_box_unreserved_is_still_moved(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "reserved" not in result.output
     assert cloud.calls, "an ordinary move asks Google what is there"
+
+
+def test_move_hands_its_host_list_to_the_survey(tmp_path, monkeypatch):
+    """`relocate.prepare` names a box in its ceiling refusal only if the host
+    list it is given holds that box — which is no use if `move` gives it none.
+    Held on what the command SENT, at the one seam it calls."""
+    from comfy_qa import relocate
+
+    seen = {}
+    real = relocate.prepare
+
+    def watching(gc, host, instance, to_zone, hosts=None):
+        seen["hosts"] = hosts
+        return real(gc, host, instance, to_zone, hosts=hosts)
+
+    monkeypatch.setattr(relocate, "prepare", watching)
+    cloud = Cloud(disks=[SOURCE], instances=[INSTANCE])
+    result = _cli_move(tmp_path, monkeypatch, cloud, "comfy-win", "--to",
+                       "us-central1-b", "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert seen["hosts"] is not None
+    assert [host.name for host in seen["hosts"]] == ["comfy-win"]

@@ -51,11 +51,23 @@ billing`, `go` and `up` end on `comfy-qat delete <name>` in place of `comfy-qat
 down <name>`, and `down --all` does not print `Nothing is now.` while a reserved
 box is declared or a reservation is on the project.
 
+```
+comfy-linux was running. Stopped — but it is reserved, so it is still billing.
+  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+```
+
 So reserve a box only for as long as you need the place held, and **delete it**
 when you are finished with it — `comfy-qat delete <name>` releases the
-reservation with the box. `comfy-qat list` shows which boxes are reserved, and
-`comfy-qat list --live` also names any reservation on the project that has no box
-at all, which bills exactly the same and appears nowhere else.
+reservation with the box. `comfy-qat list` shows which boxes are reserved.
+
+A reservation with **no box on it** bills exactly the same and is in no list of
+machines. Two commands name one, with the command that releases it:
+`comfy-qat list --live`, for every project a cloud box you have declared is on
+(and only when it could read that project's instances — it says so when it
+could not); and `comfy-qat down --all`, which also reads the project gcloud is
+pointed at when you have no cloud box declared at all. That second case is the
+one a `create --reserve` that stopped half-way leaves, so `down --all` is the
+command to end a session on.
 
 That a reservation bills for every hour it exists, used or not, is Google's
 published pricing for reservations. This tool has no way to measure it and has

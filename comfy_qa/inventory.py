@@ -73,6 +73,12 @@ class Survey:
     rows: dict[str, Row] = field(default_factory=dict)
     orphans: tuple[tuple[str, rsv.Reservation], ...] = ()
     unread: tuple[tuple[str, str], ...] = ()
+    # `(project, how many reservations)` for each project that HAS reservations
+    # and whose instances could not be read. Which of them has no box cannot be
+    # worked out without the boxes, so no orphan is named for it — and that
+    # has to be said, or a table with no orphan block under it reads as a
+    # project with no orphans.
+    unsorted: tuple[tuple[str, int], ...] = ()
 
 
 def _now() -> datetime:
@@ -253,7 +259,10 @@ def survey(gc, hosts: list[Host], *, now: datetime | None = None) -> Survey:
         for project, found_all in reserved.items()
         if found_all is not None and project in listings
         for found in rsv.orphans(found_all, listings[project]))
-    return Survey(rows=rows, orphans=orphans, unread=tuple(unread))
+    unsorted = tuple(
+        (project, len(found_all)) for project, found_all in reserved.items()
+        if found_all and project not in listings)
+    return Survey(rows=rows, orphans=orphans, unread=tuple(unread), unsorted=unsorted)
 
 
 def orphan_lines(found: Survey) -> list[str]:

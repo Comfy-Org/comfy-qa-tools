@@ -597,6 +597,10 @@ class Found:
     # a reservation holds its card whether its box runs or not.
     reserved: tuple[tuple[str, str, int, str], ...] = ()
     reserved_boxed: tuple[tuple[str, str], ...] = ()
+    # `(reservation, zone, label)` for those whose box the HOST LIST holds —
+    # the only ones `comfy-qat down/delete` may be printed for, and under the
+    # label the list gives the box, not the instance name in the description.
+    reserved_named: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def snapshot_name(self) -> str | None:
@@ -679,7 +683,7 @@ def _in_zone(resource: dict, zone: str) -> bool:
     return _tail(resource.get("zone")) == zone
 
 
-def survey(gc: Gcloud, plan: Plan) -> Found:
+def survey(gc: Gcloud, plan: Plan, hosts: list[Host] | None = None) -> Found:
     """Read the state of everything the move touches, before touching any of it.
 
     Read-only, and it runs for a dry run too: a preview that has not looked
@@ -744,11 +748,12 @@ def survey(gc: Gcloud, plan: Plan) -> Found:
         missing = zone_lacks_machine_type(gc, plan)
         if missing:
             found = replace(found, blocker=missing, blocker_is_the_zone=True)
-    return _with_the_ceiling(gc, plan, found, instances)
+    return _with_the_ceiling(gc, plan, found, instances, hosts)
 
 
 def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
-                      instances: list[dict]) -> Found:
+                      instances: list[dict],
+                      hosts: list[Host] | None = None) -> Found:
     """Read what the project-wide GPU ceiling would say about the new box.
 
     `move` creates a GPU instance and had no ceiling check at all: `create` has
@@ -798,7 +803,7 @@ def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
     # for" — cards and not boxes, a reserved box counted once and not twice.
     # One implementation rather than a second that drifts from it.
     from . import reservation as rsv
-    from .create import _boxed
+    from .create import _boxed, declared_boxes
 
     needed = plan.cards
     if not needed:
@@ -831,10 +836,15 @@ def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
         return found
     return replace(found, ceiling=ceiling, cards_held=held,
                    cards_needed=needed, holders=holders,
-                   reserved=reserved, reserved_boxed=_boxed(reserved, instances))
+                   reserved=reserved, reserved_boxed=_boxed(reserved, instances),
+                   # Asked of the host list, by identity. With no list handed
+                   # in this is empty and the remedy is Google's own commands.
+                   reserved_named=declared_boxes(reserved, instances, hosts,
+                                                 plan.project))
 
 
-def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str) -> tuple[Plan, Found]:
+def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str,
+            hosts: list[Host] | None = None) -> tuple[Plan, Found]:
     """Name what the move will create, and read what is already there. Read-only.
 
     One call, because the two halves depend on each other: the plan says which
@@ -843,7 +853,7 @@ def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str) -> tuple[Plan,
     and would eventually get it wrong.
     """
     plan = plan_move(host, instance, to_zone)
-    found = survey(gc, plan)
+    found = survey(gc, plan, hosts)
     if found.source_disk is not None:
         plan = replace(plan, disk_type=_tail(found.source_disk.get("type")) or None)
         plan = _within_the_allowance(gc, plan, found.source_disk)
@@ -941,7 +951,8 @@ def _over_the_ceiling(plan: Plan, found: Found) -> MoveError | None:
             f"{found.cards_needed}-card box this move creates cannot start. "
             f"Nothing was created.",
             fix=output.fix(
-                _how_to_release(found.reserved, found.reserved_boxed, plan.project),
+                _how_to_release(found.reserved, found.reserved_boxed, plan.project,
+                                named=found.reserved_named),
                 "then run the same move again:",
                 f"comfy-qat move {plan.host.name} --to {plan.to_zone}"),
         )

@@ -637,7 +637,7 @@ def test_the_ceiling_makes_it_stop_first(cli, monkeypatch):
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
     result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": ["TERMINATED", "RUNNING"],
                            "comfy-linux": "RUNNING"},
@@ -736,7 +736,7 @@ def test_the_dry_run_shows_the_order_the_real_run_will_use(cli, monkeypatch):
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
     result = cli("switch", "comfy-win", "--dry-run",
                  statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
                  open_tunnels=("comfy-linux",))
@@ -760,7 +760,7 @@ def test_a_ceiling_switch_that_fails_says_you_are_on_neither_machine(cli, monkey
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
     result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
                  open_tunnels=("comfy-linux",),
@@ -793,7 +793,7 @@ def test_an_interrupt_after_the_ceiling_stop_reports_both_losses(
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
 
     # No `pytest.raises`: `Interrupted` is a `typer.Exit` now, so the runner
     # returns a result with the code instead of letting an exception escape.
@@ -827,7 +827,7 @@ def test_a_switch_that_stopped_nothing_reports_only_the_bill(cli, monkeypatch,
     from comfy_qa import inflight
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: None)
+                        lambda gc, host, others, hosts=None: None)
 
     # No `pytest.raises`: `Interrupted` is a `typer.Exit` now, so the runner
     # returns a result with the code instead of letting an exception escape.
@@ -868,7 +868,7 @@ def test_a_ceiling_that_stopped_nothing_does_not_crash_the_switch(cli, monkeypat
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
 
     result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": "RUNNING", "comfy-linux": "TERMINATED"},
@@ -999,7 +999,7 @@ def test_a_reservation_holding_the_whole_ceiling_refuses_rather_than_reorders(ca
                                "values": ["held-rsv"]}}])
 
     with pytest.raises(typer.Exit) as stopped:
-        _blocked(gc, target, [held])
+        _blocked(gc, target, [held], [target, held])
 
     assert stopped.value.exit_code == 2
     said = " ".join(capsys.readouterr().err.split())
@@ -1082,3 +1082,86 @@ def test_the_plan_says_nothing_of_the_kind_about_an_ordinary_box(cli):
 
     assert "then stop comfy-linux" in result.output
     assert "reserved" not in result.output
+
+
+def _held_running(name="held"):
+    return {"name": name, "status": "RUNNING",
+            "zone": f"https://x/projects/{P}/zones/us-central1-a",
+            "reservationAffinity": {"consumeReservationType": "SPECIFIC_RESERVATION",
+                                    "values": ["held-rsv"]}}
+
+
+def _refusal(capsys, gc, target, others, hosts):
+    import typer
+
+    with pytest.raises(typer.Exit):
+        _blocked(gc, target, others, hosts)
+    return capsys.readouterr().err
+
+
+def test_the_refusal_offers_comfy_qat_only_for_a_box_the_host_list_really_holds(capsys):
+    """The reservation's description names an INSTANCE, `held`. Here the host
+    list has an entry CALLED `held` that points at a different instance — a
+    box renamed, or a second project's. `comfy-qat delete held` pasted back
+    would delete that other machine and leave the reservation billing, so it
+    must not be printed: the box on the reservation gets Google's commands."""
+    target = _host("target")
+    namesake = Host(name="held", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                    gce_instance="some-other-instance", gce_zone="us-central1-a",
+                    gce_project=P, extra=(("gce_reservation", "held-rsv"),))
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[_held_running()])
+
+    said = _refusal(capsys, gc, target, [namesake], [target, namesake])
+
+    assert "comfy-qat down" not in said and "comfy-qat delete" not in said, said
+    assert f"gcloud compute instances delete held --zone=us-central1-a --project={P}" in said
+    assert f"gcloud compute reservations delete held-rsv --zone=us-central1-a --project={P}" in said
+
+
+def test_the_refusal_names_a_declared_box_by_what_the_host_list_calls_it(capsys):
+    """The other direction: the entry is labelled `gpu-box` and points at the
+    instance `held`. The commands take the LABEL — `comfy-qat down held` would
+    be an unknown host."""
+    target = _host("target")
+    labelled = Host(name="gpu-box", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                    gce_instance="held", gce_zone="us-central1-a", gce_project=P,
+                    extra=(("gce_reservation", "held-rsv"),))
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[_held_running()])
+
+    said = _refusal(capsys, gc, target, [labelled], [target, labelled])
+
+    assert "comfy-qat down gpu-box" in said and "comfy-qat delete gpu-box" in said
+    assert "comfy-qat down held" not in said
+
+
+def test_without_a_host_list_the_refusal_prints_no_comfy_qat_command(capsys):
+    target = _host("target")
+    held = _host("held", reservation="held-rsv")
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[_held_running()])
+
+    said = _refusal(capsys, gc, target, [held], None)
+
+    assert "comfy-qat down" not in said and "comfy-qat delete" not in said
+    assert "gcloud compute reservations delete held-rsv" in said
+
+
+def test_switch_hands_the_host_list_to_the_gate(cli, monkeypatch):
+    """The gate being right about a host list is no use if the command never
+    gives it one. Held on what was SENT."""
+    from comfy_qa import host as host_module
+
+    seen = {}
+
+    def gate(gc, host, others, hosts=None):
+        seen["hosts"] = hosts
+        return None
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling", gate)
+    cli("switch", "comfy-win", "--dry-run",
+        statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"})
+
+    assert seen["hosts"] is not None
+    assert {host.name for host in seen["hosts"]} == {"local", "comfy-win", "comfy-linux"}

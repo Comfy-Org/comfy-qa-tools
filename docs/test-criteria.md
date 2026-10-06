@@ -1099,7 +1099,9 @@ echo "=== V17 the same as V0"; diff ~/qa-before/reservations.txt <(gcloud comput
       targets the reservation, the command exits 1 saying `could not release …
       so qa-rsv was not deleted and its reservation is still billing` — that is
       the second assumption failing, not a slip. Record Google's words, then
-      delete the instance and the reservation by hand (teardown, below).
+      delete them by hand **in the other order** — the instance first, then the
+      reservation — with the second of the two teardown blocks below. Running
+      the first block here would repeat the call Google has just refused.
 - [ ] **V15b** — no `qa-rsv` instance, no `qa-rsv` disk, **no `qa-rsv-rsv`
       reservation**, and no `qa-rsv` row in `qat list`. The reservation is the
       one to look for: it is what would still be billing.
@@ -1108,19 +1110,35 @@ echo "=== V17 the same as V0"; diff ~/qa-before/reservations.txt <(gcloud comput
 - [ ] **V17** — `IDENTICAL`, and no instances. If a reservation is listed here,
       it is billing right now.
 
-**Teardown, if anything stopped half-way.** Raw gcloud, in this order — the
-reservation first, because it is the one billing at a GPU's rate:
+**Teardown, if anything stopped half-way.** Raw gcloud. Look first:
 
 ```sh
 echo "=== V-teardown"
 gcloud compute reservations list --project $P
 gcloud compute instances list --project $P
 gcloud compute disks list --project $P
-# then, for each qa-* that is still there:
+```
+
+Then, for each `qa-*` still there, the reservation first — it is the one
+billing at a GPU's rate:
+
+```sh
 #   gcloud compute instances stop <name> --zone <zone> --project $P
 #   gcloud compute reservations delete <name>-rsv --zone <zone> --project $P --quiet
 #   gcloud compute instances delete <name> --zone <zone> --project $P --delete-disks=all --quiet
 ```
+
+**Unless the reservation delete is what was refused** — V15's case, where Google
+will not release a reservation a stopped box still targets. Then that order
+cannot work, and it is the instance that goes first:
+
+```sh
+#   gcloud compute instances delete <name> --zone <zone> --project $P --delete-disks=all --quiet
+#   gcloud compute reservations delete <name>-rsv --zone <zone> --project $P --quiet
+```
+
+Either way, finish by reading `gcloud compute reservations list --project $P`.
+An entry there is billing.
 
 Two more, each of which makes and removes one reserved box. Run them only after
 V17 is clean.

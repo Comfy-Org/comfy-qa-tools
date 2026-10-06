@@ -59,9 +59,10 @@ costs money and a cleanup.
 
 ```
 quota checked:
-  L4: 1, in 43 region(s)
+  L4: 1, in 2 regions
   GPUS_ALL_REGIONS (every card, project-wide): 1
 
+what this makes:
   - create comfy-linux in europe-west4-a: Ubuntu 22.04, L4 (nvidia-l4)
   - machine type g2-standard-8 — built into the machine type
   - 200 GB pd-balanced boot disk from ubuntu-2204-lts
@@ -70,12 +71,18 @@ quota checked:
 
 zone order — 4 to try, quota first, then what is offered, then measured latency (nearest: europe-west4)
   1. europe-west4-a  (208 ms to europe-west4)
-  2. europe-west4-b  (208 ms to europe-west4)
-  3. us-central1-a   (311 ms to us-central1)
+  2. us-central1-a  (311 ms to us-central1)
+  3. europe-west4-b  (208 ms to europe-west4)
+  4. us-central1-b  (311 ms to us-central1)
+
+--dry-run: nothing created
 ```
 
-`--dry-run` prints exactly that — the plan, the quota it read and the zone order
-it would try — and creates nothing.
+`--dry-run` prints exactly that on stdout — the quota it read, the plan and the
+zone order it would try — and creates nothing. Above it, on stderr, are the
+three decisions the plan was made from, one line each, whether you typed them or
+were asked: `OS: linux (from --os)`, `GPU: l4 (from --gpu)` and `reserve: no
+(default — pass --reserve to hold the capacity)`.
 
 ### Reserved, or not
 
@@ -122,8 +129,12 @@ a stopped one you already have. `create --reserve` says so before it asks:
     including a stopped one you already have.
 ```
 
-and a later `create` is refused, naming the reservation and the two commands that
-release it. What is already reserved is read from the project's own reservations,
+When another reservation already holds a card, the line ends `no GPU box without
+a reservation can start — a box with a reservation of its own can still start`,
+which is the true form of it there. A later `create` that does not fit is
+refused, naming the reservation and the commands that release it — `comfy-qat
+down` and `comfy-qat delete` when its box is in your host list, Google's own
+commands when it is not. What is already reserved is read from the project's own reservations,
 not from your host list — one made in the console counts just the same.
 
 What a reserved box changes elsewhere: `down` keeps it and says it is still
@@ -383,8 +394,12 @@ because a copy of a cloud fact goes stale the first time a disk is resized.
 
 The block under the table is a reservation **with no box on it**: made by a
 create that stopped half-way, or left when a box was deleted some other way. It
-bills at a GPU's rate and is in no list of machines, so this is the only place it
-shows. RESERVED can also read `missing` (the host list names a reservation the
+bills at a GPU's rate and is in no list of machines. `list --live` shows it for
+a project one of your declared cloud boxes is on, when it could read that
+project's instances — and warns when it could not. With **no** cloud box
+declared it asks Google nothing; `comfy-qat down --all` is the command that
+reads the project then, and it names such a reservation with the same release
+command. RESERVED can also read `missing` (the host list names a reservation the
 project does not have), `yes (not in host list)` (the box is bound to one and its
 entry does not say so) or `…, unchecked` (one of the two reads failed) — see
 [troubleshooting](troubleshooting.md#listing-what-you-have-and-what-it-costs).

@@ -410,6 +410,31 @@ def test_no_orphan_block_when_the_boxes_could_not_be_read(cli):
     """Without the instances nobody knows which reservation has a box, and a
     delete command printed on that basis is a command against live capacity."""
     result = cli("--live", cloud=Cloud(instances=GcloudError("denied")))
-    assert "has no box" not in result.output
+    assert "has no box, and is billing" not in result.output
     assert "reservations delete" not in result.output
+    assert "unknown" in result.stdout
+
+
+def test_and_it_says_that_it_could_not_work_out_which_reservations_have_no_box(cli):
+    """Withholding the orphan block is right. Saying nothing is not: a table
+    with no block under it reads as a project where every reservation has its
+    box. One warning per project, on stderr, with the command that lists them."""
+    result = cli("--live", cloud=Cloud(
+        instances=GcloudError("denied"),
+        reservations=[*RESERVATIONS, reserved("qatest-rsv", box="qatest")]))
+
+    assert result.exit_code == 0, result.output
+    said = " ".join(result.stderr.split())
+    assert (f"warning: could not ask Google about the boxes on {PROJECT}, so which "
+            f"of its 2 reservations has no box on it was not worked out") in said
+    assert f"gcloud compute reservations list --project={PROJECT}" in result.stderr
+    assert "warning" not in result.stdout
+
+
+def test_a_failed_instances_read_with_nothing_reserved_warns_of_nothing(cli):
+    """The control: there is nothing that could have been an orphan."""
+    result = cli("--live", cloud=Cloud(instances=GcloudError("denied"),
+                                       reservations=[]))
+
+    assert "was not worked out" not in result.output
     assert "unknown" in result.stdout

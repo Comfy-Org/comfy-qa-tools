@@ -731,10 +731,12 @@ def test_down_all_names_a_reservation_on_the_project_that_no_host_declares(cli):
 
     out = result.stdout
     assert "Nothing is now" not in out
-    assert ("1 reservation on this project is billing and not in your host list: "
+    assert ("1 reservation on proj is billing and not in your host list: "
             "stray-rsv (us-central1-a).") in _one_line(out)
-    assert "  comfy-qat list --live   # which of them has no box, and how to release it" \
-        in out.splitlines()
+    # What releases it, printed HERE and whole on its line — not a pointer to
+    # another command. Nothing is on it, so it is Google's own delete.
+    assert ("  gcloud compute reservations delete stray-rsv --zone=us-central1-a "
+            "--project=proj   # nothing is on it") in out.splitlines()
     # Named, not released: it is not this command's to release.
     assert "delete_reservation" not in result.cloud.calls
 
@@ -1027,6 +1029,170 @@ def test_the_help_for_delete_says_it_releases_the_reservation():
     ("switch", "Stopping a reserved box frees neither its card nor its bill"),
     ("create", "`comfy-qat down` does not stop that bill, and only `comfy-qat delete` does"),
     ("list", "a reserved box bills every hour, running or stopped, until it is deleted"),
+    ("discover", "And never a RESERVED box's entry. Its box may be gone while its "
+                 "reservation is still billing"),
 ])
 def test_each_command_a_reserved_box_changes_says_so_in_its_help(command, words):
     assert words in _help(command), _help(command)
+
+
+# --- `down --all` and reservations nobody declared: found by the audit --------
+
+LOCAL_ONLY = """\
+[hosts.local]
+kind = "local"
+port = 8188
+"""
+
+STRAY = dict(ITS_RESERVATION, name="stray-rsv", description="comfy-qat: held for stray")
+
+
+class Undeclared(Held):
+    """A project with no cloud box in the host list — the state a `create
+    --reserve` that stopped half-way leaves — so the project is whichever one
+    gcloud is pointed at, and the instances on it are whatever a test says."""
+
+    def __init__(self, *, instances=(), **kwargs):
+        super().__init__(**kwargs)
+        self._instances = instances
+
+    def current_project(self):
+        self.calls.append("current_project")
+        return "proj"
+
+    def list_instances(self, project):
+        if isinstance(self._instances, BaseException):
+            raise self._instances
+        return list(self._instances)
+
+
+def test_down_all_with_no_cloud_box_declared_names_a_reservation_and_how_to_release_it(cli):
+    """THE ORPHAN NOBODY ELSE SHOWS. No cloud box is declared, so `list` shows
+    nothing and `list --live` asks Google nothing; the reservation a failed
+    create left is billing at a GPU's rate, and this is the one output that
+    says so. The whole report could be deleted from this branch with every
+    other test green."""
+    result = cli("down", "--all", declared=LOCAL_ONLY,
+                 cloud=Undeclared(reservations=(STRAY,)))
+
+    assert result.exit_code == 0, result.output
+    out = result.stdout
+    assert ("1 reservation on proj is billing and not in your host list: "
+            "stray-rsv (us-central1-a).") in _one_line(out)
+    assert ("  gcloud compute reservations delete stray-rsv --zone=us-central1-a "
+            "--project=proj   # nothing is on it") in out.splitlines()
+    assert "list_reservations" in result.cloud.calls
+
+
+def test_that_report_never_sends_anybody_to_a_listing_that_shows_nothing(cli):
+    """It used to end `comfy-qat list --live   # which of them has no box…`.
+    With no cloud box declared that command reads no project at all, so the
+    remedy led to a table with one local row and nothing about a reservation.
+    A remedy is held to working: this one is not offered where it cannot."""
+    out = cli("down", "--all", declared=LOCAL_ONLY,
+              cloud=Undeclared(reservations=(STRAY,))).stdout
+
+    paragraph = out[out.index("1 reservation on proj"):]
+    assert "list --live" not in paragraph, paragraph
+
+
+def test_with_no_cloud_box_and_nothing_reserved_it_says_no_more_than_before(cli):
+    """The control: read, and empty, is quiet."""
+    result = cli("down", "--all", declared=LOCAL_ONLY, cloud=Undeclared(reservations=()))
+
+    assert "nothing is running on the project either" in result.stdout
+    assert "reserv" not in result.stdout
+    assert "list_reservations" in result.cloud.calls
+
+
+def test_a_reservation_with_a_box_on_it_is_not_handed_a_delete_command(cli):
+    """Somebody's box, in nobody's host list here, sitting on its reservation.
+    That is capacity in use: Google's delete for it would be offered against a
+    live machine. The box is adopted first, and deleting it releases it."""
+    theirs = {"name": "their-box", "status": "TERMINATED",
+              "zone": "https://x/projects/proj/zones/us-central1-a",
+              "reservationAffinity": {"consumeReservationType": "SPECIFIC_RESERVATION",
+                                      "values": ["stray-rsv"]}}
+    out = cli("down", "--all", declared=LOCAL_ONLY,
+              cloud=Undeclared(reservations=(STRAY,), instances=(theirs,))).stdout
+
+    assert "stray-rsv (us-central1-a)" in out
+    assert "reservations delete" not in out
+    assert ("  comfy-qat discover   # a box is on stray-rsv: adopt it, then "
+            "`comfy-qat delete` it") in out.splitlines()
+
+
+def test_no_delete_command_is_printed_when_the_boxes_could_not_be_read(cli):
+    """"Nothing is on it" needs the instances. Unread, it is a guess — and it
+    is the guess that releases a reservation from under a running box."""
+    out = cli("down", "--all", declared=LOCAL_ONLY,
+              cloud=Undeclared(reservations=(STRAY,),
+                               instances=GcloudError("denied"))).stdout
+
+    assert "stray-rsv (us-central1-a)" in out
+    assert "reservations delete" not in out
+    assert ("  gcloud compute reservations list --project=proj   # which of them "
+            "has a box on it could not be read") in out.splitlines()
+
+
+def test_an_unread_project_is_pointed_at_a_command_that_reads_it(cli):
+    result = cli("down", "--all", declared=LOCAL_ONLY,
+                 cloud=Undeclared(reservations=GcloudError("the API is disabled")))
+
+    out = result.stdout
+    assert "so this is not an all-clear." in _one_line(out)
+    assert "  gcloud compute reservations list --project=proj" in out.splitlines()
+
+
+def test_a_failed_stop_does_not_swallow_the_report_about_reservations(cli):
+    """One box will not stop, so the run exits 1 — and used to exit before
+    saying that the box which DID stop is reserved and still billing, or that
+    the project holds a reservation nobody declared."""
+    class OneWillNotStop(Held):
+        def stop_instance(self, instance, zone, project):
+            self.calls.append("stop_instance")
+            if instance == "comfy-linux":
+                raise GcloudError("the instance is locked")
+            return ""
+
+        def instance_status(self, instance, zone, project):
+            # Running before the stop; the box that refused is still running.
+            self.calls.append("instance_status")
+            return "RUNNING"
+
+    result = cli("down", "--all", declared=RESERVED,
+                 cloud=OneWillNotStop(reservations=(ITS_RESERVATION, STRAY)))
+
+    assert result.exit_code == 1, result.output
+    out = result.stdout
+    assert "still billing, stopped or not — it is reserved: comfy-win." in out
+    assert DELETE_LINE in out.splitlines()
+    assert "stray-rsv (us-central1-a)" in out
+    assert "Nothing is now" not in result.output
+
+
+TWO_PROJECTS = HOSTS.replace(
+    'gce_zone     = "us-central1-c"\ngce_project  = "proj"',
+    'gce_zone     = "us-central1-c"\ngce_project  = "second-proj"')
+
+
+def test_down_all_reads_the_reservations_of_every_project_a_box_is_on(cli):
+    """Two boxes on two projects. Only the first one's project used to be
+    asked, so a reservation on the second could not stop `Nothing is now.`"""
+    assert "second-proj" in TWO_PROJECTS
+
+    class PerProject(Held):
+        def list_reservations(self, project):
+            self.calls.append(f"list_reservations {project}")
+            return [STRAY] if project == "second-proj" else []
+
+    result = cli("down", "--all", declared=TWO_PROJECTS, cloud=PerProject())
+
+    assert sorted(call for call in result.cloud.calls if call.startswith(
+        "list_reservations")) == ["list_reservations proj",
+                                  "list_reservations second-proj"]
+    out = result.stdout
+    assert "Nothing is now" not in out
+    assert ("1 reservation on second-proj is billing and not in your host list: "
+            "stray-rsv (us-central1-a).") in _one_line(out)
+    assert "--project=second-proj" in out

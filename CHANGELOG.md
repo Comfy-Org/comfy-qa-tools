@@ -59,8 +59,11 @@ can be released while a stopped box still targets it. Phase V of
   still asks Google nothing: RESERVED is what the host list says, and the
   footnote says that is where it came from. `--live` checks it — `yes`, `no`,
   `missing`, `yes (not in host list)`, or `…, unchecked` when a read failed —
-  and names any reservation on the project that has no box on it at all, with
-  Google's command to release it. Two calls per project, however many boxes.
+  and names any reservation with no box on it, on a project one of your
+  declared boxes is on, with Google's command to release it. Two calls per
+  project, however many boxes. When a project's instances cannot be read it
+  says that which reservations have no box was not worked out. With no cloud
+  box declared it asks Google nothing; `down --all` reads the project then.
 - **`gce_reservation`** in the host list: the one optional line that says a box
   is reserved. `create --reserve` and `discover` write it.
 
@@ -73,6 +76,18 @@ can be released while a stopped box still targets it. Phase V of
   released; and the entry stays in the host list until both are gone. A
   reservation other machines share, or that the box has no claim on, is never
   released — `delete` refuses and says how to delete the box alone.
+- **`delete` reads the box's own record** for a reservation the host list entry
+  does not declare, says so before the confirmation, and releases it.
+- **`discover --prune` keeps a reserved box's entry** when the box is gone: its
+  reservation may still be billing and the entry is what `comfy-qat delete`
+  needs to release it. It names the reservation and prints that command.
+- **The limit's remedy names a box only if your host list holds it** — matched
+  by project, zone and instance, under the name the list gives it. A box on
+  the project that is in no entry gets Google's commands, and an entry that
+  merely shares the name is never offered for deletion.
+- **`down --all` names reservations nobody declared with what releases them**,
+  on every project a declared box is on — and, with no cloud box declared, on
+  the project gcloud is pointed at.
 - **`down` on a reserved box says it is still billing**, in place of `was
   billing. Stopped.`, and ends on `comfy-qat delete <name>`. `down --all` no
   longer prints `Nothing is now.` while a declared box is reserved, and reads

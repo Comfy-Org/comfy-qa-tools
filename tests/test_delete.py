@@ -920,9 +920,13 @@ def test_a_shared_reservation_is_never_released_and_the_box_is_not_deleted(
     assert cloud.released() == [] and not cloud.deleted()
     assert len(cloud.reservations) == 1 and "comfy-linux" in entries(tmp_path)
     said = flat(result.output)
-    assert "comfy-linux's reservation comfy-linux-rsv is shared" in said
-    assert ("it holds capacity for 2 machines" if case == "two machines"
-            else "other machines are on it: somebody-elses") in said
+    assert ("comfy-linux's reservation comfy-linux-rsv holds capacity for 2 "
+            "machines, where one this tool makes holds it for exactly one. "
+            "Deleting comfy-linux would release capacity that is not this box's "
+            "alone" if case == "two machines" else
+            "comfy-linux's reservation comfy-linux-rsv is shared — other machines "
+            "are on it: somebody-elses. Deleting comfy-linux would release it "
+            "from under them") in said
     assert "nothing was deleted" in said
 
 
@@ -936,8 +940,12 @@ def test_a_reservation_this_box_has_no_claim_on_is_refused(cli, tmp_path):
 
     assert result.exit_code == 2, result.output
     assert cloud.released() == [] and not cloud.deleted()
+    said = flat(result.output)
     assert ("was not made by this tool for comfy-linux, and comfy-linux is not "
-            "bound to it") in flat(result.output)
+            "bound to it. Deleting comfy-linux would release a reservation this "
+            "box has no claim on, so nothing was deleted.") in said
+    # "From under them" is the shared refusal's, and here there is no "them".
+    assert "from under them" not in said
 
 
 def test_a_reservation_made_for_another_box_is_not_this_ones_by_name_alone(cli):
@@ -1031,3 +1039,138 @@ def test_an_interrupted_release_says_it_may_or_may_not_have_gone(capsys, tmp_pat
     assert "still billing" in tail
     assert not cloud.deleted(), "the box was deleted after an interrupted release"
     assert "comfy-linux" in entries(tmp_path)
+
+
+# --- found by the audit ------------------------------------------------------
+
+
+def test_a_reservation_that_holds_no_machines_is_not_called_shared(cli):
+    """A count that reads 0. It is not one this tool made and is not released
+    — and it is not "shared … capacity for 0 machines" either."""
+    cloud = Project(reservations=[held(count="0")])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2 and cloud.released() == []
+    said = flat(result.output)
+    assert "holds capacity for 0 machines" in said
+    assert "is shared" not in said and "from under them" not in said
+
+
+def test_a_box_first_delete_that_fails_says_the_reservation_was_never_released(
+        cli, tmp_path, monkeypatch):
+    """The other order's OTHER failure. With the box deleted first, an instance
+    delete that Google refuses means the release was never reached — and the
+    only line printed used to be Google's reason for refusing the instance,
+    which says nothing about a reservation at all. Typed out: what was not
+    deleted, what was not released, and that it is still billing."""
+    from comfy_qa import remove
+
+    monkeypatch.setattr(remove, "RELEASE_FIRST", False)
+    cloud = Project(fail=GcloudError("the instance is locked"))
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 1, result.output
+    assert cloud.released() == [], "it released a reservation after a failed delete"
+    assert len(cloud.reservations) == 1
+    said = flat(result.output)
+    assert ("comfy-linux was not deleted, so its reservation comfy-linux-rsv was "
+            "not released either and is still billing.") in said
+    assert "the instance is locked" in said, "and Google's own reason is still there"
+    assert "was released" not in said
+    assert "comfy-linux" in entries(tmp_path)
+    assert "comfy-qat delete comfy-linux" in [
+        line.strip() for line in result.output.splitlines()]
+
+
+def test_the_two_orders_each_say_only_their_own_half(cli, monkeypatch):
+    """The control for the test above: in the release-first order the same
+    failed instance delete says the reservation WAS released, and must not say
+    it is still billing."""
+    cloud = Project(fail=GcloudError("the instance is locked"))
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    said = flat(result.output)
+    assert "was released, so it is no longer billing for the card" in said
+    assert "was not released either" not in said
+
+
+class Bound(Project):
+    """A project whose box says, in its OWN record, which reservation it is
+    on — which is what `delete` reads when the host list entry does not."""
+
+    def describe_instance(self, name, zone, project):
+        described = super().describe_instance(name, zone, project)
+        listed = next((row for row in self.instances if row["name"] == name), {})
+        if "reservationAffinity" in listed:
+            described["reservationAffinity"] = listed["reservationAffinity"]
+        return described
+
+
+def test_a_box_reserved_on_google_with_no_line_in_the_host_list_is_still_released(
+        cli, tmp_path):
+    """The entry has no `gce_reservation`: adopted before the field existed,
+    reserved in the console, or typed in by hand after a create that could not
+    write the file. The box is bound all the same and its reservation bills
+    all the same — and `delete` used to remove the box, say "and its disk are
+    gone", and leave the reservation billing with nothing naming it."""
+    cloud = Bound()
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")  # HOSTS
+
+    assert result.exit_code == 0, result.output
+    assert cloud.released() == [f"release {RSV} {RSV_ZONE} proj"]
+    assert cloud.reservations == [], "the reservation was left billing"
+    assert cloud.deleted() and "comfy-linux" not in entries(tmp_path)
+    said = flat(result.stdout)
+    assert ("comfy-linux is reserved, though its host list entry does not say so: "
+            "comfy-linux is bound to the reservation comfy-linux-rsv") in said
+    assert "its 200 GB boot disk, and its reservation comfy-linux-rsv." in said
+    assert "Its reservation comfy-linux-rsv was released" in said
+    # Said BEFORE the name is typed back: it changes what a yes destroys.
+    assert result.stdout.index("though its host list entry") < result.stdout.index(
+        "type comfy-linux to confirm")
+
+
+def test_an_undeclared_reservation_is_held_to_the_same_refusals(cli, tmp_path):
+    """Read off the instance, it gets no shortcut: one another box is on is
+    still not released, and the box is still not deleted."""
+    cloud = Bound(instances=[box(), box("somebody-elses")])
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 2, result.output
+    assert cloud.released() == [] and not cloud.deleted()
+    assert "other machines are on it: somebody-elses" in flat(result.output)
+
+
+def test_a_box_whose_record_cannot_be_read_is_deleted_as_its_entry_describes_it(cli):
+    """Best effort, like the read that sizes the disk: a describe that fails
+    is not a reason to refuse a delete somebody has decided on."""
+    class Unreadable(Project):
+        def describe_instance(self, name, zone, project):
+            self.calls.append(f"describe {name}")
+            raise GcloudError("timed out")
+
+    cloud = Unreadable()
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")
+
+    assert result.exit_code == 0, result.output
+    assert cloud.deleted() and cloud.released() == []
+
+
+def test_an_already_gone_box_is_told_its_reservation_is_still_billing_before_it_goes(cli):
+    """The sentence above the confirmation on the already-gone path. It could
+    be deleted with every other test green: the release still happened and the
+    closing line still said so. It is the one line that tells somebody, before
+    they type the name, that something of this box is costing money right now."""
+    cloud = gone_from_google(Project())
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    said = flat(result.stdout)
+    assert ("its reservation comfy-linux-rsv in us-central1-c is still billing, "
+            "and releasing it is the only way to stop that — so it will be "
+            "released.") in said
+    assert said.index("is still billing, and releasing it") < said.index(
+        "type comfy-linux to confirm")

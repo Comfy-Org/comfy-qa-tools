@@ -661,7 +661,9 @@ MESSAGE_FLOOR = {
     # refusal of a reserved box, and `list --live`'s warning for a project whose
     # reservations it could not ask about. The module reads 84. Raised to 78, on
     # the same rule.
-    "host.py": 78,
+    # 78 until the audit: `list --live` says when it could not work out which
+    # reservations have no box. The module reads 87; raised to 82.
+    "host.py": 82,
     "hostfile.py": 13,
     # 65 until the tunnel learned to tell a box that is still booting from one
     # that is broken, and `up` learned to say WHICH of "not installed or not
@@ -676,7 +678,9 @@ MESSAGE_FLOOR = {
     # Remote Desktop was reachable. `wait_for_port` is the new wait and carries
     # the refusal for a box whose 3389 never answers. Raised to 78 on the same
     # half-the-distance rule; the module reads 84.
-    "lifecycle.py": 78,
+    # 78 until a reserved box that is gone stopped being told nothing is
+    # billing. The module reads 89; raised to 84.
+    "lifecycle.py": 84,
     # 12 until `move` counted reserved cards against the ceiling and gave a
     # reservation that holds it a refusal of its own. The module reads 17.
     "relocate.py": 14,
@@ -684,7 +688,9 @@ MESSAGE_FLOOR = {
     # every one is about which half happened: a reservation that could not be
     # read, one the listing did not carry, one that is somebody else's too, and
     # the three ways a release and a delete can come apart. The module reads 27.
-    "remove.py": 21,
+    # 21 until the box-first order said what a failed instance delete left.
+    # The module reads 30; raised to 25.
+    "remove.py": 25,
     "setup.py": 19,
     "stamp.py": 10,
     "tunnel.py": 22,
@@ -1911,6 +1917,83 @@ def test_every_list_table_the_docs_show_has_the_columns_list_prints(monkeypatch)
         f"prints ({' '.join(plain)}, or with --live {' '.join(live)}): {stale}")
     assert any(heading == live for _page, heading in tables), (
         "no page shows the --live table, so its two extra columns are undocumented")
+
+
+def test_the_create_sample_in_the_everyday_loop_is_what_a_dry_run_prints(
+        tmp_path, monkeypatch):
+    """docs/machines.md shows `create --dry-run`'s output and says "prints
+    exactly that". It did not: the sample had no `what this makes:` heading and
+    said `in 43 region(s)` in a form the tool stopped printing. Nothing read
+    it. It is now the stdout of this command against the create tests' own
+    fixture project, character for character — a fixture, which the page's
+    project and region count make plain."""
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import zones as zones_module
+    from comfy_qa.cli import app
+
+    import test_create_cli as fixtures
+
+    monkeypatch.setattr(zones_module, "_connect",
+                        lambda region, timeout=None: fixtures.LATENCY.get(region, 500.0))
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: fixtures.FakeGcloud())
+    path = tmp_path / "hosts.toml"
+    path.write_text(fixtures.HOSTS, encoding="utf-8")
+    result = CliRunner().invoke(app, ["create", "--os", "linux", "--gpu", "l4",
+                                      "--dry-run", "--config", str(path)])
+    assert result.exit_code == 0, result.output
+
+    page = (DOCS / "machines.md").read_text(encoding="utf-8")
+    start = page.index("```\nquota checked:\n  L4:") + len("```\n")
+    sample = page[start:page.index("```", start)]
+    assert sample.strip() == result.stdout.strip()
+    # And the three lines the page says are above it, on the other stream.
+    for line in ("OS: linux (from --os)", "GPU: l4 (from --gpu)",
+                 "reserve: no (default — pass --reserve to hold the capacity)"):
+        assert line in result.stderr and f"`{line}`" in " ".join(page.split()), line
+
+
+def test_every_reserved_stop_line_the_docs_quote_is_the_one_the_tool_prints():
+    """`comfy-qat delete <name>   # the only thing that stops a reserved box's
+    bill …` is quoted on four pages, and it is the one line somebody acts on
+    to stop paying. Each quotation is held to `reservation.stop_line` for the
+    name it uses, so rewording the line fails here rather than leaving the docs
+    promising a sentence the tool no longer says."""
+    from comfy_qa import reservation
+
+    quoted = []
+    for page in [*sorted(DOCS.glob("*.md")), ROOT / "README.md"]:
+        for line in page.read_text(encoding="utf-8").splitlines():
+            found = re.match(r"\s*comfy-qat delete (\S+)\s+# the only thing", line)
+            if found:
+                quoted.append((page.name, found.group(1), line))
+
+    assert len(quoted) >= 4, f"only {len(quoted)} quotations found: {quoted}"
+    assert {"machines.md", "troubleshooting.md", "cost.md"} <= {
+        page for page, _n, _l in quoted}
+    stale = [f"{page}: {line.strip()}" for page, name, line in quoted
+             if line.strip() != reservation.stop_line(name).strip()]
+    assert not stale, stale
+
+
+def test_the_bill_sentence_the_docs_quote_is_the_one_the_tool_prints():
+    """And the sentence above it, wherever a page quotes it whole."""
+    from comfy_qa import reservation
+
+    said = " ".join(reservation.bill("comfy-linux").split())
+    pages = [page.name for page in sorted(DOCS.glob("*.md"))
+             if "is reserved. Google holds its capacity" in " ".join(
+                 page.read_text(encoding="utf-8").split())]
+    assert "machines.md" in pages
+    for name in pages:
+        flat = " ".join((DOCS / name).read_text(encoding="utf-8").split())
+        quotes = re.findall(r"(\S+) is reserved\. Google holds its capacity[^.]*\.", flat)
+        assert quotes, name
+        for box in quotes:
+            if box.startswith(("`", "<", "qa-")) or box.endswith("`"):
+                continue
+            assert said.replace("comfy-linux", box) in flat, (name, box)
 
 
 def _command_tree(app) -> dict:

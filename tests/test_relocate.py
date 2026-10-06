@@ -408,10 +408,10 @@ class _Project:
         return ceiling_quota(self.ceiling)
 
 
-def survey_with(gc):
+def survey_with(gc, hosts=None):
     from comfy_qa.relocate import survey
 
-    return survey(gc, moving())
+    return survey(gc, moving(), hosts)
 
 
 def test_a_move_of_a_running_box_under_a_ceiling_of_one_is_refused_up_front():
@@ -738,6 +738,13 @@ class _Reserving(_Project):
         return list(self.reservations)
 
 
+# The host-list entry for the box on the reservation: the project the move's
+# own host is on, and the zone and instance the fixtures above give the box. `comfy-qat down/delete` is printed only
+# for a box an entry like this points at.
+HELD_HOST = Host(name="held", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                 gce_instance="held", gce_zone="us-central1-a",
+                 gce_project=WIN.gce_project)
+
 STOPPED_SOURCE = gpu_instance("comfy-win", status="TERMINATED")
 HELD_BOX = _bound(gpu_instance("held", status="TERMINATED"), "held-rsv")
 
@@ -748,7 +755,7 @@ def test_a_stopped_reserved_box_holds_the_ceiling_against_a_move():
     with the remedy for a reservation and not for a running box."""
     gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
                     reservations=[_reserved("held-rsv", box="held")])
-    problem = blocked(moving(), survey_with(gc))
+    problem = blocked(moving(), survey_with(gc, [WIN, HELD_HOST]))
 
     assert problem is not None
     said = " ".join(str(problem).split())
@@ -863,3 +870,44 @@ def test_a_stockout_moving_a_box_with_no_gpu_does_not_say_no_none_capacity():
 
     assert "us-central1-b has no machine capacity either" in str(problem)
     assert "none capacity" not in str(problem)
+
+
+def test_a_reserved_box_the_host_list_does_not_hold_gets_no_comfy_qat_command():
+    """The reservation says `held for held`, and nothing in the host list is
+    that instance. `comfy-qat delete held` would exit 2 while the reservation
+    bills, so the box and its reservation get Google's own commands."""
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    problem = blocked(moving(), survey_with(gc, [WIN]))
+
+    assert "comfy-qat down" not in problem.fix and "comfy-qat delete" not in problem.fix
+    assert (f"gcloud compute instances delete held --zone=us-central1-a "
+            f"--project={WIN.gce_project}") in problem.fix
+    assert "gcloud compute reservations delete held-rsv" in problem.fix
+    assert "comfy-qat move comfy-win --to us-central1-b" in problem.fix
+
+
+def test_an_entry_of_the_same_name_for_another_machine_is_not_offered_for_deletion():
+    """An entry CALLED `held` that points at a different instance. Pasted
+    back, `comfy-qat delete held` would destroy that machine."""
+    namesake = Host(name="held", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                    gce_instance="another-instance", gce_zone="us-central1-a",
+                    gce_project=WIN.gce_project)
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    problem = blocked(moving(), survey_with(gc, [WIN, namesake]))
+
+    assert "comfy-qat delete" not in problem.fix, problem.fix
+    assert "gcloud compute instances delete held " in problem.fix
+
+
+def test_prepare_hands_the_host_list_through_to_the_survey():
+    """`move` calls `prepare`, not `survey`. Held at the seam the command uses."""
+    from comfy_qa.relocate import prepare
+
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    _plan, found = prepare(gc, WIN, MOVE_INSTANCE, "us-central1-b",
+                           hosts=[WIN, HELD_HOST])
+
+    assert found.reserved_named == (("held-rsv", "us-central1-a", "held"),)

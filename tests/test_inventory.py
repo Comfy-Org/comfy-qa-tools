@@ -455,3 +455,22 @@ def test_the_shape_of_a_reservation_is_read_through_the_shared_parser():
     module names is a record the limit counted the same way."""
     (found,) = parse_all([reserved("x-rsv")])
     assert inventory.shape(found) == "T4"
+
+
+def test_reservations_whose_boxes_could_not_be_read_are_counted_not_dropped(hosts):
+    """No orphan is NAMED when the instances could not be read — and that
+    silence must not be the whole of it. The survey says how many reservations
+    it could not sort into "has a box" and "has none", by project."""
+    cloud = Cloud(instances=GcloudError("denied"),
+                  reservations=[reserved("held-rsv", box="held"),
+                                reserved("stray-rsv", box="stray")])
+    found = inventory.survey(cloud, hosts(), now=NOW)
+
+    assert found.orphans == ()
+    assert found.unsorted == ((PROJECT, 2),)
+
+
+def test_nothing_is_unsorted_when_both_reads_worked_or_nothing_is_reserved(hosts):
+    assert inventory.survey(everything(), hosts(), now=NOW).unsorted == ()
+    none_reserved = Cloud(instances=GcloudError("denied"), reservations=[])
+    assert inventory.survey(none_reserved, hosts(), now=NOW).unsorted == ()

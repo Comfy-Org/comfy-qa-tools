@@ -885,18 +885,25 @@ tool knows about does. It is counted in **cards**: one H100 reservation is eight
 
 What the fix prints depends on what the reservation is:
 
-- **one this tool made, with its box on it** — the box is stopped and then
-  deleted, and its reservation goes with it:
+- **its box is in your host list** — the box is stopped and then deleted, and
+  its reservation goes with it:
 
   ```sh
   comfy-qat down comfy-linux
   comfy-qat delete comfy-linux
   ```
 
-  Two lines because `delete` refuses a box that is running.
-- **anything else** — somebody else's reservation, or one of this tool's with
-  nothing on it — has no box `comfy-qat delete` could be given, so you get
-  Google's own command instead:
+  Two lines because `delete` refuses a box that is running. The name is the one
+  **your host list** gives the box, matched by project, zone and instance — not
+  the name in the reservation's description, which is the instance's. An entry
+  that merely has the same name and points at a different machine is not it,
+  and is never offered: `comfy-qat delete` on that would delete the wrong box.
+- **its box is on the project and in no entry of yours** — a create that died
+  before the entry was written, or somebody else's box. This tool cannot name
+  it, so you get Google's commands for both, the box first:
+  `gcloud compute instances delete <box> --zone=<zone> --project=<project>` and
+  then the reservation's. Check whose it is first.
+- **nothing is on it** — Google's own command for the reservation alone:
   `gcloud compute reservations delete <name> --zone=<zone> --project=<project>`.
   Check whose it is before running that on one you did not make.
 
@@ -1321,6 +1328,12 @@ A stockout at the **box**, after its reservation was made, never moves on to
 another zone: the capacity was already held here. It is handled by the three
 entries below it.
 
+Before moving on from a zone whose reservation was refused for capacity, the
+tool asks Google by name whether a reservation was left there anyway, and says
+`nothing is billing` only when Google says there is none. When every zone is
+out, the command the refusal offers for another region carries `--reserve` and
+`--name <name>`, so that running it makes the reserved box that was asked for.
+
 **`Google refused to reserve comfy-linux-rsv in us-central1-a: <error>. Nothing was created and nothing is billing.`**
 
 The reservation was refused for a reason other than capacity, and Google
@@ -1358,9 +1371,12 @@ each: stop the box if it is there, release the reservation if it is not.
 
 Printed with `<name> could not be added to <path>` when a reserved box was
 created and the host list could not be written. Two things are billing and
-stopping the box ends neither bill, so the fix prints the stop and then the
-release, in the order they have to be run. `comfy-qat discover` adopts the box
-with its reservation once the file is writable.
+stopping the box ends neither bill, so the fix prints three commands: the stop,
+which works at once, and then what ends both bills — the instance delete and
+the reservation delete, in that order. `comfy-qat discover` adopts the box with
+its reservation once the file is writable; if you add the entry by hand
+instead, it needs the `gce_reservation = "<name>-rsv"` line the message names,
+or this tool will not know the box is reserved.
 
 ### The NVIDIA driver
 
@@ -1722,6 +1738,10 @@ The install of the CUDA build failed. Read pip's output above. If it timed out
 reaching pypi, the box has no route out — see the entry below on
 `add-access-config`.
 
+On a box with no GPU (`gpu = "none"`) the same failure ends `so ComfyUI cannot
+start. Its log is above.` — there is no GPU for it to fail to use, and it is the
+CPU build that would not install.
+
 **`installing torch from cu130, which is what this box's driver supports`**
 Not an error. The PyTorch index is chosen from the CUDA version the box's driver
 reports, rather than pinned. It used to be fixed at cu128, and a real L4 answered
@@ -1786,6 +1806,20 @@ Nothing is billing, because there is nothing left to bill: this is not the
 hedged **`it may still be running and billing`**, which is what you get when the
 state genuinely could not be read. The only thing still wrong is the record, and
 `comfy-qat discover --prune` fixes it.
+
+**Unless the box was reserved.** Then the box is gone and its reservation may
+not be — a reservation outlives its box and bills at the card's rate with
+nothing on it — and the sentence is a different one:
+
+**`could not stop comfy-linux (<error>), and the project does not have it — the box no longer exists, but its reservation comfy-linux-rsv is still billing unless it was released too. Release it and clear the entry: comfy-qat delete comfy-linux`**
+
+`comfy-qat delete <name>` is the command for this, not `discover --prune`. It
+asks Google by name whether the reservation is still there, releases it if it
+is, and takes the entry out either way. `discover --prune` does **not** remove a
+reserved box's entry for exactly this reason: the entry is the last thing on
+your machine that names the reservation. It lists it under `not on the project
+any more, and reserved — the box is gone, but its reservation may still be
+billing, so the entry was kept:` and prints the `comfy-qat delete` line.
 
 `comfy-qat delete <name>` also works on a box that is already gone — it asks the
 project when its own read fails, and takes the entry out. It still refuses a box
@@ -2496,6 +2530,21 @@ its reservation comfy-linux-rsv is not on <project> — already released.
 is not an error. Google said, by name, that there is no such reservation, so
 there is nothing to release and the box is deleted as usual.
 
+A box can be reserved on Google with **no `gce_reservation` line** in its host
+list entry — adopted before the field existed, reserved in the console, or
+typed in by hand. `delete` reads the instance's own record for that, and says so
+before the confirmation:
+
+```
+comfy-linux is reserved, though its host list entry does not say so: comfy-linux is bound to
+the reservation comfy-linux-rsv, which bills every hour whether the box runs or not.
+```
+
+It is then released like any other, and held to the same refusals. Add the
+`gce_reservation` line to such an entry when you find one: until it is there,
+`down`, `list` and every other sentence about that box's bill is working from a
+host list that says it is not reserved.
+
 **`could not read comfy-linux's reservation comfy-linux-rsv (<error>), so whether it would be released is not known. Nothing was deleted.`**
 
 One of the reads `delete` makes about the reservation failed. A read that failed
@@ -2513,11 +2562,17 @@ known. Run it again.
 
 **`comfy-linux's reservation comfy-linux-rsv is shared — other machines are on it: somebody-elses. Deleting comfy-linux would release it from under them, so nothing was deleted.`**
 
-This tool only ever makes a reservation for one machine. One that holds capacity
-for several, or that another box is bound to, is somebody else's capacity as
-well, and it is never released. The same refusal reads `was not made by this tool
-for comfy-linux, and comfy-linux is not bound to it` when the host list names a
-reservation that nothing but the host list connects to this box.
+This tool only ever makes a reservation for one machine. One that another box is
+bound to is somebody else's capacity as well, and it is never released. The same
+refusal has two other forms, each saying what releasing would take:
+
+- `holds capacity for 2 machines, where one this tool makes holds it for exactly
+  one. Deleting comfy-linux would release capacity that is not this box's alone`
+  — the reservation's count is not 1;
+- `was not made by this tool for comfy-linux, and comfy-linux is not bound to it.
+  Deleting comfy-linux would release a reservation this box has no claim on` —
+  the host list names a reservation that nothing but the host list connects to
+  this box.
 
 The way out is three lines, and the fix prints them: delete the box with Google's
 own command, which leaves the reservation alone; run `comfy-qat delete <name>`
@@ -2543,6 +2598,13 @@ the reservation gone and deletes the box.
 Half of it happened, and it is the half that mattered for the bill. Google's own
 reason for refusing the instance delete follows this line. The box is stopped and
 now holds no place; `comfy-qat delete <name>` again finishes the job.
+
+**`comfy-linux was not deleted, so its reservation comfy-linux-rsv was not released either and is still billing.`**
+
+Only where the box is deleted before its reservation. Google refused the instance
+delete — its own reason follows this line — so the release, which comes second in
+that order, was never reached. Nothing was destroyed and nothing was released;
+`comfy-qat delete <name>` again does both once the box can be deleted.
 
 **`comfy-linux and its disk are gone, but its reservation comfy-linux-rsv could not be released (<error>), so it is still billing with no box on it. comfy-linux is still in your host list, as the only record of it.`**
 
@@ -2708,7 +2770,9 @@ certainty it cannot support, but the exact resource and the exact command:
   released. The box has not been touched and the entry is still in the host
   list; `comfy-qat delete <name>` again carries on from whatever is left.
 * **`go`, `up` and `switch`** name the machine, and it is declared, so
-  `comfy-qat down <name>` reaches it. `comfy-qat list --live` settles whether it
+  `comfy-qat down <name>` reaches it. For a **reserved** box the undo goes on:
+  `it is reserved, so stopping it does not stop its bill — that only stops
+  with:` and then `comfy-qat delete <name>`. `comfy-qat list --live` settles whether it
   needs to.
 * **`switch`** is the only command that prints the second heading. On the
   GPU-ceiling path — the normal path when `GPUS_ALL_REGIONS`
@@ -2992,7 +3056,36 @@ what it was made for.
 
 The reservations read failed for that project, so RESERVED says `unchecked` on
 its rows and no orphaned reservation can be named. STATE, AGE and DISK came from
-the other read and are unaffected. The brackets carry gcloud's own reason.
+the other read and are unaffected. The brackets carry gcloud's own reason —
+usually an expired login (`gcloud auth login`) or a project where the Compute
+Engine API is off. Ask Google directly, and run `list --live` again once this
+answers:
+
+```sh
+gcloud compute reservations list --project=<project>
+```
+
+Until it does, treat `yes, unchecked` as reserved and billing: it is what the
+box's own record or your host list says, and nothing has contradicted it.
+
+**`could not ask Google about the boxes on <project>, so which of its 2 reservations has no box on it was not worked out`**
+
+The other read failed: the project's **instances** could not be listed, so STATE,
+AGE and DISK read `unknown` — and the block that names reservations with no box
+is withheld, because without the boxes every reservation would look like one.
+This warning is what says so; without it, a table with no block under it reads
+as a project where every reservation has its box. The line under it is the
+command that lists them:
+
+```sh
+gcloud compute reservations list --project=<project>
+```
+
+`list --live` reads reservations only for projects a **declared cloud box** is
+on. With none declared it asks Google nothing — `--live` on a host list holding
+only `local` stays a loopback check that needs no login. `comfy-qat down --all`
+is the command that reads the project gcloud is pointed at in that case, and it
+names any reservation there with the command that releases it.
 
 ### Stopping a reserved box
 
@@ -3018,11 +3111,17 @@ and it reads the project's reservations before printing it at all:
 still billing, stopped or not — it is reserved: comfy-linux.
 ```
 
-A reservation on the project that no host list entry names is reported too —
-`1 reservation on this project is billing and not in your host list` — and is
-not released: `comfy-qat list --live` shows which of them has no box and how to
-release it. If the reservations could not be read, the summary says `the
-project's reservations could not be checked … so this is not an all-clear`.
+A reservation that no host list entry names is reported too — `1 reservation on
+<project> is billing and not in your host list` — and is not released, but what
+releases it is printed under it: Google's `gcloud compute reservations delete …`
+when nothing is on it, or `comfy-qat discover` when a box is, so the box can be
+adopted and then deleted. Every project a declared box is on is read, and with
+no cloud box declared at all, the project gcloud is pointed at — which is where
+a `create --reserve` that stopped half-way leaves its reservation. If a
+project's reservations could not be read, the summary says `the project's
+reservations could not be checked … so this is not an all-clear` and prints the
+`gcloud compute reservations list` line for it. A run where a box refused to
+stop exits 1 and still says all of this.
 
 ## Getting onto a box
 
