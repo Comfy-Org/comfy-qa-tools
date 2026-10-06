@@ -325,14 +325,224 @@ def test_a_g2_reservation_with_no_card_listed_still_holds_one():
     assert found.cards == 1
 
 
-@pytest.mark.parametrize("machine_type", [
-    "g2-standard-96", "a2-highgpu-4g", "a3-megagpu-8g", "g4-standard-48", "a4-highgpu-8g",
+# --- a GPU machine type this tool does not order -----------------------------
+#
+# A reservation made in the console can be for any machine type, and for these
+# families Google's record may carry no `guestAccelerators` at all. Counting
+# such a one as a single card was the defect: an `a2-megagpu-16g` holds sixteen.
+# The expected numbers below are typed here, not read from the module.
+
+ORDERED = {
+    "g2-standard-8": ("nvidia-l4", 1),
+    "a2-highgpu-1g": ("nvidia-tesla-a100", 1),
+    "a2-ultragpu-1g": ("nvidia-a100-80gb", 1),
+    "a3-highgpu-8g": ("nvidia-h100-80gb", 8),
+}
+
+
+def unlisted(machine_type, **fields) -> Reservation:
+    """A reservation whose record lists no card — and a check that it does not."""
+    found = one(machine_type=machine_type, accelerators=ABSENT, **fields)
+    assert found.accelerator == "" and found.accelerator_count == 0, (
+        "the fixture must reach the no-card-listed branch")
+    return found
+
+
+def test_the_machine_types_this_tool_orders_count_exactly_as_they_did():
+    """The four built-in-card rows of the card table, by name and by number."""
+    assert {card.machine_type: (card.accelerator, card.count)
+            for card in create.CARDS.values() if card.attached} == ORDERED, (
+        "the card table changed; this test's literals are the baseline")
+    for machine_type, (_accelerator, count) in ORDERED.items():
+        assert unlisted(machine_type).cards == count, machine_type
+
+
+@pytest.mark.parametrize("machine_type,cards", [
+    ("a2-highgpu-2g", 2),
+    ("a2-highgpu-4g", 4),
+    ("a2-highgpu-8g", 8),
+    ("a2-megagpu-16g", 16),
+    ("a2-ultragpu-2g", 2),
+    ("a2-ultragpu-8g", 8),
+    ("a3-highgpu-1g", 1),
+    ("a3-highgpu-4g", 4),
+    ("a3-megagpu-8g", 8),
+    ("a3-ultragpu-8g", 8),
+    ("a3-edgegpu-8g", 8),
+    ("a4-highgpu-8g", 8),
+    ("a4x-highgpu-4g", 4),
 ])
-def test_a_gpu_machine_this_tool_has_no_row_for_counts_one_not_zero(machine_type):
-    """Fail closed: an unfamiliar GPU machine type is not an empty machine."""
+def test_a_machine_type_whose_name_says_how_many_cards_holds_that_many(machine_type, cards):
+    """`-Ng` is Google's own spelling of "N GPUs" in the A families."""
+    assert unlisted(machine_type).cards == cards
+
+
+@pytest.mark.parametrize("machine_type,cards", [
+    ("g2-standard-4", 1),
+    ("g2-standard-12", 1),
+    ("g2-standard-16", 1),
+    ("g2-standard-32", 1),
+    ("g2-standard-24", 2),
+    ("g2-standard-48", 4),
+    ("g2-standard-96", 8),
+    ("g4-standard-48", 1),
+    ("g4-standard-96", 2),
+    ("g4-standard-192", 4),
+    ("g4-standard-384", 8),
+])
+def test_a_g_machine_type_holds_what_the_table_says(machine_type, cards):
+    """The G families name vCPUs, not cards, so these come from a table."""
+    assert unlisted(machine_type).cards == cards
+
+
+@pytest.mark.parametrize("machine_type,at_least", [
+    ("g2-standard-64", 8),       # a size the table has no row for
+    ("g2-highmem-48", 8),        # a shape nobody has seen
+    ("g4-standard-768", 8),
+    ("a2-highgpu-32g", 32),      # the name still says
+    ("a2-novagpu", 16),          # the name says nothing: the family's largest
+    ("a3-something-new", 8),
+    ("a4-anything", 8),
+    ("a4x-anything", 8),
+])
+def test_an_unknown_variant_of_a_known_family_is_guessed_high(machine_type, at_least):
+    """Never one. A variant nobody has a number for counts as the most cards
+    any known machine of its family holds — or what its own name says, when it
+    says more."""
     assert all(card.machine_type != machine_type for card in create.CARDS.values()), (
         "the fixture must be a machine type the card table does not know")
-    assert one(machine_type=machine_type, accelerators=ABSENT).cards == 1
+    assert unlisted(machine_type).cards == at_least
+
+
+def test_a_variant_never_counts_fewer_cards_than_the_family_is_known_to_hold_at_that_size():
+    """The relationship rather than the numbers: for every known G size, an
+    unknown size of the same family counts at least as many."""
+    known = [unlisted(f"g2-standard-{n}").cards for n in (4, 8, 12, 16, 24, 32, 48, 96)]
+
+    assert unlisted("g2-standard-1000").cards >= max(known) == 8
+
+
+def test_cards_multiply_for_a_variant_too():
+    assert unlisted("a2-megagpu-16g", count="2").cards == 32
+
+
+def test_every_count_of_a_family_only_reservation_agrees():
+    """`cards`, `cards_reserved`, `cards_held` and `holders` are one number."""
+    held = parsed(record(name="big-rsv", machine_type="a2-highgpu-8g", accelerators=ABSENT),
+                  record(name="l4s-rsv", zone="us-east4-a", machine_type="g2-standard-48",
+                         accelerators=ABSENT))
+
+    assert [found.cards for found in held] == [8, 4]
+    assert reservation.cards_reserved(held) == 12
+    assert reservation.cards_held([], held) == 12
+    assert reservation.cards_held([box("loose")], held) == 13
+    assert reservation.holders(held) == (
+        ("big-rsv", "us-central1-a", 8, ""), ("l4s-rsv", "us-east4-a", 4, ""))
+
+
+def test_a_listed_card_still_wins_over_the_machine_type():
+    """What Google lists is a statement; the name is only read when it lists nothing."""
+    found = one(machine_type="a2-highgpu-8g", accelerators=(("nvidia-tesla-a100", 8),))
+
+    assert found.cards == 8
+    assert one(machine_type="a2-highgpu-8g",
+               accelerators=(("nvidia-tesla-a100", 2),)).cards == 2
+
+
+# --- which card a family-only reservation is counted against ------------------
+
+
+def test_a_variant_of_a_series_this_tool_orders_is_that_series_card():
+    """`g2-standard-48` is L4s and `a2-highgpu-8g` is A100s: same series, same
+    card, so the per-card regional count takes all of them."""
+    held = parsed(
+        record(name="l4s-rsv", machine_type="g2-standard-48", accelerators=ABSENT),
+        record(name="a100s-rsv", machine_type="a2-highgpu-8g", accelerators=ABSENT),
+        record(name="a100-80s-rsv", machine_type="a2-ultragpu-4g", accelerators=ABSENT),
+        record(name="h100s-rsv", machine_type="a3-highgpu-4g", accelerators=ABSENT),
+    )
+
+    def in_region(accelerator):
+        return reservation.held_in("us-central1", accelerator, [], held)
+
+    assert in_region("nvidia-l4") == 4
+    assert in_region("nvidia-tesla-a100") == 8
+    assert in_region("nvidia-a100-80gb") == 4
+    assert in_region("nvidia-h100-80gb") == 4
+    assert in_region("nvidia-tesla-t4") == 0
+
+
+def test_a_variant_whose_card_cannot_be_named_counts_against_every_card_of_its_family():
+    """`a2-megagpu-16g` is in no series this tool orders, so which A100 it holds
+    is not known here. Guess high: it is counted against each card whose own
+    machine type is in that family — and against no card of another family."""
+    held = parsed(record(machine_type="a2-megagpu-16g", accelerators=ABSENT))
+
+    assert reservation.held_in("us-central1", "nvidia-tesla-a100", [], held) == 16
+    assert reservation.held_in("us-central1", "nvidia-a100-80gb", [], held) == 16
+    assert reservation.held_in("us-central1", "nvidia-h100-80gb", [], held) == 0
+    assert reservation.held_in("us-central1", "nvidia-l4", [], held) == 0
+    assert reservation.held_in("europe-west4", "nvidia-tesla-a100", [], held) == 0
+
+
+def test_a_family_this_tool_orders_no_card_from_is_counted_in_the_total_only():
+    """G4 and A4: no row in the card table, so no per-card quota this tool
+    reads can be theirs. The project-wide count still has them."""
+    held = parsed(record(machine_type="g4-standard-96", accelerators=ABSENT))
+
+    assert reservation.cards_held([], held) == 2
+    assert [reservation.held_in("us-central1", card.accelerator, [], held)
+            for card in create.CARDS.values()] == [0] * len(create.CARDS)
+
+
+def test_a_listed_card_is_counted_against_that_card_and_no_other():
+    """Attribution by family is only for a record that lists nothing."""
+    held = parsed(record(machine_type="a2-megagpu-16g",
+                         accelerators=(("nvidia-tesla-a100", 16),)))
+
+    assert reservation.held_in("us-central1", "nvidia-tesla-a100", [], held) == 16
+    assert reservation.held_in("us-central1", "nvidia-a100-80gb", [], held) == 0
+
+
+# --- the helpers the other modules call ---------------------------------------
+
+
+@pytest.mark.parametrize("where,zone", [
+    ({"zone": "https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a"},
+     "us-central1-a"),
+    ({"zone": "projects/p/zones/europe-west4-b/"}, "europe-west4-b"),
+    ({"zone": "us-east4-c"}, "us-east4-c"),
+    ("https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a", "us-central1-a"),
+    ("us-east4-c", "us-east4-c"),
+    ({"zone": None}, ""),
+    ({}, ""),
+    (None, ""),
+    ("", ""),
+])
+def test_zone_of_reads_a_zone_off_a_record_or_a_url(where, zone):
+    assert reservation.zone_of(where) == zone
+
+
+def test_zone_of_does_not_take_a_record_s_name_for_its_zone():
+    assert reservation.zone_of({"name": "comfy-linux", "selfLink": "x/zones/z/instances/a"}) == ""
+
+
+def test_the_private_spellings_are_the_public_helpers():
+    """Other modules already call `_outside`; it and `_zone_of` stay, as names
+    for the same functions, so nothing can drift between the two spellings."""
+    assert reservation._outside is reservation.outside
+    assert reservation._zone_of is reservation.zone_of
+
+
+def test_outside_is_the_boxes_no_listed_reservation_covers():
+    held = parsed(record(name="comfy-linux-rsv", accelerators=T4))
+    covered = box("comfy-linux", bound="comfy-linux-rsv")
+    loose = box("loose")
+    elsewhere = box("twin", zone="us-east4-a", bound="comfy-linux-rsv")
+
+    assert reservation.outside([covered, loose, elsewhere], held) == [loose, elsewhere]
+    assert reservation.outside([covered, loose], None) == [covered, loose]
+    assert reservation.outside(None, held) == []
 
 
 def test_a_reservation_with_no_gpu_holds_no_card():
