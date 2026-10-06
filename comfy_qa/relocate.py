@@ -498,8 +498,8 @@ def _cards_wanted(host: Host, instance: dict) -> int:
     runs on an estimate instead of not running at all. Wrong in that direction
     costs a refusal that shows its arithmetic; wrong in the other costs a
     snapshot, a 200-300 GB disk and a move that has to start over. `gpu = "none"`
-    is the declared CPU box — `config` uses that spelling everywhere — and it is
-    an answer, so it is honoured.
+    — or `cpu`, in any case — is the declared box with no GPU, as `config.has_gpu`
+    reads it, and it is an answer, so it is honoured.
 
     The status is overridden to RUNNING because a stopped source still says how
     many cards its copy will need; the copy is created running.
@@ -509,8 +509,14 @@ def _cards_wanted(host: Host, instance: dict) -> int:
     cards = _cards_running([{**instance, "status": "RUNNING"}]) if instance else 0
     if cards:
         return cards
-    declared = (host.gpu or "").strip().lower()
-    return 1 if declared and declared != "none" else 0
+    # THE PREDICATE, not a comparison with `"none"`. A host file may say `cpu`
+    # for the same box — `create --gpu cpu` is accepted, and `config` reads
+    # both words as no GPU — and compared to one spelling, the other was a
+    # card: a box with no GPU declared `gpu = "cpu"` was held to the GPU
+    # ceiling and refused a move for quota it does not use.
+    from .config import has_gpu
+
+    return 1 if has_gpu(host) else 0
 
 
 def plan_move(host: Host, instance: dict, to_zone: str,
@@ -590,6 +596,17 @@ class Found:
     cards_held: int = 0
     cards_needed: int = 0
     holders: tuple[tuple[str, str], ...] = ()
+    # `(name, zone, cards, box)` for each reservation holding a card, from the
+    # project's own list — and which of them have their own box on them. Kept
+    # apart from `holders`, which is the RUNNING boxes outside any reservation,
+    # because the two are let go of differently: a running box is stopped, and
+    # a reservation holds its card whether its box runs or not.
+    reserved: tuple[tuple[str, str, int, str], ...] = ()
+    reserved_boxed: tuple[tuple[str, str], ...] = ()
+    # `(reservation, zone, label)` for those whose box the HOST LIST holds —
+    # the only ones `comfy-qat down/delete` may be printed for, and under the
+    # label the list gives the box, not the instance name in the description.
+    reserved_named: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def snapshot_name(self) -> str | None:
@@ -672,7 +689,7 @@ def _in_zone(resource: dict, zone: str) -> bool:
     return _tail(resource.get("zone")) == zone
 
 
-def survey(gc: Gcloud, plan: Plan) -> Found:
+def survey(gc: Gcloud, plan: Plan, hosts: list[Host] | None = None) -> Found:
     """Read the state of everything the move touches, before touching any of it.
 
     Read-only, and it runs for a dry run too: a preview that has not looked
@@ -737,11 +754,12 @@ def survey(gc: Gcloud, plan: Plan) -> Found:
         missing = zone_lacks_machine_type(gc, plan)
         if missing:
             found = replace(found, blocker=missing, blocker_is_the_zone=True)
-    return _with_the_ceiling(gc, plan, found, instances)
+    return _with_the_ceiling(gc, plan, found, instances, hosts)
 
 
 def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
-                      instances: list[dict]) -> Found:
+                      instances: list[dict],
+                      hosts: list[Host] | None = None) -> Found:
     """Read what the project-wide GPU ceiling would say about the new box.
 
     `move` creates a GPU instance and had no ceiling check at all: `create` has
@@ -775,20 +793,42 @@ def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
     **What the new box needs is not guessed from the list.** It comes off the
     source's own describe payload at planning time — see `_cards_wanted`, which
     is also where the fail-closed rule lives.
+
+    **Reserved cards are held too, running or not.** A reservation holds its
+    card from the moment it is made until it is released, so a stopped reserved
+    box — which `_cards_running` skips, correctly, as a running box — is still
+    one of the allowance gone. They are read from the project's own
+    `reservations list`, never the host list, and counted by
+    `reservation.cards_held`: the same function `create`'s gate counts with, so
+    the third command that starts a card is not the one working from a
+    different number. A reservations read that fails is not read, not zero:
+    the count is then the running cards alone, exactly as it was before
+    reservations existed, and Google's refusal at the create is still there.
     """
-    # `create` owns the arithmetic for "how much of the ceiling is that", cards
-    # and not boxes, with the reasoning in its own docstring. One implementation
-    # rather than a second that drifts from it.
-    from .create import _cards_running
+    # `reservation` owns the arithmetic for "how much of the ceiling is spoken
+    # for" — cards and not boxes, a reserved box counted once and not twice.
+    # One implementation rather than a second that drifts from it.
+    from . import reservation as rsv
+    from .create import _boxed, declared_boxes
 
     needed = plan.cards
-    held = _cards_running(instances)
     if not needed:
         return found
 
+    try:
+        reservations = rsv.parse_all(gc.list_reservations(plan.project))
+    except (GcloudError, AttributeError):
+        reservations = None
+    held = rsv.cards_held(instances, reservations)
+    reserved = rsv.holders(reservations or [])
+
+    # The boxes whose card is NOT one of those reservations' — the ones a stop
+    # frees. A running box on its own reservation is that reservation's card,
+    # and naming it here would offer `stop it` as a way to free something a
+    # stop does not free.
     holders = tuple(
         (i.get("name") or "", _tail(i.get("zone")))
-        for i in instances
+        for i in rsv._outside(instances, reservations)
         if i.get("status") != "TERMINATED" and i.get("guestAccelerators")
     )
     try:
@@ -801,10 +841,16 @@ def _with_the_ceiling(gc: Gcloud, plan: Plan, found: Found,
         # at the far end if allowing it was wrong.
         return found
     return replace(found, ceiling=ceiling, cards_held=held,
-                   cards_needed=needed, holders=holders)
+                   cards_needed=needed, holders=holders,
+                   reserved=reserved, reserved_boxed=_boxed(reserved, instances),
+                   # Asked of the host list, by identity. With no list handed
+                   # in this is empty and the remedy is Google's own commands.
+                   reserved_named=declared_boxes(reserved, instances, hosts,
+                                                 plan.project))
 
 
-def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str) -> tuple[Plan, Found]:
+def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str,
+            hosts: list[Host] | None = None) -> tuple[Plan, Found]:
     """Name what the move will create, and read what is already there. Read-only.
 
     One call, because the two halves depend on each other: the plan says which
@@ -813,7 +859,7 @@ def prepare(gc: Gcloud, host: Host, instance: dict, to_zone: str) -> tuple[Plan,
     and would eventually get it wrong.
     """
     plan = plan_move(host, instance, to_zone)
-    found = survey(gc, plan)
+    found = survey(gc, plan, hosts)
     if found.source_disk is not None:
         plan = replace(plan, disk_type=_tail(found.source_disk.get("type")) or None)
         plan = _within_the_allowance(gc, plan, found.source_disk)
@@ -890,6 +936,33 @@ def _over_the_ceiling(plan: Plan, found: Found) -> MoveError | None:
     if meets(ceiling, found.cards_held + found.cards_needed):
         return None
 
+    reserved_cards = sum(cards for _name, _zone, cards, _box in found.reserved)
+    if found.reserved and not meets(ceiling, reserved_cards + found.cards_needed):
+        # BEFORE the "stop the one you are not using" advice below, and instead
+        # of it. That remedy is right when a running box holds the ceiling and
+        # cannot work here: the reserved cards ALONE leave no room, and a
+        # reservation holds its card whether its box is running or stopped.
+        # The same refusal `create` makes, with the remedy from the same
+        # function — so one reservation is never handed two different commands.
+        from .create import _how_to_release
+
+        count = len(found.reserved)
+        names = ", ".join(f"{name} ({zone})"
+                          for name, zone, _cards, _box in found.reserved)
+        return MoveError(
+            f"GPUS_ALL_REGIONS is {ceiling} on this project, and {reserved_cards} "
+            f"of it is held by {count} reservation{'' if count == 1 else 's'}: "
+            f"{names}. A reservation holds its card whether its box is running "
+            f"or stopped, so stopping a box frees nothing, and the "
+            f"{found.cards_needed}-card box this move creates cannot start. "
+            f"Nothing was created.",
+            fix=output.fix(
+                _how_to_release(found.reserved, found.reserved_boxed, plan.project,
+                                named=found.reserved_named),
+                "then run the same move again:",
+                f"comfy-qat move {plan.host.name} --to {plan.to_zone}"),
+        )
+
     source = plan.host.gce_instance
     others = [(name, zone) for name, zone in found.holders if name != source]
     running_source = any(name == source for name, _ in found.holders)
@@ -918,7 +991,13 @@ def _over_the_ceiling(plan: Plan, found: Found) -> MoveError | None:
     advice += ["then run the same move again:",
                f"comfy-qat move {plan.host.name} --to {plan.to_zone}"]
 
-    holding = ", ".join(name for name, _ in found.holders) or "another box"
+    # Everybody holding part of it, by name: the running boxes a stop would
+    # free, and any reservation, which a stop would not. Both are in
+    # `cards_held`, so both are in the sentence that quotes it.
+    holding = ", ".join(
+        [name for name, _ in found.holders]
+        + [f"the reservation {name}" for name, _zone, _cards, _box in found.reserved]
+    ) or "another box"
     return MoveError(
         f"GPUS_ALL_REGIONS is {ceiling} on this project and {holding} already "
         f"holds {found.cards_held} of it, so the {found.cards_needed}-card box "
@@ -1749,8 +1828,12 @@ def _stopped(plan: Plan, found: Found, done: list[str], action: Action,
             if elsewhere else
             f"comfy-qat move {plan.host.name} --to <another zone>"
         )
+        # `_card_word`, not `plan.host.gpu or 'GPU'`: for a box declared to
+        # have no GPU that printed "has no none capacity either".
+        from .lifecycle import _card_word
+
         return MoveError(
-            f"{plan.to_zone} has no {plan.host.gpu or 'GPU'} capacity either, so "
+            f"{plan.to_zone} has no {_card_word(plan.host)} capacity either, so "
             f"{plan.new_instance} could not be created. The zone Google named had "
             "capacity when it said so and has none now; that is normal, and not a "
             "fault on your side.",

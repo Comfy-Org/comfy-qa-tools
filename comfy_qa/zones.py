@@ -467,7 +467,7 @@ def _named(regions: list[str]) -> str:
 
 
 def choose(
-    gc, project: str, *, accelerator: str, machine_type: str,
+    gc, project: str, *, accelerator: str | None, machine_type: str,
     regions: list[str], config: Path | None = None, probe=None,
     nearest: int = NEAREST_REGIONS, limit: int = MAX_ATTEMPTS,
     path: Path | None = None, fleet: list[str] | None = None,
@@ -483,12 +483,19 @@ def choose(
     project has no quota in; it only lifts a region that is already allowed.
     See `_fleet_first` for why a laptop's round trip is the wrong prior on its
     own.
+
+    `accelerator=None` is a box with no GPU. There is then no card to look for,
+    and the zones come from the machine type alone — see `_choose_without_a_card`.
     """
     if not regions:
         return Ordering(zones=(), regions=())
 
     scores = latencies(regions, config=config, probe=probe, path=path)
     ranked_regions = sorted(regions, key=lambda region: (scores.get(region, UNREACHABLE), region))
+
+    if accelerator is None:
+        return _choose_without_a_card(gc, project, machine_type, regions,
+                                      ranked_regions, scores, limit, fleet)
 
     offered = zones_offering(gc.accelerator_types(project, accelerator), accelerator)
     in_quota = [zone for zone in offered if region_of(zone) in set(regions)]
@@ -553,6 +560,52 @@ def choose(
         zones=(), regions=tuple(ranked_regions), latency=scores,
         notes=(f"{accelerator} is offered in {len(in_quota)} zone(s) this project has "
                f"quota in, and none of them offers {machine_type}",),
+    )
+
+
+def _choose_without_a_card(gc, project: str, machine_type: str, regions: list[str],
+                           ranked_regions: list[str], scores: dict[str, float],
+                           limit: int, fleet: list[str] | None) -> Ordering:
+    """`choose`, for a box with no GPU: where the machine type is sold.
+
+    One read instead of two. With a card the zones come from where the CARD is
+    sold and are then checked for the machine type, a handful of regions at a
+    time, because an N1 is offered almost everywhere and the card is the half
+    that varies. With no card the machine type is the only question, and
+    `machine-types list` with no `--zones` answers it for every zone at once —
+    so there is no widening loop, nothing to re-ask, and `accelerator-types` is
+    never called.
+
+    The same ranking, fleet lift, spread and cap as the card path, so a box
+    with no GPU lands where a box with one would have.
+    """
+    sold = zones_with_machine_type(gc.machine_type_zones(project, machine_type),
+                                   machine_type)
+    in_quota = [zone for zone in sold if region_of(zone) in set(regions)]
+    if not in_quota:
+        return Ordering(
+            zones=(), regions=tuple(ranked_regions), latency=scores,
+            notes=(f"no zone in {_named(regions)} offers {machine_type}",),
+        )
+
+    reaches = {region_of(zone) for zone in in_quota}
+    offering = tuple(region for region in ranked_regions if region in reaches)
+    home = {region_of(place) for place in (fleet or []) if place}
+    settled = _fleet_first(ranked_regions, home & set(ranked_regions))
+    picked = _spread(in_quota, settled)[:limit]
+    # `_scope` with nothing to count against says only what was lifted. The
+    # sentence about how much of the world was looked at is this path's own,
+    # because the other one is about "quota and a card" and points at a table
+    # of GPU quotas.
+    notes = _scope(picked, settled, home, ())
+    chosen = list(dict.fromkeys(region_of(zone) for zone in picked))
+    if len(chosen) < len(offering):
+        notes.append(f"{len(chosen)} of the {len(offering)} regions with room for "
+                     f"{machine_type} were looked at, nearest first — name another "
+                     f"with --region")
+    return Ordering(
+        zones=tuple(picked), regions=tuple(ranked_regions), latency=scores,
+        notes=tuple(notes), offering=offering,
     )
 
 

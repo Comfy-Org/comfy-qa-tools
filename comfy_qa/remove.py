@@ -19,6 +19,20 @@ is not caution; it is the risk with extra steps.
 The friction is deliberate and it is in one place: you type the box's name back.
 A `[y/N]` is answered by reflex at 2am. A name is not.
 
+A RESERVED BOX HAS A SECOND THING TO DESTROY, and it is the one that costs.
+Its reservation bills for the card every hour, running or stopped, until it is
+released — so a delete that removed the box and left the reservation would
+leave the expensive half of the bill running with nothing in the host list
+naming it. Deleting the box releases it: that is what "reserved until the box
+is deleted" means. The reservation is released FIRST, so a failure between the
+two leaves a cheap stopped box rather than an invisible billing reservation,
+and the host list entry stays until both are gone. `RELEASE_FIRST` is that
+order, in one place.
+
+Only a reservation that is this box's own. One that other machines share, or
+that was not made for this box and that the box is not bound to, is somebody
+else's capacity: this refuses rather than release it from under them.
+
 Two refusals rather than warnings:
 
 - **A running box is refused.** Stop it first. That is not really about GCE, which
@@ -44,9 +58,188 @@ from .host import ConfigOption
 
 app = typer.Typer()
 
+# Which of the two goes first when a reserved box is deleted: its reservation,
+# or the instance. True is the reservation — it is the half that bills at a
+# GPU's rate, so a failure in between then leaves a stopped box and not a
+# reservation nobody can see.
+#
+# ONE SWITCH, because the order rests on something not yet read off Google:
+# whether it will release a reservation that a STOPPED box still targets. If it
+# will not, this becomes False and nothing else changes — `_destroy` runs the
+# same two calls the other way round, each failure already says what is left
+# for the order it happened in, and the entry is kept until the reservation is
+# gone either way.
+RELEASE_FIRST = True
+
 
 def _refuse(message: str, fix: str | None = None) -> None:
     say.fail(message, fix=fix, code=2)
+
+
+def _prose(text: str) -> None:
+    """A sentence that is part of the answer, on stdout, broken at the prose width.
+
+    `say.result` prints what it is given, which is right for a command and
+    wrong for a sentence that names a box, a zone and a reservation and is over
+    a hundred characters once it has. `say.wrapped` is the one wrapper and
+    never breaks inside a word. The same helper, under the same name, as
+    `host._prose`.
+    """
+    for line in say.wrapped(text):
+        say.result(line)
+
+
+# What `_bound_on_google` answers when the box's own record could not be read:
+# not "bound to nothing", which is None. The caller says so rather than
+# deleting in silence.
+UNREAD = object()
+
+
+def _bound_on_google(gc, host):
+    """The reservation this box's OWN record says it is bound to, or None.
+
+    For an entry that does not say. `gce_reservation` is one line in a file
+    people edit, and it can be missing from a box that is reserved all the
+    same: adopted before the field existed, reserved in the console, or added
+    by hand after a `create --reserve` that could not write the host list.
+    Deleting such a box on the entry's word alone removed the machine, said
+    "and its disk are gone", and left its reservation billing with nothing
+    anywhere naming it.
+
+    The instance says which reservation it may consume, and `delete` is
+    already describing the instance to size its disk — so it is asked. Best
+    effort, like that read: a describe that fails does not stop the delete.
+    It answers `UNREAD`, though, and not None — "could not ask" is not "bound
+    to nothing", and the caller says which it was.
+    """
+    from . import reservation as rsv
+    from .gcloud import GcloudError
+
+    try:
+        instance = gc.describe_instance(host.gce_instance, host.gce_zone,
+                                        host.gce_project)
+    except (GcloudError, OSError):
+        return UNREAD
+    return rsv.bound_to(instance or {})
+
+
+def _held_for(gc, host, name: str, *, already_gone: bool):
+    """This box's reservation, as the project has it: `(reservation, lines)`.
+
+    Read before anything is confirmed or destroyed, so the confirmation can
+    name what will go and every refusal here is free. Three answers:
+
+      (Reservation, [])   it is on the project and it is this box's own —
+                          it will be released.
+      (None, lines)       nothing to release, and `lines` say why, for the
+                          user: Google says it is not there (already
+                          released), or it is there and is NOT this box's to
+                          release and the box itself is already gone — in
+                          which case the last line is Google's own command to
+                          release it, alone on its line so it can be pasted.
+      refuses             everything else. A read that failed is not an
+                          absence; a reservation other machines share is not
+                          this box's; and one this tool did not make for this
+                          box, that the box is not bound to, is somebody
+                          else's capacity.
+
+    ABSENCE IS ASKED OF GOOGLE BY NAME, with `reservation_absent`, and not
+    inferred from a listing it did not turn up in. What rides on it is the
+    bill: read as "already released" on a mistyped zone, the box would be
+    deleted and its reservation left billing with nothing naming it.
+
+    "THIS BOX'S OWN" is two tests, and either is enough. The description this
+    tool wrote when it made it — `comfy-qat: held for <instance>` — or the
+    box's own record saying it may consume this reservation and no other. The
+    name alone is neither: anybody can call a reservation `something-rsv`.
+    """
+    from . import reservation as rsv
+    from .gcloud import GcloudError
+
+    zone, project = host.gce_zone, host.gce_project
+    release = rsv.delete_command(name, zone, project)
+    try:
+        if gc.reservation_absent(name, zone, project):
+            return None, [f"its reservation {name} is not on {project} — "
+                          f"already released."]
+        listed = rsv.parse_all(gc.list_reservations(project))
+        instances = gc.list_instances(project)
+    except GcloudError as exc:
+        _refuse(
+            f"could not read {host.name}'s reservation {name} ({exc}), so "
+            f"whether it would be released is not known. Nothing was deleted.",
+            fix=say.fix("see it yourself, then run this again:",
+                        f"gcloud compute reservations list --project={project}",
+                        f"comfy-qat delete {host.name}"))
+
+    found = next((entry for entry in listed
+                  if (entry.name, entry.zone) == (name, zone)), None)
+    if found is None:
+        # Google described it a moment ago and the listing does not carry it.
+        # Whatever produced that gap, it is not an absence.
+        _refuse(
+            # Not "could not be read": that four-word run is one config.py also
+            # builds, and the docs check then files this entry under config's
+            # errors and fails it for not being one. host.py was reworded for
+            # the same collision.
+            f"{host.name}'s reservation {name} is on {project} but the project's "
+            f"own listing did not include it, so what it holds is not known. "
+            f"Nothing was deleted.",
+            fix=say.fix("see it yourself, then run this again:",
+                        f"gcloud compute reservations list --project={project}",
+                        f"comfy-qat delete {host.name}"))
+
+    def _zone(instance: dict) -> str:
+        return str(instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+
+    on_it = [str(instance.get("name") or "") for instance in instances
+             if rsv.bound_to(instance) == name and _zone(instance) == zone]
+    others = [box for box in on_it if box != host.gce_instance]
+    ours = found.ours and found.box == host.gce_instance
+    mine = ours or host.gce_instance in on_it
+
+    # Why it is not this box's to release, and what releasing it would do —
+    # two halves of one sentence, chosen together so the second is true of the
+    # first. "From under them" needs a "them".
+    why = taken = ""
+    if others:
+        why = f"is shared — other machines are on it: {', '.join(others)}"
+        taken = "it from under them"
+    elif found.vm_count != 1:
+        # Zero as well as two: this tool only ever makes one for exactly one
+        # machine, and "shared" is not the word for a reservation holding none.
+        why = (f"holds capacity for {found.vm_count} machines, where one this "
+               f"tool makes holds it for exactly one")
+        taken = "capacity that is not this box's alone"
+    elif not mine:
+        why = (f"was not made by this tool for {host.gce_instance}, and "
+               f"{host.gce_instance} is not bound to it")
+        taken = "a reservation this box has no claim on"
+    if not why:
+        return found, []
+
+    if already_gone:
+        # The box is gone, so there is nothing left to refuse the deletion OF —
+        # and refusing here would make the entry unremovable by any command in
+        # this tool, which is the trap `delete` was changed to get out of. The
+        # reservation is left exactly as it is, and that is said where it
+        # cannot be missed: it is still billing.
+        return None, [f"its reservation {name} {why}, so it is left alone — it "
+                      f"is still on {project} and still billing. To release it:",
+                      f"  {release}"]
+    _refuse(
+        f"{host.name}'s reservation {name} {why}. Deleting {host.name} would "
+        f"release {taken}, so nothing was deleted.",
+        fix=say.fix(
+            "delete the box with Google's own command, which leaves the "
+            "reservation alone:",
+            f"gcloud compute instances delete {host.gce_instance} --zone={zone} "
+            f"--project={project} --delete-disks=all",
+            "then take the entry out of your host list:",
+            f"comfy-qat delete {host.name}",
+            "the reservation bills until it is released, by whoever it "
+            "belongs to:",
+            release))
 
 
 def _boot_disk_phrase(gc, host) -> str:
@@ -94,6 +287,11 @@ def delete_cmd(
 
     Stopping a box ends the expensive part of the bill; its disk keeps costing a
     few pounds a month. Deleting removes both, and the install with them.
+
+    A reserved box is the exception to the first half of that: stopping it ends
+    nothing, because its reservation bills for the card every hour whether the
+    box runs or not. Deleting it releases the reservation as well, and is the
+    only thing that stops that bill.
 
     This one writes: the box's entry goes out of your host list — the file
     `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
@@ -174,13 +372,70 @@ def delete_cmd(
             fix=f"comfy-qat down {host.name}",
         )
 
+    # THE RESERVATION, read before the confirmation and before anything is
+    # destroyed — on both paths, because a box that is already gone can have
+    # left its reservation behind, and that is the half still billing.
+    #
+    # WHICH reservation is what the entry says, and failing that what the
+    # instance itself says: a box can be reserved on Google with no
+    # `gce_reservation` line in the host list, and its reservation bills just
+    # the same. A box that is already gone has no record left to ask.
+    held, not_released = None, []
+    reserved_as = host.reservation
+    undeclared = False
+    unasked = ""
+    if not reserved_as and not already_gone:
+        reserved_as = _bound_on_google(gc, host)
+        if reserved_as is UNREAD:
+            reserved_as, unasked = None, "its own record could not be read"
+        undeclared = bool(reserved_as)
+    elif not reserved_as:
+        unasked = "it is gone, and its record with it"
+    if unasked:
+        # NOT CHECKED, and said. Two ways an entry with no `gce_reservation`
+        # line cannot be asked about: the box is already gone, or Google would
+        # not describe it. Either way a reservation may be billing that this
+        # delete will not release, and saying nothing reads as "there is none".
+        # One line and the command that settles it — no refusal, because not
+        # being able to look is not a reason to keep a box somebody has
+        # decided to delete.
+        _prose(f"whether {host.name} had a reservation was not checked — {unasked}. "
+               f"One left behind bills with nothing on it; look:")
+        say.result(f"  gcloud compute reservations list --project={host.gce_project}")
+    if reserved_as:
+        held, not_released = _held_for(gc, host, reserved_as,
+                                       already_gone=already_gone)
+    if undeclared:
+        # Said before the confirmation, because it changes what a yes destroys
+        # and the host list gave no warning of it.
+        _prose(f"{host.name} is reserved, though its host list entry does not "
+               f"say so: {host.gce_instance} is bound to the reservation "
+               f"{reserved_as}, which bills every hour whether the box runs or "
+               f"not.")
+
     if already_gone:
+        left = (f"only its reservation {held.name} and the host list entry are "
+                f"left" if held is not None
+                else "only the host list entry is left")
         say.result(f"{host.gce_instance} is not on {host.gce_project} — it has "
-                   f"already been deleted, so only the host list entry is left.")
+                   f"already been deleted, so {left}.")
+        if held is not None:
+            _prose(f"its reservation {held.name} in {held.zone} is still "
+                   f"billing, and releasing it is the only way to stop that "
+                   f"— so it will be released.")
+    elif held is not None:
+        # All three named, because all three go. The reservation is the one a
+        # person will not think of, and it is the one that bills.
+        _prose(f"delete {host.gce_instance} in {host.gce_zone}, "
+               f"{_boot_disk_phrase(gc, host)}, and its reservation "
+               f"{held.name}.")
+        say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
     else:
         say.result(f"delete {host.gce_instance} in {host.gce_zone}, and "
                    f"{_boot_disk_phrase(gc, host)}.")
         say.result("this cannot be undone: the ComfyUI on it and anything it holds go too.")
+    for line in not_released:
+        _say_not_released(line)
 
     if not yes:
         if not can_prompt():
@@ -195,17 +450,129 @@ def delete_cmd(
             raise typer.Exit(code=2)
 
     if already_gone:
-        # Nothing to call: the instance is not there, its disk went with it, and
-        # the remaining work is the entry. Falling through to `instances delete`
-        # would 404 in exactly the place this branch exists to get past.
+        # No instance to call about: it is not there, its disk went with it.
+        # Falling through to `instances delete` would 404 in exactly the place
+        # this branch exists to get past. A reservation it left behind is still
+        # there, though, and still released.
         say.result("")
+        if held is not None:
+            _release_the_reservation(gc, host, held, box_deleted=True)
     else:
+        _destroy(gc, host, config, held)
+
+    _forget_the_entry(config, host, hosts, already_gone=already_gone,
+                      released=held)
+    if len(not_released) > 1:
+        # A reservation that was left alone, said again as the LAST thing this
+        # command prints. Above the confirmation it is one line among several;
+        # here it is what somebody reads before deciding they are finished, and
+        # they are not: it is still billing.
+        say.result("")
+        for line in not_released:
+            _say_not_released(line)
+
+
+def _say_not_released(line: str) -> None:
+    """One line of "there is nothing to release, and why": a sentence is
+    wrapped, and a command — indented, as every offered command is — is left
+    whole so it can be pasted."""
+    if line.startswith(" "):
+        say.result(line)
+    else:
+        _prose(line)
+
+
+def _destroy(gc, host, config, held) -> None:
+    """The box, and its reservation if it has one — in `RELEASE_FIRST`'s order.
+
+    THE ONLY PLACE THE ORDER IS DECIDED. Each of the two calls reports its own
+    failure for the state it happened in, so swapping them is this function
+    and nothing else. Either way round, a failure exits before the host list
+    is touched: the entry is the only record of whatever is left.
+    """
+    if held is None:
         _delete_the_box(gc, host, config)
+    elif RELEASE_FIRST:
+        _release_the_reservation(gc, host, held, box_deleted=False)
+        _delete_the_box(gc, host, config, released=held)
+    else:
+        _delete_the_box(gc, host, config, unreleased=held)
+        _release_the_reservation(gc, host, held, box_deleted=True)
 
-    _forget_the_entry(config, host, hosts, already_gone=already_gone)
+
+def _release_the_reservation(gc, host, held, *, box_deleted: bool) -> None:
+    """Release this box's reservation, or say exactly what is still billing.
+
+    `box_deleted` is whether the instance is already gone when this runs, and
+    it is the whole difference between the two failures: with the box still
+    there, nothing was destroyed and running the command again does all of it;
+    with the box gone, the reservation is billing with nothing on it and the
+    entry is all that still names it.
+    """
+    from . import reservation as rsv
+    from .gcloud import GcloudError
+
+    release = rsv.delete_command(held.name, held.zone, host.gce_project)
+    releasing = say.slow(f"releasing {held.name}", expect="up to a minute").start()
+    try:
+        # Registered for `_delete_the_box`'s reason: the request reaches Google
+        # before an interrupt reaches gcloud, so by the time it can be
+        # interrupted the reservation may be gone — or may not, and it bills
+        # until it is. The entry is still in the host list either way, because
+        # the code that takes it out has not run.
+        with inflight.may_leave(
+            f"the reservation {held.name} in {held.zone}, being released",
+            undo=[
+                "find out whether it went:",
+                f"gcloud compute reservations list --project={host.gce_project}",
+                f"then run it again — it carries on from whatever is left: "
+                f"comfy-qat delete {host.name}",
+            ],
+            note=("if it is still there it is still billing, with or without "
+                  f"{host.name} on it"),
+            heading="this may or may not have been released:",
+        ):
+            try:
+                gc.delete_reservation(held.name, held.zone, host.gce_project)
+            except BaseException:
+                releasing.give_up()
+                raise
+    except GcloudError as exc:
+        releasing.give_up()
+        if box_deleted:
+            say.fail(
+                f"{host.name} and its disk are gone, but its reservation "
+                f"{held.name} could not be released ({exc}), so it is still "
+                f"billing with no box on it. {host.name} is still in your host "
+                f"list, as the only record of it.",
+                fix=say.fix("release it:", release,
+                            "then run this again to take the entry out:",
+                            f"comfy-qat delete {host.name}"),
+                code=1)
+        say.fail(
+            f"could not release {held.name} ({exc}), so {host.name} was not "
+            f"deleted and its reservation is still billing.",
+            fix=say.fix("release it yourself:", release,
+                        "then run this again — it finds the reservation gone "
+                        "and deletes the box:",
+                        f"comfy-qat delete {host.name}"),
+            code=1)
+    except inflight.Interrupted:
+        releasing.give_up()
+        raise
+    releasing.done(f"released {held.name}")
 
 
-def _delete_the_box(gc, host, config) -> None:
+def _delete_the_box(gc, host, config, released=None, unreleased=None) -> None:
+    """Delete the instance and its disks.
+
+    `released` is a reservation this run has ALREADY released, so a failure
+    here can say the box is the only thing left — and that it is no longer
+    holding a place. `unreleased` is the other order's: a reservation this run
+    was going to release AFTER the box, so a failure here means it was never
+    reached and is still billing. One or neither, never both, and a failure
+    says which — "the delete failed" alone reads as "nothing changed" in one
+    order and hides a live bill in the other."""
     from .gcloud import GcloudError
 
     removing = say.slow(f"deleting {host.name}", expect="up to a minute").start()
@@ -269,6 +636,29 @@ def _delete_the_box(gc, host, config) -> None:
                 raise
     except GcloudError as exc:
         removing.give_up()
+        if released is not None:
+            # Half of it happened, and it is the half that mattered for the
+            # bill. Said before Google's own sentence so that "the delete
+            # failed" is not read as "nothing changed": the reservation is
+            # gone, and the stopped box that is left costs its disk.
+            say.error(
+                f"{host.name}'s reservation {released.name} was released, so it "
+                f"is no longer billing for the card — but {host.name} itself "
+                f"was not deleted, and its disk still bills.",
+                say.fix("run it again to delete the box:",
+                        f"comfy-qat delete {host.name}"))
+        if unreleased is not None:
+            # The box-first order's half. Nothing was deleted and nothing was
+            # released: the release comes after the box in this order and was
+            # never reached. Without this the only line printed is Google's
+            # reason for refusing the instance delete, which says nothing
+            # about a reservation at all.
+            say.error(
+                f"{host.name} was not deleted, so its reservation "
+                f"{unreleased.name} was not released either and is still "
+                f"billing.",
+                say.fix("run it again once the box can be deleted:",
+                        f"comfy-qat delete {host.name}"))
         say.fail(exc, code=1)
     except inflight.Interrupted:
         # A no-op in the ordinary case: the step was closed inside the
@@ -279,7 +669,8 @@ def _delete_the_box(gc, host, config) -> None:
     removing.done()
 
 
-def _forget_the_entry(config, host, hosts, *, already_gone: bool) -> None:
+def _forget_the_entry(config, host, hosts, *, already_gone: bool,
+                      released=None) -> None:
     # Taking the entry out is not tidying. `create` refuses a name that a host
     # list entry holds, and ports come from the same list, so leaving it reserves
     # both for a machine that does not exist — and the refusal arrives weeks later
@@ -299,9 +690,15 @@ def _forget_the_entry(config, host, hosts, *, already_gone: bool) -> None:
                  "reserved for a machine that no longer exists")
         raise typer.Exit(code=1) from exc
 
+    # What went, said by name — the reservation with it when there was one,
+    # because "is the reservation gone too" is the question a reserved box's
+    # owner has, and a sentence that does not answer it leaves them to go and
+    # check.
+    also = (f" Its reservation {released.name} was released, so nothing of it "
+            f"is billing." if released is not None else "")
     if already_gone:
-        say.result(f"\n{host.name} was already deleted, and it is now out of your "
-                   "host list too.")
+        _prose(f"\n{host.name} was already deleted, and it is now out of your "
+               f"host list too.{also}")
         return
-    say.result(f"\n{host.name} and its disk are gone, and it is out of your host "
-               "list.")
+    _prose(f"\n{host.name} and its disk are gone, and it is out of your host "
+           f"list.{also}")
