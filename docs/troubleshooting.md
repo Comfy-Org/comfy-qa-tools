@@ -901,7 +901,7 @@ What the fix prints depends on what the reservation is:
 - **its box is on the project and in no entry of yours** — a create that died
   before the entry was written, or somebody else's box. This tool cannot name
   it, so you get Google's commands for both, the box first:
-  `gcloud compute instances delete <box> --zone=<zone> --project=<project>` and
+  `gcloud compute instances delete <box> --zone=<zone> --project=<project> --delete-disks=all` and
   then the reservation's. Check whose it is first.
 - **nothing is on it** — Google's own command for the reservation alone:
   `gcloud compute reservations delete <name> --zone=<zone> --project=<project>`.
@@ -1333,6 +1333,10 @@ tool asks Google by name whether a reservation was left there anyway, and says
 `nothing is billing` only when Google says there is none. When every zone is
 out, the command the refusal offers for another region carries `--reserve` and
 `--name <name>`, so that running it makes the reserved box that was asked for.
+That holds for every `comfy-qat create` a refusal hands back for a reserved
+build — a mistyped `--os`, a card this tool cannot drive, a disk the wrong size,
+`--zone` given with `--region`, a region in the wrong case, a region whose card
+is held: each keeps `--reserve`, and the name when you gave one.
 
 **`Google refused to reserve comfy-linux-rsv in us-central1-a: <error>. Nothing was created and nothing is billing.`**
 
@@ -2540,7 +2544,20 @@ comfy-linux is reserved, though its host list entry does not say so: comfy-linux
 the reservation comfy-linux-rsv, which bills every hour whether the box runs or not.
 ```
 
-It is then released like any other, and held to the same refusals. Add the
+It is then released like any other, and held to the same refusals.
+
+Two cases it cannot ask about, and it says so rather than deleting in silence:
+the box is **already gone**, so there is no record left to read, or Google would
+not describe the box. Then, for an entry with no `gce_reservation` line, you see
+
+```
+whether comfy-linux had a reservation was not checked — it is gone, and its record with it.
+One left behind bills with nothing on it; look:
+  gcloud compute reservations list --project=<project>
+```
+
+and the delete goes ahead. If that listing shows one for the box, release it
+with `gcloud compute reservations delete <name> --zone=<zone> --project=<project>`. Add the
 `gce_reservation` line to such an entry when you find one: until it is there,
 `down`, `list` and every other sentence about that box's bill is working from a
 host list that says it is not reserved.

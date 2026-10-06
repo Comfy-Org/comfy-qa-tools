@@ -89,7 +89,13 @@ def _prose(text: str) -> None:
         say.result(line)
 
 
-def _bound_on_google(gc, host) -> str | None:
+# What `_bound_on_google` answers when the box's own record could not be read:
+# not "bound to nothing", which is None. The caller says so rather than
+# deleting in silence.
+UNREAD = object()
+
+
+def _bound_on_google(gc, host):
     """The reservation this box's OWN record says it is bound to, or None.
 
     For an entry that does not say. `gce_reservation` is one line in a file
@@ -102,8 +108,9 @@ def _bound_on_google(gc, host) -> str | None:
 
     The instance says which reservation it may consume, and `delete` is
     already describing the instance to size its disk — so it is asked. Best
-    effort, like that read: a describe that fails answers None, and the box is
-    then deleted as the entry describes it, which is what happened before.
+    effort, like that read: a describe that fails does not stop the delete.
+    It answers `UNREAD`, though, and not None — "could not ask" is not "bound
+    to nothing", and the caller says which it was.
     """
     from . import reservation as rsv
     from .gcloud import GcloudError
@@ -112,7 +119,7 @@ def _bound_on_google(gc, host) -> str | None:
         instance = gc.describe_instance(host.gce_instance, host.gce_zone,
                                         host.gce_project)
     except (GcloudError, OSError):
-        return None
+        return UNREAD
     return rsv.bound_to(instance or {})
 
 
@@ -376,9 +383,25 @@ def delete_cmd(
     held, not_released = None, []
     reserved_as = host.reservation
     undeclared = False
+    unasked = ""
     if not reserved_as and not already_gone:
         reserved_as = _bound_on_google(gc, host)
+        if reserved_as is UNREAD:
+            reserved_as, unasked = None, "its own record could not be read"
         undeclared = bool(reserved_as)
+    elif not reserved_as:
+        unasked = "it is gone, and its record with it"
+    if unasked:
+        # NOT CHECKED, and said. Two ways an entry with no `gce_reservation`
+        # line cannot be asked about: the box is already gone, or Google would
+        # not describe it. Either way a reservation may be billing that this
+        # delete will not release, and saying nothing reads as "there is none".
+        # One line and the command that settles it — no refusal, because not
+        # being able to look is not a reason to keep a box somebody has
+        # decided to delete.
+        _prose(f"whether {host.name} had a reservation was not checked — {unasked}. "
+               f"One left behind bills with nothing on it; look:")
+        say.result(f"  gcloud compute reservations list --project={host.gce_project}")
     if reserved_as:
         held, not_released = _held_for(gc, host, reserved_as,
                                        already_gone=already_gone)

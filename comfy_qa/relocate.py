@@ -498,8 +498,8 @@ def _cards_wanted(host: Host, instance: dict) -> int:
     runs on an estimate instead of not running at all. Wrong in that direction
     costs a refusal that shows its arithmetic; wrong in the other costs a
     snapshot, a 200-300 GB disk and a move that has to start over. `gpu = "none"`
-    is the declared CPU box — `config` uses that spelling everywhere — and it is
-    an answer, so it is honoured.
+    — or `cpu`, in any case — is the declared box with no GPU, as `config.has_gpu`
+    reads it, and it is an answer, so it is honoured.
 
     The status is overridden to RUNNING because a stopped source still says how
     many cards its copy will need; the copy is created running.
@@ -509,8 +509,14 @@ def _cards_wanted(host: Host, instance: dict) -> int:
     cards = _cards_running([{**instance, "status": "RUNNING"}]) if instance else 0
     if cards:
         return cards
-    declared = (host.gpu or "").strip().lower()
-    return 1 if declared and declared != "none" else 0
+    # THE PREDICATE, not a comparison with `"none"`. A host file may say `cpu`
+    # for the same box — `create --gpu cpu` is accepted, and `config` reads
+    # both words as no GPU — and compared to one spelling, the other was a
+    # card: a box with no GPU declared `gpu = "cpu"` was held to the GPU
+    # ceiling and refused a move for quota it does not use.
+    from .config import has_gpu
+
+    return 1 if has_gpu(host) else 0
 
 
 def plan_move(host: Host, instance: dict, to_zone: str,

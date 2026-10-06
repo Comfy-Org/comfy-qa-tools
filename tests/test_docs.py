@@ -1996,6 +1996,120 @@ def test_the_bill_sentence_the_docs_quote_is_the_one_the_tool_prints():
             assert said.replace("comfy-linux", box) in flat, (name, box)
 
 
+# --- corrected passages that reverted with the suite green --------------------
+#
+# Four passages were corrected after an audit and then found to revert with
+# every test passing. Each is tied below to the thing it describes WHERE THAT IS
+# SOMETHING THE TOOL PRINTS OR A COMMAND IT BUILDS. The sentences around them
+# that are plain prose — why an order matters, which command to end a session
+# on — are not tested: a test of prose is a test of its wording, and breaks on
+# the next honest rewrite.
+
+
+def _section(page: str, heading: str, until: str) -> str:
+    text = (DOCS / page).read_text(encoding="utf-8")
+    start = text.index(heading)
+    return text[start:text.index(until, start + len(heading))]
+
+
+def test_the_teardown_for_a_refused_release_deletes_the_instance_first():
+    """docs/test-criteria.md, phase V. When Google refuses to release a
+    reservation that a stopped box still targets, the teardown that runs the
+    release FIRST repeats the call that was just refused. The block for that
+    case has to be the two commands the other way round — and the ordinary
+    block, above it, the reservation first."""
+    case = _section("test-criteria.md",
+                    "**Unless the reservation delete is what was refused**",
+                    "Either way, finish by reading")
+    assert case.index("gcloud compute instances delete") < case.index(
+        "gcloud compute reservations delete"), case
+
+    usual = _section("test-criteria.md", "Then, for each `qa-*` still there",
+                     "**Unless the reservation delete is what was refused**")
+    assert usual.index("gcloud compute reservations delete") < usual.index(
+        "gcloud compute instances delete"), usual
+    # And V15, which is the criterion that sends a tester there, says which.
+    v15 = _section("test-criteria.md", "- [ ] **V15**", "- [ ] **V15b**")
+    assert "the instance first, then the" in " ".join(v15.split())
+
+
+def test_what_the_page_says_prune_prints_for_a_reserved_ghost_is_what_it_prints(
+        tmp_path, monkeypatch):
+    """docs/troubleshooting.md, "Stopping a box that has already been deleted".
+    The passage used to say nothing is billing and offer `discover --prune`
+    for a reserved box. It now quotes the heading prune prints when it KEEPS
+    such an entry, and names `comfy-qat delete` — both read off a real run."""
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.cli import app
+
+    import test_reserved_cli as fixtures
+
+    cloud = fixtures.Project(reservations=[fixtures.ours()])
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    path = tmp_path / "hosts.toml"
+    path.write_text(fixtures.WITH_A_RESERVED_BOX, encoding="utf-8")
+    result = CliRunner().invoke(app, ["discover", "--prune", "--yes",
+                                      "--config", str(path)])
+    assert result.exit_code == 0, result.output
+    heading = next(line for line in result.stdout.splitlines()
+                   if line.startswith("not on the project any more, and reserved"))
+    offered = next(line.split("#")[0].strip() for line in result.stdout.splitlines()
+                   if line.strip().startswith("comfy-qat delete"))
+
+    passage = " ".join(_section(
+        "troubleshooting.md", "### Stopping a box that has already been deleted",
+        "\n## ").split()).replace("`", "")
+    assert heading in passage, "the page no longer quotes what prune prints"
+    assert offered.replace("comfy-linux", "<name>") in passage
+    # The passage's own entry is E2's sentence, and it ends on that command.
+    assert "Release it and clear the entry: comfy-qat delete comfy-linux" in passage
+
+
+def test_every_release_command_the_docs_show_is_the_one_the_tool_builds():
+    """`gcloud compute reservations delete <name> --zone=… --project=…` is what
+    `list --live` and `down --all` print for a reservation with no box, and it
+    is quoted on four pages. Each whole-line quotation is held to
+    `reservation.delete_command`, so the flag spelling cannot drift."""
+    from comfy_qa import reservation
+
+    shape = re.compile(r"^\s*(gcloud compute reservations delete (\S+) "
+                       r"--zone=(\S+) --project=(\S+))\s*$")
+    quoted = []
+    for page in ("machines.md", "troubleshooting.md", "cost.md"):
+        for line in (DOCS / page).read_text(encoding="utf-8").splitlines():
+            found = shape.match(line)
+            if found:
+                quoted.append((page, *found.groups()))
+
+    assert len(quoted) >= 2, quoted
+    for page, line, name, zone, project in quoted:
+        assert line == reservation.delete_command(name, zone, project), (page, line)
+
+
+def test_the_entry_for_a_failed_reservations_read_hands_over_a_command(tmp_path):
+    """The `list --live` warning for a project whose reservations could not be
+    read had an entry that said what it meant and offered nothing to do. The
+    entry has to carry a command, and the command has to be one that asks the
+    question the tool could not: the same listing, for that project — which is
+    exactly what `Gcloud.list_reservations` sends."""
+    from comfy_qa.gcloud import Gcloud
+
+    entry = _section(
+        "troubleshooting.md",
+        "**`could not ask Google about reservations on <project> (<error>)",
+        "\n**`")
+    offered = [line.strip() for line in entry.splitlines()
+               if line.strip().startswith("gcloud ")]
+    assert offered == ["gcloud compute reservations list --project=<project>"], entry
+
+    sent: list[list[str]] = []
+    Gcloud(runner=lambda args, mode: sent.append(args) or []).list_reservations(
+        "<project>")
+    assert ["gcloud", *sent[0]] == offered[0].split()
+
+
 def _command_tree(app) -> dict:
     """The real command surface, as nested names, straight off the Typer app."""
     tree: dict = {}

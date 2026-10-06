@@ -1157,6 +1157,40 @@ def test_a_box_whose_record_cannot_be_read_is_deleted_as_its_entry_describes_it(
 
     assert result.exit_code == 0, result.output
     assert cloud.deleted() and cloud.released() == []
+    # Deleted — and NOT in silence. "Could not ask" is not "bound to nothing":
+    # a reservation may be billing that this did not release, so it says the
+    # check was not made and how to make it, before the name is typed back.
+    said = flat(result.stdout)
+    assert ("whether comfy-linux had a reservation was not checked — its own "
+            "record could not be read. One left behind bills with nothing on it; "
+            "look:") in said
+    assert "  gcloud compute reservations list --project=proj" in result.stdout.splitlines()
+    assert result.stdout.index("was not checked") < result.stdout.index(
+        "type comfy-linux to confirm")
+
+
+def test_a_gone_box_with_no_reservation_line_is_not_cleared_in_silence(cli):
+    """Already deleted, and the entry says nothing about a reservation. There
+    is no record left to ask, so this cannot know — and it used to say only
+    that the box was gone, which reads as "and nothing of it is left"."""
+    cloud = gone_from_google(Project(reservations=[held()]))
+    result = cli("delete", "comfy-linux", cloud=cloud, input="comfy-linux\n")  # HOSTS
+
+    assert result.exit_code == 0, result.output
+    said = flat(result.stdout)
+    assert ("whether comfy-linux had a reservation was not checked — it is gone, "
+            "and its record with it.") in said
+    assert "  gcloud compute reservations list --project=proj" in result.stdout.splitlines()
+    assert cloud.released() == [], "it released on a guess"
+
+
+def test_a_box_that_was_asked_and_is_bound_to_nothing_is_told_nothing_of_the_kind(cli):
+    """The control: the record was read and names no reservation. That is an
+    answer, and a nudge to go and look would be noise on every ordinary delete."""
+    result = cli("delete", "comfy-linux", cloud=Project(), input="comfy-linux\n")
+
+    assert result.exit_code == 0
+    assert "was not checked" not in result.output
 
 
 def test_an_already_gone_box_is_told_its_reservation_is_still_billing_before_it_goes(cli):

@@ -749,8 +749,11 @@ def test_a_reserved_box_that_is_in_no_host_list_gets_googles_commands_not_ours(r
     assert mutating(cloud) == []
     assert offered(result.output) == [], "a comfy-qat command for a box it cannot name"
     lines = [line.strip() for line in result.output.splitlines()]
+    # The whole command, `--delete-disks=all` included: boot disks here are made
+    # `auto-delete=no`, so the instance delete without it leaves the disk
+    # billing with nothing attached.
     box = (f"gcloud compute instances delete comfy-linux --zone=us-central1-a "
-           f"--project={PROJECT}")
+           f"--project={PROJECT} --delete-disks=all")
     release = (f"gcloud compute reservations delete {RSV} --zone=us-central1-a "
                f"--project={PROJECT}")
     assert box in lines and release in lines
@@ -1010,3 +1013,115 @@ def test_a_dry_run_prune_names_the_reserved_ghost_and_writes_nothing(run):
     assert result.hosts == WITH_A_RESERVED_BOX
     assert "comfy-qat delete comfy-linux" in result.stdout
     assert mutating(cloud) == []
+
+
+# --- every rewritten `create` is still the box that was asked for -------------
+#
+# A remedy that rewrites the command rewrites the box. Each refusal `create`
+# can reach from the command line hands back a corrected `comfy-qat create`,
+# and one that drops `--reserve` makes — pasted into a script, where nobody is
+# asked — an unreserved box out of a request for a reserved one. The name goes
+# with it: a reservation is found again by its box's name.
+
+RESERVED_AS = ("--reserve", "--name", "held-box")
+KEPT = "--reserve --name held-box"
+
+REFUSALS = {
+    "no such operating system": ("--os", "plan9", "--gpu", "l4"),
+    "a card this tool cannot drive": ("--os", "linux", "--gpu", "p100"),
+    "--os left off, nobody to ask": ("--gpu", "l4"),
+    "--gpu left off, nobody to ask": ("--os", "linux"),
+    "--zone and --region together": ("--os", "linux", "--gpu", "l4", "--zone",
+                                     "us-central1-a", "--region", "europe-west4"),
+    "a region in the wrong case": ("--os", "linux", "--gpu", "l4", "--region",
+                                   "US-CENTRAL1"),
+    "a disk too small": ("--os", "linux", "--gpu", "l4", "--disk", "5"),
+}
+
+
+def _creates(result) -> list[str]:
+    return [line for line in offered(result.output)
+            if line.startswith("comfy-qat create")]
+
+
+@pytest.mark.parametrize("why", sorted(REFUSALS))
+def test_every_create_a_refusal_hands_back_for_a_reserved_build_still_reserves(run, why):
+    cloud = Project()
+    result = run("create", *REFUSALS[why], *RESERVED_AS, "--yes", cloud=cloud)
+
+    assert result.exit_code == 2, result.output
+    assert mutating(cloud) == []
+    creates = _creates(result)
+    assert creates, f"{why}: the refusal offered no create to run:\n{result.output}"
+    for line in creates:
+        assert KEPT in line, f"{why}: {line!r} is not the box that was asked for"
+
+
+@pytest.mark.parametrize("why", sorted(REFUSALS))
+def test_the_same_refusals_for_an_ordinary_build_say_nothing_of_reserving(run, why):
+    """The control: the flag is carried because it was typed, not always."""
+    result = run("create", *REFUSALS[why], "--yes", cloud=Project())
+
+    creates = _creates(result)
+    assert creates, result.output
+    assert not any("--reserve" in line or "--name" in line for line in creates), creates
+
+
+def test_the_create_remedies_in_the_command_modules_are_the_ones_driven_above():
+    """Counted from the syntax tree, as `test_create.py` counts `create.py`'s:
+    every string in code that builds a `comfy-qat create`, by the function it
+    is written in, compared BOTH ways with this list. A new remedy in host.py,
+    remove.py, relocate.py, inventory.py or ask.py fails here until it is
+    listed — beside a row in `REFUSALS` that drives it for a reserved build."""
+    import ast
+    import inspect
+
+    from comfy_qa import ask, host, inventory, relocate, remove
+
+    def sites(module):
+        found: dict[str, int] = {}
+        for function in ast.walk(ast.parse(inspect.getsource(module))):
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            docstring = ast.get_docstring(function, clean=False)
+            for node in ast.walk(function):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and "comfy-qat create" in node.value
+                        and node.value != docstring):
+                    found[function.name] = (found.get(function.name, 0)
+                                            + node.value.count("comfy-qat create"))
+        return found
+
+    assert sites(host) == {
+        # --zone with --region (two lines), --os missing, --gpu missing, and
+        # the region that is not one: five, all driven by REFUSALS.
+        "create_cmd": 5,
+        # `move` on a reserved box: driven by
+        # test_every_line_the_refused_move_of_a_reserved_box_prints_runs.
+        "_refuse_to_move_a_reserved_box": 1,
+    }
+    for module in (remove, relocate, inventory, ask):
+        assert sites(module) == {}, f"{module.__name__} hands back a create command"
+
+
+# --- the host list reaches the zone order too ---------------------------------
+
+
+def test_a_region_whose_card_is_held_names_the_declared_box_that_holds_it(run):
+    """The refusal `order_zones` makes — this region's own allowance is held —
+    hands over `comfy-qat down/delete` only for a box the host list holds, so
+    it needs the host list. The ceiling here has room (4), so the limit does
+    not refuse first and this is the only refusal that can name the box:
+    dropped on the way to `order_zones`, the fix falls back to Google's
+    commands and this fails."""
+    cloud = a_project_holding_one_reserved_box(quotas=[grant(1), ceiling(4)])
+    result = run("create", "--os", "linux", "--gpu", "l4", "--name", "second",
+                 "--region", "us-central1", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+
+    assert result.exit_code == 2, result.output
+    assert "allowance is already held in the region asked for" in flat(result.output)
+    assert mutating(cloud) == []
+    assert ["comfy-qat down comfy-linux", "comfy-qat delete comfy-linux"] == [
+        line for line in offered(result.output)
+        if line.startswith(("comfy-qat down", "comfy-qat delete"))]

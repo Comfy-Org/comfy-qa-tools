@@ -911,3 +911,48 @@ def test_prepare_hands_the_host_list_through_to_the_survey():
                            hosts=[WIN, HELD_HOST])
 
     assert found.reserved_named == (("held-rsv", "us-central1-a", "held"),)
+
+
+# --- `cpu` is no GPU to `move` as well (recheck: still wrong 3) ---------------
+
+
+def _a_box_declared(gpu):
+    return Host(name="cpu-box", kind="gce", port=8190, os="Ubuntu 22.04", gpu=gpu,
+                gce_instance="cpu-box", gce_zone="us-central1-a", gce_project="p")
+
+
+NO_CARD_INSTANCE = {"name": "cpu-box", "status": "TERMINATED",
+                    "machineType": "x/machineTypes/n1-standard-8",
+                    "disks": [{"boot": True, "source": "x/disks/cpu-box"}]}
+
+
+@pytest.mark.parametrize("word", ["none", "None", "NONE", "cpu", "Cpu", "CPU", " cpu "])
+def test_a_box_declared_with_no_gpu_wants_no_card_however_that_is_spelled(word):
+    """`create --gpu cpu` is accepted and `config` reads `cpu` as no GPU, but
+    this counter compared the word to `"none"` alone — so a box with no GPU
+    declared `gpu = "cpu"` counted as one card, was held to the GPU ceiling,
+    and was refused a move for quota it does not use."""
+    from comfy_qa.relocate import _cards_wanted
+
+    assert _cards_wanted(_a_box_declared(word), NO_CARD_INSTANCE) == 0
+
+
+def test_a_box_declared_with_a_card_the_payload_does_not_show_still_wants_one():
+    """The control, and the fail-closed rule the predicate must not undo."""
+    from comfy_qa.relocate import _cards_wanted
+
+    assert _cards_wanted(_a_box_declared("L4"), NO_CARD_INSTANCE) == 1
+
+
+@pytest.mark.parametrize("word", ["none", "cpu", "CPU"])
+def test_moving_a_box_with_no_gpu_is_not_refused_over_a_full_gpu_ceiling(word):
+    """Through the gate, not the counter: a running GPU box holds the whole
+    ceiling of 1, and a box with no GPU moves anyway — with no quota read."""
+    from comfy_qa.relocate import survey
+
+    gc = _Reserving([gpu_instance("busy")], ceiling=1)
+    plan = plan_move(_a_box_declared(word), NO_CARD_INSTANCE, "us-central1-b")
+    found = survey(gc, plan)
+
+    assert blocked(plan, found) is None
+    assert gc.quota_reads == 0 and gc.reservation_reads == 0

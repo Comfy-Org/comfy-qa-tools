@@ -863,7 +863,7 @@ def discover_cmd(
             _forget(path, [host for host, _owner in ghosts], yes=yes)
 
 
-def _os_problem(value: str) -> str | None:
+def _os_problem(value: str, asked: str = "") -> str | None:
     """Why `--os <value>` cannot be used, in `plan`'s own words, or None.
 
     `image_for`, which is the first line of `plan`, rather than a membership
@@ -875,13 +875,15 @@ def _os_problem(value: str) -> str | None:
     from .lifecycle import LifecycleError
 
     try:
-        image_for(value)
+        # `asked` is ` --reserve --name <name>` for a reserved build, so the
+        # corrected command this refusal carries is still the box asked for.
+        image_for(value, asked)
     except LifecycleError as exc:
         return str(exc)
     return None
 
 
-def _gpu_problem(value: str) -> str | None:
+def _gpu_problem(value: str, asked: str = "") -> str | None:
     """Why `--gpu <value>` cannot be used, in `plan`'s own words, or None.
 
     The same two calls `plan` makes and in the same order: `card_for`, which
@@ -904,7 +906,7 @@ def _gpu_problem(value: str) -> str | None:
     # `card.is_gpu and`, as `plan` has it: no card at all has no GSP either,
     # and `none` is an answer rather than a card this tool cannot drive.
     if card.is_gpu and not card.has_gsp:
-        return str(undrivable(card))
+        return str(undrivable(card, asked=asked))
     return None
 
 
@@ -1212,6 +1214,10 @@ def create_cmd(
         # And `--reserve`, when it was typed. Left off a rewritten command it
         # is not a detail: with nobody to ask, the box would be made unreserved.
         chosen += {True: "--reserve ", False: "--no-reserve "}.get(reserve, "")
+        # And the name, for a reserved build, as every other rewritten create
+        # carries it: a reservation is found again by its box's name.
+        chosen += f"{create_mod._asked_for(True, name).removeprefix(' --reserve').strip()} " \
+            if reserve and name else ""
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
             "pins one zone, --region asks for a choice within one region",
@@ -1230,23 +1236,30 @@ def create_cmd(
     os_menu = create_mod.os_menu()
     # `gpu_choices`, not `gpu_menu`: the cards, and then no card at all.
     gpu_menu = create_mod.gpu_choices()
+    # WHAT WAS ASKED FOR BEYOND THE OS AND THE CARD, for every command these
+    # refusals hand back: ` --reserve` and the name, when `--reserve` was
+    # typed. A remedy that rewrites the command rewrites the box, and one that
+    # drops `--reserve` makes — in a script, where nobody is asked — an
+    # unreserved box out of a request for a reserved one. Empty otherwise, so
+    # the lines for an ordinary build are what they always were.
+    asked = create_mod._asked_for(reserve is True, name)
     os_choice = ask.settle(
         "--os", os_choice,
         label="OS", question="Which operating system?",
         options=[key for key, _ in os_menu], notes=[note for _, note in os_menu],
-        problem=_os_problem,
+        problem=lambda value: _os_problem(value, asked),
         missing="--os is required and there is no terminal to ask at: "
                 + " or ".join(key for key, _ in os_menu),
-        fix="comfy-qat create --os linux --gpu l4",
+        fix=f"comfy-qat create --os linux --gpu l4{asked}",
     )
     gpu = ask.settle(
         "--gpu", gpu,
         label="GPU", question="Which card?",
         options=[key for key, _ in gpu_menu], notes=[note for _, note in gpu_menu],
-        problem=_gpu_problem,
+        problem=lambda value: _gpu_problem(value, asked),
         missing="--gpu is required and there is no terminal to ask at: "
                 + ", ".join(key for key, _ in gpu_menu),
-        fix="comfy-qat create --os linux --gpu l4",
+        fix=f"comfy-qat create --os linux --gpu l4{asked}",
     )
 
     # THE THIRD, and the only one with a default. Asked after the card because
@@ -1366,7 +1379,9 @@ def create_cmd(
         wrong = (region_problem(gc, project, quotas, region, membership=False)
                  if card.is_gpu else None)
         if wrong:
-            held = " --reserve" if reserve else ""
+            # ` --reserve --name <name>` for a reserved build, from the one
+            # function every rewritten create takes it from.
+            held = create_mod._asked_for(bool(reserve), name)
             say.fail(wrong[0],
                      fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
                                    f"{gpu}{held} {line}" for line in wrong[1]],
@@ -3383,6 +3398,7 @@ def _reserved_cards(gc, host: Host, others: list[Host]) -> _Held:
     "a stop would free this" only ever makes stopping first less likely.
     """
     from . import reservation as rsv
+    from .config import has_gpu
     from .create import card_named
 
     try:
@@ -3394,7 +3410,10 @@ def _reserved_cards(gc, host: Host, others: list[Host]) -> _Held:
         live = None
 
     if live is None:
-        declared = tuple(other for other in others if other.reservation)
+        # `has_gpu`, as everywhere a card is counted: an entry that says
+        # `none` or `cpu` holds no card whatever else it says.
+        declared = tuple(other for other in others
+                         if other.reservation and has_gpu(other))
         return _Held(
             cards=sum(_cards_in(other.gpu, card_named) for other in declared),
             boxes=frozenset(other.name for other in declared),

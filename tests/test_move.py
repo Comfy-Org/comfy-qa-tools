@@ -1896,3 +1896,31 @@ def test_move_hands_its_host_list_to_the_survey(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert seen["hosts"] is not None
     assert [host.name for host in seen["hosts"]] == ["comfy-win"]
+
+
+def test_the_replan_after_a_clean_is_handed_the_host_list_too(tmp_path, monkeypatch):
+    """`move --clean` plans twice: once before the deleting and once after it,
+    because the first plan was built from resources that no longer exist. The
+    second call is its own line of code, and the host list could be left off
+    it with every other test green — the first call still had it. Every call
+    is recorded, and every one has to carry the list."""
+    from comfy_qa import relocate
+
+    seen = []
+    real = relocate.prepare
+
+    def watching(gc, host, instance, to_zone, hosts=None):
+        seen.append(hosts)
+        return real(gc, host, instance, to_zone, hosts=hosts)
+
+    monkeypatch.setattr(relocate, "prepare", watching)
+    stranger = disk("comfy-win-a-b", "us-central1-b", from_snapshot="somebody-else",
+                    created="2026-08-25T07:38:24.167-07:00")
+    cloud = Cloud(disks=[SOURCE, stranger], instances=[INSTANCE])
+    result = _cli_move(tmp_path, monkeypatch, cloud,
+                       "comfy-win", "--to", "us-central1-b", "--clean", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert len(seen) == 2, f"the clean did not re-plan: {len(seen)} call(s)"
+    for hosts in seen:
+        assert hosts is not None and [host.name for host in hosts] == ["comfy-win"]
