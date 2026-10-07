@@ -2059,3 +2059,109 @@ def test_a_failed_torch_install_on_a_gpu_box_still_says_what_it_cost(tmp_path, n
     with pytest.raises(LifecycleError) as caught:
         ensure_installed(Gcloud(runner=runner), WIN, say, tunnel_dir=tmp_path)
     assert "so ComfyUI cannot use its GPU. Its log is above." in str(caught.value)
+
+
+# --- live pass D5: a stock-out is recognised in the text Google really prints -------
+#
+# Captured verbatim from `gcloud compute reservations create … --zone=us-central1-a`
+# on a real project, 2026-10-06 22:44Z — line breaks and indentation as gcloud
+# printed them. gcloud wraps the YAML it prints, so two of the phrases this
+# tool looks for arrive split across lines: "is\n      currently unavailable in
+# the" and "does not\n  have enough resources". Matched against the raw text
+# neither was found, and the stock-out was recognised only by its `code:` line.
+
+REAL_STOCKOUT = """\
+ERROR: (gcloud.compute.reservations.create) Could not fetch resource:
+---
+code: ZONE_RESOURCE_POOL_EXHAUSTED
+errorDetails:
+- help:
+    links:
+    - description: Troubleshooting documentation
+      url: https://cloud.google.com/compute/docs/resource-error
+- localizedMessage:
+    locale: en-US
+    message: A n1-standard-8 VM instance with 1 nvidia-tesla-t4 accelerator(s) is
+      currently unavailable in the us-central1-a zone. Alternatively, you can try
+      your request again with a different VM hardware configuration or at a later
+      time. For more information, see the troubleshooting documentation.
+- errorInfo:
+    domain: compute.googleapis.com
+    metadatas:
+      attachment: nvidia-tesla-t4:1
+      vmType: n1-standard-8
+      zone: us-central1-a
+      zonesAvailable: ''
+    reason: resource_availability
+message: The zone 'projects/stately-timing-504610-p1/zones/us-central1-a' does not
+  have enough resources available to fulfill the request.  Try a different zone, or
+  try again later.
+"""
+
+
+def _only(first: str, last: str) -> str:
+    """The captured text from the line holding `first` to the one holding `last`."""
+    lines = REAL_STOCKOUT.splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines) if first in line)
+    end = next(i for i, line in enumerate(lines) if last in line)
+    return "".join(lines[start:end + 1])
+
+
+def test_the_real_stockout_text_is_recognised_whole():
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert is_capacity_failure(REAL_STOCKOUT)
+    assert is_capacity_failure(REAL_STOCKOUT.replace("us-central1-a", "us-central1-b"))
+
+
+def test_the_code_line_alone_is_enough():
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert is_capacity_failure("code: ZONE_RESOURCE_POOL_EXHAUSTED\n")
+
+
+def test_the_unavailable_sentence_is_recognised_without_the_code_line():
+    """As gcloud wrapped it: `is` ends one line and `currently` starts the next."""
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    wrapped = _only("localizedMessage", "For more information")
+    assert "RESOURCE_POOL_EXHAUSTED" not in wrapped and "enough resources" not in wrapped
+    assert "is currently unavailable in the" not in wrapped, "the fixture: it IS wrapped"
+    assert is_capacity_failure(wrapped)
+
+
+def test_the_not_enough_resources_sentence_is_recognised_without_the_code_line():
+    """`does not` ends one line and `have enough resources` starts the next."""
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    wrapped = _only("message: The zone", "try again later")
+    assert "RESOURCE_POOL_EXHAUSTED" not in wrapped and "unavailable" not in wrapped
+    assert "does not have enough resources" not in wrapped, "the fixture: it IS wrapped"
+    assert is_capacity_failure(wrapped)
+
+
+def test_the_rest_of_the_real_text_is_not_a_stockout_by_itself():
+    """The pair: with the three signs taken out, what is left — the help link,
+    the metadata, an empty `zonesAvailable` — must not read as one."""
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    rest = (_only("ERROR:", "---") + _only("errorDetails", "url:")
+            + _only("errorInfo", "resource_availability"))
+    assert "zonesAvailable: ''" in rest
+    assert not is_capacity_failure(rest)
+
+
+def test_folding_whitespace_does_not_join_words_into_a_sign():
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert not is_capacity_failure("permission denied\n  for this zone")
+    assert not is_capacity_failure("it does\n\nnot have a quota here")
+
+
+def test_the_real_stockout_names_no_other_zone_and_none_is_invented():
+    """`zonesAvailable: ''` in every stock-out seen on the live pass, and no
+    "trying your request in the … zone" sentence. So nothing is suggested —
+    and the empty field is not read as a zone."""
+    from comfy_qa.lifecycle import suggested_zones
+
+    assert suggested_zones(REAL_STOCKOUT) == []

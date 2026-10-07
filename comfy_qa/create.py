@@ -1509,17 +1509,6 @@ def _cards(count: int) -> str:
     return "1 card" if count == 1 else f"{count} cards"
 
 
-def _release_command(name: str, zone: str, project: str) -> str:
-    """Google's own command to release one reservation, complete or not at all.
-
-    `reservation.delete_command` is the one place the command is written. With
-    no project in hand the flag is dropped rather than printed empty — gcloud
-    then uses the project it is pointed at, which is the one this tool follows.
-    """
-    command = rsv.delete_command(name, zone, project)
-    return command if project else command.removesuffix(" --project=")
-
-
 def _how_to_release(holders, boxed, project: str, named=()) -> str:
     """The fix for "a reservation holds the card": how to let go of one.
 
@@ -1566,10 +1555,16 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
         # that do not auto-delete: without the flag the box goes, the card is
         # freed, and 200 GB bills on with nothing attached to it. `delete` and
         # `remove.py`'s own printed command both carry it.
+        #
+        # AND `--quiet`, for the reason the release command under it carries
+        # one. gcloud asks before deleting; pasted where nobody can answer — a
+        # script, an agent — it exits 1 having deleted nothing, and the box, its
+        # disk and its reservation all go on billing behind an error.
         where = f"--zone={zone} --project={project}" if project else f"--zone={zone}"
-        return [*(f"gcloud compute instances delete {box} {where} --delete-disks=all"
-                  for box in on[(name, zone)]),
-                _release_command(name, zone, project)]
+        # One line, flags and all, so a test can hold the three together.
+        gone = "gcloud compute instances delete {box} {where} --delete-disks=all --quiet"
+        return [*(gone.format(box=box, where=where) for box in on[(name, zone)]),
+                rsv.delete_command(name, zone, project)]
 
     look = "gcloud compute instances list"
     look = f"{look} --project={project}" if project else look
@@ -1594,11 +1589,11 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
                 "releasing it — a reservation released from under a running box "
                 "takes its capacity away:",
                 look,
-                _release_command(name, zone, project))
+                rsv.delete_command(name, zone, project))
         why = ("nothing is on it" if box else
                "nothing is on it, and it was not made by this tool, so check "
                "whose it is first")
-        return output.fix(f"release it — {why}:", _release_command(name, zone, project))
+        return output.fix(f"release it — {why}:", rsv.delete_command(name, zone, project))
     lines = ["release one of them. A box in your host list is stopped and then "
              "deleted, and its reservation goes with it; anything else is "
              "released with Google's own commands — check whose it is first:"]
@@ -1612,7 +1607,7 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
         elif on.get((name, zone)):
             lines += box_commands(name, zone)
         else:
-            lines.append(_release_command(name, zone, project))
+            lines.append(rsv.delete_command(name, zone, project))
     return output.fix(*lines)
 
 
@@ -2025,7 +2020,10 @@ def _as_reserved(blueprint: Blueprint) -> str:
 
 
 def _same_box(blueprint: Blueprint) -> str:
-    """`comfy-qat create` for this reserved box, complete up to where it goes."""
+    """`comfy-qat create` for this box, complete up to where it goes.
+
+    Reserved and named when the box is; the plain command when it is not.
+    """
     return (f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key}"
             f"{_as_reserved(blueprint)}")
 
@@ -2490,6 +2488,25 @@ def build(
             kind=EXHAUSTED,
         )
 
+    if ordering.offering and ordering.narrowed_to:
+        # ONE REGION WAS TRIED BECAUSE ONE WAS NAMED. The branch below says
+        # "every region this project can use the card in, so there is nowhere
+        # left to try" — true when nothing narrowed the search, and printed on
+        # a real project with 23 usable regions about the one `--region` named.
+        # What is true is smaller, and the way out is to stop narrowing: the
+        # same box, without `--region`.
+        raise LifecycleError(
+            f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
+            f"{', '.join(tried)}. That is every zone this could use in "
+            f"{ordering.narrowed_to}, the region you named with --region — not "
+            f"everywhere this project can use {_thing(blueprint.card)}. Nothing was "
+            f"created and nothing is billing.",
+            fix=(f"wait and run the same command again — a stockout is usually "
+                 f"minutes to hours — or drop --region and let this pick: "
+                 f"{_same_box(blueprint)}"),
+            kind=EXHAUSTED,
+        )
+
     if ordering.offering:
         raise LifecycleError(
             f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
@@ -2556,6 +2573,27 @@ def taken_names(hosts: list[Host], instances: list[dict]) -> set[str]:
     return {name for name in names if name}
 
 
+def reserved_stop_lines(name: str) -> list[str]:
+    """The two commands that end a reserved box's bill, in the order they run.
+
+    `reservation.stop_line` alone is `comfy-qat delete <name>`, and that is the
+    command that ends the bill — but a box that has just been created, started
+    or served is RUNNING, and `delete` refuses a running box: "is running, not
+    stopped. Stop it first", exit 2. So the one line the ending offered was a
+    command that is refused as printed. The refusals that hand over this pair
+    have always printed both; the endings now do too.
+
+    `down` is a STEP here and is labelled as one. It is never what stops this
+    box's bill, and the line does not say it is.
+    """
+    return [_down_first(name), rsv.stop_line(name)]
+
+
+def _down_first(name: str) -> str:
+    """The step before `delete`, said as a step."""
+    return f"  comfy-qat down {name}     # first — delete refuses a box that is running"
+
+
 def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
     """What to do with the box, and how to stop paying for it.
 
@@ -2587,6 +2625,11 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
         # is false: `down` stops the machine and the reservation goes on billing
         # for it. So the bill is stated, and the one command that ends it.
         lines.append(rsv.bill(blueprint.name))
+        # The pair `reserved_stop_lines` returns, written out: the guard that
+        # every command which can reserve ends on `rsv.stop_line` follows one
+        # call from the command and no further, and this is that call. A test
+        # holds these two lines equal to the helper's.
+        lines.append(_down_first(blueprint.name))
         lines.append(rsv.stop_line(blueprint.name))
         return lines
     lines.append(f"  comfy-qat down {blueprint.name}   # stop the machine, stop paying")
@@ -2690,10 +2733,16 @@ def order_zones(
     zone = zone.strip().lower() if zone else zone
     region = region.strip().lower() if region else region
 
+    # Whether `--region` is what narrowed this, for `build`'s last sentence.
+    # `--zone` wins over it everywhere below, so it is only said without one.
+    named = region if region and not zone else ""
+
     if not blueprint.card.is_gpu:
-        return _order_without_a_card(gc, project, blueprint, check, zone=zone,
-                                     region=region, config=config, probe=probe,
-                                     fleet=fleet)
+        return replace(
+            _order_without_a_card(gc, project, blueprint, check, zone=zone,
+                                  region=region, config=config, probe=probe,
+                                  fleet=fleet),
+            narrowed_to=named)
 
     if blueprint.reserve and leftover is not None:
         return _where_the_leftover_is(blueprint, leftover, project,
@@ -2850,6 +2899,7 @@ def order_zones(
         machine_type=blueprint.machine_type,
         regions=regions, config=config, probe=probe, fleet=fleet,
     )
+    ordering = replace(ordering, narrowed_to=named)
     if not taken:
         return ordering
     # Said, because a region missing from a numbered list is otherwise

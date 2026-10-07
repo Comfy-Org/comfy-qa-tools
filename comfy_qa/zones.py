@@ -176,6 +176,13 @@ class Ordering:
     # invent a wider world on its behalf.
     offering: tuple[str, ...] = ()
 
+    # The region the caller NAMED with `--region`, when that is why `regions`
+    # and `offering` hold one. Without it `build` cannot tell "this project can
+    # use the card in one region" from "you asked for one region", and it said
+    # the first about the second: "every region this project can use the card
+    # in, so there is nowhere left to try" — on a project with 23.
+    narrowed_to: str = ""
+
     def __bool__(self) -> bool:
         return bool(self.zones)
 

@@ -319,7 +319,13 @@ def is_capacity_failure(message: str | None) -> bool:
     *full* gcloud output, not the one-line summary — on compute errors that
     summary is literally `---`, which is how a stockout went unrecognised once.
     """
-    lowered = (message or "").lower()
+    # WHITESPACE FOLDED FIRST. gcloud prints the error as YAML and wraps it, so
+    # the sentences arrive as "…accelerator(s) is\n      currently unavailable in
+    # the…" and "…does not\n  have enough resources…". Matched raw, against the
+    # text a real stock-out printed on 2026-10-06, two of these phrases found
+    # nothing and recognition rested on the `code:` line alone — one field
+    # Google could rename.
+    lowered = " ".join((message or "").lower().split())
     return any(sign in lowered for sign in _CAPACITY_SIGNS)
 
 

@@ -599,12 +599,13 @@ def test_what_is_said_after_a_reserved_box_exists_is_the_bill_and_what_stops_it(
         "  comfy-qat go comfy-linux     # install ComfyUI and serve it",
         "comfy-linux is reserved. Google holds its capacity and bills for it every "
         "hour — running or stopped — until the box is deleted.",
+        "  comfy-qat down comfy-linux     # first — delete refuses a box that is running",
         "  comfy-qat delete comfy-linux   # the only thing that stops a reserved "
         "box's bill — the box and its disk go too",
     ]
-    assert not [line for line in lines if "stop paying" in line]
-    assert not [line for line in lines if "comfy-qat down" in line], (
-        "`down` does not stop this box's bill, and offering it here says it does")
+    assert not [line for line in lines if "stop paying" in line], (
+        "`down` is a step towards `delete`, and is never offered as what stops "
+        "this box's bill")
 
 
 def test_the_plan_for_a_reserved_box_says_what_it_costs_before_it_is_made():

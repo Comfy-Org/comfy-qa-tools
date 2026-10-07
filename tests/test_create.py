@@ -1522,9 +1522,9 @@ def refused_by_one_reservation(**kwargs):
 
 
 RAW_DELETE = (f"gcloud compute instances delete comfy-linux --zone=us-central1-a "
-              f"--project={PROJECT}")
+              f"--project={PROJECT} --delete-disks=all --quiet")
 RAW_RELEASE = (f"gcloud compute reservations delete comfy-linux-rsv "
-               f"--zone=us-central1-a --project={PROJECT}")
+               f"--zone=us-central1-a --project={PROJECT} --quiet")
 
 
 def test_a_box_the_host_list_does_not_hold_is_not_given_a_comfy_qat_command():
@@ -1672,7 +1672,7 @@ def test_reserving_what_does_not_fit_is_not_announced_as_taking_it():
 # in this module that reaches it.
 
 WITH_ITS_DISK = (f"gcloud compute instances delete comfy-linux --zone=us-central1-a "
-                 f"--project={PROJECT} --delete-disks=all")
+                 f"--project={PROJECT} --delete-disks=all --quiet")
 
 
 def test_the_limit_refusal_deletes_an_undeclared_box_with_its_disk():
@@ -1691,7 +1691,8 @@ def test_the_limit_refusal_with_no_project_still_takes_the_disk():
                         [bound("comfy-linux", "comfy-linux-rsv")],
                         reservations=[held_for("comfy-linux", in_use=1)])
     assert ("gcloud compute instances delete comfy-linux --zone=us-central1-a "
-            "--delete-disks=all") in [line.strip() for line in check.problem().fix.splitlines()]
+            "--delete-disks=all --quiet") in [
+                line.strip() for line in check.problem().fix.splitlines()]
 
 
 @pytest.mark.parametrize("asked", [dict(zone="us-central1-a"), dict(region="us-central1"), {}],
@@ -1708,7 +1709,7 @@ def test_the_full_region_refusal_deletes_an_undeclared_box_with_its_disk(asked, 
         ordered(instances, held, config=tmp_path / "hosts.toml", **asked)
 
     assert (f"gcloud compute instances delete one --zone=us-central1-b "
-            f"--project={PROJECT} --delete-disks=all") in [
+            f"--project={PROJECT} --delete-disks=all --quiet") in [
                 line.strip() for line in caught.value.fix.splitlines()]
 
 
@@ -1722,7 +1723,9 @@ def test_no_instance_delete_this_module_hands_over_leaves_the_disk():
     lines = [line for line in inspect.getsource(module).splitlines()
              if "compute instances delete" in line and not line.strip().startswith("#")]
     assert lines, "the remedy this guards has gone, or moved out of this module"
-    assert all("--delete-disks=all" in line for line in lines), lines
+    assert all("--delete-disks=all --quiet" in line for line in lines), (
+        "and --quiet with it: without it gcloud asks, and a script that cannot "
+        f"answer exits 1 with the box and its disk still billing — {lines}")
 
 
 # --- recheck: the full-region refusal on the --zone path is handed the host list -----
@@ -1937,7 +1940,7 @@ def test_every_create_remedy_in_the_package_modules_this_file_covers_is_listed()
 # same question of the same records.
 
 B_DELETE = (f"gcloud compute instances delete renamed-box --zone=us-central1-a "
-            f"--project={PROJECT} --delete-disks=all")
+            f"--project={PROJECT} --delete-disks=all --quiet")
 
 
 def bound_by_another_name(**kwargs):
@@ -2029,7 +2032,7 @@ def test_the_full_region_refusal_names_the_box_that_is_really_on_it(tmp_path):
 
     assert "nothing is on it" not in caught.value.fix
     assert (f"gcloud compute instances delete another-name --zone=us-central1-b "
-            f"--project={PROJECT} --delete-disks=all") in caught.value.fix
+            f"--project={PROJECT} --delete-disks=all --quiet") in caught.value.fix
 
 
 # --- review: one set of words for "no GPU", not two ---------------------------------
@@ -2082,3 +2085,121 @@ def test_this_module_keeps_no_copy_of_helpers_the_reservation_module_exports():
     source = inspect.getsource(create)
     assert "rsv._outside" not in source and "rsv._tail" not in source
     assert "rsv.outside(" in source and "rsv.zone_of(" in source
+
+
+# --- live pass: the release command is one function's, flags and all ----------------
+
+
+def test_the_release_command_this_module_prints_is_the_reservation_modules_own():
+    """With and without a project. There was a trim here for a trailing
+    `--project=`; the function that writes the command now leaves the flag out
+    itself, so a second opinion about its shape is a second thing to drift."""
+    from comfy_qa import create
+
+    assert not hasattr(create, "_release_command")
+    theirs = held_for("x", ours=False, name="training-hold")
+    with_project = gate(1, [], [theirs]).problem().fix
+    assert rsv.delete_command("training-hold", "us-central1-a", PROJECT) in with_project
+    assert with_project.strip().endswith("--quiet")
+
+    bare = check_quota(CARDS["t4"], [T4_QUOTA, ceiling(1)], [], reservations=[theirs])
+    assert rsv.delete_command("training-hold", "us-central1-a", "") in bare.problem().fix
+    assert "--project" not in bare.problem().fix
+
+
+# --- live pass D1: one region tried because it was named is not "every region" ------
+#
+# Printed on a real project, 2026-10-06, by `create --os linux --gpu t4
+# --reserve --name qatest-rsv --region us-central1 --yes`:
+#
+#     every zone tried is out of T4 capacity: us-central1-a, us-central1-b,
+#     us-central1-c, us-central1-f. That is every region this project can use
+#     the card in, so there is nowhere left to try right now.
+#
+# The same project, unnarrowed, four minutes earlier: 23 usable regions.
+
+US_CENTRAL1 = ("us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f")
+
+
+def narrowed_to_one_region(blueprint, cloud):
+    from dataclasses import replace
+
+    ordering = replace(
+        Ordering(zones=US_CENTRAL1, regions=("us-central1",), offering=("us-central1",)),
+        narrowed_to="us-central1")
+    with pytest.raises(LifecycleError) as caught:
+        build(cloud, blueprint, ordering, PROJECT, lambda _line: None)
+    return caught.value
+
+
+def test_a_stockout_in_the_region_that_was_named_is_not_called_everywhere():
+    qatest = Blueprint(name="qatest-rsv", image=IMAGES["linux"], card=CARDS["t4"],
+                       reserve=True)
+    problem = narrowed_to_one_region(qatest, _NothingToReserve())
+    message = str(problem)
+
+    assert problem.kind == EXHAUSTED
+    assert message.startswith(
+        "every zone tried is out of T4 capacity: us-central1-a, us-central1-b, "
+        "us-central1-c, us-central1-f.")
+    assert "every region this project can use" not in message
+    assert "nowhere left to try" not in message
+    assert "us-central1, the region you named with --region" in message
+    assert "Nothing was created and nothing is billing." in message
+    assert _creates(problem.fix) == [
+        "comfy-qat create --os linux --gpu t4 --reserve --name qatest-rsv"]
+    assert "drop --region and let this pick" in problem.fix
+    assert "--region us-central1" not in problem.fix
+
+
+def test_the_same_stockout_for_a_plain_box_offers_the_plain_command():
+    refuse = {zone: STOCKOUT for zone in US_CENTRAL1}
+    problem = narrowed_to_one_region(LINUX_T4, Cloud(refuse=refuse))
+
+    assert "us-central1, the region you named with --region" in str(problem)
+    assert _creates(problem.fix) == ["comfy-qat create --os linux --gpu t4"]
+    assert "--reserve" not in problem.fix
+
+
+def test_a_stockout_everywhere_with_no_region_named_still_says_everywhere():
+    """The pair: the sentence is true when nothing narrowed the search."""
+    ordering = Ordering(zones=US_CENTRAL1, regions=("us-central1",),
+                        offering=("us-central1",))
+    with pytest.raises(LifecycleError) as caught:
+        build(Cloud(refuse={zone: STOCKOUT for zone in US_CENTRAL1}), LINUX_T4, ordering,
+              PROJECT, lambda _line: None)
+    assert "That is every region this project can use the card in" in str(caught.value)
+    assert "--region" not in str(caught.value)
+
+
+def test_naming_a_region_is_carried_into_the_ordering(tmp_path):
+    """`build` can only say "the region you named" if `order_zones` told it."""
+    check = gate(4, [], [])
+    named = order_zones(T4Cloud(), PROJECT, LINUX_T4, check, region="us-central1",
+                        probe=lambda region: 10.0, config=tmp_path / "hosts.toml")
+    free = order_zones(T4Cloud(), PROJECT, LINUX_T4, check,
+                       probe=lambda region: 10.0, config=tmp_path / "hosts.toml")
+
+    assert named.narrowed_to == "us-central1"
+    assert free.narrowed_to == ""
+
+
+# --- live pass D2: the ending for a reserved box is two commands, in order ----------
+#
+# `comfy-qat delete qatest-rsv` straight after `create --reserve` answered, on a
+# real box: "qatest-rsv is running, not stopped. Stop it first", exit 2. The
+# one line the ending offered was a command that is refused as printed.
+
+
+def test_the_ending_for_a_reserved_box_stops_it_before_it_deletes_it():
+    from comfy_qa import create
+
+    lines = create.next_steps(T4_BLUEPRINT, "us-central1-a")
+    down = "  comfy-qat down comfy-linux     # first — delete refuses a box that is running"
+    delete = rsv.stop_line("comfy-linux")
+
+    assert lines[-2:] == [down, delete]
+    assert lines[-3] == rsv.bill("comfy-linux")
+    assert not [line for line in lines if "stop paying" in line], (
+        "`down` is a step here, never the thing that stops this box's bill")
+    assert create.reserved_stop_lines("comfy-linux") == [down, delete]
