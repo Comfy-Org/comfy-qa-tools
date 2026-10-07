@@ -14,6 +14,7 @@ live; the reservation spelling of the path has not been.
 from __future__ import annotations
 
 import inspect
+import shlex
 
 import pytest
 
@@ -143,6 +144,29 @@ def test_releasing_a_reservation_is_exactly_this_command():
         "compute", "reservations", "delete", "comfy-linux-rsv",
         "--zone=us-central1-a", "--project=proj", "--quiet",
     ], False)]
+
+
+@pytest.mark.parametrize("name,zone,project", [
+    ("comfy-linux-rsv", "us-central1-a", "proj"),
+    ("qatest-orph-rsv", "europe-west4-b", "another-project-1"),
+])
+def test_the_release_printed_for_a_person_is_the_release_this_tool_sends(name, zone, project):
+    """Two spellings of one command: the argv `delete_reservation` runs, and
+    the line `reservation.delete_command` prints for somebody to paste. They
+    drifted once — the tool's own carried `--quiet` and the printed one did
+    not, so the printed one stopped at a prompt nobody was there to answer.
+
+    Compared whole, word for word, so a flag added to either is a flag the
+    other must carry.
+    """
+    gc, calls = recording("")
+    gc.delete_reservation(name, zone, project)
+    sent = calls[0][0]
+
+    printed = shlex.split(reservation.delete_command(name, zone, project))
+
+    assert printed == ["gcloud", *sent]
+    assert "--quiet" in sent, "the comparison must be against a release that does not ask"
 
 
 def test_releasing_a_reservation_waits_under_the_instance_clock():

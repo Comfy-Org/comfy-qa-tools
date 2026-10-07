@@ -155,8 +155,33 @@ def test_the_stop_line_names_delete_and_not_down():
 def test_the_delete_command_is_googles_own_and_complete():
     assert reservation.delete_command("qatest-rsv", "us-central1-a", "proj") == (
         "gcloud compute reservations delete qatest-rsv --zone=us-central1-a "
-        "--project=proj"
+        "--project=proj --quiet"
     )
+
+
+def test_the_delete_command_does_not_stop_to_ask():
+    """Run exactly as printed with nobody to answer — a script, an agent — a
+    `reservations delete` without `--quiet` asks `Do you want to continue
+    (Y/n)?`, exits 1 and deletes nothing. Seen on a real project: the
+    reservation stayed, and went on billing, behind a command this tool had
+    printed as the way to stop that."""
+    words = reservation.delete_command("qatest-rsv", "us-central1-a", "proj").split()
+
+    assert "--quiet" in words
+    assert words[:4] == ["gcloud", "compute", "reservations", "delete"], (
+        "it must still be the delete it says it is")
+
+
+def test_with_no_project_in_hand_the_flag_is_left_out_not_printed_empty():
+    """`--project= --quiet` is a command gcloud refuses. `create` used to trim
+    a trailing ` --project=` off this line itself; with `--quiet` after it the
+    trim matched nothing, so the rule lives here now, where the line is built."""
+    assert reservation.delete_command("qatest-rsv", "us-central1-a", "") == (
+        "gcloud compute reservations delete qatest-rsv --zone=us-central1-a --quiet")
+    assert "--project" not in reservation.delete_command("qatest-rsv", "us-central1-a", None)
+    # What `create._release_command` does to it today must leave it whole.
+    assert reservation.delete_command("qatest-rsv", "us-central1-a", "").removesuffix(
+        " --project=").endswith("--zone=us-central1-a --quiet")
 
 
 # --- reading Google's records ------------------------------------------------

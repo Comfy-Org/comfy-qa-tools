@@ -480,8 +480,19 @@ def orphans(reservations: list[Reservation], instances: list[dict]) -> list[Rese
 
 
 def delete_command(name: str, zone: str, project: str) -> str:
-    """Google's own command to release a reservation, for a person to paste."""
-    return f"gcloud compute reservations delete {name} --zone={zone} --project={project}"
+    """Google's own command to release a reservation, for a person to paste.
+
+    With `--quiet`, as `Gcloud.delete_reservation` sends it. Without it gcloud
+    asks `Do you want to continue (Y/n)?`, and run with nobody to answer — in a
+    script, by an agent — it exits 1 and deletes nothing, so the reservation
+    this line was printed to release stays and keeps billing.
+
+    With no project in hand the flag is left out rather than printed empty:
+    `--project=` is refused, and without it gcloud uses the project it is
+    pointed at, which is the one this tool follows.
+    """
+    where = f"--zone={zone} --project={project}" if project else f"--zone={zone}"
+    return f"gcloud compute reservations delete {name} {where} --quiet"
 
 
 def bill(name: str) -> str:
