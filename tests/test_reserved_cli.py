@@ -63,6 +63,8 @@ BILL = ("comfy-linux is reserved. Google holds its capacity and bills for it "
         "every hour — running or stopped — until the box is deleted.")
 DELETE_LINE = ("  comfy-qat delete comfy-linux   # the only thing that stops a "
                "reserved box's bill — the box and its disk go too")
+FIRST_DOWN = ("  comfy-qat down comfy-linux     # first — delete refuses a box "
+              "that is running")
 
 # A host list that already holds one reserved box, the way `create --reserve`
 # writes it.
@@ -273,8 +275,18 @@ def test_a_reserved_create_ends_on_the_bill_and_not_on_stop_paying(run):
 
     ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
     assert BILL in flat(ending)
-    assert DELETE_LINE in ending.splitlines()
-    assert "stop paying" not in ending and "comfy-qat down" not in ending
+    lines = ending.splitlines()
+    # Both steps, in order: the box is running, and `delete` refuses a running
+    # box. The rule is not that `down` is absent — it is that `down` is never
+    # said to stop the bill, and `delete` is.
+    assert DELETE_LINE in lines and FIRST_DOWN in lines
+    assert lines.index(FIRST_DOWN) + 1 == lines.index(DELETE_LINE)
+    assert "stop paying" not in ending
+    for line in lines:
+        if "comfy-qat down" in line:
+            why = line.partition("#")[2]
+            assert "bill" not in why and "paying" not in why, line
+    assert "bill" in DELETE_LINE.partition("#")[2]
 
 
 def test_the_confirmation_for_a_reserved_box_says_what_a_yes_costs(run):
@@ -419,7 +431,7 @@ def test_a_reservation_nobody_declared_still_holds_the_ceiling(run):
     assert "held by 1 reservation: made-by-hand (us-central1-a)" in flat(result.output)
     assert offered(result.output) == []
     assert (f"gcloud compute reservations delete made-by-hand --zone=us-central1-a "
-            f"--project={PROJECT}") in result.output
+            f"--project={PROJECT} --quiet") in result.output
 
 
 # --- the reservations read fails ----------------------------------------------
@@ -528,7 +540,7 @@ def test_a_reservation_of_that_name_this_tool_did_not_make_is_not_taken_over(run
     said = flat(result.output)
     assert "1 of it is held by 1 reservation: comfy-linux-rsv (us-central1-b)" in said
     assert (f"gcloud compute reservations delete comfy-linux-rsv "
-            f"--zone=us-central1-b --project={PROJECT}") in result.output
+            f"--zone=us-central1-b --project={PROJECT} --quiet") in result.output
     assert "reusing reservation" not in result.output
     assert offered(result.output) == [], "it offered `comfy-qat delete` for a stranger's"
 
@@ -574,10 +586,13 @@ def test_a_reserved_box_that_could_not_be_recorded_says_two_things_are_billing(
     lines = [line.strip() for line in result.output.splitlines()]
     stop = (f"gcloud compute instances stop comfy-linux --zone=europe-west4-a "
             f"--project={PROJECT}")
+    # Each whole, as it has to be pasted: `--delete-disks=all` so the disk
+    # goes with the box, and `--quiet` on both, because either one stops to
+    # ask without it and a script that pasted it exits 1 with both bills on.
     gone = (f"gcloud compute instances delete comfy-linux --zone=europe-west4-a "
-            f"--project={PROJECT} --delete-disks=all")
+            f"--project={PROJECT} --delete-disks=all --quiet")
     release = (f"gcloud compute reservations delete comfy-linux-rsv "
-               f"--zone=europe-west4-a --project={PROJECT}")
+               f"--zone=europe-west4-a --project={PROJECT} --quiet")
     assert stop in " ".join(lines)
     # ALL of what ends both bills, in the order it has to be run. The fix used
     # to say the reservation is released "after the box is deleted" and print
@@ -687,6 +702,26 @@ def test_discover_adopts_a_reserved_box_with_its_reservation_and_says_what_it_co
             ) in flat(result.stdout)
     assert ("  comfy-qat delete their-box   # the only thing that stops a reserved "
             "box's bill — the box and its disk go too") in result.stdout.splitlines()
+    # Stopped, so `delete` is the next step and no `down` is put before it.
+    assert "comfy-qat down" not in result.stdout
+
+
+def test_discover_adopting_a_reserved_box_that_is_running_says_to_stop_it_first(run):
+    """`delete` refuses a running box, so for one that is running the delete
+    line alone is a command that exits 2 as pasted. Both steps, in order."""
+    found = box("their-box", status="RUNNING", bound="their-rsv")
+    found["disks"][0]["licenses"] = [f"{URL}/global/licenses/ubuntu-2204-lts"]
+    result = run("discover", cloud=Project(instances=[found]))
+
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    first = ("  comfy-qat down their-box     # first — delete refuses a box that "
+             "is running")
+    delete = ("  comfy-qat delete their-box   # the only thing that stops a "
+              "reserved box's bill — the box and its disk go too")
+    assert first in lines and delete in lines
+    assert lines.index(first) + 1 == lines.index(delete)
+    assert "stop paying" not in result.stdout
 
 
 def test_discover_says_nothing_about_reserving_for_a_box_that_is_not(run):
@@ -759,9 +794,9 @@ def test_a_reserved_box_that_is_in_no_host_list_gets_googles_commands_not_ours(r
     # `auto-delete=no`, so the instance delete without it leaves the disk
     # billing with nothing attached.
     box = (f"gcloud compute instances delete comfy-linux --zone=us-central1-a "
-           f"--project={PROJECT} --delete-disks=all")
+           f"--project={PROJECT} --delete-disks=all --quiet")
     release = (f"gcloud compute reservations delete {RSV} --zone=us-central1-a "
-               f"--project={PROJECT}")
+               f"--project={PROJECT} --quiet")
     assert box in lines and release in lines
     assert lines.index(box) < lines.index(release), "the box goes before its reservation"
 

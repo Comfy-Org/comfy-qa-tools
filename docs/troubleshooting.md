@@ -901,11 +901,17 @@ What the fix prints depends on what the reservation is:
 - **its box is on the project and in no entry of yours** — a create that died
   before the entry was written, or somebody else's box. This tool cannot name
   it, so you get Google's commands for both, the box first:
-  `gcloud compute instances delete <box> --zone=<zone> --project=<project> --delete-disks=all` and
+  `gcloud compute instances delete <box> --zone=<zone> --project=<project> --delete-disks=all --quiet` and
   then the reservation's. Check whose it is first.
 - **nothing is on it** — Google's own command for the reservation alone:
-  `gcloud compute reservations delete <name> --zone=<zone> --project=<project>`.
+  `gcloud compute reservations delete <name> --zone=<zone> --project=<project> --quiet`.
   Check whose it is before running that on one you did not make.
+
+Every delete this tool prints ends `--quiet`. Without it gcloud stops to ask
+`Do you want to continue (Y/n)?`, and with no terminal to answer — a script, an
+agent — it exits 1 and deletes nothing, so the thing keeps billing. `--quiet`
+means the command runs as soon as you paste it, which is why each one says to
+check whose it is first.
 
 A reservation left by an earlier run of the **same** create is not counted
 against it: that is the card this box is about to sit on. See "A reservation an
@@ -1251,8 +1257,23 @@ lists everywhere the grant reaches.
 The other half of the message above, and the difference is the whole point of
 both. This one really does mean everywhere: every region where this project holds
 the card's quota *and* Google offers the card was tried, so there is no `--region`
-left to name. Nothing was made, so there is nothing to clean up and nothing to
+left to name. It is printed only when nothing narrowed the search — after
+`--region` or `--zone` you get one of the two messages below instead. Nothing was made, so there is nothing to clean up and nothing to
 stop. Wait, or use a card you also have quota for — `comfy-qat quota list`.
+
+**`every zone tried is out of L4 capacity: us-central1-a, us-central1-b, us-central1-c. That is every zone this could use in us-central1, the region you named with --region — not everywhere this project can use the card. Nothing was created and nothing is billing.`**
+What you get after `--region` when that region is out. One region was tried
+because one was named, so this says exactly that and no more: it is **not** the
+message above, and the rest of the project's regions were never contacted. On a
+real project with 23 usable regions, this case used to print "every region this
+project can use the card in, so there is nowhere left to try" about the single
+region `--region` named.
+
+The fix line gives the same create without `--region`, which lets the tool pick
+from everywhere the grant reaches — keeping `--reserve` and the name when you
+asked for them. Or wait: a stockout usually clears in minutes to hours, and
+stock for a *reservation* is narrower and moves faster than stock for a plain
+box.
 
 **`every zone tried is out of L4 capacity: us-central1-f. Nothing was created and nothing is billing.`**
 The same refusal with no sentence about scope, which is what you get after
@@ -2567,7 +2588,7 @@ it does next depends on what it finds:
   comfy-linux-rsv (us-central1-c) is on <project> and may have been comfy-linux's, but nothing
   establishes that it was — it is not one this tool made for comfy-linux in us-central1-c — so
   it is left alone, and it is still billing. Check whose it is, then release it:
-    gcloud compute reservations delete comfy-linux-rsv --zone=us-central1-c --project=<project>
+    gcloud compute reservations delete comfy-linux-rsv --zone=us-central1-c --project=<project> --quiet
   ```
 
 - **None.** Only then does it say `so only the host list entry is left.`
@@ -2589,7 +2610,7 @@ left behind bills with nothing on it; look:
 ```
 
 and the delete goes ahead. If that listing shows one for the box, release it
-with `gcloud compute reservations delete <name> --zone=<zone> --project=<project>`. Add the
+with `gcloud compute reservations delete <name> --zone=<zone> --project=<project> --quiet`. Add the
 `gce_reservation` line to an entry whose box is reserved when you find one:
 `down <name>` and `delete` ask the box itself and are not misled, but `list`
 without `--live` and the other commands read the host list.
@@ -3094,7 +3115,7 @@ instance is bound to**, with Google's own command to release it:
 ```
 1 reservation on <project> has no box, and is billing:
   qatest-rsv in us-central1-a (T4)
-  gcloud compute reservations delete qatest-rsv --zone=us-central1-a --project=<project>
+  gcloud compute reservations delete qatest-rsv --zone=us-central1-a --project=<project> --quiet
 ```
 
 That is the one thing on a project that bills at a GPU's rate and appears in no
@@ -3148,10 +3169,22 @@ comfy-linux was running. Stopped — but it is reserved, so it is still billing.
 
 The same holds for a reserved box that was already stopped (`was not running —
 but it is reserved, so it is still billing`) and for one whose state could not be
-read (`It is reserved, so it is billing either way`). `up`, `go`, `logs` and
-`disconnect` end on that same `comfy-qat delete` line for a reserved box, where
-for any other box they end on `comfy-qat down <name>   # stop the box, stop
-paying`.
+read (`It is reserved, so it is billing either way`).
+
+`up`, `go` and `logs` leave a reserved box **running**, and `delete` refuses a
+running box (`is running, not stopped. Stop it first`, exit 2). So they end on
+two lines, in the order to run them, where for any other box they end on
+`comfy-qat down <name>   # stop the box, stop paying`:
+
+```
+  comfy-qat down comfy-linux     # first — delete refuses a box that is running
+  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+```
+
+`down` is there as a step and is labelled as one; it is never said to stop the
+bill. `disconnect` already prints its own `comfy-qat down <name>   # when the
+work is finished` and adds the `delete` line under it. `create --reserve` ends
+the same way as `go`.
 
 `down --all` never prints `Nothing is now.` while any declared box is reserved,
 and it reads the project's reservations before printing it at all:
@@ -3297,7 +3330,7 @@ Run the reset yourself and read what comes back; the message prints the full
 command for the box, zone and project it used:
 
 ```sh
-gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project>
+gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project> --quiet
 ```
 
 Two causes account for most of it: the box is not RUNNING — the guest agent has to
@@ -3325,7 +3358,7 @@ who signs in to that box. Run the reset yourself and read the new one off the
 screen:
 
 ```sh
-gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project>
+gcloud compute reset-windows-password <instance> --zone=<zone> --project=<project> --quiet
 ```
 
 If it is slow every time rather than once, the box is the likely cause: a Windows

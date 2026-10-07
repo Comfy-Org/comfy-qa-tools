@@ -852,12 +852,17 @@ def discover_cmd(
             # Somebody who reserved it in the console knows; somebody adopting a
             # colleague's box does not.
             from . import reservation as rsv
+            from .create import reserved_stop_lines
 
             for box, _port in additions:
                 if box.reservation:
                     say.result("")
                     _prose(rsv.bill(box.name))
-                    say.result(rsv.stop_line(box.name))
+                    # Both steps for one that is running: `delete` refuses
+                    # a running box. `discover` read which it is.
+                    for line in (reserved_stop_lines(box.name) if box.running
+                                 else [rsv.stop_line(box.name)]):
+                        say.result(line)
 
         if ghosts:
             _forget(path, [host for host, _owner in ghosts], yes=yes)
@@ -1546,7 +1551,8 @@ def create_cmd(
                         "to end both bills, delete the box and then release its "
                         "reservation:",
                         f"gcloud compute instances delete {blueprint.name} "
-                        f"--zone={made_in} --project={project} --delete-disks=all",
+                        f"--zone={made_in} --project={project} "
+                        f"--delete-disks=all --quiet",
                         rsv.delete_command(blueprint.reservation, made_in,
                                            project)))
         else:
@@ -1679,8 +1685,18 @@ def _act(action, *args, **kwargs):
         say.fail(exc, code=2 if getattr(exc, "refusal", False) else 1)
 
 
-def _stop_line(host: Host, *, reserved: bool | None = None) -> str:
-    """The line a command ends on to say how the bill for this box is stopped.
+def _stop_line(host: Host, *, reserved: bool | None = None,
+               running: bool = True) -> str:
+    """What a command ends on to say how the bill for this box is stopped.
+
+    FOR A RESERVED BOX THAT IS RUNNING IT IS TWO LINES, `down` then `delete`.
+    `delete` is what ends the bill, and `delete` refuses a running box — so
+    after `go`, `up` or `logs`, the single line this used to print was a
+    command that exits 2 as pasted. Found on a real box. `create.
+    reserved_stop_lines` is the pair, and `create`'s own sign-off prints the
+    same one. `running=False` is for the caller that has just stopped the
+    machine, or prints its own `down` line above: there the `delete` line
+    alone is the next thing to run.
 
     `reserved` is for the caller that asked Google and knows better than the
     entry — `down <name>` on a box bound to a reservation its entry does not
@@ -1707,6 +1723,10 @@ def _stop_line(host: Host, *, reserved: bool | None = None) -> str:
     from .lifecycle import stop_paying
 
     if host.reservation if reserved is None else reserved:
+        if running:
+            from .create import reserved_stop_lines
+
+            return "\n".join(reserved_stop_lines(host.name))
         return rsv.stop_line(host.name)
     return f"  {stop_paying(host)}   # stop the box, stop paying"
 
@@ -1804,7 +1824,8 @@ def _say_reserved(gc, hosts: list[Host], reservations) -> None:
             f"\nstill billing, stopped or not — "
             f"{'it is' if len(held) == 1 else 'they are'} reserved: {names}.")
         for host in held:
-            say.result(_stop_line(host))
+            # Stopped a moment ago by this run, so `delete` is the next step.
+            say.result(_stop_line(host, running=False))
 
     if not reservations:
         _prose("\nthere was no project to ask about reservations, and a "
@@ -2042,8 +2063,10 @@ def disconnect_cmd(
     if host.reservation:
         # `down` is still how the machine is stopped when the work is done, so
         # the line above stays. What it must not be left to imply is that the
-        # bill stops with it.
-        say.result(_stop_line(host))
+        # bill stops with it. `running=False`: the `down` step is the line
+        # above, so this adds the `delete` that follows it and not a second
+        # `down`.
+        say.result(_stop_line(host, running=False))
 
 
 @app.command("down")
@@ -2343,7 +2366,10 @@ def down_cmd(
                    f"is bound to the reservation {bound}, which bills every "
                    f"hour whether the box runs or not.")
         # Told, not left to read the entry: the entry is what did not know.
-        say.result(_stop_line(host, reserved=True))
+        # The machine is stopped on every verdict but "left running", and only
+        # there is `down` still a step before `delete`.
+        say.result(_stop_line(host, reserved=True,
+                              running=verdict == "billing"))
         return
     say.result({
         "caught": f"\n{host.name} was billing. Stopped.",
@@ -2659,7 +2685,7 @@ def rdp_cmd(
                 "nothing printed the new one, so reset it again and read it off "
                 "the screen:",
                 f"gcloud compute reset-windows-password {host.gce_instance} "
-                f"--zone={host.gce_zone} --project={host.gce_project}",
+                f"--zone={host.gce_zone} --project={host.gce_project} --quiet",
             ],
             note=(f"anyone else signing in to {host.name} is holding a password "
                   f"that may no longer work"),
@@ -2716,7 +2742,8 @@ def rdp_cmd(
                     "run the reset yourself and read the password off the "
                     "screen:",
                     f"gcloud compute reset-windows-password {host.gce_instance} "
-                    f"--zone={host.gce_zone} --project={host.gce_project}",
+                    f"--zone={host.gce_zone} --project={host.gce_project} "
+                    f"--quiet",
                 ),
                 code=1,
                 blank_line=False,
@@ -2753,7 +2780,8 @@ def rdp_cmd(
                  fix=say.fix(
                      "run the reset yourself and read what comes back:",
                      f"gcloud compute reset-windows-password {host.gce_instance} "
-                     f"--zone={host.gce_zone} --project={host.gce_project}"),
+                     f"--zone={host.gce_zone} --project={host.gce_project} "
+                     f"--quiet"),
                  code=1)
 
     say.result(f"user     {user}")

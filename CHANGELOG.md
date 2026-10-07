@@ -18,13 +18,15 @@ That last sentence is most of the work. Until this release, "stop the box" and
 summaries and twenty-eight failure fixes. Every one of them is false about a
 reserved box, and each now says the reserved form instead.
 
-**None of this has been run against a real project yet.** It is tested against a
-fake cloud that keeps state — a reservation that is made is listed until it is
-released — and three things about Google are assumed rather than observed: that
-a reservation counts against GPU quota as a running box does, that one for a
-card built into its machine type is made without naming the card, and that one
-can be released while a stopped box still targets it. Phase V of
-[the acceptance pack](docs/test-criteria.md) is the run that finds out.
+**The feature set was run on real Google Compute Engine boxes on 2026-10-07**: a
+reserved L4 box, a box with no GPU, the limit, `list` and `delete`. A reserved T4
+box could not be run, for lack of stock. That run observed the three things
+about Google this release had assumed — a reservation counts against GPU quota
+as a running box does, one for a card built into its machine type is made
+without naming the card, and one can be released while a stopped box still
+targets it — and found four defects, fixed below. Paths that need a GPU ceiling
+above 1 have not been run for real; see Phase V of
+[the acceptance pack](docs/test-criteria.md).
 
 ### Added
 
@@ -110,6 +112,12 @@ can be released while a stopped box still targets it. Phase V of
 
 ### Fixed
 
+- **Found on real boxes, 2026-10-07.** Every `gcloud … delete` printed for you to
+  paste now ends `--quiet`; without it gcloud stops to ask, and from a script it
+  exits 1 with the thing still billing. After `create --reserve`, `go`, `up` and
+  `logs` on a reserved box the remedy is two lines, `comfy-qat down` then
+  `comfy-qat delete` — `delete` alone is refused while the box runs. A stock-out
+  after `--region` says it tried that region, not "every region".
 - `down <name>` trusted the host list alone, and told a box that was reserved
   without a `gce_reservation` line `was billing. Stopped.` It now reads the
   instance's own record, as `delete` does: bound to a reservation, it gets the

@@ -378,25 +378,30 @@ def test_a_reservation_with_no_box_is_named_with_its_delete_command(cli):
     assert (f"1 reservation on {PROJECT} has no box, and is billing:\n"
             f"  qatest-rsv in {ZONE} (T4)\n"
             f"  gcloud compute reservations delete qatest-rsv --zone={ZONE} "
-            f"--project={PROJECT}\n") in result.stdout
+            f"--project={PROJECT} --quiet\n") in result.stdout
 
 
 def test_the_orphan_delete_command_is_googles_own_and_parses_whole(cli):
     """It cannot be pasted into this CLI — it is gcloud's — so it is held to
     what E1's layer sends for the same release: same verb, same three values,
-    one unwrapped line a shell reads as eight words."""
+    one unwrapped line a shell reads as eight words — the eighth being
+    `--quiet`, without which gcloud stops to ask and a script that pasted it
+    exits 1 with the reservation still billing."""
     result = cli("--live", cloud=Cloud(
         reservations=[reserved("qatest-rsv", box="qatest")]))
     line = next(text.strip() for text in result.stdout.splitlines()
                 if "reservations delete" in text)
     words = shlex.split(line)
     assert words[:5] == ["gcloud", "compute", "reservations", "delete", "qatest-rsv"]
-    assert sorted(words[5:]) == [f"--project={PROJECT}", f"--zone={ZONE}"]
+    assert sorted(words[5:]) == [f"--project={PROJECT}", "--quiet", f"--zone={ZONE}"]
+    assert len(words) == 8
 
     sent: list[list[str]] = []
     real = RealGcloud(runner=lambda args, mode: sent.append(args) or "")
     real.delete_reservation("qatest-rsv", ZONE, PROJECT)
-    assert ["gcloud", *[arg for arg in sent[0] if arg != "--quiet"]] == words
+    # Word for word what the tool itself sends, `--quiet` and all: the printed
+    # command used to be that one with the flag taken off.
+    assert ["gcloud", *sent[0]] == words
 
 
 def test_a_reservation_with_its_box_on_it_gets_no_orphan_block(cli):

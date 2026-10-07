@@ -931,22 +931,33 @@ echo "=== K7 and Google agrees"; gcloud compute instances list
 
 ## Phase V — reserved boxes, the limit, and a box with no GPU *(V1–V3 free; the rest bills, and the reserved box bills STOPPED)*
 
-**New in 1.3.0, and nothing in this phase has been run on hardware.** Every
-check here is green against a fake cloud that keeps state; none has met Google.
-That matters more than usual, because three things this phase depends on are
-assumptions about Google rather than observations, and this is the phase that
-finds out:
+**New in 1.3.0. The feature set was run on real Google Compute Engine boxes on
+2026-10-07**, on a project with a GPU ceiling of 1: a reserved L4 box (create,
+stop, start twice, `go`, `stamp`, the refused `move`, delete), a box with no GPU,
+the limit, `list` and `list --live`, and `delete`. The boxes below are left
+unticked: that run followed its own script, not this one step for step, so this
+phase has still to be walked as written.
 
-- that a **reservation counts against GPU quota** the way a running box does
-  (V9 is refused by *this tool* on that assumption — V9c is how you tell whether
-  Google agrees);
-- that `gcloud compute reservations delete` **succeeds while a stopped box still
+Three things this phase depended on were assumptions about Google. That run
+observed all three:
+
+- a **reservation counts against GPU quota** the way a running box does — the
+  card's regional quota and `GPUS_ALL_REGIONS` both, from the moment it is made,
+  with no box; and a box on its own reservation is not counted a second time;
+- `gcloud compute reservations delete` **succeeds while a stopped box still
   targets it**, which is the order `delete` uses (V15);
-- what a reservation for a **built-in card** (L4) looks like, and whether it is
-  made without naming the card (V19).
+- a reservation for a **built-in card** (L4) is made without naming the card,
+  and reads back with the card filled in (V19).
 
-If any of those is wrong the tool is wrong, not the tester. Record what Google
-said, verbatim.
+**Not run for real:** a reserved **T4** box through the tool, for lack of stock
+(no T4 could be reserved in any zone tried); anything that needs a ceiling above
+1 (V20, V21, V25); Ctrl-C between the reservation and the box (V23); a
+reservations read that fails (V24); and the bill itself (V26).
+
+Four defects from that run were fixed before release: a delete command printed
+without `--quiet`, a reserved ending that offered only a `delete` the running
+box refuses, a stock-out message that said "every region" after `--region`, and
+a stock-out sign that did not match gcloud's line-wrapped error.
 
 **Read this before V6. A reserved box bills every hour, running or stopped,
 until it is deleted.** `down` does not stop it. If you stop part-way through this
@@ -1021,9 +1032,11 @@ echo "=== V8 the list, offline and then live"; qat list; qat list --live
 - [ ] **V6** — **the reservation is made first, then the box, in the same zone**:
       `reserving qa-rsv-rsv in <zone>` and then `creating qa-rsv on it`. It was
       not refused because `qa-cpu` is running — a box with no GPU holds none of
-      the GPU allowance. It ends on the bill sentence and `comfy-qat delete qa-rsv
-      # the only thing that stops a reserved box's bill …`, and **does not** print
-      `stop paying` or offer `comfy-qat down` as the way to stop the bill.
+      the GPU allowance. It ends on the bill sentence and two lines: `comfy-qat down
+      qa-rsv     # first — delete refuses a box that is running`, then `comfy-qat
+      delete qa-rsv   # the only thing that stops a reserved box's bill …`. It
+      **does not** print `stop paying`, and the `down` line is not described as
+      stopping the bill.
 - [ ] **V7** — read from Google, not from the tool: a reservation `qa-rsv-rsv`,
       `READY`, count 1, in use 1; and `qa-rsv` with `SPECIFIC_RESERVATION` naming
       it. If the box is there and unbound, or the reservation is in another zone,
@@ -1128,9 +1141,10 @@ billing at a GPU's rate:
 #   gcloud compute instances delete <name> --zone <zone> --project $P --delete-disks=all --quiet
 ```
 
-**Unless the reservation delete is what was refused** — V15's case, where Google
-will not release a reservation a stopped box still targets. Then that order
-cannot work, and it is the instance that goes first:
+**Unless the reservation delete is what was refused** — V15's case. On
+2026-10-07 Google released a reservation a stopped box still targeted, exit 0,
+so this is not expected; if it happens, that order cannot work, and it is the
+instance that goes first:
 
 ```sh
 #   gcloud compute instances delete <name> --zone <zone> --project $P --delete-disks=all --quiet

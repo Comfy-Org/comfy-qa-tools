@@ -425,7 +425,7 @@ def test_the_orphan_block_names_it_and_hands_over_googles_own_delete(hosts):
         f"1 reservation on {PROJECT} has no box, and is billing:",
         f"  qatest-rsv in {ZONE} (T4)",
         f"  gcloud compute reservations delete qatest-rsv --zone={ZONE} "
-        f"--project={PROJECT}",
+        f"--project={PROJECT} --quiet",
     ]
 
 

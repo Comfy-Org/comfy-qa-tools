@@ -556,7 +556,11 @@ RESERVED = HOSTS.replace(
 
 RSV = "comfy-linux-rsv"
 RSV_ZONE = "us-central1-c"
-RELEASE = f"gcloud compute reservations delete {RSV} --zone={RSV_ZONE} --project=proj"
+# Typed out whole, `--quiet` included: without it gcloud stops to ask, and
+# pasted into a script it exits 1 with the reservation still billing. Found on
+# a real project.
+RELEASE = (f"gcloud compute reservations delete {RSV} --zone={RSV_ZONE} "
+           f"--project=proj --quiet")
 
 
 def held(name=RSV, *, zone=RSV_ZONE, box="comfy-linux", count="1"):
@@ -971,6 +975,26 @@ def test_a_console_made_reservation_the_box_is_bound_to_is_its_own(cli, tmp_path
     assert cloud.deleted() and "comfy-linux" not in entries(tmp_path)
 
 
+def test_the_box_delete_a_shared_reservation_refusal_hands_over_does_not_prompt(cli):
+    """`gcloud compute instances delete` stops to ask "Do you want to continue
+    (Y/n)?" unless it is told `--quiet`. Pasted into a script or handed to an
+    agent, a command that waits for an answer exits 1 and deletes nothing —
+    and what it did not delete is still billing. The whole line, as printed:
+    `--delete-disks=all` so the disk goes with the box, `--quiet` so it runs."""
+    cloud = Project(instances=[box(), box("somebody-elses")])
+    result = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
+                 input="comfy-linux\n")
+
+    assert result.exit_code == 2, result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    assert ("gcloud compute instances delete comfy-linux --zone=us-central1-c "
+            "--project=proj --delete-disks=all --quiet") in lines
+    assert RELEASE in lines
+    for line in lines:
+        if line.startswith("gcloud compute") and " delete " in line:
+            assert line.endswith(" --quiet"), line
+
+
 def test_the_way_out_of_a_shared_reservation_runs_and_leaves_it_alone(cli, tmp_path):
     """The refusal hands over three lines. The first and last are Google's; the
     middle one is this tool's, so it is run — after the first has been done —
@@ -984,7 +1008,7 @@ def test_the_way_out_of_a_shared_reservation_runs_and_leaves_it_alone(cli, tmp_p
                 input="comfy-linux\n")
     lines = [line.strip() for line in first.output.splitlines()]
     assert ("gcloud compute instances delete comfy-linux --zone=us-central1-c "
-            "--project=proj --delete-disks=all") in lines
+            "--project=proj --delete-disks=all --quiet") in lines
     rerun = next(line for line in lines if line == "comfy-qat delete comfy-linux")
 
     after = gone_from_google(cloud)
@@ -1273,7 +1297,7 @@ def test_this_tools_reservation_for_the_box_in_another_zone_is_named_not_release
     assert result.exit_code == 0, result.output
     assert cloud.released() == []
     assert ("  gcloud compute reservations delete comfy-linux-rsv "
-            "--zone=us-east1-b --project=proj") in result.stdout.splitlines()
+            "--zone=us-east1-b --project=proj --quiet") in result.stdout.splitlines()
     assert ONLY_THE_ENTRY not in flat(result.stdout)
 
 

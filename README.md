@@ -27,10 +27,10 @@ never collide on `PATH`.
 run against real GCE hardware on both Linux and Windows**.
 
 What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
-cost columns in `list` — is tested against a fake cloud that keeps state. **It
-has not yet been run against a real project**, so what Google actually does with
-a reservation (how it counts against quota, whether it can be released while a
-stopped box still targets it) is this tool's assumption until it has been.
+cost columns in `list` — **was run on real Google Compute Engine boxes on
+2026-10-07**: a reserved L4 box, a box with no GPU, the limit, `list` and
+`delete`. A reserved T4 box could not be run, for lack of stock, and nothing that
+needs more than one GPU of quota has been run for real.
 
 The verbs are at the top level: `comfy-qat go linux`. The `host ...` and
 `auth ...` spellings were a deprecation window rather than a second permanent way

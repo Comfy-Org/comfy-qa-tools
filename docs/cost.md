@@ -47,9 +47,11 @@ and the pricing calculator: https://cloud.google.com/products/calculator
 `comfy-qat down` does not stop a reserved box's bill, and neither does anything
 else short of deleting it. The tool says so every time it would otherwise have
 said "stop paying": `down` ends on `Stopped — but it is reserved, so it is still
-billing`, `go` and `up` end on `comfy-qat delete <name>` in place of `comfy-qat
-down <name>`, and `down --all` does not print `Nothing is now.` while a reserved
-box is declared or a reservation is on the project.
+billing`, and `down --all` does not print `Nothing is now.` while a reserved
+box is declared or a reservation is on the project. `create --reserve`, `go` and
+`up` leave the box running, and `delete` refuses a running box, so they end on
+two steps: `comfy-qat down <name>`, labelled as the step that comes first and
+never as what stops the bill, and then `comfy-qat delete <name>`.
 
 ```
 comfy-linux was running. Stopped — but it is reserved, so it is still billing.
@@ -70,8 +72,10 @@ one a `create --reserve` that stopped half-way leaves, so `down --all` is the
 command to end a session on.
 
 That a reservation bills for every hour it exists, used or not, is Google's
-published pricing for reservations. This tool has no way to measure it and has
-not been run against a live reservation yet.
+published pricing for reservations. This tool has no way to measure it. The run
+on a real project on 2026-10-07 confirmed the quota side — a reservation holds
+its card against the project's allowance from the moment it is made, with its
+box running, stopped or absent — and could not observe the bill itself.
 
 ## Checking what you have spent
 

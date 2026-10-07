@@ -1394,7 +1394,9 @@ def test_the_one_stop_line_says_each_bill_in_its_own_words():
     The static guard above proves there is one place the ending is written.
     This proves what that place says: for an ordinary box, the line every
     command has always ended on; for a reserved one, the only command that
-    stops its bill — and nothing that mentions `down`.
+    stops its bill. While that box is RUNNING it is two lines, because
+    `delete` refuses a running box: `down` as a step, said to be a step and
+    never said to stop the bill, and then the `delete` line.
     """
     from comfy_qa.config import Host
     from comfy_qa.host import _stop_line
@@ -1408,10 +1410,15 @@ def test_the_one_stop_line_says_each_bill_in_its_own_words():
                 extra=(("gce_reservation", "comfy-win-rsv"),))
 
     assert _stop_line(plain) == "  comfy-qat down comfy-win   # stop the box, stop paying"
-    assert _stop_line(held) == (
-        "  comfy-qat delete comfy-win   # the only thing that stops a reserved "
-        "box's bill — the box and its disk go too")
-    assert "down" not in _stop_line(held)
+    delete = ("  comfy-qat delete comfy-win   # the only thing that stops a "
+              "reserved box's bill — the box and its disk go too")
+    first = ("  comfy-qat down comfy-win     # first — delete refuses a box that "
+             "is running")
+    assert _stop_line(held) == f"{first}\n{delete}"
+    assert _stop_line(held, running=False) == delete
+    assert "paying" not in _stop_line(held) and "bill" not in first
+    # And an entry that does not declare it, for the caller that asked Google.
+    assert _stop_line(plain, reserved=True, running=False) == delete
 
 
 # What makes a RESERVATION exist and bill, at the layer where that is a fact.
@@ -2137,3 +2144,37 @@ def test_a_project_that_cannot_be_named_is_None_not_empty():
     reporting no configured project."""
     gc = _FakeGc(project=None)
     assert host_module._undeclared_and_running(gc, [_LOCAL_ONLY]) is None
+
+
+# --- a printed command that stops to ask ---------------------------------------
+
+
+def test_no_gcloud_command_these_files_print_for_pasting_stops_to_ask():
+    """`gcloud compute instances delete` and `reset-windows-password` both stop
+    for a "(Y/n)?" unless they are told `--quiet`. Printed for somebody to
+    paste, a command that waits is one that exits 1 from a script and does
+    nothing — and for a delete, what it did not delete goes on billing. Found
+    on a real project, on the reservation delete; these are its siblings in
+    `host.py` and `remove.py`.
+
+    Read off the source: every place one of the two is BUILT, as an f-string
+    taking a name, has `--quiet` before the statement ends.
+    """
+    import inspect
+    import re
+
+    from comfy_qa import host, remove
+
+    built = re.compile(
+        r'f"gcloud compute (?:instances delete|reset-windows-password) \{')
+    found = 0
+    for module in (host, remove):
+        source = inspect.getsource(module)
+        for match in built.finditer(source):
+            found += 1
+            # To the end of the call the string is an argument of.
+            rest = source[match.start():]
+            statement = rest[:re.search(r"\)\s*\n|\],?\s*\n", rest).end()]
+            assert "--quiet" in statement, (
+                f"{module.__name__}: prints a command that prompts:\n{statement}")
+    assert found >= 5, f"only {found} found — the pattern no longer matches the source"

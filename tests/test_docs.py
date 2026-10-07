@@ -2068,14 +2068,18 @@ def test_what_the_page_says_prune_prints_for_a_reserved_ghost_is_what_it_prints(
 
 
 def test_every_release_command_the_docs_show_is_the_one_the_tool_builds():
-    """`gcloud compute reservations delete <name> --zone=… --project=…` is what
-    `list --live` and `down --all` print for a reservation with no box, and it
-    is quoted on four pages. Each whole-line quotation is held to
-    `reservation.delete_command`, so the flag spelling cannot drift."""
+    """`gcloud compute reservations delete <name> --zone=… --project=… --quiet`
+    is what `list --live` and `down --all` print for a reservation with no box,
+    and it is quoted on four pages. Each whole-line quotation is held to
+    `reservation.delete_command`, so the flag spelling cannot drift — `--quiet`
+    included, which a real run showed the command does not work without from
+    a script. The pattern takes the line with or without it, so that a page
+    that drops the flag is CAUGHT by the comparison and not skipped by the
+    search."""
     from comfy_qa import reservation
 
     shape = re.compile(r"^\s*(gcloud compute reservations delete (\S+) "
-                       r"--zone=(\S+) --project=(\S+))\s*$")
+                       r"--zone=(\S+) --project=(\S+)(?: --quiet)?)\s*$")
     quoted = []
     for page in ("machines.md", "troubleshooting.md", "cost.md"):
         for line in (DOCS / page).read_text(encoding="utf-8").splitlines():
@@ -2086,6 +2090,26 @@ def test_every_release_command_the_docs_show_is_the_one_the_tool_builds():
     assert len(quoted) >= 2, quoted
     for page, line, name, zone, project in quoted:
         assert line == reservation.delete_command(name, zone, project), (page, line)
+        assert line.endswith(" --quiet"), (page, line)
+
+
+def test_no_page_shows_a_gcloud_delete_that_stops_to_ask():
+    """Every `gcloud compute … delete` a page shows whole — on a line of its
+    own or in backticks — carries `--quiet`. Without it gcloud asks "Do you
+    want to continue (Y/n)?", and a reader who pastes it into a script gets
+    exit 1 and the thing still billing. A command only NAMED in prose (`the
+    gcloud compute reservations delete line`) has no flags and is not one."""
+    whole = re.compile(r"gcloud compute (?:instances|reservations|disks|snapshots) "
+                       r"delete [^`\n]*--project[= ][^`\n]*")
+    shown = []
+    for page in sorted(DOCS.glob("*.md")) + [DOCS.parent / "README.md"]:
+        if page.name == "tests-that-cannot-fail.md":
+            continue  # a history of defects, quoted as they were
+        for found in whole.findall(page.read_text(encoding="utf-8")):
+            shown.append((page.name, found.strip()))
+
+    assert len(shown) >= 8, shown
+    assert [item for item in shown if "--quiet" not in item[1]] == []
 
 
 def test_the_entry_for_a_failed_reservations_read_hands_over_a_command(tmp_path):

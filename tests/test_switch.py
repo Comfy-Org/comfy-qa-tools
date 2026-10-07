@@ -1118,8 +1118,10 @@ def test_the_refusal_offers_comfy_qat_only_for_a_box_the_host_list_really_holds(
     said = _refusal(capsys, gc, target, [namesake], [target, namesake])
 
     assert "comfy-qat down" not in said and "comfy-qat delete" not in said, said
-    assert f"gcloud compute instances delete held --zone=us-central1-a --project={P}" in said
-    assert f"gcloud compute reservations delete held-rsv --zone=us-central1-a --project={P}" in said
+    assert (f"gcloud compute instances delete held --zone=us-central1-a --project={P} "
+            f"--delete-disks=all --quiet") in said
+    assert (f"gcloud compute reservations delete held-rsv --zone=us-central1-a "
+            f"--project={P} --quiet") in said
 
 
 def test_the_refusal_names_a_declared_box_by_what_the_host_list_calls_it(capsys):

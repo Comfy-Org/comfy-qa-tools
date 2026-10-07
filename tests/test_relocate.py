@@ -812,8 +812,8 @@ def test_a_reservation_with_no_box_is_released_with_googles_own_command():
     problem = blocked(moving(), survey_with(gc))
 
     assert problem is not None
-    assert ("gcloud compute reservations delete made-by-hand --zone=us-central1-a "
-            in problem.fix)
+    assert (f"gcloud compute reservations delete made-by-hand --zone=us-central1-a "
+            f"--project={WIN.gce_project} --quiet") in problem.fix
     assert "comfy-qat delete" not in problem.fix
     assert "comfy-qat down" not in problem.fix
 
@@ -908,8 +908,9 @@ def test_a_reserved_box_the_host_list_does_not_hold_gets_no_comfy_qat_command():
 
     assert "comfy-qat down" not in problem.fix and "comfy-qat delete" not in problem.fix
     assert (f"gcloud compute instances delete held --zone=us-central1-a "
-            f"--project={WIN.gce_project}") in problem.fix
-    assert "gcloud compute reservations delete held-rsv" in problem.fix
+            f"--project={WIN.gce_project} --delete-disks=all --quiet") in problem.fix
+    assert (f"gcloud compute reservations delete held-rsv --zone=us-central1-a "
+            f"--project={WIN.gce_project} --quiet") in problem.fix
     assert "comfy-qat move comfy-win --to us-central1-b" in problem.fix
 
 

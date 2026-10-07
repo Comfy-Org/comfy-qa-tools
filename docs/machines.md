@@ -97,13 +97,19 @@ stopped box always starts again where it was.
 
 **It bills every hour, running or stopped, until the box is deleted.** Stopping a
 reserved box stops the machine and not the bill. Every command here says so in
-place of what it says about an ordinary box:
+place of what it says about an ordinary box. `create --reserve`, `go` and `up`
+leave the box running, so they end on both steps — `delete` refuses a box that
+is running:
 
 ```
 comfy-linux is reserved. Google holds its capacity and bills for it every hour —
 running or stopped — until the box is deleted.
+  comfy-qat down comfy-linux     # first — delete refuses a box that is running
   comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
 ```
+
+The `down` line is a step and says so. It is never described as what stops the
+bill; only the `delete` line is.
 
 Left off, `--reserve` is asked about at a terminal, with what each answer costs:
 
@@ -383,7 +389,7 @@ A reserved box bills every hour, running or stopped, until it is deleted.
 
 1 reservation on your-project-id has no box, and is billing:
   qatest-rsv in us-central1-a (T4)
-  gcloud compute reservations delete qatest-rsv --zone=us-central1-a --project=your-project-id
+  gcloud compute reservations delete qatest-rsv --zone=us-central1-a --project=your-project-id --quiet
 ```
 
 `comfy-linux` is the row to read twice: `stopped` and `yes` together is a box

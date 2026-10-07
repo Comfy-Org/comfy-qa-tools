@@ -335,8 +335,21 @@ def test_each_down_verdict_about_a_reserved_box_says_it_is_still_billing(
         f"billing:\n{result.stdout}")
     assert NOT_BILLING_NOW not in read
     assert _offers_a_way_to_stop(result.stdout)
-    assert stop_paying(WIN) not in result.stdout, (
-        "`comfy-qat down` was offered as the way to stop a reserved box's bill")
+    # `down` may be printed as the step before `delete` — a box left running
+    # has to be stopped before `delete` takes it — but never as what stops
+    # the bill.
+    assert "stop paying" not in result.stdout
+    for line in result.stdout.splitlines():
+        if stop_paying(WIN) in line:
+            why = line.partition("#")[2]
+            assert "bill" not in why and "paying" not in why, (
+                "`comfy-qat down` was offered as the way to stop a reserved "
+                f"box's bill: {line}")
+    assert any("comfy-qat delete comfy-win" in line and "bill" in line
+               for line in result.stdout.splitlines())
+    if verdict != "billing":
+        # Stopped by this run: `delete` is the next step, with no `down` first.
+        assert stop_paying(WIN) not in result.stdout
 
 
 def test_the_verdicts_are_read_from_the_tool_and_not_from_here():

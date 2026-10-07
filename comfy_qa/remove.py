@@ -277,7 +277,7 @@ def _held_for(gc, host, name: str, *, already_gone: bool):
             "delete the box with Google's own command, which leaves the "
             "reservation alone:",
             f"gcloud compute instances delete {host.gce_instance} --zone={zone} "
-            f"--project={project} --delete-disks=all",
+            f"--project={project} --delete-disks=all --quiet",
             "then take the entry out of your host list:",
             f"comfy-qat delete {host.name}",
             "the reservation bills until it is released, by whoever it "
