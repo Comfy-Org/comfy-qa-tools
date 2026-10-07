@@ -5,13 +5,15 @@ an L4" to "I am done and not paying for it any more".
 
 ## Making the box: `create`
 
-Before there is a loop, there is a machine. One command, and the card is the only
-real decision:
+Before there is a loop, there is a machine. One command, and two real decisions:
+the card, and whether to reserve it.
 
 ```sh
 comfy-qat create --os linux --gpu t4
 comfy-qat create --os windows --gpu l4
 comfy-qat create --os linux --gpu t4 --name box-2 --disk 500
+comfy-qat create --os linux --gpu t4 --reserve      # hold its capacity; bills stopped too
+comfy-qat create --os linux --gpu none              # no GPU at all
 comfy-qat create --os linux --gpu t4 --dry-run
 ```
 
@@ -27,6 +29,14 @@ module, which needs a GPU System Processor, and only Turing and newer cards have
 one. On an older card the install succeeds, the box boots and bills, and no kernel
 module ever loads — so `create` says no before anything exists. A T4 is the same
 `n1-standard-8` machine those four would have used.
+
+**Or no card at all.** `--gpu none` (or `cpu`) is the T4's machine,
+`n1-standard-8`, with nothing attached. ComfyUI runs on its CPU — slow, and
+enough for a workflow that never touches a model. It needs no GPU quota, is not
+counted against `GPUS_ALL_REGIONS`, and is checked against the project's vCPU
+allowance instead, so it can be made while your one GPU slot is in use. It gets no
+NVIDIA driver, `go` does not wait for one, and it is written to the host list as
+`gpu = "none"`.
 
 **You do not type a zone either.** It is chosen, in this order:
 
@@ -49,9 +59,10 @@ costs money and a cleanup.
 
 ```
 quota checked:
-  L4: 1, in 43 region(s)
+  L4: 1, in 2 regions
   GPUS_ALL_REGIONS (every card, project-wide): 1
 
+what this makes:
   - create comfy-linux in europe-west4-a: Ubuntu 22.04, L4 (nvidia-l4)
   - machine type g2-standard-8 — built into the machine type
   - 200 GB pd-balanced boot disk from ubuntu-2204-lts
@@ -60,12 +71,91 @@ quota checked:
 
 zone order — 4 to try, quota first, then what is offered, then measured latency (nearest: europe-west4)
   1. europe-west4-a  (208 ms to europe-west4)
-  2. europe-west4-b  (208 ms to europe-west4)
-  3. us-central1-a   (311 ms to us-central1)
+  2. us-central1-a  (311 ms to us-central1)
+  3. europe-west4-b  (208 ms to europe-west4)
+  4. us-central1-b  (311 ms to us-central1)
+
+--dry-run: nothing created
 ```
 
-`--dry-run` prints exactly that — the plan, the quota it read and the zone order
-it would try — and creates nothing.
+`--dry-run` prints exactly that on stdout — the quota it read, the plan and the
+zone order it would try — and creates nothing. Above it, on stderr, are the
+three decisions the plan was made from, one line each, whether you typed them or
+were asked: `OS: linux (from --os)`, `GPU: l4 (from --gpu)` and `reserve: no
+(default — pass --reserve to hold the capacity)`.
+
+### Reserved, or not
+
+A box that is **not reserved** bills while it runs and gives its place up when it
+stops: `down` it, and starting it again later can meet a stockout. That is the
+default, and it is the right one for a box you use now and then.
+
+A **reserved** box is for a card you cannot afford to lose your place on.
+`create --reserve` first makes a *reservation* — Google holding the capacity for
+one machine of that shape in one zone — and then the box, bound to it, so a
+stopped box always starts again where it was.
+
+**It bills every hour, running or stopped, until the box is deleted.** Stopping a
+reserved box stops the machine and not the bill. Every command here says so in
+place of what it says about an ordinary box. `create --reserve`, `go` and `up`
+leave the box running, so they end on both steps — `delete` refuses a box that
+is running:
+
+```
+comfy-linux is reserved. Google holds its capacity and bills for it every hour —
+running or stopped — until the box is deleted.
+  comfy-qat down comfy-linux     # first — delete refuses a box that is running
+  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+```
+
+The `down` line is a step and says so. It is never described as what stops the
+bill; only the `delete` line is.
+
+Left off, `--reserve` is asked about at a terminal, with what each answer costs:
+
+```
+Reserve it?
+  1. no    pay only while it runs. A stopped box keeps its disk, not its place
+  2. yes   Google holds the capacity and bills for it every hour, running or stopped, until you
+           delete the box
+```
+
+With `--yes`, or with nobody to ask, the box is **not** reserved and the output
+says `reserve: no (default — pass --reserve to hold the capacity)`. `--no-reserve`
+answers the question in advance. A box with no GPU cannot be reserved.
+
+**How many you may reserve is your project's GPU allowance, counted in cards.**
+A reservation holds its card against `GPUS_ALL_REGIONS` whether its box runs or
+not, so on a project where that is 1, one reserved box is the *whole* allowance:
+no other GPU box can be created, started or switched to while it exists, including
+a stopped one you already have. `create --reserve` says so before it asks:
+
+```
+  reserving takes 1 of the 1 — none left. While comfy-linux exists no other GPU box can start,
+    including a stopped one you already have.
+```
+
+When another reservation already holds a card, the line ends `no GPU box without
+a reservation can start — a box with a reservation of its own can still start`,
+which is the true form of it there. A later `create` that does not fit is
+refused, naming the reservation and the commands that release it — `comfy-qat
+down` and `comfy-qat delete` when its box is in your host list, Google's own
+commands when it is not. What is already reserved is read from the project's own reservations,
+not from your host list — one made in the console counts just the same.
+
+What a reserved box changes elsewhere: `down` keeps it and says it is still
+billing; `switch` away from it frees neither its card nor its bill; `move`
+refuses it, because a reservation is held in one zone; `delete` releases the
+reservation along with the box; and `list` has a RESERVED column.
+
+> **Not yet read off a live project.** Everything above is how this tool behaves,
+> and it is tested against a fake cloud. Three things about Google itself are
+> assumed rather than observed: that a reservation counts against GPU quota as a
+> running box does; that a reservation for a card built into its machine type
+> (L4, A100, H100) is made without naming the card; and that a reservation can be
+> released while a stopped box still targets it, which is the order `delete`
+> uses. The bill itself — every hour, used or not — is Google's published
+> pricing for reservations, not something this tool measured.
 
 The finished box is added to your host list on a free port, so `go` works on
 it immediately. **The NVIDIA driver is not in either base image**, and a box
@@ -255,10 +345,16 @@ comfy-qat list
 ```
 
 ```
-NAME         KIND   OS                   GPU   URL                    STATE
-local        local  -                    -     http://127.0.0.1:8188  -
-comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  not tunnelled
-comfy-linux  gce    Ubuntu 22.04         A100  http://127.0.0.1:8191  tunnelled
+NAME         KIND   OS                   GPU   URL                    STATE          RESERVED
+local        local  -                    -     http://127.0.0.1:8188  -              -
+comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  not tunnelled  no
+comfy-linux  gce    Ubuntu 22.04         T4    http://127.0.0.1:8191  not tunnelled  yes
+comfy-cpu    gce    Ubuntu 22.04         none  http://127.0.0.1:8192  not tunnelled  no
+
+STATE is only what this machine already knows — whether a tunnel is open.
+RESERVED is what your host list says. A reserved box bills every hour, running or stopped.
+  --live asks Google what each box is doing and this machine whether ComfyUI is answering,
+  checks the reservations, and adds each box's age and disk.
 ```
 
 STATE is read from the tunnel files on this machine, so it costs nothing and is
@@ -267,20 +363,52 @@ always shown. A tunnel is what makes a cloud box answer on `127.0.0.1`, so
 install has no tunnel to have, which is why it reads `-` here: nothing was
 asked about it, and nothing is claimed.
 
-`--live` is the flag that goes and asks. Whether an instance is *running* is a
-question only Google can answer, one call per project; whether ComfyUI is
-answering on your own machine is a loopback request that costs nothing and needs
-no credentials. Both happen here:
+RESERVED is the column about money that a stopped box does not settle. Here it is
+read from your host list — the `gce_reservation` line `create --reserve` and
+`discover` write — and nothing has been asked of Google, which the footnote says.
+
+`--live` is the flag that goes and asks. Whether an instance is *running*, how
+old it is, how much disk it has and whether its reservation is really there are
+questions only Google can answer — two calls per project, its instances and its
+reservations, however many boxes you have; whether ComfyUI is answering on your
+own machine is a loopback request that costs nothing and needs no credentials.
+All of it happens here:
 
 ```sh
 comfy-qat list --live
 ```
 
 ```
-local        local  -                    -     http://127.0.0.1:8188  serving
-comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  running, tunnelled
-comfy-linux  gce    Ubuntu 22.04         A100  http://127.0.0.1:8191  stopped
+NAME         KIND   OS                   GPU   URL                    STATE    RESERVED  AGE  DISK
+local        local  -                    -     http://127.0.0.1:8188  serving  -         -    -
+comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  running  no        21d  200 GB
+comfy-linux  gce    Ubuntu 22.04         T4    http://127.0.0.1:8191  stopped  yes       3d   200 GB
+comfy-cpu    gce    Ubuntu 22.04         none  http://127.0.0.1:8192  stopped  no        5h   100 GB
+
+A reserved box bills every hour, running or stopped, until it is deleted.
+
+1 reservation on your-project-id has no box, and is billing:
+  qatest-rsv in us-central1-a (T4)
+  gcloud compute reservations delete qatest-rsv --zone=us-central1-a --project=your-project-id --quiet
 ```
+
+`comfy-linux` is the row to read twice: `stopped` and `yes` together is a box
+that looks free and is not. AGE is since the instance was created and DISK is
+every disk on it added up — the two things that go on costing while a box sits
+stopped. Neither is kept in the host list; they are read fresh each time,
+because a copy of a cloud fact goes stale the first time a disk is resized.
+
+The block under the table is a reservation **with no box on it**: made by a
+create that stopped half-way, or left when a box was deleted some other way. It
+bills at a GPU's rate and is in no list of machines. `list --live` shows it for
+a project one of your declared cloud boxes is on, when it could read that
+project's instances — and warns when it could not. With **no** cloud box
+declared it asks Google nothing; `comfy-qat down --all` is the command that
+reads the project then, and it names such a reservation with the same release
+command. RESERVED can also read `missing` (the host list names a reservation the
+project does not have), `yes (not in host list)` (the box is bound to one and its
+entry does not say so) or `…, unchecked` (one of the two reads failed) — see
+[troubleshooting](troubleshooting.md#listing-what-you-have-and-what-it-costs).
 
 `serving` and `running` are different words for different facts. `running` is
 Google's word for the VM being powered on, which says nothing about whether
@@ -347,6 +475,29 @@ box costs only its disk — cents
 per day — which is why the pattern here is one box per OS, stopped when idle, rather
 than deleting and rebuilding.
 
+**Unless it is reserved.** A reserved box that is stopped costs what it cost
+running, and `down` says so rather than `was billing. Stopped.`:
+
+```
+comfy-linux was running. Stopped — but it is reserved, so it is still billing.
+  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+```
+
+`down <name>` asks the box itself, not only your host list. A box bound to a
+reservation its entry does not declare gets the same two lines, and one more
+saying which reservation and that the entry does not say so. If that read fails,
+`down` does not claim the bill stopped:
+
+```
+comfy-linux was running. Stopped — but whether it is reserved could not be checked, and a
+reservation bills with its box stopped.
+  gcloud compute reservations list --project=<project>
+```
+
+`down --all` does not end on `Nothing is now.` while any box you have declared is
+reserved — or while the project holds a reservation nobody declared, which it
+reads for and names.
+
 ### Keeping the box, letting go of the tunnel
 
 ```sh
@@ -391,6 +542,18 @@ The boot disk goes deliberately. These disks are created `auto-delete=no`, so
 deleting an instance on its own leaves 200-300 GB billing with nothing attached to
 it — which looks like nothing at all in a console, and is the leftover people
 actually get caught by.
+
+**A reserved box's reservation goes too**, and this is the only command that
+stops its bill. It is released first, then the box and disk are deleted — so if
+anything fails in between, what is left is a stopped box and not a reservation
+billing with nothing on it — and the confirmation names all three:
+
+```
+delete comfy-linux in us-central1-a, its 200 GB boot disk, and its reservation comfy-linux-rsv.
+```
+
+A reservation that other machines share, or that this box has no claim on, is
+never released; `delete` refuses and says how to delete the box alone.
 
 Three refusals, before any prompt:
 

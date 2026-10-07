@@ -408,10 +408,10 @@ class _Project:
         return ceiling_quota(self.ceiling)
 
 
-def survey_with(gc):
+def survey_with(gc, hosts=None):
     from comfy_qa.relocate import survey
 
-    return survey(gc, moving())
+    return survey(gc, moving(), hosts)
 
 
 def test_a_move_of_a_running_box_under_a_ceiling_of_one_is_refused_up_front():
@@ -694,3 +694,292 @@ def test_nothing_a_move_hands_over_deletes_an_instance_without_its_disk():
         "nothing in relocate.py hands over an instance delete any more, so this "
         "rule is judging an empty list and would pass on anything"
     )
+
+
+# --- reserved cards under the ceiling -----------------------------------------
+#
+# `_cards_running` skips a TERMINATED box, correctly: a stopped box runs no
+# card. A stopped RESERVED box still holds one — its reservation does, from the
+# moment it is made until it is released — so the third command that starts a
+# card was the one that would walk past a full ceiling, take a snapshot, build
+# a 300 GB disk, and be refused by Google at the create.
+#
+# Read from the project's own `reservations list`, never the host list, and
+# counted by `reservation.cards_held`: the same function `create`'s gate counts
+# with. Every reservation below is a FIXTURE in the SDK schema's shape.
+
+
+def _reserved(name, *, box="", zone="us-central1-a"):
+    return {"name": name, "zone": f"https://x/projects/p/zones/{zone}",
+            "status": "READY",
+            "description": f"comfy-qat: held for {box}" if box else "made in the console",
+            "specificReservation": {"count": "1", "instanceProperties": {
+                "machineType": "g2-standard-8"}}}
+
+
+def _bound(instance, reservation):
+    return dict(instance, reservationAffinity={
+        "consumeReservationType": "SPECIFIC_RESERVATION",
+        "values": [reservation]})
+
+
+class _Reserving(_Project):
+    """`_Project`, on a project that has reservations — or cannot list them."""
+
+    def __init__(self, instances, ceiling=1, reservations=()):
+        super().__init__(instances, ceiling)
+        self.reservations = reservations
+        self.reservation_reads = 0
+
+    def list_reservations(self, project):
+        self.reservation_reads += 1
+        if isinstance(self.reservations, BaseException):
+            raise self.reservations
+        return list(self.reservations)
+
+
+# The host-list entry for the box on the reservation: the project the move's
+# own host is on, and the zone and instance the fixtures above give the box. `comfy-qat down/delete` is printed only
+# for a box an entry like this points at.
+HELD_HOST = Host(name="held", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                 gce_instance="held", gce_zone="us-central1-a",
+                 gce_project=WIN.gce_project)
+
+STOPPED_SOURCE = gpu_instance("comfy-win", status="TERMINATED")
+HELD_BOX = _bound(gpu_instance("held", status="TERMINATED"), "held-rsv")
+
+
+def test_a_stopped_reserved_box_holds_the_ceiling_against_a_move():
+    """The source is stopped and nothing is running — the case that was
+    allowed. One reservation holds the only card, so it is refused up front,
+    with the remedy for a reservation and not for a running box."""
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    problem = blocked(moving(), survey_with(gc, [WIN, HELD_HOST]))
+
+    assert problem is not None
+    said = " ".join(str(problem).split())
+    assert ("GPUS_ALL_REGIONS is 1 on this project, and 1 of it is held by 1 "
+            "reservation: held-rsv (us-central1-a). A reservation holds its card "
+            "whether its box is running or stopped, so stopping a box frees "
+            "nothing, and the 1-card box this move creates cannot start. Nothing "
+            "was created.") == said
+    assert "comfy-qat down held" in problem.fix
+    assert "comfy-qat delete held" in problem.fix
+    assert "comfy-qat move comfy-win --to us-central1-b" in problem.fix
+    assert "stop the one you are not using" not in problem.fix
+
+
+def test_the_same_move_with_room_for_both_is_allowed():
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=2,
+                    reservations=[_reserved("held-rsv", box="held")])
+
+    assert blocked(moving(), survey_with(gc)) is None
+
+
+def test_a_reserved_box_that_is_running_is_counted_once_not_twice():
+    """Its card is its reservation's. Counted as a reservation and again as a
+    running box, one card would read as two and a ceiling of 2 would refuse a
+    move it has room for."""
+    running = _bound(gpu_instance("held"), "held-rsv")
+    gc = _Reserving([STOPPED_SOURCE, running], ceiling=2,
+                    reservations=[_reserved("held-rsv", box="held")])
+    found = survey_with(gc)
+
+    assert found.cards_held == 1
+    assert blocked(moving(), found) is None
+
+
+def test_a_reservation_and_a_running_box_together_name_both_and_stop_only_one():
+    """One reserved card, one running box, a ceiling of 2. The reservation
+    alone leaves room, so this is the ordinary refusal — but what holds the
+    ceiling is BOTH, so both are named, and only the box a stop would free is
+    offered a stop."""
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX, gpu_instance("busy")], ceiling=2,
+                    reservations=[_reserved("held-rsv", box="held")])
+    problem = blocked(moving(), survey_with(gc))
+
+    assert problem is not None
+    assert "busy, the reservation held-rsv already holds 2 of it" in str(problem)
+    assert "gcloud compute instances stop busy" in problem.fix
+    assert "instances stop held" not in problem.fix
+
+
+def test_a_reservation_with_no_box_is_released_with_googles_own_command():
+    """Made in the console: there is no box for `comfy-qat delete` to be given."""
+    gc = _Reserving([STOPPED_SOURCE], ceiling=1,
+                    reservations=[_reserved("made-by-hand")])
+    problem = blocked(moving(), survey_with(gc))
+
+    assert problem is not None
+    assert (f"gcloud compute reservations delete made-by-hand --zone=us-central1-a "
+            f"--project={WIN.gce_project} --quiet") in problem.fix
+    assert "comfy-qat delete" not in problem.fix
+    assert "comfy-qat down" not in problem.fix
+
+
+def test_a_move_refusal_does_not_say_nothing_is_on_it_when_the_boxes_were_not_read():
+    """What `Found` holds before anybody has said which instances are bound is
+    NOT READ, and the remedy has to be told that. Left as an empty tuple it
+    read as "looked, nothing bound" and the refusal printed "release it —
+    nothing is on it" about a reservation nobody had looked at."""
+    from dataclasses import replace
+
+    from comfy_qa.relocate import Found
+
+    gc = _Reserving([STOPPED_SOURCE], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    read = survey_with(gc)
+    unread = replace(read, reserved_boxed=Found().reserved_boxed)
+
+    problem = blocked(moving(), unread)
+    assert problem is not None
+    fix = " ".join(problem.fix.split())
+    assert "nothing is on it" not in fix
+    assert "whether a box is on it could not be read" in fix
+    assert "gcloud compute instances list --project=" in problem.fix
+    # The control: the same refusal with the instances READ and nothing bound
+    # does say it, so the assertion above is about the unread case and not
+    # about a sentence that is never printed.
+    assert "nothing is on it" in " ".join(blocked(moving(), read).fix.split())
+
+
+def test_reservations_that_cannot_be_read_refuse_nothing():
+    """Not read is not zero — and it is not a refusal either. The count is then
+    the running cards alone, exactly as it was before reservations existed."""
+    from comfy_qa.gcloud import GcloudError as Unread
+
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=Unread("the reservations could not be listed"))
+    found = survey_with(gc)
+
+    assert gc.reservation_reads == 1, "and it did try"
+    assert found.cards_held == 0
+    assert blocked(moving(), found) is None
+
+
+def test_a_move_that_wants_no_card_reads_no_reservations():
+    """A box with no GPU holds none of the allowance, so neither the ~58-second
+    quota read nor the reservations read buys anything."""
+    from comfy_qa.relocate import survey
+
+    gc = _Reserving([], ceiling=1, reservations=[_reserved("held-rsv", box="held")])
+    cpu_box = Host(name="cpu-box", kind="gce", port=8190, os="Ubuntu 22.04",
+                   gpu="none", gce_instance="cpu-box", gce_zone="us-central1-a",
+                   gce_project="p")
+    plan = plan_move(cpu_box, {"name": "cpu-box", "status": "TERMINATED",
+                               "machineType": "x/machineTypes/n1-standard-8",
+                               "disks": [{"boot": True, "source": "x/disks/cpu-box"}]},
+                     "us-central1-b")
+    survey(gc, plan)
+
+    assert gc.reservation_reads == 0 and gc.quota_reads == 0
+
+
+def test_a_stockout_moving_a_box_with_no_gpu_does_not_say_no_none_capacity():
+    """`host.gpu or 'GPU'` printed "has no none capacity either" for a box
+    declared to have no GPU. What the zone is out of is the machine."""
+    from comfy_qa.relocate import CREATE_INSTANCE, _stopped
+
+    cpu_box = Host(name="cpu-box", kind="gce", port=8190, os="Ubuntu 22.04",
+                   gpu="none", gce_instance="cpu-box", gce_zone="us-central1-a",
+                   gce_project="p")
+    plan = plan_move(cpu_box, {"name": "cpu-box", "status": "TERMINATED",
+                               "machineType": "x/machineTypes/n1-standard-8",
+                               "disks": [{"boot": True, "source": "x/disks/cpu-box"}]},
+                     "us-central1-b")
+    stockout = GcloudError("---", raw=(
+        "The zone 'projects/p/zones/us-central1-b' does not have enough resources "
+        "available to fulfill the request."))
+    problem = _stopped(plan, Found(), [], Action(kind=CREATE_INSTANCE, line=""),
+                       stockout)
+
+    assert "us-central1-b has no machine capacity either" in str(problem)
+    assert "none capacity" not in str(problem)
+
+
+def test_a_reserved_box_the_host_list_does_not_hold_gets_no_comfy_qat_command():
+    """The reservation says `held for held`, and nothing in the host list is
+    that instance. `comfy-qat delete held` would exit 2 while the reservation
+    bills, so the box and its reservation get Google's own commands."""
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    problem = blocked(moving(), survey_with(gc, [WIN]))
+
+    assert "comfy-qat down" not in problem.fix and "comfy-qat delete" not in problem.fix
+    assert (f"gcloud compute instances delete held --zone=us-central1-a "
+            f"--project={WIN.gce_project} --delete-disks=all --quiet") in problem.fix
+    assert (f"gcloud compute reservations delete held-rsv --zone=us-central1-a "
+            f"--project={WIN.gce_project} --quiet") in problem.fix
+    assert "comfy-qat move comfy-win --to us-central1-b" in problem.fix
+
+
+def test_an_entry_of_the_same_name_for_another_machine_is_not_offered_for_deletion():
+    """An entry CALLED `held` that points at a different instance. Pasted
+    back, `comfy-qat delete held` would destroy that machine."""
+    namesake = Host(name="held", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                    gce_instance="another-instance", gce_zone="us-central1-a",
+                    gce_project=WIN.gce_project)
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    problem = blocked(moving(), survey_with(gc, [WIN, namesake]))
+
+    assert "comfy-qat delete" not in problem.fix, problem.fix
+    assert "gcloud compute instances delete held " in problem.fix
+
+
+def test_prepare_hands_the_host_list_through_to_the_survey():
+    """`move` calls `prepare`, not `survey`. Held at the seam the command uses."""
+    from comfy_qa.relocate import prepare
+
+    gc = _Reserving([STOPPED_SOURCE, HELD_BOX], ceiling=1,
+                    reservations=[_reserved("held-rsv", box="held")])
+    _plan, found = prepare(gc, WIN, MOVE_INSTANCE, "us-central1-b",
+                           hosts=[WIN, HELD_HOST])
+
+    assert found.reserved_named == (("held-rsv", "us-central1-a", "held"),)
+
+
+# --- `cpu` is no GPU to `move` as well (recheck: still wrong 3) ---------------
+
+
+def _a_box_declared(gpu):
+    return Host(name="cpu-box", kind="gce", port=8190, os="Ubuntu 22.04", gpu=gpu,
+                gce_instance="cpu-box", gce_zone="us-central1-a", gce_project="p")
+
+
+NO_CARD_INSTANCE = {"name": "cpu-box", "status": "TERMINATED",
+                    "machineType": "x/machineTypes/n1-standard-8",
+                    "disks": [{"boot": True, "source": "x/disks/cpu-box"}]}
+
+
+@pytest.mark.parametrize("word", ["none", "None", "NONE", "cpu", "Cpu", "CPU", " cpu "])
+def test_a_box_declared_with_no_gpu_wants_no_card_however_that_is_spelled(word):
+    """`create --gpu cpu` is accepted and `config` reads `cpu` as no GPU, but
+    this counter compared the word to `"none"` alone — so a box with no GPU
+    declared `gpu = "cpu"` counted as one card, was held to the GPU ceiling,
+    and was refused a move for quota it does not use."""
+    from comfy_qa.relocate import _cards_wanted
+
+    assert _cards_wanted(_a_box_declared(word), NO_CARD_INSTANCE) == 0
+
+
+def test_a_box_declared_with_a_card_the_payload_does_not_show_still_wants_one():
+    """The control, and the fail-closed rule the predicate must not undo."""
+    from comfy_qa.relocate import _cards_wanted
+
+    assert _cards_wanted(_a_box_declared("L4"), NO_CARD_INSTANCE) == 1
+
+
+@pytest.mark.parametrize("word", ["none", "cpu", "CPU"])
+def test_moving_a_box_with_no_gpu_is_not_refused_over_a_full_gpu_ceiling(word):
+    """Through the gate, not the counter: a running GPU box holds the whole
+    ceiling of 1, and a box with no GPU moves anyway — with no quota read."""
+    from comfy_qa.relocate import survey
+
+    gc = _Reserving([gpu_instance("busy")], ceiling=1)
+    plan = plan_move(_a_box_declared(word), NO_CARD_INSTANCE, "us-central1-b")
+    found = survey(gc, plan)
+
+    assert blocked(plan, found) is None
+    assert gc.quota_reads == 0 and gc.reservation_reads == 0

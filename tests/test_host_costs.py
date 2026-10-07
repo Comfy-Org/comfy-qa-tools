@@ -24,6 +24,7 @@ The rule the third one settles, and that this file holds the whole group to:
 from __future__ import annotations
 
 import ast
+import re
 
 import pytest
 from typer.testing import CliRunner
@@ -128,6 +129,16 @@ class Cloud:
         # refuses nothing, so it leaves these tests measuring what they are for:
         # what gets SPENT, not what the allowance says.
         self.calls.append("gpu_quotas")
+        return []
+
+    def list_reservations(self, project):
+        # A read, answered for the reason the two above are. `down --all` asks
+        # it because a reservation bills with its box stopped, so "everything
+        # is stopped" is not "nothing is billing" until this comes back empty;
+        # `move` asks it beside the ceiling. Empty is a project with nothing
+        # reserved — real, and the one shape under which every sentence these
+        # tests were written against is still the true one.
+        self.calls.append("list_reservations")
         return []
 
     def run(self, args, **kwargs):
@@ -956,7 +967,18 @@ KEEPS_A_BOX_UP = "put_away"
 
 INCLUSION_VOCABULARY = STARTS_A_BOX | {KEEPS_A_BOX_UP}
 
-BILL_TOKENS = ("comfy-qat down", "stop_paying", "_with_the_bill")
+# `_stop_line` is host.py's one writer of the ending, and it joined this set the
+# day the ending stopped being one sentence. Nine commands used to spell
+# `comfy-qat down <name>   # stop the box, stop paying` themselves; for a
+# RESERVED box that sentence is false — `down` stops the machine and its
+# reservation goes on billing — so they all call the helper now, which says
+# `comfy-qat delete` for a reserved box and the old line for any other.
+#
+# A name accepted as the thing it builds, like `_with_the_bill` beside it, and
+# held to that below: `test_the_one_stop_line_says_each_bill_in_its_own_words`
+# drives it for both kinds of box, and `test_nothing_outside_the_one_helper
+# _says_stop_paying` is what stops a tenth ending being written by hand.
+BILL_TOKENS = ("comfy-qat down", "stop_paying", "_with_the_bill", "_stop_line")
 
 # The same rule one layer out, for FAILURE handlers only, and kept separate from
 # BILL_TOKENS on purpose: widening the vocabulary the ordinary-path guard reads
@@ -1275,6 +1297,241 @@ def test_every_command_that_leaves_a_box_running_names_the_bill():
         "Adding it to BILLABLE_ENDINGS is NOT the fix — that is the list of "
         "commands this rule applies to, not the list of exceptions to it."
     )
+
+
+# --- a reserved box: `down` is not how its bill stops -------------------------
+#
+# The guard above is SATISFIED by the words `comfy-qat down`. That was the right
+# alibi while stopping a box stopped its bill, and it is the wrong one for a
+# reserved box, whose reservation bills for the card every hour whether the box
+# runs or not. So a reserved box could have been told "stop the box, stop
+# paying" at every ending in host.py with that guard green — the token that
+# clears a command being, for this box, the false sentence itself.
+#
+# Three guards, each with its own vocabulary, none of them clearable by
+# `comfy-qat down`.
+
+HOST_SIDE = ("host", "remove", "relocate")
+
+
+def _host_side_functions() -> dict[str, tuple[str, ast.FunctionDef, str]]:
+    """Every function in the three modules that word a command's ending.
+
+    `{module.function: (module, node, module source)}`. Nested functions are
+    their own entries as well as part of their parent, which errs toward
+    finding an offender twice rather than missing one.
+    """
+    import importlib
+    import inspect
+
+    found: dict[str, tuple[str, ast.FunctionDef, str]] = {}
+    for name in HOST_SIDE:
+        source = inspect.getsource(importlib.import_module(f"comfy_qa.{name}"))
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.FunctionDef):
+                found[f"{name}.{node.name}"] = (name, node, source)
+    return found
+
+
+def _says_stop_paying(node: ast.FunctionDef) -> list[str]:
+    """How this function says "stop paying" by hand, if it does.
+
+    Two shapes, because the sentence has been written both ways in this file: a
+    call to `lifecycle.stop_paying`, which builds `comfy-qat down <name>`, and
+    the words themselves in a string that gets printed. Docstrings are not
+    output and are skipped; comments are not in the tree at all.
+    """
+    docstrings = {id(stmt.value) for owner in ast.walk(node)
+                  if isinstance(owner, ast.FunctionDef | ast.ClassDef)
+                  for stmt in owner.body[:1]
+                  if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)}
+    found = []
+    for part in ast.walk(node):
+        if isinstance(part, ast.Call) and _called_name(part) == "stop_paying":
+            found.append(f"line {part.lineno}: calls stop_paying()")
+        elif (isinstance(part, ast.Constant) and isinstance(part.value, str)
+              and id(part) not in docstrings
+              and re.search(r"stop\s+paying", part.value, re.I)):
+            found.append(f"line {part.lineno}: {part.value.strip()!r}")
+    return found
+
+
+def test_nothing_outside_the_one_helper_says_stop_paying():
+    """`_stop_line` is the only function on the command side allowed to tell
+    anybody that stopping a box stops its bill — because it is the only one
+    that first asks whether the box is reserved.
+
+    Written against the defect it exists for, and tried against it: the old
+    ending put back by hand in `_serve`'s `--follow` branch, once as the literal
+    `# stop the box, stop paying` and once through `stop_paying(host)` with a
+    different comment, each fail this by name. Both spellings are looked for
+    because both were in the file.
+    """
+    offenders = []
+    functions = _host_side_functions()
+    for where, (_module, node, _source) in sorted(functions.items()):
+        if where == "host._stop_line":
+            continue
+        offenders += [f"{where}, {how}" for how in _says_stop_paying(node)]
+
+    assert not offenders, (
+        "an ending says stopping the box stops the bill without asking whether "
+        "the box is reserved — for a reserved box that is false, and it is the "
+        "sentence somebody acts on before closing the laptop. Print "
+        "`_stop_line(host)` instead:\n  " + "\n  ".join(offenders))
+    # Non-vacuity: the walk found the helper it exempts, and that helper is
+    # where the sentence lives. A rename would otherwise leave this exempting
+    # nothing and finding nothing.
+    assert "host._stop_line" in functions
+    assert _says_stop_paying(functions["host._stop_line"][1]), (
+        "`_stop_line` no longer says how an ordinary box's bill is stopped, so "
+        "this guard is exempting a function that does not hold the sentence")
+
+
+def test_the_one_stop_line_says_each_bill_in_its_own_words():
+    """Driven, with the two sentences typed out here rather than imported.
+
+    The static guard above proves there is one place the ending is written.
+    This proves what that place says: for an ordinary box, the line every
+    command has always ended on; for a reserved one, the only command that
+    stops its bill. While that box is RUNNING it is two lines, because
+    `delete` refuses a running box: `down` as a step, said to be a step and
+    never said to stop the bill, and then the `delete` line.
+    """
+    from comfy_qa.config import Host
+    from comfy_qa.host import _stop_line
+
+    plain = Host(name="comfy-win", kind="gce", port=8190, gpu="L4",
+                 gce_instance="comfy-win", gce_zone="us-central1-a",
+                 gce_project="proj")
+    held = Host(name="comfy-win", kind="gce", port=8190, gpu="L4",
+                gce_instance="comfy-win", gce_zone="us-central1-a",
+                gce_project="proj",
+                extra=(("gce_reservation", "comfy-win-rsv"),))
+
+    assert _stop_line(plain) == "  comfy-qat down comfy-win   # stop the box, stop paying"
+    delete = ("  comfy-qat delete comfy-win   # the only thing that stops a "
+              "reserved box's bill — the box and its disk go too")
+    first = ("  comfy-qat down comfy-win     # first — delete refuses a box that "
+             "is running")
+    assert _stop_line(held) == f"{first}\n{delete}"
+    assert _stop_line(held, running=False) == delete
+    assert "paying" not in _stop_line(held) and "bill" not in first
+    # And an entry that does not declare it, for the caller that asked Google.
+    assert _stop_line(plain, reserved=True, running=False) == delete
+
+
+# What makes a RESERVATION exist and bill, at the layer where that is a fact.
+MAKES_A_RESERVATION = frozenset({"create_reservation"})
+
+# What clears a command that can make one: saying the reserved bill, in the
+# words `reservation.py` holds — on the success path, and within one hop. NOT
+# `comfy-qat down`, which is the remedy this guard exists to keep away from a
+# reserved box, and not the inclusion token either.
+RESERVED_BILL_TOKENS = ("rsv.bill(", "rsv.stop_line(")
+
+
+def _reserved_tokens_in(body: str) -> set[str]:
+    """Which of the reserved-bill tokens this body says on its ordinary path."""
+    said = _on_the_ordinary_path(body)
+    return {token for token in RESERVED_BILL_TOKENS if token in said}
+
+
+def _reaches(name: str, targets: frozenset[str],
+             functions: dict[str, list[ast.FunctionDef]],
+             seen: frozenset[str] = frozenset()) -> bool:
+    """Whether this function calls one of `targets`, or something that does."""
+    if name in seen:
+        return False
+    seen = seen | {name}
+    for node in functions.get(name, []):
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            called = _called_name(call)
+            if called in targets:
+                return True
+            if called in functions and _reaches(called, targets, functions, seen):
+                return True
+    return False
+
+
+def test_every_command_that_can_reserve_says_the_reserved_bill_when_it_works():
+    """A command that can bring a reservation into being has to say, on the
+    path where it WORKS, that the box now bills every hour until it is deleted.
+
+    Derived the way the billable set is: every `*_cmd` that reaches
+    `create_reservation`, followed as far as the calls go. And cleared the way
+    that set is cleared — by its own ordinary path or one hop from it — but
+    with a vocabulary of its own, because the one that guard accepts is the
+    wrong sentence here.
+
+    BOTH tokens, each of them, and not either. The first version asked for any
+    one and was cleared by the PLAN: `Blueprint.steps` says the bill before
+    anything exists, under `--dry-run` as well, so with both sentences deleted
+    from the lines printed after the box is made this stayed green. What only
+    the ending says is how the bill is STOPPED, so that is asked for by name —
+    found by deleting the ending and watching which tests noticed.
+    """
+    import inspect
+
+    from comfy_qa import host as host_module
+
+    functions = _functions_by_name()
+    bodies = _bodies_by_name()
+    reserving = sorted(name for name in functions
+                       if name.endswith("_cmd")
+                       and _reaches(name, MAKES_A_RESERVATION, functions))
+    assert reserving == ["create_cmd"], (
+        f"the commands that can make a reservation are now {reserving}. If one "
+        f"was added, it must say the reserved bill when it succeeds — this "
+        f"test checks that below — and this line is where that is acknowledged.")
+
+    source = inspect.getsource(host_module)
+    commands = {node.name: node for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.FunctionDef)}
+    silent = []
+    for name in reserving:
+        node = commands[name]
+        said = _reserved_tokens_in(ast.get_source_segment(source, node) or "")
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call):
+                for body in bodies.get(_called_name(call), []):
+                    said |= _reserved_tokens_in(body)
+        unsaid = sorted(set(RESERVED_BILL_TOKENS) - said)
+        if unsaid:
+            silent.append(f"{name} (never reaches {', '.join(unsaid)})")
+
+    assert not silent, (
+        f"{'; '.join(silent)} — it can make a reservation and does not say, "
+        f"where it succeeds, both that the box bills every hour until it is "
+        f"deleted and what stops that.")
+
+
+def test_the_reserved_vocabularies_are_real_and_cannot_clear_themselves():
+    """Three things that would each let the guard above pass on nothing.
+
+    The inclusion token is a name matched against source: rename
+    `Gcloud.create_reservation` and nothing reaches it, the derived set empties
+    and the guard has nothing to check. The clearing tokens name two functions
+    in `reservation.py`: rename either and a command can no longer be cleared
+    — or, worse, is cleared by a word that builds nothing. And no token may sit
+    in both sets, or in the ordinary guard's clearing set: `comfy-qat down` is
+    exactly what must not clear a reserving command.
+    """
+    from comfy_qa import reservation
+
+    assert MAKES_A_RESERVATION <= set(_functions_by_name()), (
+        "create_reservation is no longer a function in host.py, lifecycle.py, "
+        "create.py or gcloud.py")
+    assert MAKES_A_RESERVATION <= _mutating_gcloud_methods(), (
+        "create_reservation is no longer a gcloud call that creates something")
+    for token in RESERVED_BILL_TOKENS:
+        assert callable(getattr(reservation, token.removeprefix("rsv.").rstrip("(")))
+    cleared_by = {token.removeprefix("rsv.").rstrip("(") for token in RESERVED_BILL_TOKENS}
+    assert cleared_by & MAKES_A_RESERVATION == set()
+    assert set(RESERVED_BILL_TOKENS) & set(BILL_TOKENS) == set()
+    assert not any(token in bill for token in RESERVED_BILL_TOKENS for bill in BILL_TOKENS)
 
 
 # --- a dry run may not delete anything, --clean included ----------------------
@@ -1651,9 +1908,16 @@ def test_every_mutating_call_failure_handler_names_the_bill():
     from comfy_qa import host as host_module
     from comfy_qa import lifecycle as lifecycle_module
     from comfy_qa import relocate as relocate_module
+    from comfy_qa import remove as remove_module
 
     mutating = _mutating_gcloud_methods()
-    modules = (host_module, lifecycle_module, create_module, relocate_module)
+    # `remove` joined with the first mutating gcloud METHOD it called:
+    # `delete_reservation`, whose failure leaves a reservation billing. Its
+    # instance delete goes through the generic `gc.run` and is not a method
+    # this derivation can see — a stopped box's delete failing leaves a disk
+    # and nothing running, which is why it was never in here.
+    modules = (host_module, lifecycle_module, create_module, relocate_module,
+               remove_module)
     bodies = _failure_bodies(modules)
 
     def names_the_bill(text: str) -> bool:
@@ -1706,6 +1970,93 @@ def test_every_mutating_call_failure_handler_names_the_bill():
         f"message is the only thing standing between that and an overnight "
         f"bill. Route the fix through `_with_the_bill`."
     )
+
+
+# What a failure around a RESERVATION call has to say, and it is not what the
+# guard above accepts. `comfy-qat down` and `stop paying for it` are in that
+# vocabulary and both are the wrong remedy here: a reservation bills with its
+# box stopped, so neither stops it. What has to be said is the state of the
+# bill itself — that it is still billing, or that nothing is.
+RESERVATION_FAILURE_TOKENS = ("still billing", "nothing is billing",
+                              "nothing is left billing")
+
+
+def _reservation_methods() -> set[str]:
+    """The mutating `Gcloud` methods whose argv is about a reservation."""
+    import inspect
+
+    from comfy_qa import gcloud as gcloud_module
+
+    source = inspect.getsource(gcloud_module)
+    cls = next(node for node in ast.walk(ast.parse(source))
+               if isinstance(node, ast.ClassDef) and node.name == "Gcloud")
+    return {function.name for function in cls.body
+            if isinstance(function, ast.FunctionDef)
+            and function.name in _mutating_gcloud_methods()
+            and any(isinstance(node, ast.Constant) and node.value == "reservations"
+                    for node in ast.walk(function))}
+
+
+def test_every_failed_reservation_call_says_what_is_still_billing():
+    """Making or releasing a reservation, and an `except GcloudError` that does
+    not say whether one is billing.
+
+    The defect this is written against is a release that fails quietly: the
+    box is gone, the reservation is not, and it bills at a GPU's rate with
+    nothing in any list of machines. Cleared only by the bill's own words —
+    `comfy-qat down` in the handler does not count, because for a reservation
+    it is not a remedy.
+    """
+    import inspect
+
+    from comfy_qa import create as create_module
+    from comfy_qa import host as host_module
+    from comfy_qa import relocate as relocate_module
+    from comfy_qa import remove as remove_module
+
+    reserving = _reservation_methods()
+    assert reserving == {"create_reservation", "delete_reservation"}, sorted(reserving)
+
+    modules = (host_module, create_module, relocate_module, remove_module)
+    bodies = _failure_bodies(modules)
+
+    def says(text: str) -> bool:
+        return any(token in text for token in RESERVATION_FAILURE_TOKENS)
+
+    seen, naked = [], []
+    for module in modules:
+        source = inspect.getsource(module)
+        name = module.__name__.split(".")[-1] + ".py"
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Try):
+                continue
+            called = {_called_name(call) for call in ast.walk(node)
+                      if isinstance(call, ast.Call)} & reserving
+            if not called:
+                continue
+            for handler in node.handlers:
+                if "GcloudError" not in (ast.unparse(handler.type) if handler.type else ""):
+                    continue
+                seen.append(f"{name}:{handler.lineno}")
+                body = "\n".join(ast.get_source_segment(source, stmt) or ""
+                                 for stmt in handler.body)
+                if says(body) or any(
+                        says(text)
+                        for call in ast.walk(handler) if isinstance(call, ast.Call)
+                        for text in bodies.get(_called_name(call), [])):
+                    continue
+                naked.append(f"{name}:{handler.lineno} (around "
+                             f"{', '.join(sorted(called))})")
+
+    assert not naked, (
+        f"a failure handler around a reservation call does not say whether a "
+        f"reservation is still billing: {'; '.join(naked)}.")
+    # At least the three there are today: making one, releasing one after a
+    # refused create, and releasing one on `delete`. A walk that found none
+    # would pass by checking nothing.
+    assert len(seen) >= 3, seen
+    assert any(where.startswith("remove.py") for where in seen), seen
+    assert set(RESERVATION_FAILURE_TOKENS) & set(FAILURE_BILL_TOKENS) <= {"still billing"}
 
 
 # --- the strangers check, which nothing was holding -------------------------
@@ -1793,3 +2144,37 @@ def test_a_project_that_cannot_be_named_is_None_not_empty():
     reporting no configured project."""
     gc = _FakeGc(project=None)
     assert host_module._undeclared_and_running(gc, [_LOCAL_ONLY]) is None
+
+
+# --- a printed command that stops to ask ---------------------------------------
+
+
+def test_no_gcloud_command_these_files_print_for_pasting_stops_to_ask():
+    """`gcloud compute instances delete` and `reset-windows-password` both stop
+    for a "(Y/n)?" unless they are told `--quiet`. Printed for somebody to
+    paste, a command that waits is one that exits 1 from a script and does
+    nothing — and for a delete, what it did not delete goes on billing. Found
+    on a real project, on the reservation delete; these are its siblings in
+    `host.py` and `remove.py`.
+
+    Read off the source: every place one of the two is BUILT, as an f-string
+    taking a name, has `--quiet` before the statement ends.
+    """
+    import inspect
+    import re
+
+    from comfy_qa import host, remove
+
+    built = re.compile(
+        r'f"gcloud compute (?:instances delete|reset-windows-password) \{')
+    found = 0
+    for module in (host, remove):
+        source = inspect.getsource(module)
+        for match in built.finditer(source):
+            found += 1
+            # To the end of the call the string is an argument of.
+            rest = source[match.start():]
+            statement = rest[:re.search(r"\)\s*\n|\],?\s*\n", rest).end()]
+            assert "--quiet" in statement, (
+                f"{module.__name__}: prints a command that prompts:\n{statement}")
+    assert found >= 5, f"only {found} found — the pattern no longer matches the source"

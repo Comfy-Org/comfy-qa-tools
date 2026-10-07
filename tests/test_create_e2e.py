@@ -188,6 +188,18 @@ class FakeGcloud:
         The guard below is why this is a decision rather than an accident."""
         return list(self.preferences)
 
+    def list_reservations(self, project):
+        """`create` reads these because a reservation holds its card — and so
+        part of the GPU ceiling — whether its box is running or not. None here:
+        these tests are about grants, zones and the latency cache, and a project
+        with nothing reserved is counted exactly as it was before the read
+        existed. Recorded, so a test can say the read happened.
+
+        Added deliberately, for the reason given on `quota_preferences`: the
+        guard below turned the new read into a decision in this file too."""
+        self.calls.append("list_reservations")
+        return []
+
     def __getattr__(self, item):  # pragma: no cover - the guard, not the path
         # PUBLIC NAMES ONLY. This guard is about `create` reaching for a gcloud
         # METHOD nobody expected, and it earned its keep catching exactly that.
@@ -678,7 +690,12 @@ def test_a_dry_run_makes_no_billable_call_of_any_kind(cli):
     assert result.exit_code == 0
     assert billable(result) == []
     assert set(result.gc.calls) <= {"current_project", "list_instances", "gpu_quotas",
-                                    "accelerator_types", "machine_types"}
+                                    "accelerator_types", "machine_types",
+                                    # A read, and one a dry run must make: what
+                                    # is already reserved decides whether the
+                                    # plan it prints could be carried out.
+                                    "list_reservations"}
+    assert "list_reservations" in result.gc.calls
     assert "--dry-run: nothing created" in result.stdout
 
 

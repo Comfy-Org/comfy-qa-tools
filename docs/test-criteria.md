@@ -353,12 +353,16 @@ done
       refusal and ticked the claim about the file, which the refusal is not
       evidence for. It is free, offline, and it is the difference between
       believing `init` and checking it.
-- [ ] **B3** — a table with NAME KIND OS GPU URL **STATE**, and under it the one
-      line that says what STATE is: what this machine knows without asking
+- [ ] **B3** — a table with NAME KIND OS GPU URL STATE **RESERVED**, and under it
+      the line that says what STATE is: what this machine knows without asking
       anything — whether a tunnel is open — and that `--live` is how you ask the
-      box itself. The starter list is one row, `local`, with `-` under OS, GPU
-      and STATE. **STATE and that line are newer than this criterion was**, which
-      named five columns and would have failed a correct build on the sixth: a
+      box itself. The starter list is one row, `local`, with `-` under OS, GPU,
+      STATE and RESERVED. **There is no AGE or DISK column here**: nothing offline
+      knows either, and they appear only under `--live` (phase V). With no cloud
+      box declared there is no line about RESERVED under the table — it has
+      nothing to be about. **RESERVED is newer than this criterion was** (1.3.0),
+      as STATE once was: it named five columns and would have failed a correct
+      build on the sixth, and then six and would have failed on the seventh. A
       column the binary prints and this line does not is not a pass, it is this
       criterion going stale, which A3 has already done once here.
 - [ ] **B4** — bare `comfy-qat` prints the same table as B3, and accepts
@@ -924,6 +928,284 @@ echo "=== K7 and Google agrees"; gcloud compute instances list
       Finding a leak with `gcloud` that the tool never mentioned is a defect in the
       tool. Phase I is where you confirm this. *(Only reachable if K5 actually
       fails part way. Not something to arrange — record it as not run.)*
+
+## Phase V — reserved boxes, the limit, and a box with no GPU *(V1–V3 free; the rest bills, and the reserved box bills STOPPED)*
+
+**New in 1.3.0. The feature set was run on real Google Compute Engine boxes on
+2026-10-07**, on a project with a GPU ceiling of 1: a reserved L4 box (create,
+stop, start twice, `go`, `stamp`, the refused `move`, delete), a box with no GPU,
+the limit, `list` and `list --live`, and `delete`. The boxes below are left
+unticked: that run followed its own script, not this one step for step, so this
+phase has still to be walked as written.
+
+Three things this phase depended on were assumptions about Google. That run
+observed all three:
+
+- a **reservation counts against GPU quota** the way a running box does — the
+  card's regional quota and `GPUS_ALL_REGIONS` both, from the moment it is made,
+  with no box; and a box on its own reservation is not counted a second time;
+- `gcloud compute reservations delete` **succeeds while a stopped box still
+  targets it**, which is the order `delete` uses (V15);
+- a reservation for a **built-in card** (L4) is made without naming the card,
+  and reads back with the card filled in (V19).
+
+**Not run for real:** a reserved **T4** box through the tool, for lack of stock
+(no T4 could be reserved in any zone tried); anything that needs a ceiling above
+1 (V20, V21, V25); Ctrl-C between the reservation and the box (V23); a
+reservations read that fails (V24); and the bill itself (V26).
+
+Four defects from that run were fixed before release: a delete command printed
+without `--quiet`, a reserved ending that offered only a `delete` the running
+box refuses, a stock-out message that said "every region" after `--region`, and
+a stock-out sign that did not match gcloud's line-wrapped error.
+
+**Read this before V6. A reserved box bills every hour, running or stopped,
+until it is deleted.** `down` does not stop it. If you stop part-way through this
+phase, the teardown at the end of it is not optional: run it, and read the
+reservations list afterwards.
+
+This phase assumes the project's `GPUS_ALL_REGIONS` is **1**, which is what makes
+one reserved box the whole allowance. `qat quota list` says what yours is.
+
+```sh
+echo "=== V0 the baseline: nothing reserved, nothing running — read from Google"
+gcloud compute reservations list --project $P | tee ~/qa-before/reservations.txt
+gcloud compute instances list --project $P
+echo "=== V1 a reserved plan, and nothing else"; qat create --os linux --gpu t4 --reserve --name qa-rsv --dry-run; echo "exit $?"
+echo "=== V1b and nothing was reserved"; diff ~/qa-before/reservations.txt <(gcloud compute reservations list --project $P) && echo "IDENTICAL"
+echo "=== V2 a box with no GPU cannot be reserved"; qat create --os linux --gpu none --reserve --dry-run; echo "exit $? (2 = refused)"
+echo "=== V3 a plan with no GPU"; qat create --os linux --gpu none --name qa-cpu --dry-run; echo "exit $?"
+echo "=== V3b in a script, --reserve left off is no — and said"; qat create --os linux --gpu t4 --dry-run </dev/null 2>&1 | grep -n "reserve:"
+```
+
+- [ ] **V0** — both lists are empty, or hold only things you can account for.
+      **Do not skip this**: V1b, V9b, V15b and V17 are comparisons, and a
+      comparison with no baseline is a tick on faith.
+- [ ] **V1** — the plan for a reserved box, and nothing created. Three things it
+      must print that an ordinary plan does not: the **first step is the
+      reservation** (`reserve the capacity first: reservation qa-rsv-rsv in
+      <zone>, which only this box can use`); the **bill sentence**, word for word
+      — `qa-rsv is reserved. Google holds its capacity and bills for it every hour
+      — running or stopped — until the box is deleted.`; and, under `quota
+      checked:`, **what reserving leaves** — on a ceiling of 1, `reserving takes 1
+      of the 1 — none left. While qa-rsv exists no other GPU box can start,
+      including a stopped one you already have.` Ends `--dry-run: nothing
+      created`.
+- [ ] **V1b** — **and nothing was reserved.** `IDENTICAL` against V0. A dry run
+      that made a reservation would print exactly the same plan and then bill.
+- [ ] **V2** — refused, exit **2**, saying a box with no GPU cannot be reserved
+      and why, with two commands that each run. **Offline**: it comes back in the
+      time `qat --version` takes, before the minute of quota. Time it against V1.
+- [ ] **V3** — the plan for a box with no GPU: machine type `n1-standard-8` with
+      `nothing attached to it`, no driver line, and under `quota checked:` the
+      line `GPU quota: not used — this box has no GPU` followed by **vCPU**
+      limits, each marked `a limit, not what is free`. No `GPUS_ALL_REGIONS` line
+      and no line about reservations. It prints `reserve: no (a box with no GPU
+      is not reserved)` without asking.
+- [ ] **V3b** — the one line `reserve: no (default — pass --reserve to hold the
+      capacity)`. A script written before 1.3.0 makes the box it always made, and
+      its log now says which way the decision went.
+
+Now the ones that bill. `qa-cpu` first, because it is cheap and it stays up
+through V6 on purpose.
+
+```sh
+echo "=== V4 make the box with no GPU"; qat create --os linux --gpu none --name qa-cpu --yes; echo "exit $?"
+echo "=== V5 serve it — no driver to wait for"; qat go qa-cpu --no-browser; qat stamp qa-cpu
+echo "=== V6 make the reserved box, WHILE qa-cpu is running"; qat create --os linux --gpu t4 --reserve --name qa-rsv --yes; echo "exit $?"
+echo "=== V7 Google agrees: one reservation, in use, and the box is bound to it"
+gcloud compute reservations list --project $P --format="table(name,zone.basename(),status,specificReservation.count,specificReservation.inUseCount)"
+gcloud compute instances list --project $P --format="table(name,zone.basename(),status,reservationAffinity.consumeReservationType,reservationAffinity.values.list())"
+echo "=== V8 the list, offline and then live"; qat list; qat list --live
+```
+
+- [ ] **V4** — created without reading GPU quota at all: no `GPUS_ALL_REGIONS`
+      line in its output. It ends on `comfy-qat down qa-cpu   # stop the machine,
+      stop paying` and says there is no driver to wait for. In the host list it
+      is `gpu = "none"`.
+- [ ] **V5** — `go` serves it **without waiting for a driver**. It used to wait
+      fifteen minutes for `nvidia-smi` on a machine with no NVIDIA hardware; a
+      `go` that sits at a driver wait is that defect back. `stamp` prints a line
+      naming a CPU device and no card, and is not refused as a mismatch. **Record
+      the stamp line verbatim** — what ComfyUI calls the device on a box with no
+      GPU has not been seen yet.
+- [ ] **V6** — **the reservation is made first, then the box, in the same zone**:
+      `reserving qa-rsv-rsv in <zone>` and then `creating qa-rsv on it`. It was
+      not refused because `qa-cpu` is running — a box with no GPU holds none of
+      the GPU allowance. It ends on the bill sentence and two lines: `comfy-qat down
+      qa-rsv     # first — delete refuses a box that is running`, then `comfy-qat
+      delete qa-rsv   # the only thing that stops a reserved box's bill …`. It
+      **does not** print `stop paying`, and the `down` line is not described as
+      stopping the bill.
+- [ ] **V7** — read from Google, not from the tool: a reservation `qa-rsv-rsv`,
+      `READY`, count 1, in use 1; and `qa-rsv` with `SPECIFIC_RESERVATION` naming
+      it. If the box is there and unbound, or the reservation is in another zone,
+      the tool made two unrelated things and is billing for both.
+- [ ] **V8** — plain `list`: columns NAME KIND OS GPU URL STATE **RESERVED**;
+      `qa-rsv` reads `yes`, `qa-cpu` reads `no` with `none` under GPU; the
+      footnote says RESERVED is what your host list says. `list --live`: the same
+      plus **AGE** and **DISK**, both boxes `<1h` and `200 GB`, RESERVED `yes` and
+      `no` again — now checked — and the line `A reserved box bills every hour,
+      running or stopped, until it is deleted.` No `has no box` block: the one
+      reservation has its box on it.
+
+```sh
+echo "=== V9 a second GPU box is refused — reserved, and not"
+qat create --os linux --gpu l4 --reserve --name qa-2 --yes; echo "exit $?"
+qat create --os linux --gpu l4 --name qa-3 --yes; echo "exit $?"
+echo "=== V9b and neither was made"; gcloud compute instances list --project $P; gcloud compute reservations list --project $P
+echo "=== V9c what Google's own quota usage says the reservation is holding"
+gcloud compute project-info describe --project $P --format="value(quotas)" | tr ';' '\n' | grep -i "GPUS_ALL_REGIONS"
+echo "=== V10 a box with no GPU is still allowed"; qat create --os linux --gpu none --name qa-cpu2 --dry-run; echo "exit $?"
+echo "=== V11 down does not stop its bill, and says so"; qat down qa-rsv
+echo "=== V11b Google agrees: stopped, and still reserved"
+gcloud compute instances list --project $P; gcloud compute reservations list --project $P --format="table(name,status,specificReservation.inUseCount)"
+echo "=== V12 it starts again where it was"; qat go qa-rsv --no-browser; qat stamp qa-rsv
+echo "=== V13 move refuses it, both ways"; qat move qa-rsv --dry-run; echo "exit $?"; qat move qa-rsv --to us-central1-b; echo "exit $?"
+echo "=== V14 down --all gives no all-clear"; qat down --all
+```
+
+- [ ] **V9** — **both** are refused, exit **2**, with `GPUS_ALL_REGIONS is 1 on
+      this project, and 1 of it is held by 1 reservation: qa-rsv-rsv (<zone>). A
+      reservation holds its card whether its box is running or stopped, so
+      stopping a box frees nothing, and 1 more is needed. Nothing was created.`
+      The fix is two lines, `comfy-qat down qa-rsv` then `comfy-qat delete
+      qa-rsv`, and **not** "stop the one you are not using".
+- [ ] **V9b** — and nothing was made: one instance more than V0 for each of
+      `qa-cpu` and `qa-rsv`, one reservation, and no `qa-2` or `qa-3` anywhere.
+- [ ] **V9c** — **the assumption, checked.** Google's own usage for
+      `GPUS_ALL_REGIONS` reads **1** with one reserved T4 box on the project. If
+      it reads 0, a reservation does not count against GPU quota, V9's refusal is
+      this tool being stricter than Google, and that is a finding to report with
+      this output attached.
+- [ ] **V10** — not refused. The reserved box is the whole GPU allowance and
+      this needs none of it.
+- [ ] **V11** — stops the machine and says `qa-rsv was running. Stopped — but it
+      is reserved, so it is still billing.`, then the `comfy-qat delete qa-rsv`
+      line. It does **not** say `was billing. Stopped.`
+- [ ] **V11b** — the instance is `TERMINATED` and the reservation is still
+      there, still `READY`. Record what `inUseCount` reads for a stopped box.
+- [ ] **V12** — `go` starts it in the **same zone** and serves; `stamp` names
+      the T4. A start that is refused for capacity here means the reservation is
+      not doing what it is for.
+- [ ] **V13** — both are refused, exit **2**, in the time `qat --version` takes
+      and **without starting the box**: `qa-rsv is reserved, and a reservation is
+      held in one zone …`. The fix is three commands — `down`, `delete`, and a
+      `create … --reserve --name qa-rsv`, with `--zone us-central1-b` on the
+      second run and no `--zone` on the first.
+- [ ] **V14** — stops both boxes and **does not** end `Nothing is now.` It says
+      `still billing, stopped or not — it is reserved: qa-rsv.` and the delete
+      line.
+
+```sh
+echo "=== V15 delete releases the reservation"; qat delete qa-rsv --yes; echo "exit $?"
+echo "=== V15b nothing of it is left — read from Google"
+gcloud compute instances list --project $P; gcloud compute reservations list --project $P; gcloud compute disks list --project $P; qat list
+echo "=== V16 delete the box with no GPU"; qat delete qa-cpu --yes; echo "exit $?"
+echo "=== V17 the same as V0"; diff ~/qa-before/reservations.txt <(gcloud compute reservations list --project $P) && echo "IDENTICAL"; gcloud compute instances list --project $P
+```
+
+- [ ] **V15** — prints `delete qa-rsv in <zone>, its 200 GB boot disk, and its
+      reservation qa-rsv-rsv.`, then `releasing qa-rsv-rsv` **before** `deleting
+      qa-rsv`, and ends `Its reservation qa-rsv-rsv was released, so nothing of it
+      is billing.` **If the release is refused** because the stopped box still
+      targets the reservation, the command exits 1 saying `could not release …
+      so qa-rsv was not deleted and its reservation is still billing` — that is
+      the second assumption failing, not a slip. Record Google's words, then
+      delete them by hand **in the other order** — the instance first, then the
+      reservation — with the second of the two teardown blocks below. Running
+      the first block here would repeat the call Google has just refused.
+- [ ] **V15b** — no `qa-rsv` instance, no `qa-rsv` disk, **no `qa-rsv-rsv`
+      reservation**, and no `qa-rsv` row in `qat list`. The reservation is the
+      one to look for: it is what would still be billing.
+- [ ] **V16** — deleted as any box is; nothing about reservations is said or
+      asked.
+- [ ] **V17** — `IDENTICAL`, and no instances. If a reservation is listed here,
+      it is billing right now.
+
+**Teardown, if anything stopped half-way.** Raw gcloud. Look first:
+
+```sh
+echo "=== V-teardown"
+gcloud compute reservations list --project $P
+gcloud compute instances list --project $P
+gcloud compute disks list --project $P
+```
+
+Then, for each `qa-*` still there, the reservation first — it is the one
+billing at a GPU's rate:
+
+```sh
+#   gcloud compute instances stop <name> --zone <zone> --project $P
+#   gcloud compute reservations delete <name>-rsv --zone <zone> --project $P --quiet
+#   gcloud compute instances delete <name> --zone <zone> --project $P --delete-disks=all --quiet
+```
+
+**Unless the reservation delete is what was refused** — V15's case. On
+2026-10-07 Google released a reservation a stopped box still targeted, exit 0,
+so this is not expected; if it happens, that order cannot work, and it is the
+instance that goes first:
+
+```sh
+#   gcloud compute instances delete <name> --zone <zone> --project $P --delete-disks=all --quiet
+#   gcloud compute reservations delete <name>-rsv --zone <zone> --project $P --quiet
+```
+
+Either way, finish by reading `gcloud compute reservations list --project $P`.
+An entry there is billing.
+
+Two more, each of which makes and removes one reserved box. Run them only after
+V17 is clean.
+
+```sh
+echo "=== V18 the box is refused AFTER its reservation is made"; qat create --os linux --gpu t4 --reserve --name qa-f --disk 600 --region us-central1 --yes; echo "exit $?"
+echo "=== V18b and the reservation was released"; gcloud compute reservations list --project $P; gcloud compute instances list --project $P
+echo "=== V19 a card built into its machine type"; qat create --os linux --gpu l4 --reserve --name qa-l4 --yes; echo "exit $?"
+gcloud compute reservations describe qa-l4-rsv --zone "$(gcloud compute reservations list --project $P --filter=name=qa-l4-rsv --format='value(zone.basename())')" --project $P --format=json
+echo "=== V19b and it goes"; qat down qa-l4; qat delete qa-l4 --yes; gcloud compute reservations list --project $P
+```
+
+- [ ] **V18** — a real failure between the two calls. `--disk 600` is over this
+      project's 500 GB SSD allowance in `us-central1`, so Google makes the
+      reservation and then refuses the instance. The tool must say `The
+      reservation made for it (qa-f-rsv) was released, so nothing is left
+      billing.` and exit 1. *(Only reachable on a project whose `SSD_TOTAL_GB`
+      in the region is under 600 — check `gcloud compute regions describe
+      us-central1` first. If the disk fits, this creates a 600 GB box: delete it
+      and record the check as not run.)*
+- [ ] **V18b** — **no reservation and no instance.** This is the cleanup that
+      matters most in the phase, and the only way to know it worked is to read
+      the list. A `qa-f-rsv` here is a reservation billing with nothing on it.
+- [ ] **V19** — the L4 path. The reservation is made without `--accelerator`,
+      on the assumption that `g2-standard-8` already says which card. **If Google
+      refuses the reservation**, that assumption is wrong: record the refusal
+      verbatim — nothing is left billing when it is refused. If it succeeds,
+      record whether the describe output lists `guestAccelerators`.
+- [ ] **V19b** — stopped, deleted, and the reservations list is empty again.
+
+What a ceiling of 1 cannot show:
+
+- [ ] **V20** — two reserved boxes at once, and a reserved and an unreserved GPU
+      box together, each within a larger ceiling. *(Needs a `GPUS_ALL_REGIONS` of
+      2 or more. Not arrangeable on this project.)*
+- [ ] **V21** — `switch` from an unreserved GPU box to another while a
+      reservation holds part of the ceiling, and the refusal when reservations
+      alone hold all of it with another box running. *(Needs two GPU boxes
+      running, so a ceiling of 2 or more. Only the refusal can be seen here.)*
+- [ ] **V22** — a stockout at `reservations create`, and the fall-through to the
+      next zone that follows it. *(A real stockout cannot be forced.)*
+- [ ] **V23** — Ctrl-C between the reservation and the box, and the report that
+      names the reservation with its delete command. *(Interactive, and the
+      window is seconds.)*
+- [ ] **V24** — a reservations read that fails: `create --reserve` refuses,
+      plain `create` warns and goes on, `list --live` says `unchecked`. *(Needs
+      the Compute Engine API or the permission taken away mid-session. Not
+      something to arrange.)*
+- [ ] **V25** — an H100 reservation holding eight cards. *(Needs H100 quota and
+      a ceiling of 8.)*
+- [ ] **V26** — the bill itself: that a stopped reserved box is charged at the
+      running rate. *(Billing lags by hours. Not observable in a session — read
+      it from the billing console the next day.)*
 
 ## Phase E — a cloud box, start to serving *(this bills)*
 

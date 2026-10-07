@@ -165,14 +165,34 @@ class Stopping(Project):
             "HTTPError 404: The resource 'projects/proj/zones/us-central1-b/"
             "instances/comfy-win-b' was not found")
 
+    def describe_instance(self, name, zone, project):
+        # What `down <name>` asks next: which reservation the box's own record
+        # binds it to. A box that is gone has no record, and Google says so.
+        self.calls.append("describe")
+        raise GcloudError(
+            "HTTPError 404: The resource 'projects/proj/zones/us-central1-b/"
+            "instances/comfy-win-b' was not found")
+
 
 def test_a_stop_that_404s_on_a_missing_box_does_not_warn_about_a_bill(cli):
     cloud = Stopping(holds=[], status=GcloudError("not found"))
     result = cli("down", "comfy-win-b", cloud=cloud)
 
+    assert result.exit_code == 0, (result.output, result.exception)
     assert "may still be running and billing" not in result.output, result.output
     assert "no longer exists" in result.output
     assert "nothing is billing" in result.output
+    # The box is gone, so its record cannot say whether it was reserved — and a
+    # reservation outlives its box. The answer on stdout says that was not
+    # checked, and ends on the command that shows it; it does not say the bill
+    # stopped.
+    said = " ".join(result.stdout.split())
+    assert ("comfy-win-b was not running — but whether it is reserved could not "
+            "be checked, and a reservation bills with its box stopped.") in said
+    assert result.stdout.splitlines()[-1] == (
+        "  gcloud compute reservations list --project=proj")
+    assert "nothing was billing" not in result.stdout
+    assert "describe" in cloud.calls
 
 
 def test_a_stop_that_fails_where_nobody_can_ask_still_says_it_cannot_say(cli):
@@ -191,6 +211,12 @@ class Deleting(Project):
         self.calls.append(" ".join(str(part) for part in args))
         return ""
 
+    def list_reservations(self, project):
+        # A box that is gone can have left a reservation behind, so `delete`
+        # reads the project's before it says what is left. None here.
+        self.calls.append("reservations")
+        return []
+
 
 def test_delete_takes_the_entry_out_when_the_box_is_already_gone(cli):
     """The trap this closes: nothing in the tool could remove the entry."""
@@ -201,6 +227,10 @@ def test_delete_takes_the_entry_out_when_the_box_is_already_gone(cli):
 
     assert result.exit_code == 0, result.output
     assert "already been deleted" in result.output
+    # Said because it LOOKED: the project's reservations were read and none is
+    # this box's, which is the one case "only the entry is left" is true in.
+    assert "reservations" in cloud.calls
+    assert "so only the host list entry is left." in " ".join(result.stdout.split())
     assert "comfy-win-b" not in result.hosts, "the entry survived"
     assert not any("instances delete" in call for call in cloud.calls), (
         "it called delete on a machine that is not there"

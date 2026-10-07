@@ -114,7 +114,7 @@ STAMP = Stamp(host="comfy-win", url="http://127.0.0.1:8190", comfyui_version="0.
 
 
 def gcloud(statuses: dict[str, object], fail: Exception | None = None,
-           declared: str = ""):
+           declared: str = "", reservations=()):
     """A Gcloud answering `describe` AND `list` from one table, recording every call.
 
     A status may be a list, which is read one entry at a time and then holds —
@@ -167,6 +167,13 @@ def gcloud(statuses: dict[str, object], fail: Exception | None = None,
             return [{"name": name, "status": state_of(name, advance=False),
                      "zone": f"https://x/projects/{project}/zones/{zone}"}
                     for name, zone, owner in boxes if owner == project]
+        if key.startswith("compute reservations list"):
+            # `list --live` reads these beside the instances, and `switch` reads
+            # them beside the ceiling: a reservation holds its card whether its
+            # box runs or not. `reservations` is what the project holds — none
+            # unless a test says so, which is a project every test written
+            # before reservations existed is still true of.
+            return list(reservations)
         if key.startswith("compute instances start"):
             if fail is not None:
                 raise fail
@@ -212,11 +219,12 @@ def tunnels(*open_for: str):
 def cli(tmp_path, monkeypatch):
     """The real CLI, with only the tunnel subprocess and the HTTP probe replaced."""
     def invoke(*args, declared=HOSTS, statuses=None, open_tunnels=(), serving=(),
-               fail=None):
+               fail=None, reservations=()):
         path = tmp_path / "hosts.toml"
         path.write_text(declared, encoding="utf-8")
 
-        gc = gcloud(statuses or {}, fail=fail, declared=declared)
+        gc = gcloud(statuses or {}, fail=fail, declared=declared,
+                    reservations=reservations)
         opened: list[str] = []
         closed: list[str] = []
 
@@ -406,8 +414,18 @@ def test_switch_takes_a_description_just_like_go(cli):
 # for rather than paid for on every list.
 
 def rows_of(output: str) -> dict[str, str]:
-    """The table, without the header or the footnote under it."""
-    return {line.split()[0]: line for line in output.splitlines()[1:]
+    """The table, without the header or the footnote under it — each row as far
+    as its STATE cell.
+
+    STATE used to be the last column and these tests read it off the end of the
+    line. RESERVED, and under --live AGE and DISK, now follow it, so each row
+    is cut where the header puts RESERVED: what is left ends with the STATE
+    cell, whatever is printed to its right. Those columns have a file of their
+    own, `tests/test_list_cost.py`.
+    """
+    lines = output.splitlines()
+    cut = lines[0].index("RESERVED") if lines and "RESERVED" in lines[0] else None
+    return {line.split()[0]: line[:cut].rstrip() for line in lines[1:]
             if line.strip() and line.split()[0].islower() and " " in line}
 
 
@@ -553,6 +571,11 @@ def test_live_asks_google_and_says_stopped_rather_than_terminated(cli):
     # project. This used to assert a `describe`, of which there was one PER BOX.
     reads = [call for call in result.calls if call.startswith("compute instances")]
     assert reads == ["compute instances list --project=proj"], reads
+    # And one more read, for the columns beside STATE: the project's
+    # reservations, once. Two calls for two boxes — not one per box, and not a
+    # third for anything.
+    assert result.calls == ["compute instances list --project=proj",
+                            "compute reservations list --project=proj"], result.calls
 
 
 # --- the pieces, without the CLI in the way -------------------------------
@@ -614,7 +637,7 @@ def test_the_ceiling_makes_it_stop_first(cli, monkeypatch):
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
     result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": ["TERMINATED", "RUNNING"],
                            "comfy-linux": "RUNNING"},
@@ -713,7 +736,7 @@ def test_the_dry_run_shows_the_order_the_real_run_will_use(cli, monkeypatch):
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
     result = cli("switch", "comfy-win", "--dry-run",
                  statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
                  open_tunnels=("comfy-linux",))
@@ -737,7 +760,7 @@ def test_a_ceiling_switch_that_fails_says_you_are_on_neither_machine(cli, monkey
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
     result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
                  open_tunnels=("comfy-linux",),
@@ -770,7 +793,7 @@ def test_an_interrupt_after_the_ceiling_stop_reports_both_losses(
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
 
     # No `pytest.raises`: `Interrupted` is a `typer.Exit` now, so the runner
     # returns a result with the code instead of letting an exception escape.
@@ -804,7 +827,7 @@ def test_a_switch_that_stopped_nothing_reports_only_the_bill(cli, monkeypatch,
     from comfy_qa import inflight
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: None)
+                        lambda gc, host, others, hosts=None: None)
 
     # No `pytest.raises`: `Interrupted` is a `typer.Exit` now, so the runner
     # returns a result with the code instead of letting an exception escape.
@@ -845,7 +868,7 @@ def test_a_ceiling_that_stopped_nothing_does_not_crash_the_switch(cli, monkeypat
     from comfy_qa import host as host_module
 
     monkeypatch.setattr(host_module, "_blocked_by_the_ceiling",
-                        lambda gc, host, others: 1)
+                        lambda gc, host, others, hosts=None: 1)
 
     result = cli("switch", "comfy-win", "--no-browser",
                  statuses={"comfy-win": "RUNNING", "comfy-linux": "TERMINATED"},
@@ -856,3 +879,314 @@ def test_a_ceiling_that_stopped_nothing_does_not_crash_the_switch(cli, monkeypat
     )
     assert result.exit_code == 0, result.output
     assert "nothing else is running, so nothing to stop" in result.output
+
+
+# --- a reserved box, and a box with no GPU, under the ceiling -----------------
+#
+# The ceiling arithmetic above was written when the only thing that held a card
+# was a running box, and when every cloud box had one. Neither is true now:
+#
+#   * a RESERVED box holds its card running or stopped, so stopping it frees
+#     nothing — and "stop the other one first" is the destructive order chosen
+#     for no gain;
+#   * a box declared `gpu = "none"` holds no card at all, and `"none"` is a
+#     non-empty string.
+#
+# Driven through the gate itself, `_blocked_by_the_ceiling`, with a real
+# `Gcloud` over a scripted runner — not through a helper it calls. Every
+# reservation payload is a FIXTURE in the SDK schema's shape.
+
+P = "proj"
+
+
+def _host(name, *, gpu="L4", reservation=None, zone="us-central1-a"):
+    extra = (("gce_reservation", reservation),) if reservation else ()
+    return Host(name=name, kind="gce", port=8190, os="Ubuntu 22.04", gpu=gpu,
+                gce_instance=name, gce_zone=zone, gce_project=P, extra=extra)
+
+
+def _reservation(name, *, box="", zone="us-central1-a", machine="g2-standard-8"):
+    return {"name": name, "zone": f"https://x/projects/{P}/zones/{zone}",
+            "status": "READY",
+            "description": f"comfy-qat: held for {box}" if box else "made in the console",
+            "specificReservation": {"count": "1", "instanceProperties": {
+                "machineType": machine}}}
+
+
+def _gate(ceiling, *, reservations=(), instances=(), fail_reservations=False,
+          fail_instances=False):
+    """A `Gcloud` that answers the reads the gate makes, and records them."""
+    calls: list[str] = []
+
+    def runner(args, mode):
+        key = " ".join(args)
+        calls.append(key)
+        if "quotas info list" in key:
+            return [{"quotaId": "GPUS-ALL-REGIONS-per-project",
+                     "dimensionsInfos": [{"details": {"value": str(ceiling)},
+                                          "applicableLocations": ["global"]}]}]
+        if key.startswith("compute reservations list"):
+            if fail_reservations:
+                raise GcloudError("the reservations could not be listed")
+            return list(reservations)
+        if key.startswith("compute instances list"):
+            if fail_instances:
+                raise GcloudError("the instances could not be listed")
+            return list(instances)
+        raise AssertionError(f"unexpected: {key}")
+
+    gc = gcloud_module.Gcloud(runner=runner)
+    gc.calls = calls  # type: ignore[attr-defined]
+    return gc
+
+
+def _blocked(*args, **kwargs):
+    from comfy_qa.host import _blocked_by_the_ceiling
+
+    return _blocked_by_the_ceiling(*args, **kwargs)
+
+
+def test_a_box_with_no_gpu_running_elsewhere_is_not_counted_as_a_card():
+    """One box with no GPU is running, the ceiling is 1, and the target wants
+    one card. Nothing holds any of the ceiling, so nothing has to stop first —
+    read as a card, the box somebody is working on would be stopped for
+    nothing."""
+    target, cpu = _host("target"), _host("cpu-box", gpu="none")
+
+    assert _blocked(_gate(1), target, [cpu]) is None
+
+
+def test_a_real_card_running_elsewhere_still_reorders(  # the control
+):
+    target, other = _host("target"), _host("other")
+
+    assert _blocked(_gate(1), target, [other]) == 1
+
+
+def test_switching_to_a_box_with_no_gpu_never_reads_the_quota():
+    """It needs none of the allowance, so the ~58-second read buys nothing."""
+    gc = _gate(1)
+
+    assert _blocked(gc, _host("cpu-box", gpu="none"), [_host("other")]) is None
+    assert gc.calls == []
+
+
+def test_switching_to_a_reserved_box_is_never_blocked_by_the_ceiling():
+    """Its own reservation already holds its card, and has since it was made.
+    Starting it takes nothing more out of the allowance, so the box somebody is
+    on is not stopped first."""
+    target = _host("held", reservation="held-rsv")
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")])
+
+    assert _blocked(gc, target, [_host("other")]) is None
+
+
+def test_a_reservation_holding_the_whole_ceiling_refuses_rather_than_reorders(capsys):
+    """THE CASE. The other machine is running and reserved; the ceiling is 1.
+
+    The old arithmetic says "one box is running, the ceiling is one, stop it
+    first" — and then the target cannot start anyway, because the reservation
+    still holds the card. So the user ends on neither machine, having been
+    told the switch was reordered to make room. Refused instead, before
+    anything is started or stopped, and exit 2 says nothing was changed.
+    """
+    import typer
+
+    target = _host("target")
+    held = _host("held", reservation="held-rsv")
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[{"name": "held", "status": "RUNNING",
+                           "zone": f"https://x/projects/{P}/zones/us-central1-a",
+                           "reservationAffinity": {
+                               "consumeReservationType": "SPECIFIC_RESERVATION",
+                               "values": ["held-rsv"]}}])
+
+    with pytest.raises(typer.Exit) as stopped:
+        _blocked(gc, target, [held], [target, held])
+
+    assert stopped.value.exit_code == 2
+    said = " ".join(capsys.readouterr().err.split())
+    assert ("GPUS_ALL_REGIONS is 1 on this project, and 1 of it is held by 1 "
+            "reservation: held-rsv (us-central1-a). A reservation holds its card "
+            "whether its box is running or stopped, so stopping the other "
+            "machines would free nothing and target still could not start. "
+            "Nothing was started or stopped.") in said
+    # The remedy `create` prints for the same refusal: stop it, then delete it.
+    assert "comfy-qat down held" in said and "comfy-qat delete held" in said
+    assert not [call for call in gc.calls if " stop " in call or " start " in call]
+
+
+def test_a_stopped_reserved_box_nobody_is_switching_away_from_still_counts():
+    """It is in nobody's `others` — it is not running — and it holds a card.
+    Counted from the project's own reservations, the one running box beside it
+    fills a ceiling of 2, so that one has to stop first."""
+    target, other = _host("target"), _host("other")
+    gc = _gate(2, reservations=[_reservation("held-rsv", box="held")])
+
+    assert _blocked(gc, target, [other]) == 2
+
+
+def test_the_same_project_with_nothing_reserved_has_room():
+    """The control for the test above: same ceiling, same running box."""
+    assert _blocked(_gate(2), _host("target"), [_host("other")]) is None
+
+
+def test_a_reserved_box_that_is_running_is_one_card_not_two():
+    """Its card is its reservation's. Counted as a reservation AND as a running
+    box it would be two of a ceiling of 2, and the switch would be refused or
+    reordered on a card that does not exist."""
+    target = _host("target")
+    held = _host("held", reservation="held-rsv")
+    gc = _gate(2, reservations=[_reservation("held-rsv", box="held")])
+
+    assert _blocked(gc, target, [held]) is None
+
+
+def test_reservations_that_cannot_be_read_never_cause_a_refusal_or_a_reorder():
+    """Not knowing must never reorder a switch — and must not refuse one. With
+    the list unreadable the count falls back to what the host list declares,
+    which for two unreserved boxes is the arithmetic it always was."""
+    target, other = _host("target"), _host("other")
+
+    assert _blocked(_gate(2, fail_reservations=True), target, [other]) is None
+    assert _blocked(_gate(1, fail_reservations=True), target, [other]) == 1
+
+
+def test_an_entry_naming_a_reservation_the_project_no_longer_has_is_an_ordinary_box():
+    """The host list says reserved and the project holds no such reservation.
+    Stopping that box DOES free its card, so it is counted as freeable and the
+    switch reorders — refusing would be refusing on a reservation that is not
+    there."""
+    target = _host("target")
+    stale = _host("stale", reservation="gone-rsv")
+
+    assert _blocked(_gate(1, reservations=[]), target, [stale]) == 1
+
+
+def test_the_plan_says_stopping_a_reserved_box_frees_neither_its_card_nor_its_bill(cli):
+    """`switch` still stops it — that is what the command means — and says, in
+    the plan, before anything happens, the two things the stop will not do."""
+    declared = HOSTS.replace(
+        'gce_instance = "comfy-linux"',
+        'gce_instance = "comfy-linux"\ngce_reservation = "comfy-linux-rsv"')
+    assert "gce_reservation" in declared
+    result = cli("switch", "comfy-win", "--dry-run", declared=declared,
+                 statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"},
+                 reservations=[_reservation("comfy-linux-rsv", box="comfy-linux",
+                                            zone="us-central1-b")])
+
+    assert ("(reserved — stopping it does not free its card or its bill)"
+            in result.output), result.output
+
+
+def test_the_plan_says_nothing_of_the_kind_about_an_ordinary_box(cli):
+    result = cli("switch", "comfy-win", "--dry-run",
+                 statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"})
+
+    assert "then stop comfy-linux" in result.output
+    assert "reserved" not in result.output
+
+
+def _held_running(name="held"):
+    return {"name": name, "status": "RUNNING",
+            "zone": f"https://x/projects/{P}/zones/us-central1-a",
+            "reservationAffinity": {"consumeReservationType": "SPECIFIC_RESERVATION",
+                                    "values": ["held-rsv"]}}
+
+
+def _refusal(capsys, gc, target, others, hosts):
+    import typer
+
+    with pytest.raises(typer.Exit):
+        _blocked(gc, target, others, hosts)
+    return capsys.readouterr().err
+
+
+def test_the_refusal_offers_comfy_qat_only_for_a_box_the_host_list_really_holds(capsys):
+    """The reservation's description names an INSTANCE, `held`. Here the host
+    list has an entry CALLED `held` that points at a different instance — a
+    box renamed, or a second project's. `comfy-qat delete held` pasted back
+    would delete that other machine and leave the reservation billing, so it
+    must not be printed: the box on the reservation gets Google's commands."""
+    target = _host("target")
+    namesake = Host(name="held", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                    gce_instance="some-other-instance", gce_zone="us-central1-a",
+                    gce_project=P, extra=(("gce_reservation", "held-rsv"),))
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[_held_running()])
+
+    said = _refusal(capsys, gc, target, [namesake], [target, namesake])
+
+    assert "comfy-qat down" not in said and "comfy-qat delete" not in said, said
+    assert (f"gcloud compute instances delete held --zone=us-central1-a --project={P} "
+            f"--delete-disks=all --quiet") in said
+    assert (f"gcloud compute reservations delete held-rsv --zone=us-central1-a "
+            f"--project={P} --quiet") in said
+
+
+def test_the_refusal_names_a_declared_box_by_what_the_host_list_calls_it(capsys):
+    """The other direction: the entry is labelled `gpu-box` and points at the
+    instance `held`. The commands take the LABEL — `comfy-qat down held` would
+    be an unknown host."""
+    target = _host("target")
+    labelled = Host(name="gpu-box", kind="gce", port=8195, os="Ubuntu 22.04", gpu="L4",
+                    gce_instance="held", gce_zone="us-central1-a", gce_project=P,
+                    extra=(("gce_reservation", "held-rsv"),))
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[_held_running()])
+
+    said = _refusal(capsys, gc, target, [labelled], [target, labelled])
+
+    assert "comfy-qat down gpu-box" in said and "comfy-qat delete gpu-box" in said
+    assert "comfy-qat down held" not in said
+
+
+def test_without_a_host_list_the_refusal_prints_no_comfy_qat_command(capsys):
+    target = _host("target")
+    held = _host("held", reservation="held-rsv")
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               instances=[_held_running()])
+
+    said = _refusal(capsys, gc, target, [held], None)
+
+    assert "comfy-qat down" not in said and "comfy-qat delete" not in said
+    assert "gcloud compute reservations delete held-rsv" in said
+
+
+def test_the_refusal_does_not_say_nothing_is_on_it_when_the_boxes_were_not_read(capsys):
+    """The reservations came back and the instances did not. Whether a box is
+    on the reservation is then NOT KNOWN, and "release it — nothing is on it"
+    is the guess that takes a reservation from under somebody's running box.
+    Not read is handed to the remedy as not read: it says so, and leads with
+    the command that shows what is there."""
+    target = _host("target")
+    held = _host("held", reservation="held-rsv")
+    gc = _gate(1, reservations=[_reservation("held-rsv", box="held")],
+               fail_instances=True)
+
+    said = _refusal(capsys, gc, target, [held], [target, held])
+
+    assert "nothing is on it" not in " ".join(said.split())
+    assert "whether a box is on it could not be read" in " ".join(said.split())
+    assert f"gcloud compute instances list --project={P}" in said
+    # Not a `comfy-qat` command either: which box is on it is what was not read.
+    assert "comfy-qat down" not in said and "comfy-qat delete" not in said
+
+
+def test_switch_hands_the_host_list_to_the_gate(cli, monkeypatch):
+    """The gate being right about a host list is no use if the command never
+    gives it one. Held on what was SENT."""
+    from comfy_qa import host as host_module
+
+    seen = {}
+
+    def gate(gc, host, others, hosts=None):
+        seen["hosts"] = hosts
+        return None
+
+    monkeypatch.setattr(host_module, "_blocked_by_the_ceiling", gate)
+    cli("switch", "comfy-win", "--dry-run",
+        statuses={"comfy-win": "TERMINATED", "comfy-linux": "RUNNING"})
+
+    assert seen["hosts"] is not None
+    assert {host.name for host in seen["hosts"]} == {"local", "comfy-win", "comfy-linux"}

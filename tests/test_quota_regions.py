@@ -77,3 +77,46 @@ def test_a_quota_record_with_no_places_at_all_is_still_resolvable():
     dimensions is not a reason to refuse to ask for it."""
     bare = {"quotaId": "NVIDIA-L4-GPUS-per-project-region"}
     assert resolve("l4", [bare]) == "NVIDIA-L4-GPUS-per-project-region"
+
+
+# --- where a machine's CPU quota has room for it --------------------------------
+
+
+def _cpus(rows):
+    return [{"quotaId": "CPUS-per-project-region", "dimensionsInfos": [
+        {"details": {"value": str(value)}, "applicableLocations": list(places)}
+        for value, places in rows]}]
+
+
+def test_the_regions_with_cpu_room_for_a_machine_are_the_ones_that_meet_it():
+    from comfy_qa.quota import cpu_regions
+
+    quotas = _cpus([(200, ["us-central1", "us-east1"]), (4, ["europe-west4"])])
+    assert cpu_regions("n1-standard-8", quotas, 8) == ["us-central1", "us-east1"]
+    assert cpu_regions("n1-standard-8", quotas, 4) == [
+        "europe-west4", "us-central1", "us-east1"]
+    assert cpu_regions("n1-standard-8", quotas, 201) == []
+
+
+def test_an_unlimited_cpu_pool_has_room_for_anything():
+    """The sentinel: `-1 >= 8` is False, and -1 is not a small number."""
+    from comfy_qa.quota import cpu_regions
+
+    assert cpu_regions("n1-standard-8", _cpus([(-1, ["us-central1"])]), 8) == [
+        "us-central1"]
+
+
+def test_a_project_that_reports_no_cpu_pool_names_no_region():
+    from comfy_qa.quota import cpu_regions
+
+    assert cpu_regions("n1-standard-8", [], 8) == []
+
+
+def test_the_project_wide_ceiling_is_not_a_region():
+    from comfy_qa.quota import cpu_regions
+
+    quotas = _cpus([(200, ["us-central1"])]) + [{
+        "quotaId": "CPUS-ALL-REGIONS-per-project",
+        "dimensionsInfos": [{"details": {"value": "32"},
+                             "applicableLocations": ["global"]}]}]
+    assert cpu_regions("n1-standard-8", quotas, 8) == ["us-central1"]

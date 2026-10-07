@@ -625,8 +625,20 @@ MESSAGE_FLOOR = {
     # nothing about scope at all after `--zone`, where nothing was ranked. Each
     # carries two identifying runs, so the count is 51 + 4. Raised here, in the
     # commit that added them.
-    "create.py": 55,
-    "gcloud.py": 8,
+    #
+    # 55 until reserved boxes, the reservation limit and the box with no GPU.
+    # The module reads 111: the two refusals for a reserve that cannot be
+    # planned, the limit and its unread twin, the two CPU refusals, the leftover
+    # that cannot be used or is somewhere else, and — the bulk of it — every way
+    # a reserved create can stop between its two calls, each of which says what
+    # is still billing in a sentence of its own. Raised to 105 rather than to
+    # 111, for the reason under WORDING_FLOOR: it leaves room to fall as well as
+    # to rise.
+    "create.py": 105,
+    # 8 until the reservations listing and its by-name absence check arrived —
+    # an empty listing that is not an empty result, and a not-found about
+    # something larger than the reservation asked about. The module reads 14.
+    "gcloud.py": 11,
     # 54 until `--os`/`--gpu` and `down --keep-running` were removed. Six
     # messages went with them — two selector refusals, the note that announced
     # their retirement, the note that announced `--keep-running`'s, and the
@@ -642,7 +654,16 @@ MESSAGE_FLOOR = {
     # one. Raised to 58 rather than to today's 63, for the reason the paragraph
     # under WORDING_FLOOR gives: the count is shared, and a floor pinned to an
     # exact number turns somebody else's honest deletion into a failure here.
-    "host.py": 58,
+    #
+    # 58 until the commands learned about reserved boxes: `create`'s two answers
+    # to a reservations read that failed and its two-things-are-billing error,
+    # `switch`'s refusal to reorder on a ceiling a reservation holds, `move`'s
+    # refusal of a reserved box, and `list --live`'s warning for a project whose
+    # reservations it could not ask about. The module reads 84. Raised to 78, on
+    # the same rule.
+    # 78 until the audit: `list --live` says when it could not work out which
+    # reservations have no box. The module reads 87; raised to 82.
+    "host.py": 82,
     "hostfile.py": 13,
     # 65 until the tunnel learned to tell a box that is still booting from one
     # that is broken, and `up` learned to say WHICH of "not installed or not
@@ -657,9 +678,19 @@ MESSAGE_FLOOR = {
     # Remote Desktop was reachable. `wait_for_port` is the new wait and carries
     # the refusal for a box whose 3389 never answers. Raised to 78 on the same
     # half-the-distance rule; the module reads 84.
-    "lifecycle.py": 78,
-    "relocate.py": 12,
-    "remove.py": 11,
+    # 78 until a reserved box that is gone stopped being told nothing is
+    # billing. The module reads 89; raised to 84.
+    "lifecycle.py": 84,
+    # 12 until `move` counted reserved cards against the ceiling and gave a
+    # reservation that holds it a refusal of its own. The module reads 17.
+    "relocate.py": 14,
+    # 11 until `delete` released a reserved box's reservation. Six messages, and
+    # every one is about which half happened: a reservation that could not be
+    # read, one the listing did not carry, one that is somebody else's too, and
+    # the three ways a release and a delete can come apart. The module reads 27.
+    # 21 until the box-first order said what a failed instance delete left.
+    # The module reads 30; raised to 25.
+    "remove.py": 25,
     "setup.py": 19,
     "stamp.py": 10,
     "tunnel.py": 22,
@@ -722,7 +753,13 @@ MESSAGE_FLOOR = {
 # with nobody to ask, and the warning that a supplied flag is being asked for
 # again — and the rest of the distance is other people's work on the page.
 # Raised to 296, half the distance to today's 302, on the rule above.
-ENTRY_FLOOR = 296
+# 296 until reserved boxes, the reservation limit, the box with no GPU and the
+# cost columns in `list` landed their entries — thirty-one of them, across
+# creating, moving, switching, deleting and listing. The page reads 333. Raised
+# to 327, which is past half the distance and deliberately so: three engineers'
+# messages landed in this one commit, the slack is 12, and half the distance
+# would leave the floor already stale on the day it was set.
+ENTRY_FLOOR = 327
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -748,7 +785,9 @@ ENTRY_FLOOR = 296
 # 336 until `create`'s prompts landed their entries — four quoted wordings, the
 # two required-choice refusals sharing one entry and the invalid-flag warning.
 # Raised to 342, half the distance to today's 349, on the rule above.
-WORDING_FLOOR = 342
+# 342 until the same commit: 386 quoted wordings now. Raised to 380, for the
+# reason given beside ENTRY_FLOOR.
+WORDING_FLOOR = 380
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -1073,6 +1112,10 @@ GCLOUD_BY_DESIGN = {
                "and reset-windows-password, which is credential-bearing",
     "lifecycle.py": "a ComfyUI this run did not start, and add-access-config, which "
                     "changes the box's networking on a hypothesis the tool cannot confirm",
+    "remove.py": "a box whose reservation is not that box's alone to release — shared "
+                 "with other machines, or one this tool did not make for it. Deleting "
+                 "it here would release the reservation from under somebody else, so "
+                 "the instance delete is handed over and the reservation is left alone",
     "relocate.py": "a box the host list cannot name after a failed rewrite; the instance "
                    "delete that destroys an install ('handed over, never run'); and the "
                    "disk and snapshot deletes, which `remove_leftovers` DOES run under "
@@ -1755,6 +1798,340 @@ def test_every_quoted_config_error_is_still_built_that_way(line, quotation):
 
 
 # --- the commands our own messages tell people to run ---------------------
+
+
+# --- quotations of the tool's own output that nothing was reading -------------
+#
+# "A free edit is an unguarded one." Three pages quote the sentence config prints
+# for an unknown field, and two pages quote `list`'s table. One of the first
+# three was test-read — through the config-error check above — and the other two
+# were not, so adding a field to the host list left `docs/hosts.md` and the
+# README quoting a sentence the tool no longer says. The tables were read by
+# nothing at all.
+#
+# Both are derived here from the thing they quote, so the next field and the
+# next column fail a test rather than a reader.
+
+QUOTING_KNOWN_FIELDS = ("docs/troubleshooting.md", "docs/hosts.md", "README.md")
+
+
+def _known_fields_sentence() -> str:
+    """The sentence as the loader builds it today, from the loader."""
+    from comfy_qa import config
+
+    return f"Known fields: {', '.join(sorted(config._known_fields()))}."
+
+
+@pytest.mark.parametrize("page", QUOTING_KNOWN_FIELDS)
+def test_every_quotation_of_the_known_fields_is_what_the_loader_says(page):
+    """Each page that quotes `Known fields: …` quotes today's list, exactly.
+
+    Every occurrence on the page, not "the right one appears somewhere": a stale
+    copy beside a fresh one is still a page telling somebody the wrong fields.
+    """
+    said = _known_fields_sentence()
+    text = (ROOT / page).read_text(encoding="utf-8")
+    quoted = re.findall(r"Known fields: [^.\n]*\.", text)
+
+    assert quoted, f"{page} no longer quotes the sentence — take it out of the list"
+    assert set(quoted) == {said}, (
+        f"{page} quotes {sorted(set(quoted) - {said})}, and the loader says "
+        f"{said!r}")
+
+
+def test_the_known_fields_sentence_is_really_what_the_loader_raises(tmp_path):
+    """The guard on the guard: the sentence above is rebuilt from a private
+    function, and that would go on passing if the loader stopped using it. So
+    the loader is run on a misspelt field and has to say the same thing."""
+    from comfy_qa.config import ConfigError, load
+
+    path = tmp_path / "hosts.toml"
+    path.write_text('[hosts.local]\nkind = "local"\nport = 8188\nprot = 1\n',
+                    encoding="utf-8")
+    with pytest.raises(ConfigError) as refused:
+        load(path)
+
+    assert _known_fields_sentence() in str(refused.value)
+    assert "gce_reservation" in _known_fields_sentence(), (
+        "the field that says a box is reserved has left the host list")
+
+
+def test_no_other_page_quotes_the_known_fields_unread():
+    """And the list of pages is itself guarded: a fourth page that starts
+    quoting the sentence is a fourth page nothing reads."""
+    pages = [*sorted(DOCS.glob("*.md")), ROOT / "README.md", ROOT / "CHANGELOG.md"]
+    quoting = {str(page.relative_to(ROOT)) for page in pages
+               if "Known fields:" in page.read_text(encoding="utf-8")}
+
+    assert quoting == set(QUOTING_KNOWN_FIELDS), (
+        f"{sorted(quoting ^ set(QUOTING_KNOWN_FIELDS))} — a page quotes the "
+        f"sentence and is not checked, or is checked and no longer quotes it")
+
+
+def _list_headings() -> tuple[list[str], list[str]]:
+    """`list`'s column headings, plain and `--live`, read off the command."""
+    import tempfile
+
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    path = Path(tempfile.mkdtemp()) / "hosts.toml"
+    path.write_text('[hosts.local]\nkind = "local"\nport = 8188\n', encoding="utf-8")
+    runner = CliRunner()
+    plain = runner.invoke(app, ["list", "--config", str(path)]).stdout
+    live = runner.invoke(app, ["list", "--live", "--config", str(path)]).stdout
+    return plain.splitlines()[0].split(), live.splitlines()[0].split()
+
+
+def _quoted_list_tables() -> list[tuple[str, list[str]]]:
+    """Every `NAME  KIND  …` heading line quoted in a fenced block in the docs."""
+    found = []
+    for page in [*sorted(DOCS.glob("*.md")), ROOT / "README.md"]:
+        if page.name == "tests-that-cannot-fail.md":
+            continue
+        for line in page.read_text(encoding="utf-8").splitlines():
+            if re.match(r"NAME\s+KIND\s", line):
+                found.append((page.name, line.split()))
+    return found
+
+
+def test_every_list_table_the_docs_show_has_the_columns_list_prints(monkeypatch):
+    """A table in the docs with a column the tool has dropped, or without one it
+    has gained, is the acceptance pack's B3 failing a correct build — which it
+    has done twice. Each quoted heading must be one of the two `list` prints."""
+    from comfy_qa import host as host_module
+
+    # The local "is ComfyUI answering" probe is a loopback GET; whether this
+    # machine happens to be serving is not this test's subject.
+    monkeypatch.setattr(host_module, "_answering", lambda host: False)
+    plain, live = _list_headings()
+    assert plain[-1] == "RESERVED" and live[-2:] == ["AGE", "DISK"], (plain, live)
+
+    tables = _quoted_list_tables()
+    assert len(tables) >= 3, f"only {len(tables)} list tables found in the docs"
+    stale = [f"{page}: {' '.join(heading)}" for page, heading in tables
+             if heading not in (plain, live)]
+    assert not stale, (
+        f"the docs show a `list` table whose columns are not the ones `list` "
+        f"prints ({' '.join(plain)}, or with --live {' '.join(live)}): {stale}")
+    assert any(heading == live for _page, heading in tables), (
+        "no page shows the --live table, so its two extra columns are undocumented")
+
+
+def test_the_create_sample_in_the_everyday_loop_is_what_a_dry_run_prints(
+        tmp_path, monkeypatch):
+    """docs/machines.md shows `create --dry-run`'s output and says "prints
+    exactly that". It did not: the sample had no `what this makes:` heading and
+    said `in 43 region(s)` in a form the tool stopped printing. Nothing read
+    it. It is now the stdout of this command against the create tests' own
+    fixture project, character for character — a fixture, which the page's
+    project and region count make plain."""
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import zones as zones_module
+    from comfy_qa.cli import app
+
+    import test_create_cli as fixtures
+
+    monkeypatch.setattr(zones_module, "_connect",
+                        lambda region, timeout=None: fixtures.LATENCY.get(region, 500.0))
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: fixtures.FakeGcloud())
+    path = tmp_path / "hosts.toml"
+    path.write_text(fixtures.HOSTS, encoding="utf-8")
+    result = CliRunner().invoke(app, ["create", "--os", "linux", "--gpu", "l4",
+                                      "--dry-run", "--config", str(path)])
+    assert result.exit_code == 0, result.output
+
+    page = (DOCS / "machines.md").read_text(encoding="utf-8")
+    start = page.index("```\nquota checked:\n  L4:") + len("```\n")
+    sample = page[start:page.index("```", start)]
+    assert sample.strip() == result.stdout.strip()
+    # And the three lines the page says are above it, on the other stream.
+    for line in ("OS: linux (from --os)", "GPU: l4 (from --gpu)",
+                 "reserve: no (default — pass --reserve to hold the capacity)"):
+        assert line in result.stderr and f"`{line}`" in " ".join(page.split()), line
+
+
+def test_every_reserved_stop_line_the_docs_quote_is_the_one_the_tool_prints():
+    """`comfy-qat delete <name>   # the only thing that stops a reserved box's
+    bill …` is quoted on four pages, and it is the one line somebody acts on
+    to stop paying. Each quotation is held to `reservation.stop_line` for the
+    name it uses, so rewording the line fails here rather than leaving the docs
+    promising a sentence the tool no longer says."""
+    from comfy_qa import reservation
+
+    quoted = []
+    for page in [*sorted(DOCS.glob("*.md")), ROOT / "README.md"]:
+        for line in page.read_text(encoding="utf-8").splitlines():
+            found = re.match(r"\s*comfy-qat delete (\S+)\s+# the only thing", line)
+            if found:
+                quoted.append((page.name, found.group(1), line))
+
+    assert len(quoted) >= 4, f"only {len(quoted)} quotations found: {quoted}"
+    assert {"machines.md", "troubleshooting.md", "cost.md"} <= {
+        page for page, _n, _l in quoted}
+    stale = [f"{page}: {line.strip()}" for page, name, line in quoted
+             if line.strip() != reservation.stop_line(name).strip()]
+    assert not stale, stale
+
+
+def test_the_bill_sentence_the_docs_quote_is_the_one_the_tool_prints():
+    """And the sentence above it, wherever a page quotes it whole."""
+    from comfy_qa import reservation
+
+    said = " ".join(reservation.bill("comfy-linux").split())
+    pages = [page.name for page in sorted(DOCS.glob("*.md"))
+             if "is reserved. Google holds its capacity" in " ".join(
+                 page.read_text(encoding="utf-8").split())]
+    assert "machines.md" in pages
+    for name in pages:
+        flat = " ".join((DOCS / name).read_text(encoding="utf-8").split())
+        quotes = re.findall(r"(\S+) is reserved\. Google holds its capacity[^.]*\.", flat)
+        assert quotes, name
+        for box in quotes:
+            if box.startswith(("`", "<", "qa-")) or box.endswith("`"):
+                continue
+            assert said.replace("comfy-linux", box) in flat, (name, box)
+
+
+# --- corrected passages that reverted with the suite green --------------------
+#
+# Four passages were corrected after an audit and then found to revert with
+# every test passing. Each is tied below to the thing it describes WHERE THAT IS
+# SOMETHING THE TOOL PRINTS OR A COMMAND IT BUILDS. The sentences around them
+# that are plain prose — why an order matters, which command to end a session
+# on — are not tested: a test of prose is a test of its wording, and breaks on
+# the next honest rewrite.
+
+
+def _section(page: str, heading: str, until: str) -> str:
+    text = (DOCS / page).read_text(encoding="utf-8")
+    start = text.index(heading)
+    return text[start:text.index(until, start + len(heading))]
+
+
+def test_the_teardown_for_a_refused_release_deletes_the_instance_first():
+    """docs/test-criteria.md, phase V. When Google refuses to release a
+    reservation that a stopped box still targets, the teardown that runs the
+    release FIRST repeats the call that was just refused. The block for that
+    case has to be the two commands the other way round — and the ordinary
+    block, above it, the reservation first."""
+    case = _section("test-criteria.md",
+                    "**Unless the reservation delete is what was refused**",
+                    "Either way, finish by reading")
+    assert case.index("gcloud compute instances delete") < case.index(
+        "gcloud compute reservations delete"), case
+
+    usual = _section("test-criteria.md", "Then, for each `qa-*` still there",
+                     "**Unless the reservation delete is what was refused**")
+    assert usual.index("gcloud compute reservations delete") < usual.index(
+        "gcloud compute instances delete"), usual
+    # And V15, which is the criterion that sends a tester there, says which.
+    v15 = _section("test-criteria.md", "- [ ] **V15**", "- [ ] **V15b**")
+    assert "the instance first, then the" in " ".join(v15.split())
+
+
+def test_what_the_page_says_prune_prints_for_a_reserved_ghost_is_what_it_prints(
+        tmp_path, monkeypatch):
+    """docs/troubleshooting.md, "Stopping a box that has already been deleted".
+    The passage used to say nothing is billing and offer `discover --prune`
+    for a reserved box. It now quotes the heading prune prints when it KEEPS
+    such an entry, and names `comfy-qat delete` — both read off a real run."""
+    from typer.testing import CliRunner
+
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa.cli import app
+
+    import test_reserved_cli as fixtures
+
+    cloud = fixtures.Project(reservations=[fixtures.ours()])
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    path = tmp_path / "hosts.toml"
+    path.write_text(fixtures.WITH_A_RESERVED_BOX, encoding="utf-8")
+    result = CliRunner().invoke(app, ["discover", "--prune", "--yes",
+                                      "--config", str(path)])
+    assert result.exit_code == 0, result.output
+    heading = next(line for line in result.stdout.splitlines()
+                   if line.startswith("not on the project any more, and reserved"))
+    offered = next(line.split("#")[0].strip() for line in result.stdout.splitlines()
+                   if line.strip().startswith("comfy-qat delete"))
+
+    passage = " ".join(_section(
+        "troubleshooting.md", "### Stopping a box that has already been deleted",
+        "\n## ").split()).replace("`", "")
+    assert heading in passage, "the page no longer quotes what prune prints"
+    assert offered.replace("comfy-linux", "<name>") in passage
+    # The passage's own entry is E2's sentence, and it ends on that command.
+    assert "Release it and clear the entry: comfy-qat delete comfy-linux" in passage
+
+
+def test_every_release_command_the_docs_show_is_the_one_the_tool_builds():
+    """`gcloud compute reservations delete <name> --zone=… --project=… --quiet`
+    is what `list --live` and `down --all` print for a reservation with no box,
+    and it is quoted on four pages. Each whole-line quotation is held to
+    `reservation.delete_command`, so the flag spelling cannot drift — `--quiet`
+    included, which a real run showed the command does not work without from
+    a script. The pattern takes the line with or without it, so that a page
+    that drops the flag is CAUGHT by the comparison and not skipped by the
+    search."""
+    from comfy_qa import reservation
+
+    shape = re.compile(r"^\s*(gcloud compute reservations delete (\S+) "
+                       r"--zone=(\S+) --project=(\S+)(?: --quiet)?)\s*$")
+    quoted = []
+    for page in ("machines.md", "troubleshooting.md", "cost.md"):
+        for line in (DOCS / page).read_text(encoding="utf-8").splitlines():
+            found = shape.match(line)
+            if found:
+                quoted.append((page, *found.groups()))
+
+    assert len(quoted) >= 2, quoted
+    for page, line, name, zone, project in quoted:
+        assert line == reservation.delete_command(name, zone, project), (page, line)
+        assert line.endswith(" --quiet"), (page, line)
+
+
+def test_no_page_shows_a_gcloud_delete_that_stops_to_ask():
+    """Every `gcloud compute … delete` a page shows whole — on a line of its
+    own or in backticks — carries `--quiet`. Without it gcloud asks "Do you
+    want to continue (Y/n)?", and a reader who pastes it into a script gets
+    exit 1 and the thing still billing. A command only NAMED in prose (`the
+    gcloud compute reservations delete line`) has no flags and is not one."""
+    whole = re.compile(r"gcloud compute (?:instances|reservations|disks|snapshots) "
+                       r"delete [^`\n]*--project[= ][^`\n]*")
+    shown = []
+    for page in sorted(DOCS.glob("*.md")) + [DOCS.parent / "README.md"]:
+        if page.name == "tests-that-cannot-fail.md":
+            continue  # a history of defects, quoted as they were
+        for found in whole.findall(page.read_text(encoding="utf-8")):
+            shown.append((page.name, found.strip()))
+
+    assert len(shown) >= 8, shown
+    assert [item for item in shown if "--quiet" not in item[1]] == []
+
+
+def test_the_entry_for_a_failed_reservations_read_hands_over_a_command(tmp_path):
+    """The `list --live` warning for a project whose reservations could not be
+    read had an entry that said what it meant and offered nothing to do. The
+    entry has to carry a command, and the command has to be one that asks the
+    question the tool could not: the same listing, for that project — which is
+    exactly what `Gcloud.list_reservations` sends."""
+    from comfy_qa.gcloud import Gcloud
+
+    entry = _section(
+        "troubleshooting.md",
+        "**`could not ask Google about reservations on <project> (<error>)",
+        "\n**`")
+    offered = [line.strip() for line in entry.splitlines()
+               if line.strip().startswith("gcloud ")]
+    assert offered == ["gcloud compute reservations list --project=<project>"], entry
+
+    sent: list[list[str]] = []
+    Gcloud(runner=lambda args, mode: sent.append(args) or []).list_reservations(
+        "<project>")
+    assert ["gcloud", *sent[0]] == offered[0].split()
 
 
 def _command_tree(app) -> dict:
