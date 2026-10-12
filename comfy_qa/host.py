@@ -160,13 +160,20 @@ def _answering(host: Host) -> bool:
     return True
 
 
-def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
+def _states(hosts: list[Host], *, live: bool, found=None) -> dict[str, str]:
     """What each machine is doing right now.
 
     The tunnel is what makes a cloud box answer on 127.0.0.1, so "tunnelled" is
     the honest answer to "which box am I on?" — and reading a pid file costs
-    nothing, so it is always shown. Whether the instance is *running* is a gcloud
-    call per box, which is not free, so it waits to be asked for with --live.
+    nothing, so it is always shown. Whether the instance is *running* is a
+    question for Google, which is not free, so it waits to be asked for with
+    --live.
+
+    `found` is what `inventory.survey` read, and it is where a cloud box's live
+    state comes from: one `instances list` per project, which this used to make
+    itself and which now also answers the age and disk columns beside it. None
+    without --live, and None under --live when there is no cloud box to ask
+    about.
 
     A LOCAL INSTALL HAS NO TUNNEL, SO ITS DEFAULT `-` IS CORRECT AND STAYS. That
     is a decision somebody already made and pinned, and the reason holds: without
@@ -179,26 +186,8 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
     it, on a host list with no cloud boxes in it at all, so not one call was
     saved by the silence.
     """
+    from .gcloud import GONE
     from .tunnel import status as tunnel_status
-
-    # One read for every cloud box, not one per box. `instance_statuses` asks
-    # `instances list` once per distinct project; this loop used to spawn a
-    # `gcloud compute instances describe` process per host, serially, so a host
-    # list with eight boxes meant eight of them.
-    live_states: dict[tuple[str, str, str], str] = {}
-    if live:
-        from .gcloud import GONE, Gcloud, GcloudError
-
-        remote = [(host.gce_instance, host.gce_zone, host.gce_project)
-                  for host in hosts if host.is_remote]
-        if remote:
-            try:
-                live_states = Gcloud().instance_statuses(remote)
-            except GcloudError:
-                # Unchanged in kind: not knowing was never a reason to fail
-                # `list`. It is now all-or-nothing per read rather than per box,
-                # which is what one call instead of N means.
-                live_states = {}
 
     states: dict[str, str] = {}
     for host in hosts:
@@ -222,8 +211,12 @@ def _states(hosts: list[Host], *, live: bool) -> dict[str, str]:
                 # the read established: the project comes off the host list, and
                 # an entry naming the wrong project would otherwise be handed a
                 # false all-clear in the one direction that costs money.
-                key = (host.gce_instance, host.gce_zone, host.gce_project)
-                state = live_states.get(key) or "unknown"
+                #
+                # Per project now, not all-or-nothing: `inventory.survey` reads
+                # each project on its own, so one that cannot be reached costs
+                # only its own rows their answer.
+                row = found.rows.get(host.name) if found is not None else None
+                state = (row.state if row is not None else "") or "unknown"
                 # TERMINATED is Google's word for stopped, and reads as broken.
                 parts.append({"RUNNING": "running", "TERMINATED": "stopped",
                               GONE: "not on the project"}.get(
@@ -253,21 +246,61 @@ def list_cmd(
     config: ConfigOption = None,
     live: Annotated[bool, typer.Option(
         "--live", help="Go and ask, rather than reporting what is already known: "
-                       "Google whether each cloud box is running, and this "
-                       "machine whether ComfyUI is answering on a local one.")] = False,
+                       "Google whether each cloud box is running, whether it is "
+                       "reserved, how old it is and how much disk it has — and "
+                       "this machine whether ComfyUI is answering on a local "
+                       "one.")] = False,
 ) -> None:
-    """Show every declared machine: what it is, where it answers, and what is up."""
+    """Show every declared machine: what it is, where it answers, and what is up.
+
+    RESERVED is the column about money that a stopped box does not settle: a
+    reserved box bills every hour, running or stopped, until it is deleted.
+    Without --live it is what your host list says; with it, it is checked.
+    """
+    from . import inventory
+
     try:
         hosts = load(config)
     except ConfigError as exc:
         say.fail(exc, code=2, blank_line=False)
 
-    state = _states(hosts, live=live)
+    # ASKED ONLY WHEN THERE IS SOMEBODY TO ASK ABOUT. A host list with no cloud
+    # box in it has nothing Google could say, and `--live` on it stays the one
+    # loopback GET it always was. Two reads per project otherwise — see
+    # `inventory` — and never a non-zero exit for one that did not come back.
+    found = None
+    if live and any(host.is_remote for host in hosts):
+        from .gcloud import Gcloud
+
+        found = inventory.survey(Gcloud(), hosts)
+
+    state = _states(hosts, live=live, found=found)
+
+    # AGE AND DISK ONLY UNDER --live. Nothing offline knows either, and a
+    # column of dashes under a heading reads as an answer — "no disk" — rather
+    # than as a question nobody asked. RESERVED is in both, because the host
+    # list does say it, and the footnote says that is where it came from.
+    heading: tuple[str, ...] = ("NAME", "KIND", "OS", "GPU", "URL", "STATE", "RESERVED")
+    if live:
+        heading += ("AGE", "DISK")
+
+    table: list[tuple[str, ...]] = [heading]
+    for h in hosts:
+        # A row the survey has is a row Google was asked about; without one —
+        # no --live, or a machine that is not a cloud box — RESERVED is what
+        # the host list says and the two live columns have nothing to hold.
+        row = found.rows.get(h.name) if found is not None else None
+        cells: tuple[str, ...] = (
+            h.name, h.kind, h.os or "-", h.gpu or "-", h.url, state[h.name],
+            row.reserved if row is not None else inventory.declared(h))
+        if live:
+            cells += ((row.age, row.disk) if row is not None
+                      else (inventory.ABSENT, inventory.ABSENT))
+        table.append(cells)
+
     # The padding used to be written out here, which is why `discover` — listing
     # the same machines two commands later — did not have any.
-    for line in say.rows([("NAME", "KIND", "OS", "GPU", "URL", "STATE")] + [
-        (h.name, h.kind, h.os or "-", h.gpu or "-", h.url, state[h.name]) for h in hosts
-    ]):
+    for line in say.rows(table):
         say.result(line)
 
     # Without --live the STATE column knows about tunnels and nothing else, so a
@@ -278,13 +311,14 @@ def list_cmd(
     # The condition used to be `any(host.is_remote ...)`, which meant a host list
     # with no cloud boxes printed no footnote at all — so the one reader who sees
     # NOTHING but dashes in that column was the one told nothing about it.
+    cloud = any(host.is_remote for host in hosts)
     if hosts and not live:
         asks = []
-        if any(host.is_remote for host in hosts):
+        if cloud:
             asks.append("Google what each box is doing")
         if any(not host.is_remote for host in hosts):
             asks.append("this machine whether ComfyUI is answering")
-        # TWO LINES, BROKEN WHERE THE SENSE BREAKS. This was one sentence of 168
+        # AUTHORED BREAKS, WHERE THE SENSE BREAKS. This was one sentence of 168
         # characters — what STATE is, and what --live would add — printed under
         # every `list` a person ever runs. A terminal soft-wraps it at whatever
         # width the window happens to be, so the break lands mid-clause and in a
@@ -297,12 +331,57 @@ def list_cmd(
         # produce different text in a terminal and in a pipe. The break is a
         # property of the sentence, so it belongs in the sentence.
         #
-        # The second line is indented under the first because it is about
-        # --live rather than about STATE, and the indent is what says so without
-        # a word.
+        # One line per column the table cannot vouch for, then what --live
+        # would add — indented under them because it is about --live rather than
+        # about either column, and the indent is what says so without a word.
         say.result("\nSTATE is only what this machine already knows — "
                    "whether a tunnel is open.")
-        say.result(f"  --live asks {' and '.join(asks)}.")
+        if cloud:
+            # The bill sentence, here because this is the table somebody reads
+            # to decide whether anything is still costing money, and a stopped
+            # box that is reserved is the row that reads as free and is not.
+            say.result("RESERVED is what your host list says. A reserved box "
+                       "bills every hour, running or stopped.")
+            say.result(f"  --live asks {' and '.join(asks)},")
+            say.result("  checks the reservations, and adds each box's age and "
+                       "disk.")
+        else:
+            say.result(f"  --live asks {' and '.join(asks)}.")
+
+    if found is None:
+        return
+
+    # One per project whose reservations could not be listed. On stderr, as a
+    # warning: the table above is still the answer, and this is why one of its
+    # columns says `unchecked`.
+    for project, why in found.unread:
+        say.warn(f"could not ask Google about reservations on {project} ({why}) — "
+                 f"RESERVED is what each box and your host list say, not what "
+                 f"the project holds")
+
+    # And the other read. A project whose instances could not be listed has no
+    # orphan block — "has no box" needs the boxes — and silence there read as
+    # "no reservation here is without a box", which nobody established.
+    for project, count in found.unsorted:
+        say.warn(f"could not ask Google about the boxes on {project}, so which "
+                 f"of its {say.count(count, 'reservation')} has no box on it "
+                 f"was not worked out")
+        say.detail(f"gcloud compute reservations list --project={project}")
+
+    if any(row.reserved.startswith("yes") for row in found.rows.values()):
+        # Said under the live table too, and only when a row needs it: `stopped`
+        # beside `yes` is the pair that looks like nothing is being spent.
+        say.result("\nA reserved box bills every hour, running or stopped, "
+                   "until it is deleted.")
+
+    orphaned = inventory.orphan_lines(found)
+    if orphaned:
+        # On stdout, with the table: it answers the same question the table
+        # does. A reservation with no box bills at a GPU's rate and is in no
+        # list of machines anywhere, so this is the only place it can be seen.
+        say.result("")
+        for line in orphaned:
+            say.result(line)
 
 
 @app.command("init")
@@ -579,6 +658,10 @@ def discover_cmd(
     a check that confirms, and an entry deleted because the network was down is
     the one mistake this file cannot recover from.
 
+    And never a RESERVED box's entry. Its box may be gone while its
+    reservation is still billing, and the entry is what `comfy-qat delete`
+    needs to release it — so it is named, kept, and that command printed.
+
     This one writes: your host list — the file `--config` names, and
     ~/.config/comfy-qa-tools/hosts.toml when it is left off — is read and then
     appended to, and under `--prune` rewritten. `--dry-run` shows what would be
@@ -627,6 +710,9 @@ def discover_cmd(
         say.result(f"no cloud boxes on {project}")
         _say_unreadable(unreadable)
         return
+    # NOTE: `ghosts` is split further down into the ones that are pruned and
+    # the reserved ones that are kept; both early returns here are taken only
+    # when there are none of either.
 
     additions = new_hosts(found, existing)
     clashes = label_clashes(found, existing)
@@ -650,12 +736,38 @@ def discover_cmd(
         say.result("\nnot in your host list yet:")
         for line in say.rows([
             (box.name, box.os, box.gpu or "no GPU",
-             "running" if box.running else "stopped", f"port {port}")
+             "running" if box.running else "stopped", f"port {port}",
+             # Only on a row that has one. `stopped` beside a reservation is the
+             # pair that reads as costing nothing, so it is said in the table
+             # and again, as a sentence, once the box has been adopted.
+             *((f"reserved ({box.reservation})",) if box.reservation else ()))
             for box, port in additions
         ]):
             say.result(f"  {line}")
     for box, label in clashes:
         say.result(clash_note(box, label))
+
+    # A RESERVED GHOST IS NOT PRUNED. Its box is gone and its reservation may
+    # not be: a reservation outlives its box, bills at the card's rate with
+    # nothing on it, and the entry is the last thing on this machine that
+    # names it. Pruned with the others — which is what happened — the entry
+    # went without a word about the reservation, and the one command that
+    # would have released it (`delete`, which needs the entry) could no
+    # longer be given it. So these are named, kept, and handed that command,
+    # which asks Google by name whether the reservation is still there and
+    # takes the entry out either way.
+    held_ghosts = [(host, owner) for host, owner in ghosts if host.reservation]
+    ghosts = [(host, owner) for host, owner in ghosts if not host.reservation]
+    if held_ghosts:
+        say.result("\nnot on the project any more, and reserved — the box is "
+                   "gone, but its reservation may still be billing, so the "
+                   "entry was kept:")
+        for host, owner in held_ghosts:
+            say.result(f"  {host.name}  ({host.gce_instance} in {host.gce_zone}, "
+                       f"{owner}; reservation {host.reservation})")
+        for host, _owner in held_ghosts:
+            say.result(f"  comfy-qat delete {host.name}   # releases the "
+                       f"reservation if it is still there, and takes the entry out")
 
     if ghosts:
         # Named one per line with the project that was asked, because "3 entries
@@ -734,12 +846,29 @@ def discover_cmd(
                 # that nothing was written.
                 say.fail(exc, code=2, blank_line=False)
             say.result(f"\nadded {say.count(len(additions), 'host')} to {path}")
+            # A BOX ADOPTED WITH ITS RESERVATION is one this tool will now tell
+            # the truth about — `down` will not say it stopped the bill — and
+            # the moment it is adopted is the moment to say what that bill is.
+            # Somebody who reserved it in the console knows; somebody adopting a
+            # colleague's box does not.
+            from . import reservation as rsv
+            from .create import reserved_stop_lines
+
+            for box, _port in additions:
+                if box.reservation:
+                    say.result("")
+                    _prose(rsv.bill(box.name))
+                    # Both steps for one that is running: `delete` refuses
+                    # a running box. `discover` read which it is.
+                    for line in (reserved_stop_lines(box.name) if box.running
+                                 else [rsv.stop_line(box.name)]):
+                        say.result(line)
 
         if ghosts:
             _forget(path, [host for host, _owner in ghosts], yes=yes)
 
 
-def _os_problem(value: str) -> str | None:
+def _os_problem(value: str, asked: str = "") -> str | None:
     """Why `--os <value>` cannot be used, in `plan`'s own words, or None.
 
     `image_for`, which is the first line of `plan`, rather than a membership
@@ -751,13 +880,15 @@ def _os_problem(value: str) -> str | None:
     from .lifecycle import LifecycleError
 
     try:
-        image_for(value)
+        # `asked` is ` --reserve --name <name>` for a reserved build, so the
+        # corrected command this refusal carries is still the box asked for.
+        image_for(value, asked)
     except LifecycleError as exc:
         return str(exc)
     return None
 
 
-def _gpu_problem(value: str) -> str | None:
+def _gpu_problem(value: str, asked: str = "") -> str | None:
     """Why `--gpu <value>` cannot be used, in `plan`'s own words, or None.
 
     The same two calls `plan` makes and in the same order: `card_for`, which
@@ -777,9 +908,178 @@ def _gpu_problem(value: str) -> str | None:
         card = card_for(value)
     except LifecycleError as exc:
         return str(exc)
-    if not card.has_gsp:
-        return str(undrivable(card))
+    # `card.is_gpu and`, as `plan` has it: no card at all has no GSP either,
+    # and `none` is an answer rather than a card this tool cannot drive.
+    if card.is_gpu and not card.has_gsp:
+        return str(undrivable(card, asked=asked))
     return None
+
+
+def _has_a_card(gpu: str) -> bool:
+    """Is `--gpu <value>` a box with a GPU? True for anything `plan` will judge.
+
+    Asked before the reserve question, which is not put about a box with no
+    GPU. A value `card_for` does not know is not this function's to refuse —
+    `plan` does that, in its own words — so it answers True and the run goes on
+    to the refusal it was always going to get.
+    """
+    from .create import card_for
+    from .lifecycle import LifecycleError
+
+    try:
+        return card_for(gpu).is_gpu
+    except LifecycleError:
+        return True
+
+
+# The two rows under `Reserve it?`, "no" first — the answer that cannot bill
+# anybody by surprise. The second is the bill in one sentence: who holds it,
+# that it bills by the hour, that stopping does not stop it, and what does.
+RESERVE_NOTES = (
+    "pay only while it runs. A stopped box keeps its disk, not its place",
+    "Google holds the capacity and bills for it every hour, running or stopped, "
+    "until you delete the box",
+)
+
+
+def _prose(text: str, *, first: str = "", rest: str | None = None) -> None:
+    """A sentence that is part of the ANSWER, on stdout, broken at the prose width.
+
+    `say.result` prints what it is given and nothing wraps it, which is right
+    for a table row, a URL and a command — all three are pasted, and a pasted
+    line with a break in it is broken. It is wrong for a sentence, and the
+    sentences about a reserved box's bill are over a hundred characters before
+    a name goes into them: left whole, the terminal folds each wherever the
+    window happens to end, and a Slack paste carries it past the edge of the
+    code block.
+
+    `say.wrapped` is the one wrapper, at the one width, and never breaks inside
+    a word — so a line with nothing to break at comes out whole and over-long
+    rather than cut. `rest` is the hanging indent, for a bullet.
+    """
+    for line in say.wrapped(text, first=first, rest=rest):
+        say.result(line)
+
+
+def _steps(lines: list[str]) -> None:
+    """The closing lines of a command: sentences wrapped, commands left alone.
+
+    An offered command is indented and a sentence is not — that is how every
+    ending in this file is laid out, and it is what tells the two apart here.
+    A command is never wrapped, whatever its length.
+    """
+    for line in lines:
+        if line.startswith(" "):
+            say.result(line)
+        else:
+            _prose(line)
+
+
+def _checked(gc, project: str, blueprint, quotas: list[dict],
+             instances: list[dict], asked_region: str, hosts: list[Host]):
+    """What the project's allowance says about this box: `(check, leftover, reservations)`.
+
+    Two different questions, and which one is asked is decided by the card.
+
+    A BOX WITH NO GPU is checked against vCPU and nothing else. GPU quota, the
+    GPU ceiling and the project's reservations are not read into it at all: it
+    spends none of them, and routing it through the card's gate is how a
+    project with its one GPU in use would refuse a machine that needs no GPU.
+
+    A BOX WITH A CARD is checked against the card's grant and the project-wide
+    ceiling, counted in cards, with RESERVED cards included — read from the
+    project's own `reservations list`, never from the host list. A reservation
+    made in the console, or left by a create that stopped half-way, holds the
+    allowance exactly as one this tool knows about does.
+
+    WHAT A FAILED RESERVATIONS READ DOES was decided before what a good one
+    does, and it is two answers because the two creates risk different things:
+
+      reserving       refused. How many cards are already held is then not
+                      known, a refusal is free, and a reservation made past
+                      the limit bills until somebody notices it.
+      not reserving   goes on, with a warning. `None` is passed down, not `[]`
+                      — not read is not zero — so the count is the running
+                      cards only, which the warning says, and Google still
+                      refuses a create that does not fit.
+
+    `hosts` is the host list as loaded, and it buys one thing: when a
+    reservation is what refuses the create, `comfy-qat down` and `comfy-qat
+    delete` are printed only for a box the host list really holds, under the
+    name the list gives it. A reservation's description carries its INSTANCE's
+    name, and a remedy built from that alone is a command that either cannot
+    run or — where the list has an entry of that name for another machine —
+    deletes the wrong box.
+
+    `leftover` is a reservation under this box's name that an earlier run of
+    the same create left behind. The same object goes to the limit, the zone
+    order and the build, so all three decide "is it this create's own" once.
+    """
+    from . import reservation as rsv
+    from .create import _refused_regions, check_cpu, check_quota
+    from .gcloud import GcloudError
+
+    if not blueprint.card.is_gpu:
+        return check_cpu(blueprint.card, quotas), None, None
+
+    unread: GcloudError | None = None
+    reservations: list | None
+    try:
+        reservations = rsv.parse_all(gc.list_reservations(project))
+    except GcloudError as exc:
+        reservations, unread = None, exc
+
+    # PREFERENCES TOO, so the refusal can say where NOT to ask. Failing to
+    # read them is not a reason to refuse a create, so it degrades to the
+    # plain remedy rather than stopping.
+    try:
+        preferences = gc.quota_preferences(project)
+    except GcloudError:
+        preferences = None
+    # ASKABLE, NOT MERELY METERED, and computed by the shared function rather
+    # than composed here. `create`'s remedy named `africa-south1` — zero
+    # NVIDIA accelerators, so the command it printed exits 2 — because it
+    # built the list from `regions_metered` alone. Twenty-first second-site,
+    # and the helper that answers this had existed for six rounds.
+    # ONLY WHEN THE REMEDY NEEDS IT. `elsewhere` is read by one branch — the
+    # card was refused somewhere — and fetching the catalogue unconditionally
+    # added an API call to a path whose whole point is refusing before any
+    # lookup, which a test caught immediately. `_refused_regions` is free: it
+    # reads preferences already in hand.
+    from .auth import Availability, _regions_stocking, askable_regions
+
+    refused = _refused_regions(blueprint.card, preferences)
+    askable: list[str] | None = None
+    if refused:
+        try:
+            sells = Availability(
+                looked=True,
+                where=_regions_stocking(gc, project,
+                                        set(blueprint.card.quota_names)))
+        except GcloudError:
+            sells = Availability.not_checked()
+        askable = sorted({r for name in blueprint.card.quota_names
+                          for r in askable_regions(name, quotas, sells,
+                                                   refused)})
+
+    leftover = (rsv.leftover_for(blueprint.name, reservations)
+                if blueprint.reserve and reservations is not None else None)
+    check = check_quota(blueprint.card, quotas, instances, asked_region,
+                        preferences=preferences, askable=askable,
+                        reservations=reservations, reserve=blueprint.reserve,
+                        leftover=leftover, project=project, box=blueprint.name,
+                        hosts=hosts)
+
+    if unread is not None and not blueprint.reserve:
+        say.warn(f"could not read this project's reservations ({unread}), so "
+                 f"cards held by a reservation are not counted — Google still "
+                 f"refuses a create that does not fit")
+    # A create that RESERVES and could not read them is refused, and not here:
+    # `check.problem()` says it, once, after every refusal built on something
+    # that was read. This function printed its own copy of that sentence and
+    # exited before the quota lines, so one refusal had two wordings and the
+    # caller's never ran.
+    return check, leftover, reservations
 
 
 @app.command("create")
@@ -806,9 +1106,20 @@ def create_cmd(
         # `create` will not order them (`create.GSP_ARCHITECTURES`). A reader
         # completing the dots from `quota list` got a card that cannot work.
         # `tests/test_gpu_driver.py` holds this line to `create.drivable_cards()`.
-        "--gpu", help="The card: l4, t4, a100, a100-80gb or h100. The machine "
-                      "type follows from it. Left off, you are asked — or, with "
-                      "nobody to ask, told what to pass.")] = None,
+        "--gpu", help="The card: l4, t4, a100, a100-80gb or h100 — or none for "
+                      "a box with no GPU. The machine type follows from it. Left "
+                      "off, you are asked — or, with nobody to ask, told what to "
+                      "pass.")] = None,
+    # THREE STATES, NOT TWO. `Optional[bool]` with both spellings, so "nothing
+    # was said" stays apart from `--no-reserve`: the first is asked about when
+    # there is somebody to ask, and the second is an answer. A plain `bool`
+    # would fold them together and either ask a question already answered or
+    # never ask it at all.
+    reserve: Annotated[Optional[bool], typer.Option(
+        "--reserve/--no-reserve",
+        help="Hold the capacity for this box until it is deleted. A reserved "
+             "box bills every hour, running or stopped. Left off, you are "
+             "asked — or, with --yes or nobody to ask, it is not reserved.")] = None,
     name: Annotated[Optional[str], typer.Option(
         "--name", help="Name the box. Default: comfy-linux / comfy-win, numbered if taken.")] = None,
     zone: Annotated[Optional[str], typer.Option(
@@ -822,16 +1133,25 @@ def create_cmd(
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the plan, the quota and the zone order. Create nothing.")] = False,
 ) -> None:
-    """Create a GPU box, choosing the zone for you.
+    """Create a box, choosing the zone for you.
 
-    The card is the only real decision. The machine type follows from it — an L4
-    is a G2 with the GPU built in, a T4 is an N1 with one attached — and the zone
-    is chosen: regions this project holds quota in, zones inside them that offer
-    the card and the machine type, ranked by latency measured from here, and
-    tried in order until one has capacity.
+    The card is the first real decision. The machine type follows from it — an L4
+    is a G2 with the GPU built in, a T4 is an N1 with one attached, and `none`
+    is that N1 with nothing attached — and the zone is chosen: regions this
+    project holds quota in, zones inside them that offer the card and the
+    machine type, ranked by latency measured from here, and tried in order until
+    one has capacity.
+
+    The second is whether to reserve it. A box that is not reserved bills while
+    it runs and gives its place up when it stops. With `--reserve` Google holds
+    the capacity for it and bills for it every hour, running or stopped, until
+    the box is deleted — `comfy-qat down` does not stop that bill, and only
+    `comfy-qat delete` does.
 
     Quota is checked before anything exists, because a refusal costs nothing and
-    a quota failure after the instance exists costs money and a cleanup.
+    a quota failure after the instance exists costs money and a cleanup. A
+    reservation holds its card whether its box runs or not, so reserved cards
+    are counted from the project's own reservations, not from your host list.
 
     This one writes: the new box is appended to your host list — the file
     `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
@@ -839,9 +1159,10 @@ def create_cmd(
     """
     from . import ask
     from . import create as create_mod
+    from . import reservation as rsv
     from .create import (
-        _refused_regions, build, check_quota, host_entry, next_steps, nowhere,
-        order_zones, plan, summary, taken_names,
+        build, host_entry, next_steps, nowhere, order_zones, plan, summary,
+        taken_names,
     )
     from .discover import next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
@@ -883,6 +1204,13 @@ def create_cmd(
         chosen = "".join(
             f"--{flag} {shlex.quote(value)} "
             for flag, value in (("os", os_choice), ("gpu", gpu)) if value)
+        # And `--reserve`, when it was typed. Left off a rewritten command it
+        # is not a detail: with nobody to ask, the box would be made unreserved.
+        chosen += {True: "--reserve ", False: "--no-reserve "}.get(reserve, "")
+        # And the name, for a reserved build, as every other rewritten create
+        # carries it: a reservation is found again by its box's name.
+        chosen += f"{create_mod._asked_for(True, name).removeprefix(' --reserve').strip()} " \
+            if reserve and name else ""
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
             "pins one zone, --region asks for a choice within one region",
@@ -899,25 +1227,59 @@ def create_cmd(
     # after a minute of quota reading is a question asked too late, and a
     # refusal for a missing flag has to cost what Typer's parse error cost.
     os_menu = create_mod.os_menu()
-    gpu_menu = create_mod.gpu_menu()
+    # `gpu_choices`, not `gpu_menu`: the cards, and then no card at all.
+    gpu_menu = create_mod.gpu_choices()
+    # WHAT WAS ASKED FOR BEYOND THE OS AND THE CARD, for every command these
+    # refusals hand back: ` --reserve` and the name, when `--reserve` was
+    # typed. A remedy that rewrites the command rewrites the box, and one that
+    # drops `--reserve` makes — in a script, where nobody is asked — an
+    # unreserved box out of a request for a reserved one. Empty otherwise, so
+    # the lines for an ordinary build are what they always were.
+    asked = create_mod._asked_for(reserve is True, name)
     os_choice = ask.settle(
         "--os", os_choice,
         label="OS", question="Which operating system?",
         options=[key for key, _ in os_menu], notes=[note for _, note in os_menu],
-        problem=_os_problem,
+        problem=lambda value: _os_problem(value, asked),
         missing="--os is required and there is no terminal to ask at: "
                 + " or ".join(key for key, _ in os_menu),
-        fix="comfy-qat create --os linux --gpu l4",
+        fix=f"comfy-qat create --os linux --gpu l4{asked}",
     )
     gpu = ask.settle(
         "--gpu", gpu,
         label="GPU", question="Which card?",
         options=[key for key, _ in gpu_menu], notes=[note for _, note in gpu_menu],
-        problem=_gpu_problem,
+        problem=lambda value: _gpu_problem(value, asked),
         missing="--gpu is required and there is no terminal to ask at: "
                 + ", ".join(key for key, _ in gpu_menu),
-        fix="comfy-qat create --os linux --gpu l4",
+        fix=f"comfy-qat create --os linux --gpu l4{asked}",
     )
+
+    # THE THIRD, and the only one with a default. Asked after the card because
+    # it is about the card: a reservation holds one, bills for it every hour
+    # and is counted against the project's GPU allowance, so there is nothing
+    # to ask about a box that has none.
+    #
+    # One value from here down. The flag, the answer at the prompt and — later
+    # — a reservation an earlier run left behind all become `reserve` on the
+    # blueprint before any guard reads it, so no check can be reached by one of
+    # them and not another.
+    if reserve is None and not _has_a_card(gpu):
+        # Printed, not passed over: the transcript says which way every
+        # decision went, including the one nobody was asked.
+        say.detail("reserve: no (a box with no GPU is not reserved)")
+        reserve = False
+    else:
+        reserve = ask.decide(
+            "--reserve", reserve,
+            label="reserve", question="Reserve it?", notes=RESERVE_NOTES,
+            default=False,
+            # `--yes` is "do not ask", and it means this question too. A script
+            # that worked before this flag existed still makes the box it
+            # always made — unreserved, and said so.
+            ask_it=ask.watching() and not yes,
+            unasked="default — pass --reserve to hold the capacity",
+        )
 
     path = config or DEFAULT_CONFIG_PATH
     try:
@@ -957,9 +1319,12 @@ def create_cmd(
     # the project too, and that genuinely needs the instance list. So a name
     # clashing with your own host list is refused in a second, and one clashing
     # with an undeclared box on the project still costs the read it requires.
+    #
+    # `reserve` goes in here as well, so `--gpu none --reserve` and a name too
+    # long to carry `-rsv` are both refused before Google is asked anything.
     try:
-        plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
-             taken=taken_names(hosts, []))
+        card = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
+                    taken=taken_names(hosts, []), reserve=reserve).card
     except _reportable() as exc:
         _refused(exc)
 
@@ -987,17 +1352,32 @@ def create_cmd(
 
         _stop_on_region_shape(region)
         with say.slow("reading quota", expect="about a minute"):
-            quotas = gc.gpu_quotas(project)
+            # A BOX WITH NO GPU SPENDS NO GPU QUOTA, so none is read for it.
+            # What it spends is vCPU, and `compute_quotas` is every compute
+            # record — the list `gpu_quotas` filters down to the GPU ones,
+            # which holds no CPU quota at all.
+            quotas = (gc.gpu_quotas(project) if card.is_gpu
+                      else gc.compute_quotas(project))
         # AND THE HALF THAT NEEDS THE RECORDS, now that we have them — so this
         # command asks the same question as `quota list` and `setup` rather than
         # a cheaper version of it.
         from .auth import region_problem
 
-        wrong = region_problem(gc, project, quotas, region, membership=False)
+        # ONLY FOR A BOX WITH A CARD. `region_problem` builds its universe of
+        # regions from the accelerator catalogue, and a box with no GPU has no
+        # business asking where cards are sold: it is promised that nothing
+        # about GPUs is read for it, and that promise held only while
+        # `--region` was left off. `order_zones` refuses a region outside the
+        # vCPU allowance on its own, with a check-the-spelling fix.
+        wrong = (region_problem(gc, project, quotas, region, membership=False)
+                 if card.is_gpu else None)
         if wrong:
+            # ` --reserve --name <name>` for a reserved build, from the one
+            # function every rewritten create takes it from.
+            held = create_mod._asked_for(bool(reserve), name)
             say.fail(wrong[0],
                      fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
-                                   f"{gpu} {line}" for line in wrong[1]],
+                                   f"{gpu}{held} {line}" for line in wrong[1]],
                                  "comfy-qat quota list --by-region  # every "
                                  "region this project meters"),
                      code=2)
@@ -1006,44 +1386,12 @@ def create_cmd(
 
     try:
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
-                         taken=taken_names(hosts, instances))
-        # PREFERENCES TOO, so the refusal can say where NOT to ask. Failing to
-        # read them is not a reason to refuse a create, so it degrades to the
-        # plain remedy rather than stopping.
-        try:
-            preferences = gc.quota_preferences(project)
-        except GcloudError:
-            preferences = None
-        # ASKABLE, NOT MERELY METERED, and computed by the shared function rather
-        # than composed here. `create`'s remedy named `africa-south1` — zero
-        # NVIDIA accelerators, so the command it printed exits 2 — because it
-        # built the list from `regions_metered` alone. Twenty-first second-site,
-        # and the helper that answers this had existed for six rounds.
-        # ONLY WHEN THE REMEDY NEEDS IT. `elsewhere` is read by one branch — the
-        # card was refused somewhere — and fetching the catalogue unconditionally
-        # added an API call to a path whose whole point is refusing before any
-        # lookup, which a test caught immediately. `_refused_regions` is free: it
-        # reads preferences already in hand.
-        from .auth import Availability, _regions_stocking, askable_regions
-
-        refused = _refused_regions(blueprint.card, preferences)
-        askable: list[str] | None = None
-        if refused:
-            try:
-                sells = Availability(
-                    looked=True,
-                    where=_regions_stocking(gc, project,
-                                            set(blueprint.card.quota_names)))
-            except GcloudError:
-                sells = Availability.not_checked()
-            askable = sorted({r for name in blueprint.card.quota_names
-                              for r in askable_regions(name, quotas, sells,
-                                                       refused)})
-        check = check_quota(blueprint.card, quotas, instances, region or "",
-                            preferences=preferences, askable=askable)
+                         taken=taken_names(hosts, instances), reserve=reserve)
+        check, leftover, reservations = _checked(
+            gc, project, blueprint, quotas, instances, region or "", hosts)
         say.result("\nquota checked:")
         for line in check.lines():
-            say.result(f"  {line}")
+            _prose(line, first="  ", rest="    ")
         problem = check.problem()
         if problem is not None:
             _refused(problem)
@@ -1055,7 +1403,15 @@ def create_cmd(
                                # looks at this. Read from the host list that was
                                # loaded above rather than fetched again.
                                fleet=[host.gce_zone for host in hosts
-                                      if host.gce_zone])
+                                      if host.gce_zone],
+                               # The same three things `_checked` counted with,
+                               # so the zone order and the limit cannot be
+                               # working from two different pictures.
+                               leftover=leftover, instances=instances,
+                               reservations=reservations,
+                               # And the host list, for the one refusal in
+                               # there that hands over `comfy-qat down/delete`.
+                               hosts=hosts)
     except _reportable() as exc:
         _refused(exc)
     except GcloudError as exc:
@@ -1081,7 +1437,7 @@ def create_cmd(
     # page, the plan looked like more quota.
     say.result("\nwhat this makes:")
     for line in blueprint.steps(ordering.zones[0]):
-        say.result(f"  - {line}")
+        _prose(line, first="  - ", rest="    ")
     say.result("")
     for line in summary(blueprint, ordering):
         say.result(line)
@@ -1091,13 +1447,20 @@ def create_cmd(
     if dry_run:
         say.result("\n--dry-run: nothing created")
         return
-    if not yes and not typer.confirm(f"\nCreate {blueprint.name}?"):
+    # The reserved question says what a yes costs, because this is the last
+    # line anybody reads before a reservation starts billing — and unlike the
+    # box, it does not stop billing when the box does.
+    question = (f"\nCreate {blueprint.name} and reserve it? It bills every hour "
+                f"until deleted, running or stopped."
+                if blueprint.reserve else f"\nCreate {blueprint.name}?")
+    if not yes and not typer.confirm(question):
         say.result("nothing changed")
         return
 
     say.result("")
     try:
-        made_in = build(gc, blueprint, ordering, project, say.step)
+        made_in = build(gc, blueprint, ordering, project, say.step,
+                        leftover=leftover)
     except _reportable() + (GcloudError,) as exc:
         say.fail(exc, code=1)
     # No `except KeyboardInterrupt` here, and that is the fix rather than an
@@ -1166,16 +1529,49 @@ def create_cmd(
         # It leads, on its own line, ahead of the adoption path and ahead of the
         # OSError text, which can be long enough on its own to push a command at
         # the end of a paragraph out of sight.
-        say.error(f"{blueprint.name} exists in {made_in} and is billing",
-                  say.fix("stop it now:",
-                          f"gcloud compute instances stop {blueprint.name} "
-                          f"--zone={made_in} --project={project}"))
+        stop = (f"gcloud compute instances stop {blueprint.name} "
+                f"--zone={made_in} --project={project}")
+        if blueprint.reserve:
+            # TWO THINGS ARE BILLING, and stopping the box ends neither bill:
+            # its reservation goes on at the card's rate with the box off. So
+            # the stop is still handed over — it is the half that works now —
+            # and then EVERYTHING that ends both bills, in the order this tool
+            # itself would run it: the box deleted, then its reservation
+            # released. The fix used to print the release alone under "after
+            # the box is deleted" and no command that deletes the box.
+            #
+            # Whether Google would release a reservation with a box still on
+            # it has not been read off Google, so the order printed is the one
+            # that cannot depend on the answer.
+            say.error(
+                f"{blueprint.name} exists in {made_in} and is billing, and so is "
+                f"its reservation {blueprint.reservation} — which bills whether "
+                f"the box is running or stopped",
+                say.fix("stop it now:", stop,
+                        "to end both bills, delete the box and then release its "
+                        "reservation:",
+                        f"gcloud compute instances delete {blueprint.name} "
+                        f"--zone={made_in} --project={project} "
+                        f"--delete-disks=all --quiet",
+                        rsv.delete_command(blueprint.reservation, made_in,
+                                           project)))
+        else:
+            say.error(f"{blueprint.name} exists in {made_in} and is billing",
+                      say.fix("stop it now:", stop))
+        # `discover` reads the box's own binding and writes `gce_reservation`
+        # with the entry. Somebody adding it by hand has to be told to, or the
+        # entry they write describes a box whose bill `down` would say it had
+        # stopped.
+        by_hand = (f"add it by hand — with gce_reservation = "
+                   f"\"{blueprint.reservation}\", or this tool will not know it is "
+                   f"reserved — or adopt it: comfy-qat discover"
+                   if blueprint.reserve else
+                   "add it by hand, or adopt it: comfy-qat discover")
         say.fail(f"{blueprint.name} could not be added to {path}: {exc}",
-                 fix="add it by hand, or adopt it: comfy-qat discover", code=1)
+                 fix=by_hand, code=1)
 
     say.result(f"\n{blueprint.name} is up in {made_in}, on port {port}.")
-    for line in next_steps(blueprint, made_in):
-        say.result(line)
+    _steps(next_steps(blueprint, made_in))
 
 
 def _selector(name: str | None) -> str:
@@ -1289,6 +1685,195 @@ def _act(action, *args, **kwargs):
         say.fail(exc, code=2 if getattr(exc, "refusal", False) else 1)
 
 
+def _stop_line(host: Host, *, reserved: bool | None = None,
+               running: bool = True) -> str:
+    """What a command ends on to say how the bill for this box is stopped.
+
+    FOR A RESERVED BOX THAT IS RUNNING IT IS TWO LINES, `down` then `delete`.
+    `delete` is what ends the bill, and `delete` refuses a running box — so
+    after `go`, `up` or `logs`, the single line this used to print was a
+    command that exits 2 as pasted. Found on a real box. `create.
+    reserved_stop_lines` is the pair, and `create`'s own sign-off prints the
+    same one. `running=False` is for the caller that has just stopped the
+    machine, or prints its own `down` line above: there the `delete` line
+    alone is the next thing to run.
+
+    `reserved` is for the caller that asked Google and knows better than the
+    entry — `down <name>` on a box bound to a reservation its entry does not
+    declare. Left out, the entry is what is read.
+
+    THE ONE PLACE in this file that sentence is written, because it has two
+    forms and one of them is false about half the boxes this tool can make.
+
+    For an ordinary box it is `comfy-qat down <name>`: stopping it stops the
+    bill. For a RESERVED box it is not — Google holds the capacity and bills
+    for it every hour, running or stopped, so `down` stops the machine and
+    changes nothing about what it costs. Told "stop the box, stop paying", a
+    person stops it, closes the laptop, and pays for the card all night.
+    `reservation.stop_line` says what does end it: deleting the box.
+
+    Nine endings used to carry the first form as a string of their own. Each
+    was a site the second form had to reach, and the guard that checks a
+    billable command names the bill was SATISFIED by the words `comfy-qat
+    down` — so a reserved box could have been told the wrong thing at every
+    one of them with the suite green. They all read this now, and
+    `tests/test_host_costs.py` holds them to it.
+    """
+    from . import reservation as rsv
+    from .lifecycle import stop_paying
+
+    if host.reservation if reserved is None else reserved:
+        if running:
+            from .create import reserved_stop_lines
+
+            return "\n".join(reserved_stop_lines(host.name))
+        return rsv.stop_line(host.name)
+    return f"  {stop_paying(host)}   # stop the box, stop paying"
+
+
+def _bound_live(gc, host: Host):
+    """The reservation this box's own record says it is bound to, for `down`.
+
+    `remove._bound_on_google`, which `delete` asks for the same reason — one
+    read, written once. A name, None for "asked, and bound to nothing", or
+    `remove.UNREAD` when Google could not be asked. A machine that is not a
+    cloud box has no record to ask and no reservation to have: None, and
+    nothing is read.
+    """
+    from . import remove
+
+    if not (host.gce_instance and host.gce_project):
+        return None
+    try:
+        return remove._bound_on_google(gc, host)
+    except AttributeError:
+        # Only a test double can lack the method; `Gcloud` has it. Read as
+        # "bound to nothing" so a fake written before this read existed still
+        # sees the output it pins — the one place here where not asked is
+        # treated as no, and it cannot happen against Google.
+        return None
+
+
+def _reservations_on(gc, hosts: list[Host]):
+    """Every reservation on every project in play: `{project: list | None}`.
+
+    The other half of "am I still paying for anything". `down --all` stops
+    machines, and a reservation is not a machine: it bills with its box
+    stopped and it bills with no box at all, so a run that stopped everything
+    can end with a GPU's worth still being charged. Asked of the PROJECT, like
+    `_undeclared_and_running` beside it and for its reason — one made in the
+    console, or left by a create that stopped half-way, is in no host list.
+
+    EVERY project a declared box names, not the first one. A host list may
+    name several, and a reservation on the second billed just as much while
+    only the first was read. With no cloud box declared it is the project
+    gcloud is pointed at, which is where a `create` that stopped half-way
+    left whatever it left.
+
+    None for a project whose read did not come back — not `[]`. Read-and-empty
+    is the only answer that may be printed as an all-clear. An empty mapping
+    is "there was no project to ask", which is not an all-clear either.
+    """
+    from . import reservation as rsv
+    from .gcloud import GcloudError
+
+    projects = list(dict.fromkeys(h.gce_project for h in hosts if h.gce_project))
+    if not projects:
+        try:
+            current = gc.current_project()
+        except (GcloudError, AttributeError):
+            current = None
+        projects = [current] if current else []
+    found: dict[str, list | None] = {}
+    for project in projects:
+        try:
+            found[project] = rsv.parse_all(gc.list_reservations(project))
+        except (GcloudError, AttributeError):
+            # `AttributeError` for `_undeclared_and_running`'s reason, beside
+            # it: a cloud that cannot be asked this is one that was not asked.
+            found[project] = None
+    return found
+
+
+def _nothing_reserved(reservations) -> bool:
+    """Was every project read, and did every one of them hold nothing?"""
+    return bool(reservations) and all(found == [] for found in reservations.values())
+
+
+def _say_reserved(gc, hosts: list[Host], reservations) -> None:
+    """What `down --all` says about reservations, under its summary of machines.
+
+    Three facts, kept apart. A declared box that is reserved is still billing
+    however this run left it, and is named with the one command that ends
+    that. A reservation on a project that no declared box names is billing
+    too and is not this command's to release, so it is named — with what
+    releases it, PRINTED HERE. It used to point at `comfy-qat list --live`,
+    which shows reservations only for projects a declared box is on: with no
+    cloud box declared, which is exactly the state a half-finished `create
+    --reserve` leaves, that listing asks Google nothing and the remedy led
+    nowhere. And a read that did not come back is said to be exactly that —
+    not an all-clear.
+    """
+    from . import reservation as rsv
+    from .gcloud import GcloudError
+
+    held = [host for host in hosts if host.reservation]
+    if held:
+        names = ", ".join(host.name for host in held)
+        say.result(
+            f"\nstill billing, stopped or not — "
+            f"{'it is' if len(held) == 1 else 'they are'} reserved: {names}.")
+        for host in held:
+            # Stopped a moment ago by this run, so `delete` is the next step.
+            say.result(_stop_line(host, running=False))
+
+    if not reservations:
+        _prose("\nthere was no project to ask about reservations, and a "
+               "reservation bills with its box stopped — so this is not an "
+               "all-clear.")
+        say.result("  comfy-qat status")
+        return
+
+    declared = {(host.reservation, host.gce_zone, host.gce_project) for host in held}
+    for project, found in reservations.items():
+        if found is None:
+            _prose("\nthe project's reservations could not be checked, and a "
+                   "reservation bills with its box stopped — so this is not an "
+                   "all-clear.")
+            say.result(f"  gcloud compute reservations list --project={project}")
+            continue
+        others = [entry for entry in found
+                  if (entry.name, entry.zone, project) not in declared]
+        if not others:
+            continue
+        one = len(others) == 1
+        _prose(
+            f"\n{say.count(len(others), 'reservation')} on {project} "
+            f"{'is' if one else 'are'} billing and not in your host list: "
+            f"{', '.join(f'{entry.name} ({entry.zone})' for entry in others)}.")
+        say.result("  not released — this tool only releases what you declare:")
+        # WHICH command depends on whether a box is on it, and that needs the
+        # boxes. One with nothing on it is released with Google's own command;
+        # one with a box is somebody's capacity in use, so the box is adopted
+        # first and then deleted, which releases it. Not read, no delete
+        # command is printed at all: "nothing is on it" would be a guess, and
+        # it is the guess that takes a reservation from under a running box.
+        try:
+            instances = gc.list_instances(project)
+        except (GcloudError, AttributeError):
+            say.result(f"  gcloud compute reservations list --project={project}"
+                       f"   # which of them has a box on it could not be read")
+            continue
+        empty = {(entry.name, entry.zone) for entry in rsv.orphans(others, instances)}
+        for entry in others:
+            if (entry.name, entry.zone) in empty:
+                say.result(f"  {rsv.delete_command(entry.name, entry.zone, project)}"
+                           f"   # nothing is on it")
+            else:
+                say.result(f"  comfy-qat discover   # a box is on {entry.name}: "
+                           f"adopt it, then `comfy-qat delete` it")
+
+
 # The four words `put_away` answers with, from nine `return` statements. Named
 # here rather than inline at each of the two call sites, so that adding a fifth
 # is one edit and not a search.
@@ -1352,7 +1937,7 @@ def up_cmd(
     # machine or deliberately LEAVES one running names stop_paying before it
     # returns.
     say.result(f"\nopen {host.url}")
-    say.result(f"  comfy-qat down {host.name}   # stop the box, stop paying")
+    say.result(_stop_line(host))
 
 
 @app.command("open")
@@ -1475,6 +2060,13 @@ def disconnect_cmd(
     # offered command, and `put_away`'s block is the story on stderr. One
     # instruction, once, and neither stream is empty on any path.
     say.result(f"  comfy-qat down {host.name}   # when the work is finished")
+    if host.reservation:
+        # `down` is still how the machine is stopped when the work is done, so
+        # the line above stays. What it must not be left to imply is that the
+        # bill stops with it. `running=False`: the `down` step is the line
+        # above, so this adds the `delete` that follows it and not a second
+        # `down`.
+        say.result(_stop_line(host, running=False))
 
 
 @app.command("down")
@@ -1488,12 +2080,18 @@ def down_cmd(
 ) -> None:
     """Close the tunnel and stop the machine, so it stops costing money.
 
+    Except a reserved box. Its reservation bills for the card every hour whether
+    the box is running or stopped, so `down` stops the machine and says, every
+    time, that it is still billing — and that `comfy-qat delete` is the only
+    thing that ends it.
+
     `--all` exists because the question at the end of a session is never "is
     comfy-win stopped", it is "am I still paying for anything" — and answering
-    that by naming each box in turn is how one gets missed.
+    that by naming each box in turn is how one gets missed. It reads the
+    project's reservations before it says nothing is.
     """
     from .gcloud import Gcloud
-    from .lifecycle import put_away, stop_paying
+    from .lifecycle import put_away
 
     if everything:
         if name:
@@ -1534,6 +2132,11 @@ def down_cmd(
             else:
                 say.result("no cloud machines are declared, and nothing is "
                            "running on the project either")
+            # Nothing running is not nothing billing: a reservation with no
+            # box on it is neither declared nor running.
+            reservations = _reservations_on(gc, hosts)
+            if not _nothing_reserved(reservations):
+                _say_reserved(gc, hosts, reservations)
             return
 
         failed = []
@@ -1587,12 +2190,24 @@ def down_cmd(
         # worse than the bill. Saying nothing about it is what makes the summary
         # a lie.
         strangers = _undeclared_and_running(gc, hosts)
+        # AND THE RESERVATIONS, for the same reason and with the same three
+        # answers. A stopped box that is reserved bills exactly as it did
+        # running, so "everything is stopped" stopped being the same sentence as
+        # "nothing is billing" the day a box could be reserved.
+        reservations = _reservations_on(gc, hosts)
+        reserved = [h for h in hosts if h.reservation]
 
         if failed:
             say.error(
                 f"{len(failed)} of {len(hosts)} did not stop and may still be billing",
                 say.fix(*[f"{other.name} — {exc.fix or 'stop it in the console'}"
                           for other, exc in failed]))
+            # The reservations are reported on this path too. The run is a
+            # failure and exits 1, but the boxes that DID stop and are reserved
+            # are still billing, and so is anything nobody declared — and this
+            # used to exit before saying either.
+            if reserved or not _nothing_reserved(reservations):
+                _say_reserved(gc, hosts, reservations)
             raise typer.Exit(code=1)
         # "all N stopped." was printed whether five GPU boxes had been billing
         # all night or none, because stopping an already-stopped box succeeds
@@ -1618,10 +2233,28 @@ def down_cmd(
         # can also be wrong. It is one condition now rather than two, so the two
         # cannot drift apart again: `caught` says what this stopped, `all_clear`
         # says whether anything is left, and they are separate claims.
-        all_clear = not unknown and strangers == []
+        #
+        # TWO MORE CONDITIONS, both about reservations, and both have to hold:
+        # no declared box is reserved, AND the project's own reservations were
+        # read and there are none. The first alone trusts the host list about
+        # the project; the second alone would print the all-clear over a read
+        # that failed. `_nothing_reserved` is every project read AND every one
+        # of them empty — a project whose read failed is "nobody could say",
+        # which is not an all-clear, exactly as `strangers is None` is not.
+        all_clear = (not unknown and strangers == []
+                     and not reserved and _nothing_reserved(reservations))
         if caught:
+            # "was running", not "was billing", when a box this stopped is
+            # reserved: it was billing, and it still is.
+            #
+            # Two whole sentences rather than one with a word swapped in, so
+            # that each is a sentence somebody can read in the source — and so
+            # the check that reads money sentences out of this file can see
+            # that one of them is a claim about a bill.
             names = ", ".join(h.name for h in caught)
-            say.result(f"\nwas billing: {names}. Stopped."
+            say.result((f"\nwas running: {names}. Stopped."
+                        if any(h.reservation for h in caught)
+                        else f"\nwas billing: {names}. Stopped.")
                        + (" Nothing is now." if all_clear else ""))
         elif all_clear:
             say.result("\nnothing was running, so nothing was billing.")
@@ -1653,6 +2286,8 @@ def down_cmd(
             for name, zone in strangers:
                 say.result(f"  gcloud compute instances stop {name} --zone={zone}")
             say.result("  comfy-qat discover   # or adopt them and use `down --all`")
+        if reserved or not _nothing_reserved(reservations):
+            _say_reserved(gc, hosts, reservations)
         return
 
     # Not `_selector` alone: its "which machine?" does not know about `--all`,
@@ -1662,7 +2297,8 @@ def down_cmd(
                  blank_line=False)
 
     host = _host(_selector(name), config)
-    found = _act(put_away, Gcloud(), host, say.step)
+    gc = Gcloud()
+    found = _act(put_away, gc, host, say.step)
 
     # `down --all` ends with its money summary on stdout and the per-host story
     # on stderr. This form printed the story and stopped, so `comfy-qat down
@@ -1676,6 +2312,65 @@ def down_cmd(
     # that line is the story of one machine on stderr, this is the answer on
     # stdout, and someone who redirects either away still has the other.
     verdict = _known_verdict(host, found)
+    # ASKED OF THE BOX, NOT ONLY OF THE HOST LIST. `gce_reservation` is one
+    # line in a file people edit, and a box can be reserved without it: adopted
+    # before the field existed, reserved in the console, or left by a `create
+    # --reserve` that could not write the entry. This command then said "was
+    # billing. Stopped." about a box whose reservation went on billing. The
+    # instance's own record says what it is bound to, and `delete` already
+    # reads it for this reason — the same read, from the same function.
+    from . import remove
+
+    bound = host.reservation or _bound_live(gc, host)
+    if bound is remove.UNREAD:
+        # NOT READ IS NOT "NOT RESERVED". The two sentences that say the bill
+        # ended are the two that cannot be said here, so they say what happened
+        # to the machine and what is not known about the money — and end on the
+        # command that shows it.
+        unchecked = ("whether it is reserved could not be checked, and a "
+                     "reservation bills with its box stopped")
+        _prose({
+            "caught": f"\n{host.name} was running. Stopped — but {unchecked}.",
+            "idle": f"\n{host.name} was not running — but {unchecked}.",
+            "billing": f"\n{host.name} is left running, and it is billing. "
+                       f"Also, {unchecked}.",
+            "unknown": f"\n{host.name} could not be checked before stopping, so "
+                       f"it may have been billing. Also, {unchecked}.",
+        }[verdict])
+        if verdict == "unknown":
+            say.result("  comfy-qat list --live")
+        say.result(f"  gcloud compute reservations list "
+                   f"--project={host.gce_project}")
+        return
+    if bound:
+        # EVERY ONE OF THE FOUR SENTENCES BELOW IS FALSE ABOUT A RESERVED BOX.
+        # "was billing. Stopped." says the bill ended; "not running, so nothing
+        # was billing" says there never was one. Its reservation bills for the
+        # card every hour whatever this command found and whatever it did, so
+        # each verdict says what happened to the MACHINE and then what is still
+        # true of the money — and ends on the one command that changes that.
+        say.result({
+            "caught": f"\n{host.name} was running. Stopped — but it is reserved, "
+                      f"so it is still billing.",
+            "idle": f"\n{host.name} was not running — but it is reserved, so it "
+                    f"is still billing.",
+            "billing": f"\n{host.name} is left running, and it is billing. It is "
+                       f"reserved, so stopping it would not stop that.",
+            "unknown": f"\n{host.name} could not be checked before stopping. It "
+                       f"is reserved, so it is billing either way.",
+        }[verdict])
+        if verdict == "unknown":
+            say.result("  comfy-qat list --live")
+        if not host.reservation:
+            _prose(f"its host list entry does not say so: {host.gce_instance} "
+                   f"is bound to the reservation {bound}, which bills every "
+                   f"hour whether the box runs or not.")
+        # Told, not left to read the entry: the entry is what did not know.
+        # The machine is stopped on every verdict but "left running", and only
+        # there is `down` still a step before `delete`.
+        say.result(_stop_line(host, reserved=True,
+                              running=verdict == "billing"))
+        return
     say.result({
         "caught": f"\n{host.name} was billing. Stopped.",
         "idle": f"\n{host.name} was not running, so nothing was billing.",
@@ -1689,7 +2384,7 @@ def down_cmd(
     if verdict == "unknown":
         say.result("  comfy-qat list --live")
     elif verdict == "billing":
-        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        say.result(_stop_line(host))
 
 
 @app.command("go")
@@ -1990,7 +2685,7 @@ def rdp_cmd(
                 "nothing printed the new one, so reset it again and read it off "
                 "the screen:",
                 f"gcloud compute reset-windows-password {host.gce_instance} "
-                f"--zone={host.gce_zone} --project={host.gce_project}",
+                f"--zone={host.gce_zone} --project={host.gce_project} --quiet",
             ],
             note=(f"anyone else signing in to {host.name} is holding a password "
                   f"that may no longer work"),
@@ -2047,7 +2742,8 @@ def rdp_cmd(
                     "run the reset yourself and read the password off the "
                     "screen:",
                     f"gcloud compute reset-windows-password {host.gce_instance} "
-                    f"--zone={host.gce_zone} --project={host.gce_project}",
+                    f"--zone={host.gce_zone} --project={host.gce_project} "
+                    f"--quiet",
                 ),
                 code=1,
                 blank_line=False,
@@ -2084,7 +2780,8 @@ def rdp_cmd(
                  fix=say.fix(
                      "run the reset yourself and read what comes back:",
                      f"gcloud compute reset-windows-password {host.gce_instance} "
-                     f"--zone={host.gce_zone} --project={host.gce_project}"),
+                     f"--zone={host.gce_zone} --project={host.gce_project} "
+                     f"--quiet"),
                  code=1)
 
     say.result(f"user     {user}")
@@ -2115,7 +2812,7 @@ def logs_cmd(
     which is the whole point of it being detached.
     """
     from .gcloud import Gcloud
-    from .lifecycle import read_logs, stop_paying
+    from .lifecycle import read_logs
 
     host = _host(_selector(name), config)
 
@@ -2141,7 +2838,7 @@ def logs_cmd(
     except KeyboardInterrupt:
         say.result(f"\nstopped reading. ComfyUI is still running on {host.name}, "
                    "and so is the machine.")
-        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        say.result(_stop_line(host))
         # 130, not 0, and this is the other half of the exit-code fix in
         # `read_logs`. That one stopped a FAILED read reporting success; this one
         # stops an INTERRUPTED read reporting it, and without both, `logs` still
@@ -2230,7 +2927,9 @@ def _offer_move(host: Host, exc, config: Optional[Path]) -> bool:
     from .gcloud import can_prompt
 
     zones = getattr(exc, "zones", ())
-    if not zones or not can_prompt():
+    # Never for a reserved box: `move` refuses one, so offering it here would
+    # be asking a question whose yes ends in a refusal.
+    if not zones or not can_prompt() or host.reservation:
         return False
 
     target = zones[0]
@@ -2295,8 +2994,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
 
     from .gcloud import GcloudError
     from .lifecycle import (
-        ensure_installed, serve, start_detached, stop_paying, wait_for_ssh,
-        wrong_machine_fix,
+        ensure_installed, serve, start_detached, wait_for_ssh, wrong_machine_fix,
     )
     from .stamp import mismatch
 
@@ -2321,7 +3019,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         say.result(ready.stamp.line())
         if browser:
             browser(host.url)
-        say.result(f"\n  {stop_paying(host)}   # stop the box, stop paying")
+        say.result(f"\n{_stop_line(host)}")
         return
 
     if not host.is_remote:
@@ -2381,19 +3079,19 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                        "stopping it")
         else:
             say.result(f"\nstopped. {host.name} is still running.")
-        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        say.result(_stop_line(host))
         return
 
     if follow:
         say.result(f"\nComfyUI exited ({code}). {host.name} is still running.")
-        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        say.result(_stop_line(host))
         return
 
     # The URL is last on purpose. ComfyUI announces its own address — correct on
     # the box, wrong here — and whatever is said after it is what gets opened.
     say.result(f"\nComfyUI is running on {host.name} and this terminal is free.")
     say.result(f"  comfy-qat logs {host.name}   # follow its log, on the box")
-    say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+    say.result(_stop_line(host))
     say.result(f"\nopen {host.url}")
 
 
@@ -2427,6 +3125,10 @@ def switch_cmd(
     The target is brought up *first*. If it cannot start — a capacity shortage is
     routine on GPUs — you still have the machine you were on, and you are told
     where you can work instead.
+
+    Stopping a reserved box frees neither its card nor its bill, and the plan
+    says so beside it. If reservations alone hold the project's GPU allowance,
+    the switch is refused before anything is started or stopped.
     """
     from .gcloud import Gcloud, GcloudError
     from .lifecycle import GO_BUDGET, Budget, put_away, running_elsewhere
@@ -2449,7 +3151,11 @@ def switch_cmd(
     say.result("")
     say.result(f"  - go to {host.name} ({describe(host)}) on {host.url}")
     for other, why in others:
-        say.result(f"  - then stop {other.name} ({describe(other)}) — {why}")
+        # Stopping a reserved box is still worth doing — it is what `switch`
+        # means — but it frees neither of the things a person switches to free.
+        held = (" (reserved — stopping it does not free its card or its bill)"
+                if other.reservation else "")
+        say.result(f"  - then stop {other.name} ({describe(other)}) — {why}{held}")
     if not others:
         say.result("  - leaving the other machines running (--keep-others)" if keep_others
                    else "  - nothing else is running, so nothing to stop")
@@ -2460,7 +3166,8 @@ def switch_cmd(
     # real run did the opposite — stop Y, then start X. Someone typing `--dry-run`
     # to ask "will this kill the box I am on right now" was told no, and then it
     # did exactly that.
-    first = _blocked_by_the_ceiling(gc, host, [other for other, _why in others])
+    first = _blocked_by_the_ceiling(gc, host, [other for other, _why in others],
+                                    hosts)
     if first and others:
         say.result("")
         say.result(f"  your quota allows {say.count(first, 'GPU machine')} at a "
@@ -2632,33 +3339,54 @@ def _probe_failed(gc, host: Host, exc) -> None:
         code=1, blank_line=False)
 
 
-def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
+def _blocked_by_the_ceiling(gc, host: Host, others: list[Host],
+                            hosts: list[Host] | None = None) -> int | None:
     """Would the project-wide GPU ceiling refuse this machine while those run?
 
     Returns the ceiling when it is the thing in the way, and None otherwise —
     including whenever the answer cannot be established. Not knowing must never
     reorder a switch: stopping first is the destructive order, and it is only
     correct when the arithmetic is certain.
+
+    AND IT REFUSES, rather than returning, in the one case where reordering
+    cannot help: the cards held by RESERVATIONS alone leave no room. A
+    reservation holds its card whether its box is running or stopped, so
+    stopping the other machines first — the remedy this function exists to
+    choose — would stop the box somebody is working on, free nothing, and then
+    fail to start the target. Nothing has been started or stopped when this is
+    asked, so the refusal is free, and it is asked before `--dry-run` returns
+    so the preview says the same thing the run would.
+
+    `hosts` is the whole host list, and it is used for that refusal's remedy
+    and nothing else: `comfy-qat down/delete <name>` is printed only for a box
+    an entry really points at. Left out, the remedy is Google's own commands.
     """
-    if not others or not host.is_remote or not host.gpu:
+    from .config import has_gpu
+
+    # `has_gpu`, not `host.gpu`: `"none"` is a non-empty string, and a box
+    # declared to have no GPU was being counted as one card against a ceiling it
+    # holds none of.
+    if not others or not host.is_remote or not has_gpu(host):
         return None
-    # WHY THE READ CANNOT BE SKIPPED HERE, checked 2026-09-08 and written down
-    # because it looks exactly like the case `relocate._within_the_allowance`
-    # already optimises — "nothing can be over the ceiling while nothing holds
-    # any of it", pay the ~58-second `gpu_quotas` only when the answer could be
-    # no. Tried, and reverted:
+    if host.reservation:
+        # Its own reservation already holds its card, and has since the box was
+        # made. Starting it takes nothing more out of the allowance, so the
+        # ceiling is never what stands in its way and nothing needs stopping
+        # first.
+        return None
+    # THE QUOTA READ IS PAID WHENEVER THIS LINE IS REACHED, and the reason it
+    # used to give for that is no longer true. It said the read could not be
+    # skipped because `config.py` requires a card on every cloud host, so
+    # `others` — non-empty by the line above — always holds at least one card.
+    # A box may now be declared `gpu = "none"`, so `others` can be nothing but
+    # machines with no card, and for a switch between a GPU box and a running
+    # no-GPU box this pays the ~58-second read to learn that nothing is held.
     #
-    # `relocate` counts cards in a live instance list, which really can be zero.
-    # `others` here cannot. It comes from `running_elsewhere`, which returns
-    # only hosts whose `kind` is not "local" — and `Kind` is `local | gce`, so
-    # every one of them is remote — while `config.py` REQUIRES a truthy `gpu` on
-    # every gce host (`_REQUIRED_FOR_GCE`). So `running` below is always exactly
-    # `len(others)`, and `others` is non-empty by the line above. The free half
-    # is already known to be non-zero before it is computed, and hoisting it
-    # buys nothing.
-    #
-    # The remaining question is whether `len(others) >= ceiling`, and nothing
-    # answers that without the read.
+    # It is still paid, deliberately: what may hold a card is no longer only
+    # `others`. A stopped RESERVED box holds one and is in nobody's `others`,
+    # and whether one exists is a second read this would have to make first to
+    # decide whether to skip. Reading the quota is the simpler rule, and wrong
+    # only in the direction that costs a minute.
     try:
         from .quota import global_allowance, meets
 
@@ -2677,15 +3405,155 @@ def _blocked_by_the_ceiling(gc, host: Host, others: list[Host]) -> int | None:
     # unit mismatch the other module names, on the other surface.
     from .create import card_named
 
-    running = sum(_cards_in(other.gpu, card_named) for other in others
-                  if other.is_remote and other.gpu)
+    needed = _cards_in(host.gpu, card_named)
+    held = _reserved_cards(gc, host, others)
+    # What stopping the others would actually give back: the cards on the ones
+    # that are NOT sitting on a reservation. A reserved box's card is in `held`
+    # and stays there when the box stops.
+    freeable = sum(_cards_in(other.gpu, card_named) for other in others
+                   if other.is_remote and has_gpu(other)
+                   and other.name not in held.boxes)
+    # `meets`, NOT `needed + held.cards > ceiling`. An unlimited ceiling is -1,
+    # which is not a small number, and the predicate is the one place that
+    # knows it.
+    if held.cards and not meets(ceiling, needed + held.cards):
+        say.fail(
+            f"GPUS_ALL_REGIONS is {ceiling} on this project, and {held.cards} of "
+            f"it is held by {held.said}. A reservation holds its card whether its "
+            f"box is running or stopped, so stopping the other machines would "
+            f"free nothing and {host.name} still could not start. Nothing was "
+            f"started or stopped.",
+            fix=_how_to_free(gc, host, held, hosts), code=2)
     # `meets`, NOT `running >= ceiling`. The unlimited case used to be handled
     # by an early `ceiling < 0` eight lines up — correct, and invisible here: two
     # magnitudes, a sentinel that is neither, and the only thing keeping them
     # apart sitting in a different statement. Asked through the predicate the
     # question is sentinel-safe where it is asked, and the widened sweep can read
     # it. Identical answers on every input; this is legibility, not a fix.
-    return None if meets(ceiling, running + 1) else ceiling
+    return None if meets(ceiling, held.cards + freeable + needed) else ceiling
+
+
+class _Held:
+    """The cards reservations hold against a switch, and who holds them.
+
+    `cards` is how many, and `boxes` the declared machines among `others`
+    whose card is one of them — so it is not counted a second time as
+    something a stop would free. `holders` is `reservation.holders` of the
+    project's own list, or None when that list could not be read and
+    `declared` — the machines the host list says are reserved — is all there
+    is to go on. Built by `_reserved_cards`.
+    """
+
+    def __init__(self, cards: int = 0, boxes: frozenset[str] = frozenset(),
+                 holders=None, declared: tuple[Host, ...] = ()) -> None:
+        self.cards, self.boxes = cards, boxes
+        self.holders, self.declared = holders, declared
+
+    @property
+    def said(self) -> str:
+        """Who holds them, for the refusal's sentence."""
+        if self.holders is None:
+            return ", ".join(f"{other.name}'s reservation {other.reservation}"
+                             for other in self.declared)
+        return (f"{say.count(len(self.holders), 'reservation')}: "
+                + ", ".join(f"{name} ({zone})"
+                            for name, zone, _cards, _box in self.holders))
+
+
+def _reserved_cards(gc, host: Host, others: list[Host]) -> _Held:
+    """Cards on this project that a reservation holds, stop or no stop.
+
+    FROM THE PROJECT'S OWN LIST when it can be read — a reservation made in the
+    console, or one whose box is stopped and so appears in nobody's `others`,
+    holds the allowance exactly as a declared running one does. The target's
+    own reservation is not in this count: a reserved target never reaches here.
+
+    WHEN THE LIST CANNOT BE READ, what the host list says about the machines
+    being stopped is used instead, and only that. It is an under-count — it
+    cannot see a reservation nobody declared — and under-counting here is the
+    safe direction for this function's caller: it can only fail to refuse, and
+    Google's own refusal at the start is still there. It can never cause a
+    reorder that would not otherwise have happened, because a card moved out of
+    "a stop would free this" only ever makes stopping first less likely.
+    """
+    from . import reservation as rsv
+    from .config import has_gpu
+    from .create import card_named
+
+    try:
+        live = rsv.parse_all(gc.list_reservations(host.gce_project or ""))
+    except Exception:
+        # ANY failure, as for the quota read in the caller and for its reason:
+        # whenever the answer cannot be established, this function's caller
+        # must behave exactly as if nobody had asked.
+        live = None
+
+    if live is None:
+        # `has_gpu`, as everywhere a card is counted: an entry that says
+        # `none` or `cpu` holds no card whatever else it says.
+        declared = tuple(other for other in others
+                         if other.reservation and has_gpu(other))
+        return _Held(
+            cards=sum(_cards_in(other.gpu, card_named) for other in declared),
+            boxes=frozenset(other.name for other in declared),
+            declared=declared)
+
+    holders = rsv.holders(live)
+    names = {(name, zone) for name, zone, _cards, _box in holders}
+    # Which of the machines about to be stopped is sitting on one of those. By
+    # what the host list declares, matched against what is really there: an
+    # entry naming a reservation the project no longer has is an ordinary box,
+    # and stopping it does free its card.
+    on_one = frozenset(other.name for other in others
+                       if (other.reservation, other.gce_zone) in names)
+    return _Held(cards=rsv.cards_reserved(live), boxes=on_one, holders=holders)
+
+
+def _how_to_free(gc, host: Host, held: _Held,
+                 hosts: list[Host] | None = None) -> str:
+    """The fix for "reservations hold the ceiling", for `switch`'s refusal.
+
+    The remedy `create` prints for the same refusal, FROM THE SAME FUNCTION, so
+    the two cannot hand over different commands about one reservation. Which
+    command applies is a fact about the project and not a choice of wording: a
+    reservation with its own box on it goes when that box is deleted, and one
+    with nothing on it is released with Google's own command. Telling those
+    apart needs the instances, so they are read here — on the refusal path
+    only, where one more read is what makes the remedy true.
+
+    When that read does not come back, the remedy says so and leads with the
+    command that shows what is on each one. "Nothing is on it" would be a
+    guess, and it is the guess that releases a reservation from under
+    somebody's box.
+
+    AND `comfy-qat down/delete` ONLY FOR A BOX THE HOST LIST HOLDS, by the
+    entry's own identity — project, zone, instance — never by the name in the
+    reservation's description. That name is the instance's. The host list may
+    not have it, and then the two commands exit 2 while the reservation bills;
+    or it may have an entry of that name for a different machine, and then
+    `comfy-qat delete` pasted back deletes that one.
+    """
+    from .create import _boxed, _how_to_release, declared_boxes
+    from .gcloud import GcloudError
+
+    if held.holders is None:
+        return say.fix(
+            "a reserved box frees its card only when it is deleted:",
+            *[line for other in held.declared
+              for line in (f"comfy-qat down {other.name}",
+                           f"comfy-qat delete {other.name}")])
+    project = host.gce_project or ""
+    try:
+        instances = gc.list_instances(project)
+    except GcloudError:
+        # NOT READ, and handed on as that: `None`, which `_boxed` keeps as
+        # `None` and the remedy words as "could not be read, so look first".
+        # An empty tuple here would mean "read, and nothing is bound".
+        instances = None
+    return _how_to_release(
+        held.holders, _boxed(held.holders, instances), project,
+        named=(declared_boxes(held.holders, instances, hosts, project)
+               if instances is not None else ()))
 
 
 def _cards_in(gpu: str, card_named) -> int:
@@ -2726,8 +3594,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     """
     from .gcloud import GcloudError
     from .lifecycle import (
-        LifecycleError, TERMINATED, is_capacity_failure, put_away, stop_paying,
-        suggested_zones,
+        LifecycleError, TERMINATED, is_capacity_failure, put_away, suggested_zones,
     )
 
     if dry_run:
@@ -2823,7 +3690,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
         say.result(f"{host.name} is already running in {host.gce_zone}, which has "
                    f"capacity — no move needed, and this command changed nothing.")
         say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
-        say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+        say.result(_stop_line(host))
         return None
 
     # Found stopped. It was started to ask a question, the answer is "stay where
@@ -2910,6 +3777,40 @@ def _nothing_to_move(gc, host: Host, *, clean: bool, yes: bool) -> None:
     say.result(f"\nremoved {len(removed)}.")
 
 
+def _refuse_to_move_a_reserved_box(host: Host, to: str | None) -> None:
+    """`move` on a reserved box: refused, with the way to get what was wanted.
+
+    Never returns. What somebody running this wants is the box somewhere else,
+    and for a reserved box that is three commands — stop it, delete it (which
+    releases the reservation), and make it again where it should be, reserved.
+    Each is printed as something that runs: the create names the operating
+    system and the card by the words `create` takes, read off this entry, and
+    names the zone only when one was asked for with `--to`.
+
+    The install does not come with it, and the refusal says so: that is the
+    one thing `move` would have kept and this cannot.
+    """
+    from .create import card_named
+
+    card = card_named(host.gpu or "")
+    again = (f"comfy-qat create --os {'windows' if is_windows(host) else 'linux'}"
+             + (f" --gpu {card.key}" if card is not None else "")
+             + f" --reserve --name {host.name}"
+             + (f" --zone {shlex.quote(to)}" if to else ""))
+    say.fail(
+        f"{host.name} is reserved, and a reservation is held in one zone — "
+        f"{host.gce_zone} — so it cannot be moved. A reserved box is not short "
+        f"of capacity there either: its capacity is what is held. Nothing was "
+        f"changed.",
+        fix=say.fix(
+            "to have it somewhere else, delete it and make it again there.",
+            "Its disk goes with it, so the ComfyUI on it is installed afresh:",
+            f"comfy-qat down {host.name}",
+            f"comfy-qat delete {host.name}",
+            again),
+        code=2)
+
+
 @app.command("move")
 def move_cmd(
     name: Annotated[Optional[str], typer.Argument(help="Which machine to move: a name, or what you want — windows, l4.")] = None,
@@ -2927,6 +3828,10 @@ def move_cmd(
     and retrying will not change it. Done by hand this is a snapshot, a disk, an
     instance and a config edit — four chances to get it wrong.
 
+    A reserved box is not moved. Its reservation is held in one zone and cannot
+    be carried to another, so `move` refuses it — before asking Google anything
+    — and prints the commands that delete it and make it again elsewhere.
+
     This one writes: that config edit is the fourth step, so your host list — the
     file `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is
     left off — is read and then rewritten, with a backup left beside it.
@@ -2936,7 +3841,6 @@ def move_cmd(
     from .gcloud import Gcloud, GcloudError
     from .gcloud import can_prompt
     from .hostfile import apply, read, rename_and_add, would_apply
-    from .lifecycle import stop_paying
     from .relocate import (
         MoveError, blocked, delete_instance_command, leftovers, prepare,
         remove_leftovers, run_move, split_leftovers, unclearable, would_not_load,
@@ -2946,6 +3850,14 @@ def move_cmd(
     if not host.is_remote:
         say.fail(f"{host.name} is local — there is nowhere to move it to", code=2,
                  blank_line=False)
+    if host.reservation:
+        # BEFORE `Gcloud()`, and before the capacity probe above all — which is
+        # a START, and would leave the box running to ask a question whose
+        # answer is already no. A reservation is held in one zone and cannot be
+        # carried to another, and a reserved box does not meet the stockout
+        # `move` exists for: its capacity is the thing that is held. Nothing has
+        # been read from Google, so this costs nothing and changes nothing.
+        _refuse_to_move_a_reserved_box(host, to)
 
     gc = Gcloud()
     target = to
@@ -2962,7 +3874,7 @@ def move_cmd(
 
     try:
         instance = gc.describe_instance(host.gce_instance, host.gce_zone, host.gce_project)
-        plan, found = prepare(gc, host, instance, target)
+        plan, found = prepare(gc, host, instance, target, hosts=hosts)
     except GcloudError as exc:
         _refused(exc)
 
@@ -3143,7 +4055,7 @@ def move_cmd(
             # with it would REUSE a deleted disk, or skip a snapshot it now needs,
             # and neither fails loudly — the move just builds from nothing.
             try:
-                plan, found = prepare(gc, host, instance, target)
+                plan, found = prepare(gc, host, instance, target, hosts=hosts)
             except GcloudError as exc:
                 _refused(exc)
 
@@ -3210,7 +4122,7 @@ def move_cmd(
     say.result(f"\n{host.name} is now in {target}, running and billing from now. "
                f"Same name, same port {port}.")
     say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
-    say.result(f"  {stop_paying(host)}   # stop the box, stop paying")
+    say.result(_stop_line(host))
 
     was = "running and still billing" if plan.source_running else "stopped"
     say.result(f"\nthe old box is still in {host.gce_zone} ({was}), now called "
@@ -3251,6 +4163,7 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | No
     wearing the fix's clothes: "nothing is running on the project either" is a
     claim, and an unread project does not support it.
     """
+    from . import reservation as rsv
     from .gcloud import GcloudError
 
     project = next((h.gce_project for h in hosts if h.gce_project), None)
@@ -3269,14 +4182,10 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | No
     except (GcloudError, AttributeError):
         return None
     return [
-        (i.get("name", ""), _tail_zone(i.get("zone", "")))
+        (i.get("name", ""), rsv.zone_of(i))
         for i in instances or []
         if i.get("name") not in declared and i.get("status") != "TERMINATED"
     ]
-
-
-def _tail_zone(url: str) -> str:
-    return (url or "").rstrip("/").rsplit("/", 1)[-1]
 
 
 def _probe_fix(host: Host) -> str | None:

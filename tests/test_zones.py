@@ -474,3 +474,61 @@ def test_the_regions_that_offer_the_card_are_recorded_for_the_refusal(tmp_path):
     order = zone_choice(gc=gc, regions=list(RECORDED), path=tmp_path / "cache.json")
     assert order.offering == ("europe-west4", "us-central1")
     assert len(order.regions) == 5, "where quota reaches is a different question"
+
+
+# --- a box with no GPU: zones from the machine type alone ----------------------
+
+
+class NoCard:
+    """The one read a search with no card makes. Asking about a card raises."""
+
+    def __init__(self, zones_):
+        self._zones = list(zones_)
+        self.asked: list[tuple] = []
+
+    def machine_type_zones(self, project, name):
+        self.asked.append(("machine_type_zones", project, name))
+        # The `-highmem` row is what gcloud's widening `=` filter would add.
+        return ([{"name": name, "zone": f"{URL}/zones/{zone}"} for zone in self._zones]
+                + [{"name": f"{name}-highmem", "zone": f"{URL}/zones/asia-northeast1-a"}])
+
+    def accelerator_types(self, project, name):
+        raise AssertionError("a search with no card asked where a card is sold")
+
+    def machine_types(self, project, zone_list, name):
+        raise AssertionError("the zones were already the answer; nothing to re-ask")
+
+
+def test_with_no_card_the_zones_are_wherever_the_machine_type_is_sold(tmp_path):
+    gc = NoCard(["us-central1-a", "us-central1-b", "europe-west4-a", "asia-northeast1-b"])
+    ordering = choose(gc, PROJECT, accelerator=None, machine_type="n1-standard-8",
+                      regions=["us-central1", "europe-west4"],
+                      probe=lambda region: RECORDED[region],
+                      path=tmp_path / "latency.json")
+
+    assert ordering.zones == ("europe-west4-a", "us-central1-a", "us-central1-b")
+    assert ordering.offering == ("europe-west4", "us-central1")
+    assert gc.asked == [("machine_type_zones", PROJECT, "n1-standard-8")]
+
+
+def test_with_no_card_a_machine_type_sold_nowhere_allowed_says_which_machine(tmp_path):
+    gc = NoCard(["asia-northeast1-b"])
+    ordering = choose(gc, PROJECT, accelerator=None, machine_type="n1-standard-8",
+                      regions=["us-central1"], probe=lambda region: 10.0,
+                      path=tmp_path / "latency.json")
+
+    assert not ordering
+    assert ordering.notes == ("no zone in us-central1 offers n1-standard-8",)
+    assert "None" not in ordering.notes[0], "there is no card to name"
+
+
+def test_with_no_card_the_attempts_are_still_capped_and_spread(tmp_path):
+    zones_ = [f"{region}-{letter}" for region in RECORDED for letter in "abc"]
+    ordering = choose(NoCard(zones_), PROJECT, accelerator=None,
+                      machine_type="n1-standard-8", regions=list(RECORDED),
+                      probe=lambda region: RECORDED[region],
+                      path=tmp_path / "latency.json")
+
+    assert len(ordering.zones) == zones.MAX_ATTEMPTS
+    assert [region_of(zone) for zone in ordering.zones[:5]] == [
+        "europe-west4", "europe-west1", "us-east1", "us-central1", "asia-northeast1"]

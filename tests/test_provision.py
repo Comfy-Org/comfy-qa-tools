@@ -77,6 +77,13 @@ def _builders() -> list:
             continue
         if name in ("is_windows", "root_for", "log_for"):
             continue          # predicates and paths, not commands
+        if name in ("torch_index", "_cpu_flag"):
+            # A URL and a flag: pieces of a command, not one. Left in, they
+            # are not checked — the two PowerShell rules below SKIP whatever
+            # carries no PowerShell — and a skip count that moved without
+            # anybody deciding it should is the thing to avoid. Both are pinned
+            # by name in the no-GPU tests at the end of this file.
+            continue
         extra = {p.name: _EXTRA_ARGUMENTS[p.name] for p in parameters
                  if p.name != "host" and p.default is inspect.Parameter.empty}
         found.append(pytest.param(
@@ -718,3 +725,117 @@ def test_no_windows_command_runs_the_boxs_powershell_profile(build):
         assert profile < runs, (
             f"PowerShell invocation {number} of {len(invocations)}: -NoProfile "
             "has to come before the command it is protecting")
+
+
+# --- a box with no GPU ---------------------------------------------------------
+#
+# ComfyUI started without `--cpu` on a machine with no CUDA device dies at
+# startup, and a CUDA torch on that machine is two gigabytes of runtime for a
+# card that is not there. Every assertion here has its pair on a GPU host,
+# because a rule keyed on the wrong thing would be right for one and silently
+# wrong for the other.
+
+WIN_CPU = Host(name="w", kind="gce", port=8190, os="Windows Server 2022", gpu="none",
+               gce_instance="w", gce_zone="us-central1-a", gce_project="proj")
+LINUX_CPU = Host(name="l", kind="gce", port=8191, os="Ubuntu 22.04", gpu="none",
+                 gce_instance="l", gce_zone="us-central1-a", gce_project="proj")
+NO_GPU_HOSTS = [WIN_CPU, LINUX_CPU]
+CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+
+
+def _launchers():
+    from comfy_qa.provision import launch_command, launch_detached_command
+
+    return [pytest.param(launch_command, id="foreground"),
+            pytest.param(launch_detached_command, id="detached")]
+
+
+@pytest.mark.parametrize("launch", _launchers())
+@pytest.mark.parametrize("host", NO_GPU_HOSTS, ids=["windows", "linux"])
+def test_comfyui_is_started_with_cpu_on_a_box_with_no_gpu(host, launch):
+    from comfy_qa.tunnel import COMFYUI_PORT
+
+    command = launch(host)
+    assert f"main.py --listen 127.0.0.1 --port {COMFYUI_PORT} --cpu" in command
+    assert command.count("--cpu") == 1
+
+
+@pytest.mark.parametrize("launch", _launchers())
+@pytest.mark.parametrize("host", ALL)
+def test_comfyui_is_not_started_with_cpu_on_a_box_that_has_a_card(host, launch):
+    assert "--cpu" not in launch(host)
+
+
+def test_the_liveness_check_still_finds_a_comfyui_started_with_cpu():
+    """`alive_command` matches the launch's own command line. `--cpu` goes on
+    the END of it, so the pattern the check looks for is still there."""
+    from comfy_qa.provision import alive_command, launch_detached_command
+
+    assert "[m]ain.py --listen" in alive_command(LINUX_CPU)
+    assert "main.py --listen" in launch_detached_command(LINUX_CPU)
+
+
+@pytest.mark.parametrize("host", NO_GPU_HOSTS, ids=["windows", "linux"])
+def test_a_box_with_no_gpu_is_ready_when_torch_imports(host):
+    """The verify for a GPU box asks whether torch can see the card, and on a
+    box with no card the honest answer is always no — which the caller reads as
+    "wrong torch, reinstall it". So this box is asked a question it can pass."""
+    from comfy_qa.provision import NO_TORCH, READY, TORCH_NO_CUDA, verify_command
+
+    command = verify_command(host)
+    assert TORCH_NO_CUDA not in command
+    assert "cuda" not in command.lower()
+    assert READY in command and NO_TORCH in command
+    assert "NO_COMFYUI" in command, "it still notices there is no checkout"
+
+
+@pytest.mark.parametrize("host", ALL)
+def test_a_box_with_a_card_is_still_asked_whether_torch_can_see_it(host):
+    from comfy_qa.provision import TORCH_NO_CUDA, verify_command
+
+    assert TORCH_NO_CUDA in verify_command(host)
+
+
+@pytest.mark.parametrize("host", NO_GPU_HOSTS, ids=["windows", "linux"])
+def test_a_box_with_no_gpu_installs_the_cpu_build_of_torch(host):
+    """Whatever index the caller hands over — including one for a CUDA the box
+    cannot have."""
+    for index in (None, CPU_INDEX, "https://download.pytorch.org/whl/cu128"):
+        command = install_command(host, index)
+        assert f"torch torchvision torchaudio --index-url {CPU_INDEX}" in command
+        assert "/whl/cu1" not in command
+
+
+@pytest.mark.parametrize("host", NO_GPU_HOSTS, ids=["windows", "linux"])
+def test_a_repair_on_a_box_with_no_gpu_installs_the_cpu_build_and_never_cuda(host):
+    from comfy_qa.provision import repair_command
+
+    for force in (False, True):
+        command = repair_command(host, force_torch=force,
+                                 index="https://download.pytorch.org/whl/cu128")
+        assert f"torch torchvision torchaudio --index-url {CPU_INDEX}" in command
+        assert "/whl/cu1" not in command
+        assert "requirements.txt" in command
+    assert "for this GPU" not in repair_command(WIN_CPU)
+
+
+def test_a_box_with_no_gpu_is_never_asked_for_its_cuda_version_by_the_install():
+    """`torch_index_for` reads `nvidia-smi`'s header. With no answer it falls
+    back to a CUDA index, which is the wrong fallback for this box — so the
+    index for a box is asked of the box's declaration first."""
+    from comfy_qa.provision import torch_index
+
+    assert torch_index(LINUX_CPU, None) == CPU_INDEX
+    assert torch_index(LINUX_CPU, "CUDA Version: 13.0") == CPU_INDEX
+    assert torch_index(LINUX, "CUDA Version: 13.0") == "https://download.pytorch.org/whl/cu130"
+    assert torch_index(LINUX, None) == "https://download.pytorch.org/whl/cu128"
+
+
+@pytest.mark.parametrize("launch", _launchers())
+@pytest.mark.parametrize("os_name", ["Windows Server 2022", "Ubuntu 22.04"])
+def test_a_box_that_does_not_say_what_card_it_has_is_not_forced_onto_its_cpu(os_name, launch):
+    """Saying nothing is not saying none. An entry with no `gpu` at all may be
+    a machine with a perfectly good card."""
+    unsaid = Host(name="h", kind="gce", port=8190, os=os_name, gpu=None)
+    assert "--cpu" not in launch(unsaid)
+    assert CPU_INDEX not in install_command(unsaid)

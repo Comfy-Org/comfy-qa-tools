@@ -23,6 +23,13 @@ it takes no name, and stops everything you have declared.
 - **Stopped**: only the disk. Cheap — cents per day — which is why keeping one box
   per OS and stopping the idle one is the right pattern rather than deleting and
   recreating.
+- **Reserved**: the machine type plus the GPU, per hour, **whether it is running
+  or stopped**, from the moment it is created until it is deleted. A box made
+  with `create --reserve` has its capacity held by Google, and that is what is
+  billed. Stopping it saves nothing. This is the one kind of box "stop it when
+  you stop testing" does not cover — see below.
+- **No GPU** (`create --gpu none`): the machine type alone, with no card on the
+  bill. The cheapest box this tool makes, and the slowest.
 - **Deleted**: nothing, but you also lose the ComfyUI install and the models on it.
 
 Prices vary by GPU, machine type and region and change over time, so this page does
@@ -34,6 +41,41 @@ gcloud compute machine-types describe <type> --zone <zone>
 ```
 
 and the pricing calculator: https://cloud.google.com/products/calculator
+
+## A reserved box is the exception to the one rule
+
+`comfy-qat down` does not stop a reserved box's bill, and neither does anything
+else short of deleting it. The tool says so every time it would otherwise have
+said "stop paying": `down` ends on `Stopped — but it is reserved, so it is still
+billing`, and `down --all` does not print `Nothing is now.` while a reserved
+box is declared or a reservation is on the project. `create --reserve`, `go` and
+`up` leave the box running, and `delete` refuses a running box, so they end on
+two steps: `comfy-qat down <name>`, labelled as the step that comes first and
+never as what stops the bill, and then `comfy-qat delete <name>`.
+
+```
+comfy-linux was running. Stopped — but it is reserved, so it is still billing.
+  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+```
+
+So reserve a box only for as long as you need the place held, and **delete it**
+when you are finished with it — `comfy-qat delete <name>` releases the
+reservation with the box. `comfy-qat list` shows which boxes are reserved.
+
+A reservation with **no box on it** bills exactly the same and is in no list of
+machines. Two commands name one, with the command that releases it:
+`comfy-qat list --live`, for every project a cloud box you have declared is on
+(and only when it could read that project's instances — it says so when it
+could not); and `comfy-qat down --all`, which also reads the project gcloud is
+pointed at when you have no cloud box declared at all. That second case is the
+one a `create --reserve` that stopped half-way leaves, so `down --all` is the
+command to end a session on.
+
+That a reservation bills for every hour it exists, used or not, is Google's
+published pricing for reservations. This tool has no way to measure it. The run
+on a real project on 2026-10-07 confirmed the quota side — a reservation holds
+its card against the project's allowance from the moment it is made, with its
+box running, stopped or absent — and could not observe the bill itself.
 
 ## Checking what you have spent
 
@@ -54,13 +96,15 @@ What the tool *can* answer is the question underneath — "am I still paying for
 anything":
 
 ```sh
-comfy-qat list --live      # what Google says is running, one call per box
+comfy-qat list --live      # what Google says is running and what is reserved
 comfy-qat down --all       # stop every cloud box you have declared
 ```
 
 `--live` is the honest check: without it, `list` reports only what this machine
-knows, which is whether a tunnel is open. A tunnel closed by a laptop reboot does
-not stop the box, and a box with no tunnel bills exactly the same.
+knows, which is whether a tunnel is open and what your host list says is
+reserved. A tunnel closed by a laptop reboot does not stop the box, and a box
+with no tunnel bills exactly the same. It is two calls per project — instances
+and reservations — however many boxes you have.
 
 ## Quota is not cost
 

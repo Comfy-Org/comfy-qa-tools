@@ -55,10 +55,10 @@ can build either Windows or Linux on it.
 
 | command | what it does |
 |---|---|
-| `comfy-qat create` | make a GPU box: `--os linux --gpu t4`. The card is the only real decision — the machine type follows from it and the zone is chosen, not typed. Leave `--os` or `--gpu` off and you are asked, at a terminal; in a script the same run refuses and names what to pass. `--name`, `--zone`, `--region`, `--disk`, `--yes`, `--dry-run` |
-| `comfy-qat discover` | find cloud boxes already on your project and add the missing ones. Never touches an entry you have edited. `--dry-run` |
+| `comfy-qat create` | make a box: `--os linux --gpu t4`. The card is the first real decision — the machine type follows from it and the zone is chosen, not typed — and `--gpu none` is a box with no GPU at all, which needs no GPU quota. The second is `--reserve`: Google holds the capacity and **bills for it every hour, running or stopped, until the box is deleted**; `--no-reserve` says no. Leave `--os` or `--gpu` off and you are asked, at a terminal; in a script the same run refuses and names what to pass. Leave `--reserve` off and you are asked too — or, with `--yes` or nobody to ask, the box is not reserved and the output says so. Reserved cards are counted against the project's GPU allowance from its own reservations, so a second GPU box is refused while a reservation holds the last card. `--name`, `--zone`, `--region`, `--disk`, `--yes`, `--dry-run` |
+| `comfy-qat discover` | find cloud boxes already on your project and add the missing ones. Never touches an entry you have edited. A box bound to a reservation is adopted **with** it, and you are told what it costs. `--prune` also removes entries whose box Google confirms is gone, asking first unless `--yes` — except a **reserved** box's entry, which is kept and named with `comfy-qat delete <name>`, because its reservation may still be billing. `--dry-run` |
 | `comfy-qat init` | write a starter host list you can edit by hand. `--force` |
-| `comfy-qat list` | every declared machine: what it is, where it answers, and what is up. `--live` asks Google whether each box is running, one call per box |
+| `comfy-qat list` | every declared machine: what it is, where it answers, what is up, and whether it is **RESERVED** — a reserved box bills stopped as well as running. Without `--live` nothing is asked of Google and RESERVED is what your host list says. `--live` asks: whether each box is running, whether its reservation is really there, how old it is (AGE) and how much disk it has (DISK) — two calls per project, not one per box — and names any reservation with no box on a project one of your declared boxes is on, with the command to release it. With no cloud box declared it asks Google nothing; `down --all` reads the project then |
 
 `setup` already runs `discover` for you, so on a project that has boxes you rarely
 type it. `init` is for the case where you want to write the file yourself.
@@ -70,8 +70,8 @@ type it. `init` is for the case where you want to write the file yourself.
 | `comfy-qat go <host>` | the one worth memorising: start the box, install ComfyUI if it has none, launch it **on the box**, forward a port, and hand your prompt back. `--follow` streams the log here instead and Ctrl-C then stops ComfyUI; `--new-window` runs the same command in a new macOS Terminal, `--follow` included only if you asked for it; `--no-browser`, `--no-install` |
 | `comfy-qat logs <host>` | read the ComfyUI log on the box. Follows by default, because "what is it doing now" is the question people have; `--tail N` prints that many lines and stops. Ctrl-C ends the reading and nothing else |
 | `comfy-qat stamp <host>` | ask a machine what it is, in one line you paste into a report. `--json` |
-| `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install` |
-| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money. `--all` stops every declared cloud box and takes no name |
+| `comfy-qat switch <host>` | go to that machine and stop the other one. The target comes up first, so a failure leaves you the box you were on. Stopping a **reserved** box frees neither its card nor its bill, and the plan says so; if reservations alone hold the project's GPU ceiling the switch is refused before anything is started or stopped. `--keep-others`, `--dry-run`, `--no-browser`, `--no-install` |
+| `comfy-qat down <host>` | close the tunnel and stop the machine, so it stops costing money — **except a reserved box, which goes on billing stopped**, and `down` says so and names `comfy-qat delete` as the only thing that ends it. `--all` stops every declared cloud box and takes no name; it reads the project's reservations before it says nothing is billing |
 | `comfy-qat disconnect <host>` | close the tunnel and **leave the machine running** — for a long generation you want to keep, or a laptop you are closing. It says the machine keeps billing, and how to stop it. This was `down --keep-running`, which has been removed |
 
 ## Onto the box itself
@@ -100,8 +100,8 @@ forwards in one step.
 
 | command | what it does |
 |---|---|
-| `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its ComfyUI install. Resumes a move that stopped part-way rather than restarting it, and reports what an earlier one left billing. `--to`, `--yes`, `--dry-run`, `--clean` |
-| `comfy-qat delete <host>` | **permanently** remove a box, its boot disk and the ComfyUI on it, and take its entry out of your host list. Takes an exact name — never a description — refuses a box that is not stopped, and asks you to type the name back. `--yes` |
+| `comfy-qat move <host>` | rebuild the box in a zone that has capacity, keeping its ComfyUI install. Resumes a move that stopped part-way rather than restarting it, and reports what an earlier one left billing. A **reserved** box is refused — a reservation is held in one zone — with the three commands that delete it and make it again elsewhere. `--to`, `--yes`, `--dry-run`, `--clean` |
+| `comfy-qat delete <host>` | **permanently** remove a box, its boot disk and the ComfyUI on it, and take its entry out of your host list. A reserved box's **reservation is released with it** — first, so a failure in between leaves a stopped box and not a reservation billing with nothing on it — and this is the only command that stops a reserved box's bill. Takes an exact name — never a description — refuses a box that is not stopped, and asks you to type the name back. `--yes` |
 
 `delete` is the only thing here that cannot be undone. A stopped box costs only
 its disk, so the everyday answer is `down`, not this; `delete` is for a box you

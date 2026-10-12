@@ -80,7 +80,17 @@ def choose(question: str, options: Sequence[str],
         # and for the same reason: the gap was counted by eye at the call site
         # once and was two columns out.
         row = f"  {index}. {option.ljust(width) if note else option}"
-        typer.echo(f"{row}   {note}".rstrip(), err=err)
+        if not note:
+            typer.echo(row, err=err)
+            continue
+        # A note is a sentence, and it is held to the width every other
+        # sentence here is. `say.wrapped` is the one wrapper: a note that fits
+        # comes out exactly as it did, and one that does not continues under
+        # its own first word rather than under the number — so a second line
+        # cannot be read as another option.
+        lead = f"{row}   "
+        for line in say.wrapped(note, first=lead, rest=" " * len(lead)):
+            typer.echo(line, err=err)
     while True:
         # `err=True` on the prompt as well as on the list. Click writes the
         # prompt to stdout unless told otherwise, so a question whose options
@@ -160,3 +170,51 @@ def settle(
     picked = choose(question, options, notes)
     say.detail(f"{label}: {picked}")
     return picked
+
+
+def decide(
+    flag: str,
+    value: bool | None,
+    *,
+    label: str,
+    question: str,
+    notes: Sequence[str],
+    default: bool,
+    ask_it: bool,
+    unasked: str,
+) -> bool:
+    """A yes-or-no choice: given by a flag, or asked, or defaulted out loud.
+
+    The sibling of `settle` for a choice that HAS a safe answer. `settle`
+    refuses when nobody is there, because no operating system and no card is a
+    box nobody described. Here a script that says nothing gets `default` —
+    and is TOLD so, in the transcript, on the line where the question would
+    have been. A default that is not printed is a decision nobody made.
+
+    `value` is the flag as Typer hands it over: True for `--reserve`, False
+    for `--no-reserve`, None for neither. Three states and they stay three —
+    `--no-reserve` is an answer, and reading it as "nothing was said" would
+    ask a question somebody has already answered.
+
+    `ask_it` is the caller's rule for when a question may be put, which is not
+    this module's to know: somebody has to be watching, and the command must
+    not have been told to stop asking.
+
+    `notes` are for "no" and then "yes", in that order — the order the menu
+    lists them in, with the answer that costs nothing first. `unasked` is the
+    parenthesis printed with a default: why nobody was asked, and which flag
+    would have said otherwise.
+    """
+    off = f"--no-{flag.removeprefix('--')}"
+    if value is not None:
+        # WHERE THE PROMPT WOULD HAVE BEEN, for `settle`'s reason: a scripted
+        # run and an interactive one then read alike.
+        say.detail(f"{label}: {'yes' if value else 'no'} "
+                   f"(from {flag if value else off})")
+        return value
+    if not ask_it:
+        say.detail(f"{label}: {'yes' if default else 'no'} ({unasked})")
+        return default
+    picked = choose(question, ["no", "yes"], notes)
+    say.detail(f"{label}: {picked}")
+    return picked == "yes"

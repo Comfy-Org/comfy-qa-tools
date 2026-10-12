@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from . import reservation as reservations
 from .config import COMFYUI_DEFAULT_PORT, Host
 
 # Where discovered hosts start. 8188 belongs to the local ComfyUI, and 8189 is a
@@ -43,6 +44,9 @@ class Discovered:
     gce_zone: str
     gce_project: str
     running: bool
+    # The reservation this box may only consume, by name. Empty for a box bound
+    # to none, which is every box nobody reserved.
+    reservation: str = ""
 
     @property
     def has_gpu(self) -> bool:
@@ -92,6 +96,9 @@ def parse(instance: dict, project: str) -> Discovered:
         # there — a box in STAGING read as "stopped" here, on the one command
         # whose job is telling you what exists in a project nothing recorded.
         running=(instance.get("status") != "TERMINATED"),
+        # Read off the instance's own record, so a box `create --reserve` made
+        # and one bound by hand in the console are adopted the same way.
+        reservation=reservations.bound_to(instance) or "",
     )
 
 
@@ -162,6 +169,9 @@ def clash_note(box: Discovered, label: str) -> str:
 
 def to_toml(box: Discovered, port: int) -> str:
     """One [hosts.name] block, written to be read by a person."""
+    # Only when there is one. `gce_reservation = ""` would be a declaration, and
+    # it would read as "reserved, under no name".
+    held = f'gce_reservation = "{box.reservation}"\n' if box.reservation else ""
     return (
         f"\n[hosts.{box.name}]\n"
         f'kind         = "gce"\n'
@@ -170,5 +180,6 @@ def to_toml(box: Discovered, port: int) -> str:
         f'gce_instance = "{box.gce_instance}"\n'
         f'gce_zone     = "{box.gce_zone}"\n'
         f'gce_project  = "{box.gce_project}"\n'
+        f"{held}"
         f"port         = {port}\n"
     )

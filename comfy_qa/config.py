@@ -119,6 +119,11 @@ KINDS: dict[str, MachineKind] = {
         name="gce",
         remote=True,
         requires=("os", "gpu", "gce_instance", "gce_zone", "gce_project"),
+        # The reservation holding this box's capacity, when it has one. It is
+        # something the box HAS, not part of what it IS: `identifies_by` below
+        # does not name it, so a reserved box and the same box with the line
+        # taken out are one machine.
+        accepts=("gce_reservation",),
         identifies_by=("gce_project", "gce_zone", "gce_instance"),
         in_words="instance {gce_instance!r} in {gce_zone} ({gce_project})",
         in_brief="{gce_instance} in {gce_zone}",
@@ -178,6 +183,16 @@ class Host:
         if value is not None:
             return value
         return dict(self.extra).get(field)
+
+    @property
+    def reservation(self) -> str | None:
+        """The reservation holding this box's capacity, or None if it has none.
+
+        A reserved box bills every hour, running or stopped, until it is
+        deleted — so this is the field every sentence about stopping the bill
+        has to read before it says `comfy-qat down`.
+        """
+        return self.declared("gce_reservation")
 
     @property
     def machine_id(self) -> tuple[str, ...] | None:
@@ -285,8 +300,57 @@ def _known_fields() -> frozenset[str]:
 
 # The three fields that say which cloud box an entry is. They are what `up`,
 # `open`, `down` and `move` operate on, so an entry carrying them is a machine
-# that costs money whatever its `kind` says.
-_CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project")
+# that costs money whatever its `kind` says. The fourth says its capacity is
+# reserved, which costs money whether or not the machine is even running.
+_CLOUD_FIELDS = ("gce_instance", "gce_zone", "gce_project", "gce_reservation")
+
+# How a host list says a box has no card. `discover` writes it for an instance
+# with no accelerator and `create --gpu none` writes it for one made that way.
+NO_GPU_WORD = "none"
+
+# Every spelling that means it. `cpu` is what `create --gpu` also takes and the
+# docs advertise; written by hand in a host file it used to read as a CARD
+# called "cpu" — a driver wait, a CUDA torch and no `--cpu` at launch. No card
+# is called that, so there is nothing for the second reading to be right about.
+NO_GPU_WORDS = frozenset({NO_GPU_WORD, "cpu"})
+
+
+def has_gpu(host) -> bool:
+    """Does this box have a GPU, as far as its host list entry says?
+
+    THE PREDICATE, because `"none"` is a non-empty string. `if host.gpu:` reads
+    a box declared to have no card as a box that has one, and each place that
+    asked it that way was its own defect: fifteen minutes waiting for
+    `nvidia-smi` on a machine with no NVIDIA hardware, a CUDA torch
+    force-installed on every `go`, and a box with no card counted as one card
+    against the project's GPU ceiling.
+
+    False for no declaration at all (`None`, `""`) and for `none` in any case.
+    Takes a `Host`, or the bare `gpu` word for a caller holding a record that is
+    not a host yet, or nothing.
+    """
+    declared = _declared_gpu(host)
+    return bool(declared) and declared not in NO_GPU_WORDS
+
+
+def declares_no_gpu(host) -> bool:
+    """Does the entry SAY the box has no GPU — the word `none`, in any case?
+
+    Not `not has_gpu(host)`. That is also True for an entry that says nothing
+    about its card, which is every local machine and any machine of a kind whose
+    entries need not name one — and such a machine may have a card. So "is
+    there a card to wait for" asks `has_gpu`, and anything that would actively
+    put a machine on its CPU asks this: launching ComfyUI with `--cpu` and
+    installing the CPU build of torch are things to do because a box was
+    declared to have no card, never because nobody wrote one down.
+    """
+    return _declared_gpu(host) in NO_GPU_WORDS
+
+
+def _declared_gpu(host) -> str:
+    """The `gpu` word, lowered and trimmed. Empty for none given or no host."""
+    declared = host if isinstance(host, str) else getattr(host, "gpu", None)
+    return (declared or "").strip().lower()
 
 # The one name this tool reserves. The starter host list teaches it, every
 # example uses it, and `comfy-qat stamp local` has exactly one obvious meaning.
@@ -719,7 +783,11 @@ def _check_os_is_not_a_typo(name: str, declared: str | None) -> None:
 
 def describe(host: Host) -> str:
     """How a host reads in a one-line answer: what it runs, and on what card."""
-    detail = ", ".join(part for part in (host.os, host.gpu) if part and part != "none")
+    # `has_gpu`, not `!= "none"`: that comparison was case-sensitive, so a box
+    # declared `gpu = "None"` read "Ubuntu 22.04, None" in the refusals that ask
+    # which machine was meant.
+    card = host.gpu if has_gpu(host) else None
+    detail = ", ".join(part for part in (host.os, card) if part)
     return detail or ("local install" if host.kind == "local" else host.kind)
 
 
@@ -738,9 +806,9 @@ def _matches_os(host: Host, keyword: str) -> bool:
 
 def _matches_gpu(host: Host, token: str) -> bool:
     """`a100` finds an `A100-80GB`, because nobody types the full SKU."""
-    declared = (host.gpu or "").lower()
-    if declared in ("", "none"):
+    if not has_gpu(host):
         return False
+    declared = (host.gpu or "").strip().lower()
     return declared == token or declared.startswith(token)
 
 
@@ -754,8 +822,8 @@ def _matching(hosts: list[Host], part: str) -> list[Host]:
 def _selector_for(host: Host) -> str:
     """The shortest description that would have picked this host on its own."""
     parts = [word for word in _BY_SPECIFICITY if _matches_os(host, word)][:1]
-    if host.gpu and host.gpu.lower() != "none":
-        parts.append(host.gpu.lower())
+    if has_gpu(host):
+        parts.append(host.gpu.strip().lower())
     return SEPARATOR.join(parts) or host.name
 
 
@@ -853,7 +921,7 @@ def _inventory(hosts: list[Host]) -> str:
 
 
 def _cards(hosts: list[Host]) -> str:
-    cards = sorted({h.gpu for h in hosts if h.gpu and h.gpu.lower() != "none"})
+    cards = sorted({h.gpu for h in hosts if has_gpu(h)})
     return ", ".join(card.lower() for card in cards) or "none declared"
 
 

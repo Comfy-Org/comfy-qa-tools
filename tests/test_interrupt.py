@@ -550,6 +550,96 @@ def test_the_probe_start_inside_move_is_registered_like_any_other(
     assert "comfy-qat down comfy-win" in output, output
 
 
+# --- Ctrl-C while a reserved box is being made --------------------------------
+#
+# A reserved create is two calls — the reservation, then the box bound to it —
+# and the moment between them is the one moment nothing else in this tool knows
+# a reservation exists: it is on the project, it is billing at the card's rate,
+# there is no box, and there is no host list entry. An interrupt there that
+# reported only "Aborted" would leave it billing until somebody happened to
+# look in the console.
+#
+# The registration stays open across both calls for exactly that reason. These
+# go through `cli.main` with the create tests' fake project, so what is checked
+# is what reaches the terminal.
+
+
+def _create_interrupted_at(run_main, monkeypatch, tmp_path, call, *flags):
+    """`create`, with Ctrl-C arriving inside one named gcloud call."""
+    from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import zones as zones_module
+
+    import test_create_cli as fixtures
+
+    class Interrupted(fixtures.FakeGcloud):
+        pass
+
+    def interrupt(self, *args, **kwargs):
+        self.calls.append(call)
+        raise KeyboardInterrupt
+
+    setattr(Interrupted, call, interrupt)
+    cloud = Interrupted()
+    path = tmp_path / "hosts.toml"
+    path.write_text(fixtures.HOSTS, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    monkeypatch.setattr(zones_module, "_connect",
+                        lambda region, timeout=None: fixtures.LATENCY.get(region, 500.0))
+    code, output = run_main(["create", "--os", "linux", "--gpu", "l4", *flags,
+                             "--yes", "--config", str(path)])
+    return code, output, cloud, path.read_text(encoding="utf-8"), fixtures
+
+
+def test_ctrl_c_between_the_reservation_and_the_box_reports_the_reservation(
+        run_main, monkeypatch, tmp_path):
+    """The reservation was made and the box was not. The report names it, says
+    it bills with or without a box, and hands over Google's own command to
+    release it — in the zone the attempt was actually in."""
+    code, output, cloud, hosts, fixtures = _create_interrupted_at(
+        run_main, monkeypatch, tmp_path, "create_instance_from_image", "--reserve")
+
+    assert code == 130
+    assert cloud.calls[-2:] == ["create_reservation", "create_instance_from_image"]
+    assert len(cloud._reservations) == 1, "the reservation it must report is real"
+    report = output[output.index("creating comfy-linux on it"):]
+    assert "the reservation comfy-linux-rsv in europe-west4-a" in report
+    assert "it bills until deleted, with or without a box" in report
+    assert (f"gcloud compute reservations delete comfy-linux-rsv "
+            f"--zone=europe-west4-a --project={fixtures.PROJECT}") in report
+    # And the box it was in the middle of making, which may exist too.
+    assert "the instance comfy-linux in europe-west4-a" in report
+    assert hosts == fixtures.HOSTS, "an interrupted create wrote a host list entry"
+
+
+def test_ctrl_c_inside_the_reservation_call_itself_still_reports_it(
+        run_main, monkeypatch, tmp_path):
+    """The request reaches Google before the interrupt reaches gcloud, so a
+    reservation interrupted while being made may have been made. Reported as
+    something that MAY exist — and the box, which was never asked for, is not."""
+    code, output, cloud, _hosts, fixtures = _create_interrupted_at(
+        run_main, monkeypatch, tmp_path, "create_reservation", "--reserve")
+
+    assert code == 130
+    assert "create_instance_from_image" not in cloud.calls
+    report = output[output.index("reserving comfy-linux-rsv"):]
+    assert "this may exist and be billing:" in report
+    assert "the reservation comfy-linux-rsv in europe-west4-a" in report
+    assert "gcloud compute reservations delete comfy-linux-rsv" in report
+    assert "the instance comfy-linux" not in report
+
+
+def test_ctrl_c_making_an_ordinary_box_reports_no_reservation(
+        run_main, monkeypatch, tmp_path):
+    """The control: the reservation is reported because there is one."""
+    code, output, cloud, _hosts, _fixtures = _create_interrupted_at(
+        run_main, monkeypatch, tmp_path, "create_instance_from_image")
+
+    assert code == 130
+    assert "create_reservation" not in cloud.calls
+    assert "the instance comfy-linux in europe-west4-a" in output
+    assert "reservation" not in output[output.index("trying europe-west4-a"):]
+
+
 def test_a_command_that_finishes_is_untouched_by_any_of_this(run_main, tmp_path):
     """The record must be invisible on every path but one."""
     path = tmp_path / "hosts.toml"

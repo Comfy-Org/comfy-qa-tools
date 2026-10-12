@@ -11,7 +11,9 @@ Two stand-ins let the whole path run in a test:
 `FakeGcloud` implements the same methods as `Gcloud` and is scripted per test. It
 keeps the box's state — a machine that has been started is RUNNING afterwards, a
 machine that has been installed onto answers INSTALLED — so a flow that skips a
-step fails here the way it would fail on a real box.
+step fails here the way it would fail on a real box. It keeps a reservation's
+state the same way: one that was made is listed until it is released, and a flow
+that forgets to release it leaves it there to be found.
 
 `FakeComfyUI` is a real HTTP server on a real ephemeral port. Nothing is patched
 out of the readiness probe or of `stamp.fetch`: they open real sockets and parse
@@ -32,7 +34,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from comfy_qa.gcloud import GcloudError
+from comfy_qa.gcloud import NOT_FOUND, GcloudError
 
 # ---------------------------------------------------------------- the cloud
 
@@ -85,6 +87,14 @@ class FakeGcloud:
         disks=(),
         snapshots=(),
         instances=(),
+        # The reservations the project starts with, as `reservations list`
+        # rows — or an exception (or a callable) to script the READ itself,
+        # because a listing that raises and a listing that is empty are the two
+        # cases the reservation limit treats differently.
+        reservations=(),
+        # What making and releasing a reservation do instead of succeeding.
+        reserve=None,
+        release=None,
     ) -> None:
         # `relocate.survey` lists disks, snapshots and instances before touching
         # anything — that read is what turns up the leftovers a half-finished
@@ -92,6 +102,12 @@ class FakeGcloud:
         self.disks = list(disks)
         self.snapshots = list(snapshots)
         self.instances = list(instances)
+        scripted = isinstance(reservations, BaseException) or callable(reservations)
+        self.reservations = [] if scripted else list(reservations)
+        self.reservations_read = reservations if scripted else None
+        self.reserve = reserve
+        self.release = release
+        self.reserved_with = None
         self.statuses = list(statuses)
         self.installed = installed
         self.start = start
@@ -253,6 +269,123 @@ class FakeGcloud:
         self.created_with = network
         _resolve(self.create_instance)
 
+    # --- reservations: state, not canned answers --------------------------
+    #
+    # The record shapes follow the SDK's API schema (`specificReservation.count`,
+    # `.inUseCount`, `.instanceProperties`; an instance's `reservationAffinity`).
+    # They are NOT copied from a live payload.
+
+    def list_reservations(self, project: str) -> list[dict]:
+        self.calls.append(("list_reservations", project))
+        if self.reservations_read is not None:
+            return _resolve(self.reservations_read)
+        return list(self.reservations)
+
+    def _reserved(self, name: str, zone: str) -> list[dict]:
+        return [row for row in self.reservations
+                if row.get("name") == name and _zone_tail(row) == zone]
+
+    def reservation_absent(self, name: str, zone: str, project: str) -> bool:
+        self.calls.append(("reservation_absent", name, zone, project))
+        return not self._reserved(name, zone)
+
+    def hold(self, name: str, zone: str, project: str, *, machine_type: str,
+             accelerator: str | None = None, description: str = "") -> dict:
+        """Put a reservation on the project without it counting as a call.
+
+        What `create_reservation` does once it has not been told to fail — and
+        what a test uses to script an answer that was LOST: `reserve=` raises,
+        and the reservation is there anyway.
+
+        `inUseCount` is left out until a box consumes it. Google omits fields,
+        and "not reported" is the harder of the two shapes for a caller to get
+        right, so it is the one a reservation made here starts in.
+        """
+        properties: dict = {"machineType": machine_type}
+        if accelerator:
+            fields = dict(part.split("=", 1) for part in accelerator.split(","))
+            properties["guestAccelerators"] = [{
+                "acceleratorType": fields["type"],
+                "acceleratorCount": int(fields.get("count", 1)),
+            }]
+        row = {
+            "name": name,
+            "zone": _zone_url(project, zone),
+            "status": "READY",
+            "specificReservationRequired": True,
+            "description": description,
+            "creationTimestamp": "2026-10-05T09:00:00.000-07:00",
+            "specificReservation": {"count": "1", "instanceProperties": properties},
+        }
+        self.reservations.append(row)
+        return row
+
+    def create_reservation(self, name: str, zone: str, project: str, *,
+                           machine_type: str, accelerator: str | None = None,
+                           description: str = "") -> None:
+        self.calls.append(("create_reservation", name, zone, project))
+        self.reserved_with = {"machine_type": machine_type,
+                              "accelerator": accelerator,
+                              "description": description}
+        _resolve(self.reserve)
+        self.hold(name, zone, project, machine_type=machine_type,
+                  accelerator=accelerator, description=description)
+
+    def delete_reservation(self, name: str, zone: str, project: str) -> None:
+        self.calls.append(("delete_reservation", name, zone, project))
+        _resolve(self.release)
+        found = self._reserved(name, zone)
+        if not found:
+            # Releasing twice, or releasing the wrong name, is refused at Google
+            # too. A fake that shrugged would let both pass.
+            raise _not_found(f"projects/{project}/zones/{zone}/reservations/{name}")
+        for row in found:
+            self.reservations.remove(row)
+
+    def create_instance_from_image(self, name: str, zone: str, project: str,
+                                   **kwargs) -> None:
+        """A new box. `kwargs` is everything else the real call takes, recorded
+        as `created_with` — `reservation=` above all.
+
+        A box bound to a reservation needs that reservation to exist ALREADY, in
+        the SAME zone, and is refused otherwise. That refusal is not read from
+        Google; it is here so that "reservation first, same zone" is something
+        a test of the create flow can fail on.
+        """
+        self.calls.append(("create_instance_from_image", name, zone, project))
+        self.created_with = kwargs
+        _resolve(self.create_instance)
+        row = {
+            "name": name,
+            "zone": _zone_url(project, zone),
+            "status": "RUNNING",
+            "machineType": f"{_zone_url(project, zone)}/machineTypes/"
+                           f"{kwargs.get('machine_type', '')}",
+            "creationTimestamp": "2026-10-05T09:01:00.000-07:00",
+        }
+        accelerator = kwargs.get("accelerator")
+        if accelerator:
+            fields = dict(part.split("=", 1) for part in accelerator.split(","))
+            row["guestAccelerators"] = [{
+                "acceleratorType": f"{_zone_url(project, zone)}/acceleratorTypes/"
+                                   f"{fields['type']}",
+                "acceleratorCount": int(fields.get("count", 1)),
+            }]
+        reservation = kwargs.get("reservation")
+        if reservation:
+            held = self._reserved(reservation, zone)
+            if not held:
+                raise _not_found(
+                    f"projects/{project}/zones/{zone}/reservations/{reservation}")
+            held[0]["specificReservation"]["inUseCount"] = "1"
+            row["reservationAffinity"] = {
+                "consumeReservationType": "SPECIFIC_RESERVATION",
+                "key": "compute.googleapis.com/reservation-name",
+                "values": [reservation],
+            }
+        self.instances.append(row)
+        self.running_now = True
+
     # --- what a test asks it ---------------------------------------------
 
     def remote_commands_joined(self) -> str:
@@ -263,6 +396,22 @@ class FakeGcloud:
 
     def count(self, verb: str) -> int:
         return sum(1 for call in self.calls if call[0] == verb)
+
+
+def _zone_url(project: str, zone: str) -> str:
+    return f"https://www.googleapis.com/compute/v1/projects/{project}/zones/{zone}"
+
+
+def _zone_tail(row: dict) -> str:
+    return str(row.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+def _not_found(resource: str) -> GcloudError:
+    """Google's own not-found sentence about one resource, as `gcloud` raises it."""
+    raw = ("ERROR: (gcloud.compute) Could not fetch resource:\n"
+           f" - The resource '{resource}' was not found\n")
+    return GcloudError(f"Could not fetch resource: The resource '{resource}' "
+                       f"was not found", raw=raw, kind=NOT_FOUND)
 
 
 # ------------------------------------------------------------- the ComfyUI

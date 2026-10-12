@@ -85,6 +85,66 @@ def test_every_command_has_a_row_in_the_command_reference(command):
     )
 
 
+def _options_of(command: str) -> list[str]:
+    """Every option a command takes, by the spelling a person types.
+
+    Read off the click command rather than out of `--help`, which is wrapped to
+    a terminal width. Hidden options are left out — `--config` is declared once
+    at the root and documented there — and so is `--help`.
+    """
+    import typer
+
+    node = typer.main.get_command(app)
+    for word in command.split():
+        node = node.commands[word]  # type: ignore[attr-defined]
+    found = []
+    for param in node.params:
+        if getattr(param, "hidden", False) or not getattr(param, "opts", None):
+            continue
+        found += [opt for opt in [*param.opts, *param.secondary_opts]
+                  if opt.startswith("--") and opt != "--help"]
+    return found
+
+
+def _row_for(command: str) -> str:
+    rows = [line for line in COMMANDS_PAGE.read_text().splitlines()
+            if line.lstrip().startswith(f"| `comfy-qat {command}")]
+    assert rows, f"docs/commands.md has no row that opens with `comfy-qat {command}`"
+    return rows[0]
+
+
+# The commands whose every flag has to be named in their own row. `create`
+# first, because a flag that changes what a box COSTS is not one to learn about
+# from `--help`; the rest are the commands a reserved box changed the meaning
+# of. Not every command — several rows describe their flags in prose without
+# spelling them, and this is a floor to build on, not a claim that those are
+# fine.
+FLAGS_IN_THE_ROW = ("create", "list", "delete", "down", "move", "switch", "discover")
+
+
+@pytest.mark.parametrize("command", FLAGS_IN_THE_ROW)
+def test_every_flag_of_these_commands_is_named_in_its_row(command):
+    """In the ROW, not on the page. `--reserve` appearing in a paragraph about
+    reserved boxes says the word exists; in `create`'s row it says `create`
+    takes it, which is where somebody choosing a command reads."""
+    row = _row_for(command)
+    missing = [flag for flag in _options_of(command) if f"`{flag}`" not in row]
+
+    assert not missing, (
+        f"`comfy-qat {command}` takes {', '.join(missing)} and its row in "
+        f"docs/commands.md does not name "
+        f"{'it' if len(missing) == 1 else 'them'}")
+
+
+def test_the_flags_are_really_read_off_the_commands():
+    """Non-vacuity for the check above: an option walk that found nothing
+    would pass every row."""
+    create = _options_of("create")
+    assert {"--os", "--gpu", "--reserve", "--no-reserve", "--dry-run"} <= set(create), create
+    assert "--config" not in create, "a hidden option is not one a row has to name"
+    assert _options_of("list") == ["--live"]
+
+
 def _pack_shell() -> str:
     """Everything the acceptance pack tells a tester to type.
 

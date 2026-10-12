@@ -2151,6 +2151,32 @@ def cpu_allowance(machine_type: str, quotas: list[dict], *,
     return best
 
 
+def cpu_regions(machine_type: str, quotas: list[dict], needed: int) -> list[str]:
+    """Regions whose CPU allowance has room for `needed` vCPU of this machine.
+
+    The CPU counterpart of `regions_with_quota`, for a box with no GPU, whose
+    placement is decided by this and nothing about any card. Empty when the
+    project reports no CPU quota for the machine at all — which the caller must
+    read as "not known", not as "nowhere".
+
+    A LIMIT, like everything else read from these records: a region is here
+    when the project MAY hold that many vCPU in it, not when that many are
+    free. Asked through `meets`, so an unlimited pool has room for anything.
+    """
+    target = cpu_target(machine_type, quotas)
+    if target is None:
+        return []
+    places: set[str] = set()
+    for row in _cpu_rows(target.quota_id, quotas):
+        named = list(row.locations) or (
+            [row.where] if not spans_many(row.where) and row.where != "global"
+            else [])
+        places |= {_region_name(place) for place in named
+                   if place and place != "global"}
+    return sorted(region for region in places
+                  if meets(cpu_allowance(machine_type, quotas, region=region), needed))
+
+
 def cpu_ceiling(quotas: list[dict]) -> int | None:
     """`CPUS-ALL-REGIONS-per-project` — 32 here, which no H100 can ever fit."""
     best: int | None = None

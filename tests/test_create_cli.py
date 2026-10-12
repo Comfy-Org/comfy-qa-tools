@@ -51,8 +51,20 @@ STOCKOUT = (
     "zone. Consider trying your request in the europe-west4-b zone.\n"
 )
 
+# What a box with no GPU is checked against: vCPU, per region and project-wide.
+# A FIXTURE in the shape `tests/test_setup_quota.py` records for this project —
+# 200 in a region, 32 across all of them.
+CPU_QUOTAS = [
+    {"quotaId": "CPUS-per-project-region",
+     "dimensionsInfos": [{"details": {"value": "200"}, "applicableLocations": REGIONS}]},
+    {"quotaId": "CPUS-ALL-REGIONS-per-project",
+     "dimensionsInfos": [{"details": {"value": "32"}, "applicableLocations": []}]},
+]
+
 # Every gcloud call that costs money if it succeeds. A dry run may make none.
-BILLABLE = {"create_instance_from_image"}
+# A reservation bills from the moment it is made, with or without a box on it,
+# so making one is as billable as making the box.
+BILLABLE = {"create_instance_from_image", "create_reservation"}
 
 
 class FakeGcloud:
@@ -65,15 +77,31 @@ class FakeGcloud:
     """
 
     def __init__(self, *, project=PROJECT, quotas=None, instances=(),
-                 accelerators=None, machines=None, refuse=None):
+                 accelerators=None, machines=None, refuse=None,
+                 reservations=(), refuse_reserve=None, compute=None):
         self._project = project
         self._quotas = QUOTAS if quotas is None else list(quotas)
         self._instances = list(instances)
         self._accelerators = ([{"name": "nvidia-l4", "zone": zone} for zone in ZONES]
                               if accelerators is None else list(accelerators))
-        self._machines = ([{"name": "g2-standard-8", "zone": f"{URL}/zones/{zone}"}
+        # The L4's machine and the one a box with no GPU is made on. Every
+        # read of this is filtered by name, so the second costs the first nothing.
+        self._machines = ([{"name": name, "zone": f"{URL}/zones/{zone}"}
+                           for name in ("g2-standard-8", "n1-standard-8")
                            for zone in ZONES] if machines is None else list(machines))
         self.refuse = dict(refuse or {})
+        # RESERVATIONS ARE STATE, not a canned answer: one that is made is
+        # listed until it is released, so a flow that forgets the release
+        # leaves it here to be found. An exception in place of the rows scripts
+        # the READ failing — which is not the same event as a read that came
+        # back empty, and `create` treats the two differently.
+        self._reservations_read = (reservations
+                                   if isinstance(reservations, BaseException) else None)
+        self._reservations = ([] if self._reservations_read is not None
+                              else list(reservations))
+        self.refuse_reserve = dict(refuse_reserve or {})
+        self._compute = CPU_QUOTAS if compute is None else list(compute)
+        self.reserved_with: dict | None = None
         self.calls: list[str] = []
 
     def current_project(self):
@@ -109,6 +137,73 @@ class FakeGcloud:
         problem = self.refuse.get(zone)
         if problem is not None:
             raise GcloudError("Could not fetch resource", raw=problem)
+        # The box exists from here, and is on the project the next time it is
+        # listed — bound to its reservation if it was made on one. A bound box
+        # whose reservation is not already there IN THAT ZONE is refused: not
+        # read off Google, and here so that "reservation first, same zone" is
+        # something a test of this command can fail on.
+        row = {"name": name, "zone": f"{URL}/zones/{zone}", "status": "RUNNING"}
+        if kwargs.get("accelerator"):
+            row["guestAccelerators"] = [{"acceleratorType": kwargs["accelerator"],
+                                         "acceleratorCount": 1}]
+        held = kwargs.get("reservation")
+        if held:
+            if not self._held(held, zone):
+                raise GcloudError(f"The resource 'reservations/{held}' was not found")
+            row["reservationAffinity"] = {
+                "consumeReservationType": "SPECIFIC_RESERVATION",
+                "key": "compute.googleapis.com/reservation-name", "values": [held]}
+        self._instances.append(row)
+
+    # --- reservations ------------------------------------------------------
+
+    def _held(self, name, zone):
+        return [row for row in self._reservations if row.get("name") == name
+                and str(row.get("zone") or "").rsplit("/", 1)[-1] == zone]
+
+    def list_reservations(self, project):
+        self.calls.append("list_reservations")
+        if self._reservations_read is not None:
+            raise self._reservations_read
+        return list(self._reservations)
+
+    def create_reservation(self, name, zone, project, *, machine_type,
+                           accelerator=None, description=""):
+        self.calls.append("create_reservation")
+        self.reserved_with = {"name": name, "zone": zone,
+                              "machine_type": machine_type,
+                              "accelerator": accelerator, "description": description}
+        problem = self.refuse_reserve.get(zone)
+        if problem is not None:
+            raise GcloudError("Could not fetch resource", raw=problem)
+        self._reservations.append(reservation_row(
+            name, zone, machine_type=machine_type, accelerator=accelerator,
+            description=description))
+
+    def delete_reservation(self, name, zone, project):
+        self.calls.append("delete_reservation")
+        for row in self._held(name, zone):
+            self._reservations.remove(row)
+
+    def reservation_absent(self, name, zone, project):
+        self.calls.append("reservation_absent")
+        return not self._held(name, zone)
+
+    def confirms_absent(self, name, zone, project):
+        self.calls.append("confirms_absent")
+        return not any(row.get("name") == name for row in self._instances)
+
+    # --- a box with no GPU -------------------------------------------------
+
+    def compute_quotas(self, project):
+        """Every compute quota record, which is where CPU quota lives.
+        `gpu_quotas` is this list filtered down to the GPU rows."""
+        self.calls.append("compute_quotas")
+        return list(self._compute)
+
+    def machine_type_zones(self, project, name):
+        self.calls.append("machine_type_zones")
+        return [entry for entry in self._machines if entry["name"] == name]
 
     def quota_preferences(self, project):
         """`create` reads these to know where a card has already been refused, so
@@ -130,6 +225,26 @@ class FakeGcloud:
         if item.startswith("_"):
             raise AttributeError(item)
         raise AssertionError(f"create asked the fake for {item!r}")
+
+
+def reservation_row(name, zone, *, machine_type="g2-standard-8", accelerator=None,
+                    description="", in_use=None, count="1"):
+    """One `reservations list` row. A FIXTURE in the SDK schema's shape —
+    `specificReservation.count`, `.inUseCount`, `.instanceProperties` — and not
+    a recorded live payload. `inUseCount` is left out unless given, because
+    Google omits fields and "not reported" is the harder shape to get right."""
+    properties: dict = {"machineType": machine_type}
+    if accelerator:
+        fields = dict(part.split("=", 1) for part in accelerator.split(","))
+        properties["guestAccelerators"] = [{
+            "acceleratorType": fields["type"],
+            "acceleratorCount": int(fields.get("count", 1))}]
+    specific: dict = {"count": count, "instanceProperties": properties}
+    if in_use is not None:
+        specific["inUseCount"] = in_use
+    return {"name": name, "zone": f"{URL}/zones/{zone}", "status": "READY",
+            "specificReservationRequired": True, "description": description,
+            "specificReservation": specific}
 
 
 @pytest.fixture(autouse=True)

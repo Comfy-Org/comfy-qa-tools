@@ -201,6 +201,25 @@ def test_the_changelog_names_the_version_that_ships():
     )
 
 
+def test_the_readme_names_the_version_that_ships():
+    """The README's Status section opens with a version number in bold, and it
+    said 1.1.0 for a release after it stopped being true. Nothing read it.
+
+    Held to the row that claims it — the first bold run under `## Status` — not
+    to the file: `1.1.0` still appears further down, correctly, in the sentence
+    about when the old spellings went.
+    """
+    text = (ROOT / "README.md").read_text()
+    status = text.split("\n## Status\n", 1)[1].split("\n## ", 1)[0]
+    claimed = re.search(r"\*\*(\d+\.\d+\.\d+)\.", status)
+
+    assert claimed, "the README's Status section no longer opens with a version"
+    assert claimed.group(1) == declared_version(), (
+        f"the README says {claimed.group(1)}, and this builds as "
+        f"{declared_version()}"
+    )
+
+
 def _plain(text: str) -> str:
     """Help output as words, with the box drawing and the wrapping taken out.
 

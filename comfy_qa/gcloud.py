@@ -146,6 +146,12 @@ ELSEWHERE = "ELSEWHERE"
 # host is not a Google instance it arrives here as `(None, None, None)`.
 UNADDRESSABLE = "UNADDRESSABLE"
 
+# Google answered — or nobody asked — and nothing was said about the machine's
+# state. Deliberately NOT a state name; see `Gcloud.UNKNOWN_STATE`, which is this
+# same word. At module level for the reason `GONE` is: `statuses_from` is a
+# function and not a method, and has no class to read it off.
+UNKNOWN_STATE = ""
+
 # Ordered: the first match wins, so the specific signs come before the vague
 # ones. "reauthentication" is checked before anything else because gcloud wraps
 # it inside a generic "problem refreshing your current auth tokens" sentence that
@@ -900,34 +906,10 @@ class Gcloud:
         neither `GONE` nor a state, and the host simply stops being reconciled
         with nothing saying so.
         """
-        out: dict[tuple[str | None, str | None, str | None], str] = {}
-        askable = []
-        for key in wanted:
-            if all(isinstance(part, str) and part for part in key):
-                askable.append(key)
-            else:
-                out[key] = UNADDRESSABLE
-        for project in dict.fromkeys(project for _n, _z, project in askable):
-            found = {}
-            # Every name the project holds, whatever zone it holds it in. This is
-            # what "the project does not have it" is decided against; `found` only
-            # decides whether it is where the entry says.
-            on_the_project: set[str] = set()
-            for instance in self.list_instances(project):
-                zone = (instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
-                name = instance.get("name") or ""
-                on_the_project.add(name)
-                found[(name, zone)] = (
-                    instance.get("status") or self.UNKNOWN_STATE)
-            for name, zone, owner in askable:
-                if owner != project:
-                    continue
-                if (name, zone) in found:
-                    out[(name, zone, owner)] = found[(name, zone)]
-                else:
-                    out[(name, zone, owner)] = (
-                        ELSEWHERE if name in on_the_project else self.GONE)
-        return out
+        askable = [key for key in wanted if _addressable(key)]
+        listings = {project: self.list_instances(project)
+                    for project in dict.fromkeys(project for _n, _z, project in askable)}
+        return statuses_from(wanted, listings)
 
     #: What `instance_status` returns when Google answered but said nothing about
     #: the machine's state. It is deliberately NOT a state name: callers compare
@@ -935,7 +917,7 @@ class Gcloud:
     #: treated as a real transitional state — so a describe that came back empty
     #: was reported as "the machine is unknown — it started, and it is billing",
     #: asserting a bill on no evidence at all.
-    UNKNOWN_STATE = ""
+    UNKNOWN_STATE = UNKNOWN_STATE
     GONE = GONE
     ELSEWHERE = ELSEWHERE
     UNADDRESSABLE = UNADDRESSABLE
@@ -1028,6 +1010,111 @@ class Gcloud:
                 kind=NOT_FOUND,
             ) from exc
         return False
+
+    def list_reservations(self, project: str) -> list[dict]:
+        """Every reservation on the project, across all zones.
+
+        A reservation holds its cards — and bills for them — whether or not a
+        box is using it, and whether or not this tool made it. So the limit is
+        counted from this listing and never from the host list: one made in the
+        console, or left by a create that died half-way, is here and nowhere
+        else.
+
+        NOT `... or []`, for the reason spelled out on `list_instances`: an
+        exit 0 that printed nothing is a reply that never arrived, and
+        `gcloud compute reservations list` prints `[]` for a project that holds
+        none. Reading the first as the second says "nothing is reserved" on no
+        evidence, and the caller that hears it goes on to reserve — past a
+        limit nobody counted.
+        """
+        answer = self.run([
+            "compute", "reservations", "list", f"--project={project}",
+        ])
+        if answer is None:
+            raise GcloudError(
+                f"gcloud listed the reservations on {project} and printed nothing "
+                f"at all, so what that project has reserved was not established",
+                fix=f"run it yourself and see: gcloud compute reservations list "
+                    f"--project={project}",
+            )
+        return answer
+
+    def reservation_absent(self, name: str, zone: str, project: str) -> bool:
+        """Ask Google about ONE reservation; True only to a flat not-found about it.
+
+        `confirms_absent`, for a reservation, and the three outcomes stay three
+        for the same reason they do there:
+
+          True    Google answered and says there is no such reservation in that
+                  zone.
+          False   it answered and described one.
+          raises  nobody established anything — denied, timed out, no network,
+                  or a not-found about the zone or the project it would be in.
+
+        What rides on it is money rather than a host entry. `delete` reads True
+        as "already released" and carries on to remove the box; a mistyped
+        `gce_zone` answered that way would leave the reservation billing with
+        nothing left that names it. So, exactly as for an instance, the
+        resource path in Google's own sentence has to be THIS reservation's.
+        """
+        try:
+            self.run([
+                "compute", "reservations", "describe", name,
+                f"--zone={zone}", f"--project={project}",
+            ])
+        except GcloudError as exc:
+            if exc.kind != NOT_FOUND:
+                raise
+            missing = _missing_resource(exc.raw)
+            if missing.lower().endswith(f"/zones/{zone}/reservations/{name}".lower()):
+                return True
+            raise GcloudError(
+                f"Google says {missing or 'something larger'} does not exist, "
+                f"which is not a statement about the reservation inside it",
+                fix=f"see what the project holds: gcloud compute reservations "
+                    f"list --project={project}",
+                kind=NOT_FOUND,
+            ) from exc
+        return False
+
+    def create_reservation(
+        self, name: str, zone: str, project: str, *, machine_type: str,
+        accelerator: str | None = None, description: str = "",
+    ) -> None:
+        """Have Google hold the capacity for one machine. From here it bills.
+
+        A reservation bills at the machine's full rate from this call until it
+        is deleted, with or without a box on it — which is why it goes through
+        the same credential gate as starting one.
+
+        Always one VM, and always `--require-specific-reservation`: without it
+        ANY matching box on the project may consume the capacity, and the box
+        this was made for finds it taken.
+
+        `accelerator` follows `create_instance_from_image`: the `--accelerator`
+        value for a card that is attached, None for one built into the machine
+        type.
+        """
+        self._ready_for(project)
+        args = [
+            "compute", "reservations", "create", name,
+            f"--zone={zone}", f"--project={project}",
+            "--vm-count=1",
+            f"--machine-type={machine_type}",
+            "--require-specific-reservation",
+        ]
+        if accelerator:
+            args.append(f"--accelerator={accelerator}")
+        if description:
+            args.append(f"--description={description}")
+        self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
+
+    def delete_reservation(self, name: str, zone: str, project: str) -> None:
+        """Release a reservation. This, and nothing else, is what stops its bill."""
+        self.run([
+            "compute", "reservations", "delete", name,
+            f"--zone={zone}", f"--project={project}", "--quiet",
+        ], parse_json=False, timeout=INSTANCE_TIMEOUT)
 
     def start_instance(self, name: str, zone: str, project: str) -> None:
         # From here on the project is being charged. Everything below this line
@@ -1290,11 +1377,27 @@ class Gcloud:
             f"--filter=name={name}",
         ]) or []
 
+    def machine_type_zones(self, project: str, name: str) -> list[dict]:
+        """Every zone that offers one machine type — one row per zone.
+
+        `machine_types` asks about zones it is handed, which are the zones that
+        offer the CARD. A box with no GPU has no card to start from, so this
+        asks the other way round: no `--zones`, and the zones are the answer.
+
+        Filtered again by the caller, for the reason on `accelerator_types`:
+        gcloud's `=` is changing to match more than the exact name.
+        """
+        return self.run([
+            "compute", "machine-types", "list",
+            f"--project={project}", f"--filter=name={name}",
+        ]) or []
+
     def create_instance_from_image(
         self, name: str, zone: str, project: str, *, machine_type: str,
         image_family: str, image_project: str, disk_gb: int,
         disk_type: str = "pd-balanced", accelerator: str | None = None,
         metadata: str | None = None, metadata_from_file: str | None = None,
+        reservation: str | None = None, terminate_on_maintenance: bool = True,
     ) -> None:
         """Create a new box from a public image. From here the project is billed.
 
@@ -1305,7 +1408,12 @@ class Gcloud:
 
         `--maintenance-policy=TERMINATE` is not optional on a GPU box: an
         accelerator cannot live-migrate, and Google refuses the create without
-        it rather than choosing for you.
+        it rather than choosing for you. `terminate_on_maintenance=False` is for
+        a box with no GPU, which can migrate and is left Google's default.
+
+        `reservation` binds the box to one reservation by name, so it consumes
+        the capacity held for it and nothing else's. The reservation has to
+        exist already, in this zone.
 
         No `--no-address` here, deliberately, and for the reason `move` learned:
         with no Cloud NAT on the project, a box with no external address has no
@@ -1320,14 +1428,20 @@ class Gcloud:
             f"--image-family={image_family}", f"--image-project={image_project}",
             f"--boot-disk-size={disk_gb}GB", f"--boot-disk-type={disk_type}",
             f"--boot-disk-device-name={name}",
-            "--maintenance-policy=TERMINATE",
         ]
+        if terminate_on_maintenance:
+            args.append("--maintenance-policy=TERMINATE")
         if accelerator:
             args.append(f"--accelerator={accelerator}")
         if metadata:
             args.append(f"--metadata={metadata}")
         if metadata_from_file:
             args.append(f"--metadata-from-file={metadata_from_file}")
+        # Last, so a create that names neither new keyword sends exactly the
+        # argv it always did.
+        if reservation:
+            args.append("--reservation-affinity=specific")
+            args.append(f"--reservation={reservation}")
         self.run(args, parse_json=False, timeout=INSTANCE_TIMEOUT)
 
     def firewall_rules(self, project: str) -> list[dict]:
@@ -1354,6 +1468,72 @@ class Gcloud:
         return self.run([
             "quotas", "preferences", "list", f"--project={project}",
         ]) or []
+
+
+def _addressable(key: tuple[str | None, str | None, str | None]) -> bool:
+    """Does this name one instance, in one zone, on one project?"""
+    return all(isinstance(part, str) and part for part in key)
+
+
+def statuses_from(
+    wanted: list[tuple[str | None, str | None, str | None]],
+    listings: dict[str, list[dict]],
+) -> dict[tuple[str | None, str | None, str | None], str]:
+    """The half of `instance_statuses` that asks nobody anything.
+
+    `listings` is each project's `instances list` payload, keyed by project.
+    Split out so a caller that already holds those payloads — `list --live`
+    reads age and disk size from the same rows — is answered from them rather
+    than paying for the listing twice. The rules are `instance_statuses`'s own
+    and are argued on its docstring; they are only stated here.
+
+      * a key that is not a Google address is `UNADDRESSABLE`, decided before
+        any project is looked at;
+      * the name in the listing in that zone answers with its status, or
+        `UNKNOWN_STATE` when the row carries none;
+      * the name in the listing in ANOTHER zone is `ELSEWHERE`;
+      * the name nowhere in the listing is `GONE`.
+
+    AND A PROJECT THAT IS NOT IN `listings` WAS NOT READ. Its machines are
+    answered `UNKNOWN_STATE`, never `GONE`: `GONE` is the word `discover
+    --prune` deletes on and it means the project was read and does not hold the
+    name. They are answered rather than left out because every caller reads
+    this with `.get`, and a missing key is a host that silently stops being
+    reconciled. `instance_statuses` cannot reach that branch — it lists every
+    project it is asked about, or raises.
+    """
+    out: dict[tuple[str | None, str | None, str | None], str] = {}
+    askable = []
+    for key in wanted:
+        if _addressable(key):
+            askable.append(key)
+        else:
+            out[key] = UNADDRESSABLE
+    for project in dict.fromkeys(project for _n, _z, project in askable):
+        if project not in listings:
+            for name, zone, owner in askable:
+                if owner == project:
+                    out[(name, zone, owner)] = UNKNOWN_STATE
+            continue
+        found = {}
+        # Every name the project holds, whatever zone it holds it in. This is
+        # what "the project does not have it" is decided against; `found` only
+        # decides whether it is where the entry says.
+        on_the_project: set[str] = set()
+        for instance in listings[project]:
+            zone = (instance.get("zone") or "").rstrip("/").rsplit("/", 1)[-1]
+            name = instance.get("name") or ""
+            on_the_project.add(name)
+            found[(name, zone)] = instance.get("status") or UNKNOWN_STATE
+        for name, zone, owner in askable:
+            if owner != project:
+                continue
+            if (name, zone) in found:
+                out[(name, zone, owner)] = found[(name, zone)]
+            else:
+                out[(name, zone, owner)] = (
+                    ELSEWHERE if name in on_the_project else GONE)
+    return out
 
 
 # gcloud groups that answer from the local config and credential store without

@@ -138,10 +138,14 @@ comfy-qat list
 ```
 
 ```
-NAME         KIND   OS            GPU  URL                    STATE
-local        local  -             -    http://127.0.0.1:8188  -
-comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190  not tunnelled
+NAME         KIND   OS            GPU  URL                    STATE          RESERVED
+local        local  -             -    http://127.0.0.1:8188  -              -
+comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190  not tunnelled  no
 ```
+
+RESERVED is `no` for an ordinary box, which bills only while it runs. A box made
+with `create --reserve` reads `yes`, and bills every hour, running or stopped,
+until it is deleted — see [reserved, or not](machines.md#reserved-or-not).
 
 Every machine you test on now has a name, and there is no invisible default —
 which is the whole point, because both a local ComfyUI and a cloud box will

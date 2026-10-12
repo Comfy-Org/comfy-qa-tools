@@ -461,3 +461,29 @@ def test_the_sentence_a_google_collision_prints_is_unchanged():
     assert problem is not None
     assert ("naming one machine — comfy-win in us-central1-a — and a host list"
             in str(problem))
+
+
+# --- a reservation is not part of which machine an entry names ----------------
+
+
+def test_a_reservation_does_not_change_which_machine_an_entry_names():
+    """Identity stays project, zone and instance. A reservation is something a
+    box HAS; if it were part of what a box IS, the tunnel record of a reserved
+    box would stop matching the moment its entry was written, and two entries
+    for one instance — one with the line, one without — would load as two
+    machines."""
+    (plain,) = parse({"hosts": {"comfy-win": dict(GCE)}})
+    (held,) = parse({"hosts": {"comfy-win": dict(GCE, gce_reservation="comfy-win-rsv")}})
+
+    assert held.reservation == "comfy-win-rsv"
+    assert held.machine_id == plain.machine_id == (
+        "gce", "proj", "us-central1-a", "comfy-win")
+    assert held.machine_in_words == plain.machine_in_words
+
+
+def test_two_entries_for_one_instance_are_still_one_machine_when_one_is_reserved():
+    with pytest.raises(config.ConfigError, match="are the same machine"):
+        parse({"hosts": {
+            "a": dict(GCE, port=8190),
+            "b": dict(GCE, port=8191, gce_reservation="comfy-win-rsv"),
+        }})
