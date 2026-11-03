@@ -43,9 +43,12 @@ code that run used. Everything else here ran against the suite's fakes only.
   their reason after them — a `# note`, a dash, words aligned into a column,
   `, then wait for Google` — which an interactive zsh, as it starts, passes to the
   command as arguments, and the command refuses them. The reason is now a line of
-  its own above the command, ending in the colon that introduces it. `setup`'s
-  closing lines offer `comfy-qat stamp <name>` only for a local machine your host
-  list declares; it offered `stamp local` to host lists with no `local` in them.
+  its own above the command, ending in the colon that introduces it. So is the
+  reason `setup --no-quota-request` gives for leaving `--region` off when that
+  region does not sell a card it would ask for, which came after the command,
+  behind a dash. `setup`'s closing lines offer `comfy-qat stamp <name>` only for
+  a local machine your host list declares; it offered `stamp local` to host
+  lists with no `local` in them.
 - **The tool no longer breaks a command across lines when it wraps what it
   prints.** Some were broken once their values were in: the deletes in `move`'s
   report of what an earlier move left, and in its note about a slower boot disk,
@@ -124,8 +127,11 @@ code that run used. Everything else here ran against the suite's fakes only.
 
 One new test file, for the project setting, and the rest beside what each fix
 touches, each written to fail before its fix. Two readings now back the guards:
-a walk of every string in every module, and a check of every line every test
-prints, with the values in and `comfy-qat` lines parsed by the CLI itself.
+a walk of every string in every module, and of every string a function builds
+out of parts it names, and a check of every line every test prints, with the
+values in and `comfy-qat` lines parsed by the CLI itself. `setup`'s tests now
+print what it says as well as recording it; recorded only, none of it reached
+that check.
 Between them: no printed delete or reset stops to ask, no printed command
 carries anything but the command or is broken across lines by the tool, no
 sentence names a command bare where a wrap could start a line with it — read
