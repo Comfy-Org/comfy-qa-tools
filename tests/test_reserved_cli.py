@@ -1199,3 +1199,182 @@ def test_a_region_whose_card_is_held_names_the_declared_box_that_holds_it(run):
     assert ["comfy-qat down comfy-linux", "comfy-qat delete comfy-linux"] == [
         line for line in offered(result.output)
         if line.startswith(("comfy-qat down", "comfy-qat delete"))]
+
+
+# --- the --region stock-out, after the live pass (O23) ------------------------
+#
+# 1.3.0 stopped a stock-out under `--region` being called "every region this
+# project can use the card in". The pre-merge check then found three things
+# about what replaced it: on a project whose only usable region is the one
+# named, the new sentence ("not everywhere") was false and its "drop --region"
+# remedy retried the same zones; the "same box" that remedy offers dropped
+# `--disk`, and `--name` for a box that was not reserved; and the no-GPU half
+# of the wiring that tells `build` a region was named was held by no test.
+#
+# Every stock-out here is Google's real text from live.md P1 — the line-wrapped
+# `reservations create` refusal — with the zone it names swapped in, and the
+# same text refuses a plain box's create.
+
+
+def _real_stockout(zone: str) -> str:
+    from test_lifecycle import REAL_STOCKOUT
+
+    return REAL_STOCKOUT.replace("us-central1-a", zone)
+
+
+def t4_project(regions, zones, *, at="reserve", cpu_regions=None):
+    """A project that holds T4 quota in `regions` and offers T4 in `zones`,
+    every one of which is out of stock — at the reservation, or at the box."""
+    refuse = {zone: _real_stockout(zone) for zone in zones}
+    compute = None
+    if cpu_regions is not None:
+        compute = [{"quotaId": "CPUS-per-project-region",
+                    "dimensionsInfos": [{"details": {"value": "200"},
+                                         "applicableLocations": list(cpu_regions)}]},
+                   {"quotaId": "CPUS-ALL-REGIONS-per-project",
+                    "dimensionsInfos": [{"details": {"value": "32"},
+                                         "applicableLocations": []}]}]
+    return Project(
+        accelerators=[{"name": "nvidia-tesla-t4", "zone": zone} for zone in zones],
+        machines=[{"name": "n1-standard-8", "zone": f"{URL}/zones/{zone}"}
+                  for zone in zones],
+        quotas=[grant(1, "NVIDIA-T4-GPUS-per-project-region") | {
+                    "dimensionsInfos": [{"details": {"value": "1"},
+                                         "applicableLocations": list(regions)}]},
+                ceiling(1)],
+        compute=compute,
+        **({"refuse_reserve": refuse} if at == "reserve" else {"refuse": refuse}))
+
+
+ONE_REGION = (["us-central1"], ["us-central1-a", "us-central1-b"])
+TWO_REGIONS = (REGIONS, ZONES)
+
+
+def creates(output: str) -> list[str]:
+    """Every whole `comfy-qat create …` the output offers, as argv, cut where the
+    prose after it starts. Templates — `<region>` — are left out."""
+    said = flat(output)
+    found = []
+    for piece in said.split("comfy-qat create")[1:]:
+        for stop in ("; or ", ", or ", " — or "):
+            piece = piece.split(stop)[0]
+        words = shlex.split("comfy-qat create" + piece.rstrip(". "))
+        if not any(word.startswith("<") for word in words):
+            found.append(words)
+    return found
+
+
+@pytest.mark.parametrize("reserve", [True, False], ids=["reserved", "plain"])
+def test_a_named_region_that_is_the_only_one_offers_no_way_out_that_cannot_help(
+        run, reserve):
+    """O23a. When the region `--region` named is the only one this project can
+    use the card in, "not everywhere this project can use the card" is false,
+    and "drop --region and let this pick" hands over a command that tries the
+    very same zones. What is true is the sentence the unnarrowed search ends
+    on: there is nowhere left to try right now."""
+    asked = ["--reserve", "--name", "qatest-rsv"] if reserve else ["--name", "qatest-plain"]
+    cloud = t4_project(*ONE_REGION, at="reserve" if reserve else "create")
+    result = run("create", "--os", "linux", "--gpu", "t4", *asked,
+                 "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "every zone tried is out of T4 capacity: us-central1-a, us-central1-b." in said
+    assert "not everywhere" not in said
+    assert "drop --region" not in said
+    assert ("the only region this project can use the card in, so there is "
+            "nowhere left to try right now") in said
+    assert "Nothing was created and nothing is billing." in said
+    assert mutating(cloud).count("create_reservation" if reserve
+                                 else "create_instance_from_image") == 2
+
+
+def test_a_named_region_with_others_beside_it_still_offers_to_drop_it(run):
+    """The pair: with a second region this project can use the card in, the
+    narrower sentence is the true one and dropping `--region` can help."""
+    cloud = t4_project(*TWO_REGIONS)
+    result = run("create", "--os", "linux", "--gpu", "t4", "--reserve", "--name",
+                 "qatest-rsv", "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert ("us-central1, the region you named with --region — not everywhere this "
+            "project can use the card") in said
+    assert "drop --region and let this pick" in said
+    assert "nowhere left to try" not in said
+
+
+@pytest.mark.parametrize("asked", [
+    ["--reserve", "--name", "qatest-rsv", "--disk", "400"],
+    ["--name", "qatest-plain"],
+    ["--name", "qatest-plain", "--disk", "400"],
+], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk"])
+def test_the_same_box_without_region_is_the_box_that_was_asked_for(run, asked):
+    """O23b. The remedy is "the same create, without --region". It was rebuilt
+    from `--os`, `--gpu` and, for a reserved box, `--reserve --name` — so a
+    box asked for with `--disk 400` was offered back with the default 200 GB,
+    and a plain box asked for by name came back as `comfy-linux`.
+
+    Compared with the arguments it was given: everything but `--region` and
+    `--yes`, and nothing else. And pasted back, its plan is that box."""
+    reserve = "--reserve" in asked
+    cloud = t4_project(*TWO_REGIONS, at="reserve" if reserve else "create")
+    argv = ["create", "--os", "linux", "--gpu", "t4", *asked,
+            "--region", "us-central1", "--yes"]
+    result = run(*argv, cloud=cloud)
+    assert result.exit_code == 1, result.output
+
+    offered_back = [words for words in creates(result.output) if "--region" not in words]
+    assert len(offered_back) == 1, creates(result.output)
+    words = offered_back[0][1:]
+
+    def flags(argv):
+        pairs, rest = {}, list(argv)
+        while rest:
+            word = rest.pop(0)
+            if word.startswith("--"):
+                pairs[word] = rest.pop(0) if rest and not rest[0].startswith("--") else True
+        return pairs
+
+    expected = flags(argv[1:])
+    expected.pop("--region")
+    expected.pop("--yes")
+    assert flags(words[1:]) == expected
+
+    again = run(*words, "--dry-run", cloud=t4_project(*TWO_REGIONS))
+    assert again.exit_code == 0, again.output
+    name = asked[asked.index("--name") + 1]
+    disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
+    plan = flat(again.output)
+    assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+
+
+def test_a_box_with_no_gpu_says_the_region_it_was_named(run):
+    """O23c. `order_zones` tells `build` that `--region` narrowed the search on
+    two paths, and only the card's was held by a test: with the no-GPU half
+    removed, `create --gpu none --region us-central1` went back to calling one
+    region "every region this project can use the machine in" — the live
+    pass's D1 — with the whole suite green."""
+    cloud = Project(refuse={zone: _real_stockout(zone) for zone in ZONES})
+    result = run("create", "--os", "linux", "--gpu", "none", "--name", "qatest-cpu",
+                 "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "out of n1-standard-8 capacity: us-central1-a, us-central1-b." in said
+    assert ("us-central1, the region you named with --region — not everywhere this "
+            "project can use the machine") in said
+    assert "every region this project can use" not in said
+
+
+def test_a_box_with_no_gpu_in_its_only_region_says_there_is_nowhere_else(run):
+    """O23a for the machine: CPU quota in one region only."""
+    cloud = t4_project(*ONE_REGION, at="create", cpu_regions=["us-central1"])
+    result = run("create", "--os", "linux", "--gpu", "none", "--name", "qatest-cpu",
+                 "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "drop --region" not in said and "not everywhere" not in said
+    assert ("the only region this project can use the machine in, so there is "
+            "nowhere left to try right now") in said

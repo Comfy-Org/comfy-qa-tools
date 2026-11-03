@@ -2022,10 +2022,17 @@ def _as_reserved(blueprint: Blueprint) -> str:
 def _same_box(blueprint: Blueprint) -> str:
     """`comfy-qat create` for this box, complete up to where it goes.
 
-    Reserved and named when the box is; the plain command when it is not.
+    Everything that was asked for except where. It was rebuilt from `--os`,
+    `--gpu` and, for a reserved box, `--reserve --name` — so a box asked for
+    with `--disk 400` was offered back with the default 200 GB, and a plain box
+    asked for by name came back as whatever name the next run would pick
+    (O23). The name now goes with every box, and the disk whenever it is not
+    the default, which is the only case leaving it off changes anything.
     """
+    named = _as_reserved(blueprint) or f" --name {blueprint.name}"
+    disk = f" --disk {blueprint.disk_gb}" if blueprint.disk_gb != DEFAULT_DISK_GB else ""
     return (f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key}"
-            f"{_as_reserved(blueprint)}")
+            f"{named}{disk}")
 
 
 def _wanted(card: Card) -> str:
@@ -2479,22 +2486,28 @@ def build(
             # AND WHAT WAS ASKED FOR, for a reserved build. Without `--reserve`
             # this line, pasted back, makes an unreserved box — under `--yes`,
             # without a question. The name goes with it so the rerun is the same
-            # box. Its siblings in `order_zones` already carried the flag.
-            fix=(f"try somewhere this did not reach: comfy-qat create "
-                 f"--os {blueprint.image.key} --gpu {blueprint.card.key}"
-                 f"{_as_reserved(blueprint)} --region "
+            # box. Its siblings in `order_zones` already carried the flag. It is
+            # `_same_box` now, as the region-named remedy below is, so `--disk`
+            # and a plain box's `--name` cannot be dropped here and kept there.
+            fix=(f"try somewhere this did not reach: {_same_box(blueprint)} --region "
                  f"{untried[0]}; or wait and run the same command again — a stockout "
                  f"is usually minutes to hours"),
             kind=EXHAUSTED,
         )
 
-    if ordering.offering and ordering.narrowed_to:
+    if ordering.offering and ordering.narrowed_to and ordering.elsewhere:
         # ONE REGION WAS TRIED BECAUSE ONE WAS NAMED. The branch below says
         # "every region this project can use the card in, so there is nowhere
         # left to try" — true when nothing narrowed the search, and printed on
         # a real project with 23 usable regions about the one `--region` named.
         # What is true is smaller, and the way out is to stop narrowing: the
         # same box, without `--region`.
+        #
+        # ONLY WHEN THERE IS SOMEWHERE ELSE. On a project whose one usable
+        # region is the one named, "not everywhere" was false and "drop
+        # --region" handed over a command that tried the very same zones and
+        # ended on the sentence below (O23). That case goes to the sentence
+        # below, which is then true, and says why.
         raise LifecycleError(
             f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
             f"{', '.join(tried)}. That is every zone this could use in "
@@ -2508,12 +2521,17 @@ def build(
         )
 
     if ordering.offering:
+        # Named, and the only region there is: said, so that "nowhere left"
+        # after `--region` does not read as the false sentence D1 was.
+        scope = (f"every zone this could use in {ordering.narrowed_to}, the region "
+                 f"you named with --region, and the only region this project can "
+                 f"use {_thing(blueprint.card)} in"
+                 if ordering.narrowed_to else
+                 f"every region this project can use {_thing(blueprint.card)} in")
         raise LifecycleError(
             f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
-            f"{', '.join(tried)}. That is every region this project can use "
-            f"{_thing(blueprint.card)} "
-            f"in, so there is nowhere left to try right now. Nothing was created and "
-            f"nothing is billing.",
+            f"{', '.join(tried)}. That is {scope}, so there is nowhere left to try "
+            f"right now. Nothing was created and nothing is billing.",
             fix=("wait and run the same command again — a stockout is usually minutes "
                  "to hours — or ask for a different card: comfy-qat quota list"
                  if blueprint.card.is_gpu else
@@ -2898,6 +2916,11 @@ def order_zones(
         accelerator=blueprint.card.accelerator,
         machine_type=blueprint.machine_type,
         regions=regions, config=config, probe=probe, fleet=fleet,
+        # Where the same create without `--region` could go: the other regions
+        # with quota whose own allowance is not already held. `choose` says
+        # which of them offer the card at all, from the catalogue it reads.
+        narrowed_away=[name for name in check.regions
+                       if named and name != named and name not in full],
     )
     ordering = replace(ordering, narrowed_to=named)
     if not taken:
@@ -3096,11 +3119,15 @@ def _order_without_a_card(
         # nothing" — the right reading for a card and the wrong one for this.
         sold = zones_with_machine_type(gc.machine_type_zones(project, machine), machine)
         regions = sorted({region_of(place) for place in sold})
+    # The card path's `narrowed_away`, for the same sentence: where the same
+    # create without `--region` could have gone.
+    narrowed_away = [name for name in regions if region and name != region]
     if region:
         regions = [name for name in regions if name == region]
 
     return choose(gc, project, accelerator=None, machine_type=machine,
-                  regions=regions, config=config, probe=probe, fleet=fleet)
+                  regions=regions, config=config, probe=probe, fleet=fleet,
+                  narrowed_away=narrowed_away)
 
 
 def nowhere(blueprint: Blueprint, ordering: Ordering, project: str) -> LifecycleError:

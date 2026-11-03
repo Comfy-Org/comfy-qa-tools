@@ -1258,8 +1258,16 @@ The other half of the message above, and the difference is the whole point of
 both. This one really does mean everywhere: every region where this project holds
 the card's quota *and* Google offers the card was tried, so there is no `--region`
 left to name. It is printed only when nothing narrowed the search — after
-`--region` or `--zone` you get one of the two messages below instead. Nothing was made, so there is nothing to clean up and nothing to
+`--region` or `--zone` you get one of the messages below instead. Nothing was made, so there is nothing to clean up and nothing to
 stop. Wait, or use a card you also have quota for — `comfy-qat quota list`.
+
+**`every zone tried is out of T4 capacity: us-central1-a, us-central1-b. That is every zone this could use in us-central1, the region you named with --region, and the only region this project can use the card in, so there is nowhere left to try right now. Nothing was created and nothing is billing.`**
+The same "everywhere", reached after `--region`. The region you named is the
+only one where this project holds the card's quota and Google offers the card,
+so naming it narrowed nothing, and the same create without `--region` would try
+the same zones. That is why this offers no "drop `--region`": it used to, on
+exactly this project shape, and the command it handed over ended on the message
+above. Wait, or use a card you also have quota for — `comfy-qat quota list`.
 
 **`every zone tried is out of L4 capacity: us-central1-a, us-central1-b, us-central1-c. That is every zone this could use in us-central1, the region you named with --region — not everywhere this project can use the card. Nothing was created and nothing is billing.`**
 What you get after `--region` when that region is out. One region was tried
@@ -1269,9 +1277,11 @@ real project with 23 usable regions, this case used to print "every region this
 project can use the card in, so there is nowhere left to try" about the single
 region `--region` named.
 
-The fix line gives the same create without `--region`, which lets the tool pick
-from everywhere the grant reaches — keeping `--reserve` and the name when you
-asked for them. Or wait: a stockout usually clears in minutes to hours, and
+Printed only when there is somewhere else to go: another region with the card's
+quota where Google offers the card. The fix line gives the same create without
+`--region`, which lets the tool pick from everywhere the grant reaches — the same
+box, so the name, `--reserve` and a `--disk` other than the default all go with
+it. Or wait: a stockout usually clears in minutes to hours, and
 stock for a *reservation* is narrower and moves faster than stock for a plain
 box.
 

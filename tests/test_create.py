@@ -1627,15 +1627,36 @@ def test_the_stockout_remedy_for_a_reserved_build_still_reserves():
             "--region us-east1") in caught.value.fix
 
 
-def test_the_stockout_remedy_for_a_plain_build_is_the_line_it_always_was():
+def test_the_stockout_remedy_for_a_plain_build_is_the_same_box_unreserved():
+    """No `--reserve` for a box that was not reserved — and, since O23, its
+    name, which the plain line used to drop: pasted back it made whatever box
+    the next run would name."""
     ordering = Ordering(zones=("us-central1-a",), regions=("us-central1", "us-east1"),
                         offering=("us-central1", "us-east1"))
     with pytest.raises(LifecycleError) as caught:
         build(Cloud(refuse={"us-central1-a": STOCKOUT}), LINUX_T4, ordering, PROJECT,
               lambda _line: None)
 
-    assert "comfy-qat create --os linux --gpu t4 --region us-east1;" in caught.value.fix
+    assert ("comfy-qat create --os linux --gpu t4 --name comfy-linux --region us-east1;"
+            in caught.value.fix)
     assert "--reserve" not in caught.value.fix
+
+
+def test_the_untried_region_remedy_keeps_the_disk_and_the_name_asked_for():
+    """O23's "same box", on the branch beside it: "try somewhere this did not
+    reach" rebuilt the command the same way and dropped `--disk` and a plain
+    box's `--name` too. It goes through `_same_box` now."""
+    ordering = Ordering(zones=("us-central1-a",), regions=("us-central1", "us-east1"),
+                        offering=("us-central1", "us-east1"))
+    asked = Blueprint(name="qatest-plain", image=IMAGES["linux"], card=CARDS["t4"],
+                      disk_gb=400)
+    with pytest.raises(LifecycleError) as caught:
+        build(Cloud(refuse={"us-central1-a": STOCKOUT}), asked, ordering, PROJECT,
+              lambda _line: None)
+
+    assert _creates(caught.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --name qatest-plain --disk 400 "
+        "--region us-east1"]
 
 
 # --- audit: what reserving leaves, said truthfully ----------------------------------
@@ -1894,8 +1915,10 @@ CREATE_REMEDIES = {
     "image_for": 1,               # no such operating system
     "plan": 4,                    # no-GPU-and-reserve (two), disk too small, too large
     "_refuse_the_leftover": 1,    # a reservation of this name that does not fit
-    "build": 4,                   # plain: capped (two) and named zone; untried regions
-    "_same_box": 1,               # reserved: capped (two) and named zone go through this
+    "build": 3,                   # plain: capped (two) and named zone
+    # Reserved: capped (two) and named zone; and every box: the region named,
+    # and the untried regions, which wrote their own until O23.
+    "_same_box": 1,
     "_refuse_full": 1,            # the region's allowance is held
     "_where_the_leftover_is": 1,  # the leftover is somewhere else
 }
@@ -2122,11 +2145,13 @@ US_CENTRAL1 = ("us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f
 
 
 def narrowed_to_one_region(blueprint, cloud):
+    """`--region us-central1` on a project that could use the card elsewhere
+    too — the live project had 23 regions. With nowhere else, see O23 below."""
     from dataclasses import replace
 
     ordering = replace(
         Ordering(zones=US_CENTRAL1, regions=("us-central1",), offering=("us-central1",)),
-        narrowed_to="us-central1")
+        narrowed_to="us-central1", elsewhere=("europe-west4",))
     with pytest.raises(LifecycleError) as caught:
         build(cloud, blueprint, ordering, PROJECT, lambda _line: None)
     return caught.value
@@ -2153,11 +2178,12 @@ def test_a_stockout_in_the_region_that_was_named_is_not_called_everywhere():
 
 
 def test_the_same_stockout_for_a_plain_box_offers_the_plain_command():
+    """Plain, and still the same box: its name goes with it (O23)."""
     refuse = {zone: STOCKOUT for zone in US_CENTRAL1}
     problem = narrowed_to_one_region(LINUX_T4, Cloud(refuse=refuse))
 
     assert "us-central1, the region you named with --region" in str(problem)
-    assert _creates(problem.fix) == ["comfy-qat create --os linux --gpu t4"]
+    assert _creates(problem.fix) == ["comfy-qat create --os linux --gpu t4 --name comfy-linux"]
     assert "--reserve" not in problem.fix
 
 
