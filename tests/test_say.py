@@ -271,6 +271,93 @@ def test_no_writer_breaks_a_command_in_anything_the_package_says(writer):
     assert seen >= 1000, f"only {seen} commands wrapped — the walk is broken"
 
 
+# --- nor starts a line with a command a sentence only names -----------------------
+#
+# The test above holds a command a sentence OFFERS, after its colon, whole. A
+# command a sentence only NAMES, after one of its words, is the other half:
+# `wrapped` may break at the space in front of it, and the next line is then a
+# command running on into prose. `create`'s warning that the host list stopped
+# loading ended `fix the file before comfy-qat go or comfy-qat down`, after the
+# loader's refusal and the path in it, and at the length the Linux runners' temp
+# directory happened to be, a line came out `comfy-qat go or comfy-qat down` —
+# refused by `comfy-qat`, pasted. On a Mac the same tests passed. Where the break
+# falls depends on everything in front of it on the line, so no wrap at any one
+# length proves a sentence safe; the rule is held on the sentence instead.
+
+# That sentence, as it was printed. Kept here, not in the package, so the
+# reading below can be shown to refuse it.
+_NAMED_BARE = ("your host list stopped loading while this ran ({}), so port 8190 was "
+               "chosen from the file as it was before — check it against the entries "
+               "that no longer parse, and fix the file before comfy-qat go or "
+               "comfy-qat down")
+
+
+def test_no_sentence_in_the_package_names_a_command_bare():
+    """A command named in passing goes in backticks, where a wrapped line starts
+    with the backtick and not the command.
+
+    Every string in every module, read by `commandlines.mid_sentence`. What is
+    put together at run time — a command interpolated into a sentence — is read
+    the same way, per test, by `conftest.every_printed_command_is_only_the_command`,
+    from every text any test hands `wrapped`."""
+    from commandlines import mid_sentence
+    from printed import strings
+
+    found = [f"{where}: {command}" for where, text in strings()
+             for line in text.splitlines() for command in mid_sentence(line)]
+    assert not found, "\n".join(found)
+
+
+@pytest.mark.prints_its_own_text
+def test_a_bare_name_lands_at_the_start_of_a_line_and_a_quoted_one_never_does():
+    """Why the rule is about the sentence, and that the reading refuses the one
+    that was red: filled in at every length a line can take, `warn` starts a
+    line with the bare commands at some of them — and, quoted, at none."""
+    from commandlines import is_command, mid_sentence
+
+    def lands(sentence: str) -> list[int]:
+        return [length for length in range(1, say.PROSE_WIDTH + 1)
+                if any(is_command(line.strip()) for line in say.wrapped(
+                    sentence.replace("{}", "x" * length), first=say.WARNING,
+                    rest=" " * len(say.WARNING))[1:])]
+
+    quoted = _NAMED_BARE.replace("comfy-qat go", "`comfy-qat go`").replace(
+        "comfy-qat down", "`comfy-qat down`")
+    assert mid_sentence(_NAMED_BARE) == ["comfy-qat go or comfy-qat down",
+                                         "comfy-qat down"]
+    assert lands(_NAMED_BARE), "the bare sentence no longer lands — it proves nothing"
+    assert mid_sentence(quoted) == []
+    assert lands(quoted) == []
+
+
+@pytest.mark.parametrize("line", [
+    "Run comfy-qat quota to see where each card stands.",
+    "{} granted. Run comfy-qat quota to see where each card stands.",
+    "or drop --zone: comfy-qat create --zone <zone>, or run comfy-qat list",
+    "find it with gcloud compute instances list --project={}, then fix it",
+    "warning: open a second tunnel with ssh -N -L 8190:127.0.0.1:8188 {}",
+])
+def test_the_reading_finds_a_command_a_sentence_names_bare(line):
+    from commandlines import mid_sentence
+
+    assert mid_sentence(line), line
+
+
+@pytest.mark.parametrize("line", [
+    "Run `comfy-qat init` to write a starter one.",
+    "run it yourself and see: gcloud compute instances list --project={}",
+    "  gcloud compute ssh {} --zone={} --project={} --command='a b'",
+    "  comfy-qat down {}",
+    "to keep comfy-qat on one project whatever gcloud is set to:",
+    "ssh process by hand leaves the records behind",
+    "gcloud is not installed or not on PATH.",
+])
+def test_the_reading_leaves_a_command_offered_quoted_or_on_its_own_line_alone(line):
+    from commandlines import mid_sentence
+
+    assert mid_sentence(line) == [], line
+
+
 def test_a_command_a_sentence_ends_on_is_moved_whole_to_the_next_line(capsys):
     """What `wrapped` does instead: the command is one word to it, so when it
     does not fit after its colon it goes to the next line in one piece. The

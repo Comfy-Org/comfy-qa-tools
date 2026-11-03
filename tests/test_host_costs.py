@@ -2365,7 +2365,9 @@ def test_the_printed_reading_is_on_for_every_test(request):
 def test_only_the_tests_that_hand_say_their_own_text_are_left_unread():
     """`prints_its_own_text` turns the printed reading off for a test, so where it
     is used is held here rather than trusted: two tests in `test_say.py` that
-    show how `write_fix` lays out `#` notes it is handed. A third use, anywhere,
+    show how `write_fix` lays out `#` notes it is handed, and one that hands
+    `wrapped` the sentence that was red on the Linux runners — `comfy-qat go`
+    named bare — to show a wrap starting a line with it. A fourth use, anywhere,
     fails until it is added — beside a reason."""
     import ast
 
@@ -2377,6 +2379,7 @@ def test_only_the_tests_that_hand_say_their_own_text_are_left_unread():
                     for decorator in node.decorator_list):
                 marked.append(f"{path.name}::{node.name}")
     assert marked == [
+        "test_say.py::test_a_bare_name_lands_at_the_start_of_a_line_and_a_quoted_one_never_does",
         "test_say.py::test_the_notes_beside_a_run_of_commands_are_in_one_column",
         "test_say.py::test_a_column_is_shared_by_the_commands_it_belongs_to_and_no_others",
     ], marked
