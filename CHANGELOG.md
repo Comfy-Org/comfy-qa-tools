@@ -51,7 +51,11 @@ code that run used. Everything else here ran against the suite's fakes only.
   report of what an earlier move left, and in its note about a slower boot disk,
   lost `--quiet` — and some `--project` too — to the next line, so the first
   line, copied, stopped to ask, or deleted on gcloud's own project; and a long
-  project ID pushed `<id>` off `comfy-qat setup --project <id>`.
+  project ID pushed `<id>` off `comfy-qat setup --project <id>`. Nor does it
+  start a line with a command a sentence only names: `create`'s warning that the
+  host list stopped loading could wrap to a line reading `comfy-qat go or
+  comfy-qat down`, refused when pasted, depending on how long the path in front
+  of it was. A command named in a sentence is in backticks now.
 - **Every printed `comfy-qat delete` carries `--yes`**, so it runs from a
   script or an agent; without it, it stopped to ask for the box's name and
   exited 2 with nothing deleted — and for a reserved box it is the command that
@@ -106,6 +110,11 @@ code that run used. Everything else here ran against the suite's fakes only.
   the same fold, as are what a not-found names, a quota request already made, a
   sign-in that is missing, and a dead tunnel's log — where a box still booting
   was read as one with nothing listening, and `go` said to start ComfyUI first.
+- **A first `create` no longer says the host list stopped loading.** With no
+  host list when it started and none when it picked the port, it warned that
+  the host list had stopped loading while the box was made, and to fix a file
+  that was never there. That warning is now only for a file that is there and
+  will not load.
 - **The 1.3.0 entry below** said the live run found four defects; it found ten,
   and four were fixed. It had no line for the stock-out text fix. And the
   acceptance pack still said the device name on a box with no GPU had not been
@@ -118,12 +127,15 @@ touches, each written to fail before its fix. Two readings now back the guards:
 a walk of every string in every module, and a check of every line every test
 prints, with the values in and `comfy-qat` lines parsed by the CLI itself.
 Between them: no printed delete or reset stops to ask, no printed command
-carries anything but the command or is broken across lines by the tool, and
-every printed gcloud command that acts on a project names it. And no argv
-reaches gcloud, or a fake standing in for it, without its project, however it
-was built. No test asks a ComfyUI running on the machine that runs the suite:
-three did, on 127.0.0.1:8188, and the network check now refuses 8188 to 8190
-even on loopback, and fails the test when the code it ran caught the refusal.
+carries anything but the command or is broken across lines by the tool, no
+sentence names a command bare where a wrap could start a line with it — read
+before the wrap, so it holds at every length and not only at the one a runner's
+temp path gives — and every printed gcloud command that acts on a project
+names it. And no argv reaches gcloud, or a fake standing in for it, without its
+project, however it was built. No test asks a ComfyUI running on the machine
+that runs the suite: three did, on 127.0.0.1:8188, and the network check now
+refuses 8188 to 8190 even on loopback, and fails the test when the code it ran
+caught the refusal.
 
 ## 1.3.0 — reserved boxes, a limit on them, and a box with no GPU
 
