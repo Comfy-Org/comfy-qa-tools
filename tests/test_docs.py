@@ -808,9 +808,9 @@ ENTRY_FLOOR = 352
 # reason given beside ENTRY_FLOOR.
 # 380 until 1.3.1, for the entries named beside ENTRY_FLOOR: 397 quoted
 # wordings now. Raised to 388, half the distance, on the rule above.
-# 388 until 1.4.0, for the entries named beside ENTRY_FLOOR: 417 quoted
-# wordings now. Raised to 406, inside the slack of 12, on the rule above.
-WORDING_FLOOR = 406
+# 388 until 1.4.0, for the entries named beside ENTRY_FLOOR: 421 quoted
+# wordings now. Raised to 412, inside the slack of 12, on the rule above.
+WORDING_FLOOR = 412
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

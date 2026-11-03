@@ -1647,6 +1647,34 @@ the error prints the command to try by hand.
 The install script exited non-zero. Its output is on your terminal above the error —
 read that first. Get onto the box with the printed command to finish by hand.
 
+Since 1.4.0 the install is comfy-cli's: the script puts comfy-cli in a venv of its
+own (`/opt/comfy-qat/venv` on Linux, `C:\comfy-qat\venv` on Windows), prints the
+exact `comfy install` it runs — the line starting `+ comfy` — and then runs it, so
+the failure is usually comfy-cli's own message just above. A line starting
+`INSTALL_INCOMPLETE:` says which step the script itself found unfinished: comfy-cli
+did not install, `comfy install` exited non-zero, there was no `main.py` at the end,
+or — on Linux — `/opt/comfyui` already held something that is not ComfyUI and was
+not moved aside. The same command run again resumes: a clone that stopped half-way
+is removed and made again, and a checkout that is there is installed into with
+`--restore`, keeping its custom nodes and models.
+
+**`the build on comfy-win could not be changed (exit 1). Its log is above; the
+checkout is where comfy-cli left it.`**
+A build change on a box that already has ComfyUI — `go` or `switch` with a build
+option — ran `comfy install --restore` and it did not finish. Read comfy-cli's own
+output above; a release, PR or commit that could not be checked out, or a
+requirement that would not install, is said there. The checkout may be part-way
+between the two builds, so run the same command again, or add `--clean` to start
+from nothing (custom nodes and models go with it). **`the build on comfy-win could
+not be changed: ...`** is the same with gcloud's own reason in place of an exit
+code — usually the connection to the box dropped part-way.
+
+**`could not record the new build on comfy-win: ...`**
+Moving to another frontend release needs nothing installed — ComfyUI fetches the
+release itself when it starts — so the change is a one-line record on the box, and
+writing it failed. Nothing was changed. Run the same command again; gcloud's reason
+is after the colon.
+
 **`ComfyUI is not answering on http://127.0.0.1:8190: it is installed on comfy-win
 but nothing has started it. The machine is up and billing.`**
 The everyday one, and what you get from `comfy-qat up` on **any box that has been
