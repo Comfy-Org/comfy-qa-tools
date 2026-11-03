@@ -296,7 +296,10 @@ the pinned frontend back without changing the backend. A command that chooses no
 backend — `--no-manager`, `--torch` — keeps the frontend the box has. Asking again for the PR a box is on — `go comfy-linux --pr
 17497` after its author has pushed — fetches the new commits: the checkout is held
 to the head GitHub reports now, so a box on the PR's older head is changed, not
-handed over. `--clean` deletes ComfyUI on the box, nodes and models with
+handed over. A frontend PR is not held to its head: comfy-cli keeps the build of
+each frontend PR for seven days under its number and branch, and serves that build
+again after new pushes, which is one more reason it is always said to be
+unconfirmed (below). `--clean` deletes ComfyUI on the box, nodes and models with
 it, and installs the build from nothing. With no build option at all, a box keeps
 what it has, and `go` onto one that is already serving asks it nothing — that is
 what keeps the everyday command quick.

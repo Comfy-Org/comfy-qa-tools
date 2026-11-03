@@ -98,7 +98,9 @@ build kept by every `create` a refusal hands back.
   changes; a frontend release alone is a launch option, not an install.
   Asking again for a PR that has had commits since the box checked it out
   fetches them: the checkout is held to the head GitHub reports now, not to the
-  PR's number. `--clean` deletes ComfyUI on the box and installs from nothing.
+  PR's number. That is a ComfyUI PR; comfy-cli keeps a frontend PR's build for
+  seven days under its number and branch, and serves it again after new pushes.
+  `--clean` deletes ComfyUI on the box and installs from nothing.
 - **Bad input is refused before anything is created or charged.** A release
   that does not exist, a PR that does not exist or is closed (a merged one is
   pointed at the commit it landed as), an unknown commit, a frontend release
