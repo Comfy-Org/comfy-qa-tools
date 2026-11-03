@@ -260,8 +260,15 @@ def _missing_resource(text: str | None) -> str:
 
     Split out from `confirms_absent` so the parsing can be tested against the
     real sentences on its own, without a fake cloud in the way.
+
+    Read through `folded`, as every phrase in gcloud's text is: wrapped as
+    `was not\\n      found`, the raw match found nothing and an instance that
+    was gone read as "something larger" not existing. The path comes back
+    lowercased with the rest, which loses nothing: a GCE project, zone,
+    instance or reservation name cannot hold a capital, and both callers
+    compare it lowered anyway.
     """
-    found = _MISSING.search(text or "")
+    found = _MISSING.search(folded(text))
     return found.group(1) if found else ""
 
 
@@ -1874,9 +1881,12 @@ def is_already_asked(exc: BaseException) -> bool:
     still arranged to be benign in the direction it can be wrong: a message this
     does not recognise falls through to "the request was refused: <verbatim>",
     which is true, non-fatal, and prints the reason.
+
+    Folded, on both sides, as `classify` is: gcloud wraps what it prints, and
+    `already\\n      exist` was such a message this did not recognise.
     """
-    text = str(exc).lower()
-    return any(phrase in text for phrase in _ALREADY_THERE)
+    text = folded(str(exc))
+    return any(folded(phrase) in text for phrase in _ALREADY_THERE)
 
 
 def console_quota_url(project: str) -> str:

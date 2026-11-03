@@ -485,8 +485,11 @@ def is_auth_failure(exc: GcloudError) -> bool:
     """
     if getattr(exc, "is_auth", False):
         return True
-    lowered = f"{exc} {getattr(exc, 'raw', '')}".lower()
-    return any(sign in lowered for sign in (
+    # Folded, on both sides, like every other reader of gcloud's text: the
+    # signs are sentences out of output gcloud wraps, and `You do not\n
+    # currently have an active account` matched none of them raw.
+    lowered = folded(f"{exc} {getattr(exc, 'raw', '')}")
+    return any(folded(sign) in lowered for sign in (
         "reauthentication failed",
         "refreshing your current auth tokens",
         "do not currently have an active account",

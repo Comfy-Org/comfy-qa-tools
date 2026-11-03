@@ -2211,16 +2211,33 @@ def test_the_real_texts_are_still_stockouts_without_the_bare_word():
 
 
 def _readers():
-    from comfy_qa.gcloud import classify
-    from comfy_qa.lifecycle import is_capacity_failure, suggested_zones
+    """Every reader of a phrase in gcloud's text, by name.
+
+    The three after the first three were left out when O25 folded those, and
+    each went on matching the raw text: wrapped, Google's not-found sentence
+    gave no resource path, an existing quota request read as a fresh refusal,
+    and an account that was never signed in read as a machine problem. Each
+    of those is wrong in the safe direction — `confirms_absent` raises, the
+    refusal is printed verbatim, `up` retries — but the docstring of `folded`
+    says every reader goes through it, and three did not.
+
+    The two that take an exception get one with no `kind`, so what is read is
+    the text: for `is_auth_failure` that is its fallback, the part that matches
+    phrases."""
+    from comfy_qa.gcloud import _missing_resource, classify, is_already_asked
+    from comfy_qa.lifecycle import is_auth_failure, is_capacity_failure, suggested_zones
 
     return {"classify": classify, "is_capacity_failure": is_capacity_failure,
-            "suggested_zones": suggested_zones}
+            "suggested_zones": suggested_zones,
+            "_missing_resource": _missing_resource,
+            "is_already_asked": lambda text: is_already_asked(GcloudError(text)),
+            "is_auth_failure": lambda text: is_auth_failure(GcloudError(text))}
 
 
 def _real_texts():
     """Everything gcloud really printed that this suite holds, by name."""
     import test_gcloud_auth as auth
+    import test_prune as prune
 
     return {
         "reservations create stock-out (live.md P1)": REAL_STOCKOUT,
@@ -2230,10 +2247,32 @@ def _real_texts():
         "no account": auth.NO_ACCOUNT_OUTPUT,
         "no project": auth.NO_PROJECT_OUTPUT,
         "denied": auth.DENIED_OUTPUT,
+        # The live wordings `test_prune` holds for a describe of what is not
+        # there: the instance, and the project around it.
+        "no such instance": prune.NO_SUCH_INSTANCE.format(
+            project="proj", zone="us-central1-a", name="ghostone"),
+        "no such project": prune.NO_SUCH_PROJECT,
+        # Google's two refusals of a quota preference that is already there, as
+        # `test_setup_quota` and `gcloud._ALREADY_THERE` record them — read off
+        # the live API, with the middle elided where they elide it.
+        "quota preference already there": (
+            "Quota Preference with dimension '{gpu_family=NVIDIA_RTX_PRO_6000}' "
+            "already exist ... in location 'us-central1'"),
+        "quota preference in another location": (
+            "Location in existing quota preference '...' does not match"),
     }
 
 
-@pytest.mark.parametrize("reader", ["classify", "is_capacity_failure", "suggested_zones"])
+READERS = ["classify", "is_capacity_failure", "suggested_zones", "_missing_resource",
+           "is_already_asked", "is_auth_failure"]
+
+
+def test_every_reader_is_wrapped():
+    """The list the test below is parametrised over is the readers there are."""
+    assert sorted(READERS) == sorted(_readers())
+
+
+@pytest.mark.parametrize("reader", READERS)
 @pytest.mark.parametrize("name", list(_real_texts()))
 def test_a_line_break_anywhere_in_googles_text_changes_no_reading(reader, name):
     """gcloud prints its errors as YAML and wraps them wherever the line runs
@@ -2273,3 +2312,11 @@ def test_the_readings_the_wraps_are_compared_against_are_the_real_ones():
         "disks create quota refusal", "expired session", "no account", "no project",
         "denied")] == [QUOTA, REAUTH, NO_ACCOUNT, NO_PROJECT, DENIED]
     assert CREDENTIALS not in [read["classify"](text) for text in texts.values()]
+    assert [read["_missing_resource"](texts[name]) for name in (
+        "no such instance", "no such project", "denied")] == [
+        "projects/proj/zones/us-central1-a/instances/ghostone",
+        "projects/no-such-project-comfy-qa-9271", ""]
+    assert [name for name in texts if read["is_already_asked"](texts[name])] == [
+        "quota preference already there", "quota preference in another location"]
+    assert [name for name in texts if read["is_auth_failure"](texts[name])] == [
+        "expired session", "no account"]
