@@ -2251,6 +2251,49 @@ def test_commands_we_tell_people_to_run_exist(where, words):
         node = node[word]
 
 
+# A command a sentence only NAMES is written without the binary since CI-3 —
+# "the discover command adopts it", "run the quota command" — because a wrap can
+# start a line with it and a shell runs a `comfy-qat …` or a backticked one
+# pasted. Without `comfy-qat ` in front, `_INVOCATION` above no longer sees those
+# names, and 25 of its cases went with them. This is the same question asked of
+# the new spelling: every `the <name> command` the package says names a command
+# the root really has.
+#
+# Over what the package PRINTS (`printed.strings`, no docstrings), where "the
+# same command" and the help's "the tunnel command" — gcloud's — are English,
+# not names. Those two words are the exclusions, and the hygiene test below
+# drops either one the package stops saying, so the list cannot rot into a hole.
+_NAMED_COMMAND = re.compile(r"\bthe ([a-z][a-z-]*) command\b")
+_NOT_NAMES = ("same", "tunnel")
+
+
+def _named_commands(skip=_NOT_NAMES) -> list[tuple[str, str]]:
+    from printed import strings
+
+    return [(where, match.group(1)) for where, text in strings()
+            for match in _NAMED_COMMAND.finditer(text)
+            if match.group(1) not in skip]
+
+
+def test_the_reading_of_named_commands_sees_the_package():
+    """A reading that found nothing would pass the test below for no reason,
+    and an exclusion the package no longer says is a hole somebody can walk a
+    real name through."""
+    assert len(_named_commands()) >= 15, _named_commands()
+    assert _NAMED_COMMAND.findall("run the quotas command") == ["quotas"]
+    said = {name for _, name in _named_commands(skip=())}
+    assert set(_NOT_NAMES) <= said, set(_NOT_NAMES) - said
+
+
+@pytest.mark.parametrize("where,name", _named_commands(),
+                         ids=lambda value: str(value))
+def test_commands_a_sentence_names_without_the_binary_exist(where, name):
+    from comfy_qa.cli import app
+
+    assert name in _command_tree(app), (
+        f"{where}: 'the {name} command' — there is no command {name!r}")
+
+
 # --- the same question, asked of the spellings that name no binary -----------
 #
 # The walk above sees a command only when the binary is spelled out in front of

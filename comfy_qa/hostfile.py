@@ -377,7 +377,7 @@ PROJECT_LINE = re.compile(r'^([ \t]*project[ \t]*=[ \t]*)"[^"\r\n]*"' + _TRAILIN
 _PROJECT_NOTE = """\
 # The Google project comfy-qat works in: where `create` makes a box, what
 # `discover` lists, and what `quota` and `status` read. Change it here, or with
-# `comfy-qat setup --project <id>`. A box below keeps its own gce_project.
+# the setup command's --project option. A box below keeps its own gce_project.
 """
 
 

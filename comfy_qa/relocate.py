@@ -1803,8 +1803,8 @@ def _unregistered(plan: Plan, found: Found, done: list[str],
         f"{plan.new_instance} is now in {plan.to_zone}, running and billing, but "
         f"your host list could not be updated: {exc}",
         fix=output.fix(
-            f"stop it now — nothing knows this box yet, so `comfy-qat down "
-            f"{plan.host.name}` would reach the old one:",
+            f"stop it now — nothing knows this box yet, so the down command "
+            f"would reach the old {plan.host.name}:",
             stop_instance_command(plan),
             "then fix the host list and run the move again; it finds what already "
             "exists and carries on:",

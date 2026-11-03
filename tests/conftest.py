@@ -412,8 +412,9 @@ def every_printed_command_is_only_the_command(monkeypatch, request):
     from commandlines import mid_sentence, problems
 
     found = problems(printed) + [
-        (line, f"names {command!r} bare, mid-sentence, where a wrap at another "
-               f"length starts a line with it — put it in backticks")
+        (line, f"names {command!r} mid-sentence, where a wrap at another length "
+               f"starts a line with it — name it without `comfy-qat` and without "
+               f"backticks, which a shell runs pasted")
         for line in handed for command in mid_sentence(line)]
     if found:
         raise AssertionError(

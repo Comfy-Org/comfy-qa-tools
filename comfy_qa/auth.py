@@ -818,11 +818,15 @@ def login_cmd() -> None:
     `gcloud auth login` opens a browser and is interactive, so it is handed over
     rather than driven. Running it yourself also leaves you the repro trail.
     """
-    say.result("run these, then `comfy-qat status`:\n")
+    # The check is the last of the commands, on a line of its own like the
+    # others. It was named in the sentence above them, in backticks, and a
+    # backtick is a shell's command substitution (CI-3, step 1's re-check).
+    say.result("run these — the last one checks the rest:\n")
     say.result("  gcloud auth login")
     # comfy-qat's own project, in the host list, not gcloud's: see
     # `config.PROJECT_KEY`.
     say.result(f"  {NO_PROJECT_FIX.replace('<id>', '<your-project-id>')}")
+    say.result("  comfy-qat status")
 @quota_app.callback(invoke_without_command=True)
 def quota_default(ctx: typer.Context) -> None:
     """Showing what you can run is the safe default."""
@@ -1289,11 +1293,14 @@ def quota_list_cmd(
     def wrapped(text: str) -> None:
         """A footnote, wrapped. The GSP note is 334 characters on one line — the
         widest thing in this output by nearly 3x, and the only width guard in the
-        suite excluded `note:` lines by construction, so nothing could see it."""
-        import textwrap
+        suite excluded `note:` lines by construction, so nothing could see it.
 
+        By `say.wrapped`, at the same 96 columns, and no longer by a `textwrap`
+        of its own: the suite reads every sentence handed to `say.wrapped` for a
+        command a wrap could start a line with, and a footnote wrapped here was
+        the one sentence it could not see (CI-3, step 1's re-check)."""
         say.result("")
-        for line in textwrap.wrap(text, width=96):
+        for line in say.wrapped(text):
             say.result(line)
 
     def footnote() -> None:
@@ -1333,7 +1340,7 @@ def quota_list_cmd(
                      f"rows cover several regions at once."
                      if not_checked and stocks.looked else "")
             wrapped("note: STATUS reports quota held, not whether a region "
-                    "offers the card. `comfy-qat create` checks both and will "
+                    "offers the card. The create command checks both and will "
                     "refuse a card this project holds quota for but Google no "
                     "longer sells."
                     + (about or " Add --region to have that checked here."))
@@ -1588,8 +1595,8 @@ def quota_request_cmd(
         help="Permit a value below a request already with Google, or below the "
              "quota this project holds. Without this, a smaller number is "
              "refused rather than quietly replacing the standing one. Nothing "
-             "in this tool can undo a decrease: `gcloud quotas preferences` has "
-             "create, describe, list and update, and no delete.")] = False,
+             "in this tool can undo a decrease: Google's quota preferences can be "
+             "created, described, listed and updated, and never deleted.")] = False,
     release_quota: Annotated[bool, typer.Option(
         "--release-quota",
         help="Permit --value 0, which gives up the quota this project holds for "
@@ -2398,8 +2405,9 @@ def quota_request_cmd(
         # so this is a result rather than a failure, and it names what to run
         # next because approval can take days and the wait has to be re-entered.
         say.result(f"still pending: {', '.join(still_waiting)}. Approval can take "
-                   "days — run this again to keep waiting, or `comfy-qat quota` "
-                   "to check.")
+                   "days — run this again to keep waiting, or see where each card "
+                   "stands with:")
+        say.result("  comfy-qat quota")
         raise typer.Exit(code=75)
 
 

@@ -1282,7 +1282,7 @@ def test_a_reservation_with_a_box_on_it_is_not_handed_a_delete_command(cli):
 
     assert "stray-rsv (us-central1-a)" in out
     assert "reservations delete" not in out
-    assert ("  a box is on stray-rsv — adopt it, then `comfy-qat delete` it:\n"
+    assert ("  a box is on stray-rsv — adopt it, then delete it:\n"
             "    comfy-qat discover\n") in out
 
 

@@ -3621,7 +3621,9 @@ def test_the_default_view_says_the_column_is_about_quota(monkeypatch):
 
     assert "quota held" in result.output, (
         "the default view claims availability it has not checked")
-    assert "comfy-qat create" in result.output, (
+    # Named without `comfy-qat` in front of it since CI-3: a command a
+    # sentence only names is a word a wrap may start a line with.
+    assert "The create command checks both" in " ".join(result.output.split()), (
         "the command that knows both is not named")
 
 

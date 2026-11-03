@@ -243,8 +243,12 @@ def setup_cmd(
         # to be out of date.
         say.result("\nno cloud boxes yet. Make one:")
         say.result("  comfy-qat create --os linux --gpu l4")
-        say.result(f"\nor, if you already have one on the project, `comfy-qat "
-                   f"discover` adopts it. {path} is the list either way.")
+        # The adopting command on a line of its own, as the one above it is. It
+        # was named in this sentence, in backticks, and a backtick is a shell's
+        # command substitution (CI-3, step 1's re-check).
+        say.result("\nor, if you already have one on the project, adopt it:")
+        say.result("  comfy-qat discover")
+        say.result(f"\n{path} is the list either way.")
 
 
 def _choose(question: str, options: list[str]) -> str:

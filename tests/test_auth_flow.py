@@ -495,6 +495,29 @@ def test_the_table_says_why_once_underneath_rather_than_in_every_row():
     assert result.output.count("GPU System Processor") == 1, "once, under the table"
 
 
+def test_the_footnotes_under_the_table_are_wrapped_by_say(monkeypatch):
+    """CI-3, step 1's re-check: `quota list` wrapped its own footnotes with
+    `textwrap`, outside `say.wrapped`, so the suite-wide reading of every
+    sentence handed to the wrapper never saw them — a command put into a
+    footnote at run time would have gone unread. They go through `say.wrapped`
+    now, like every other sentence the package wraps."""
+    from comfy_qa import say
+
+    handed: list[str] = []
+    real = say.wrapped
+
+    def recording(text, *args, **kwargs):
+        handed.append(str(text))
+        return real(text, *args, **kwargs)
+
+    monkeypatch.setattr(say, "wrapped", recording)
+    result = run(FakeCloud(quotas=[P100, L4]), "quota", "list")
+
+    assert result.exit_code == 0, result.output
+    assert any("GPU System Processor (GSP)" in text for text in handed), handed
+    assert any(text.startswith("note: STATUS reports quota held") for text in handed)
+
+
 def test_the_same_mark_survives_by_region():
     """`--by-region` is the same answer expanded, so it cannot be the view where
     the card looks usable again."""

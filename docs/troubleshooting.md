@@ -21,7 +21,7 @@ installed is confusing for more than one reason.
 
 ## Host list
 
-**no host list at ~/.config/comfy-qa-tools/hosts.toml. Run `comfy-qat init`
+**no host list at ~/.config/comfy-qa-tools/hosts.toml. Run the init command
 to write a starter one.**
 You have not set one up yet. `comfy-qat setup` writes one too, along with
 everything else a first run needs.
@@ -1326,7 +1326,7 @@ command at the end of a paragraph out of sight. Adopting it with
 `comfy-qat discover` is the other way out, and is second because it leaves
 the box running.
 
-**`` your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before `comfy-qat go` or `comfy-qat down` ``**
+**`` your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before go or down``**
 The host list loaded when this command started — it refuses outright otherwise —
 and does not load now, so something edited it while the create was running. That
 is minutes, and another terminal or an editor is all it takes.
@@ -2454,7 +2454,7 @@ up windows/l4`. These are the refusals, and each one is a refusal rather than a
 guess on purpose: a tool that picks for you is a tool that reads results from the
 wrong box.
 
-**`nothing declared matches 'windows/l4'. Declared: local (local install); comfy-linux (Ubuntu 22.04, A100). Create the box in the Google Cloud console, then `comfy-qat discover` to add it to your host list.`**
+**`nothing declared matches 'windows/l4'. Declared: local (local install); comfy-linux (Ubuntu 22.04, A100). Create the box in the Google Cloud console, then run the discover command to add it to your host list.`**
 You described a machine you do not have. The message lists what you do have, with
 each one's OS and card, so you can see which half was wrong. If the box exists in
 Google Cloud but not in your host list, `comfy-qat discover` adds it — nothing
@@ -3321,7 +3321,7 @@ not know", which is what it is.
 Check the machine yourself with `comfy-qat list --live`, and report the verdict in
 the brackets.
 
-**`could not tell whether <name> is running: <error>. Check with `comfy-qat list --live``**
+**`could not tell whether <name> is running: <error>. Check with list --live`**
 
 `disconnect` closes the tunnel and deliberately leaves the machine on, so it has
 to say whether that machine is actually billing. Asking Google failed —
@@ -3788,7 +3788,7 @@ ignored: a misspelt `project` read as no line at all would send every command to
 gcloud's project instead. Spell it `project`, or move the key into the host it
 belongs to.
 
-**``project = 'My Project' is not a Google project ID — that is lowercase letters, digits and hyphens, starting with a letter. It is the ID, not the name — `gcloud projects list` shows both.``**
+**``project = 'My Project' is not a Google project ID — that is lowercase letters, digits and hyphens, starting with a letter. It is the ID, not the name; gcloud's projects list shows both.``**
 Usually the project's display name, typed where its ID goes. `gcloud projects
 list` shows both; the ID is the one in the first column.
 

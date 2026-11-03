@@ -69,7 +69,7 @@ what this makes:
   - machine type g2-standard-8 — built into the machine type
   - 200 GB pd-balanced boot disk from ubuntu-2204-lts
   - startup script installs the NVIDIA driver on first boot
-  - ComfyUI build, installed by `comfy-qat go`: ComfyUI at the tip of its default branch · the
+  - ComfyUI build, installed by the go command: ComfyUI at the tip of its default branch · the
     frontend that ComfyUI pins · Manager on · torch as comfy-cli picks it for the box — no
     --version, --pr or --commit was given
   - add comfy-linux to the host list on the next free port

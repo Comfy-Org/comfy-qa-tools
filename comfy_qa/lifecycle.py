@@ -2928,7 +2928,7 @@ def put_away(
         except GcloudError as exc:
             # Not knowing is its own answer, and it is not "it is fine".
             say(f"could not tell whether {host.name} is running: {exc}. "
-                "Check with `comfy-qat list --live`")
+                "Check with list --live")
             return "unknown"
         if not state:
             # A describe that succeeded and said nothing. The honest branch is
@@ -2936,7 +2936,7 @@ def put_away(
             # the confident billing claim instead — the right answer was already
             # written and simply unreachable from here.
             say(f"could not tell whether {host.name} is running. "
-                "Check with `comfy-qat list --live`")
+                "Check with list --live")
             return "unknown"
         if state == TERMINATED:
             say(f"{host.name} was already stopped — nothing left running")

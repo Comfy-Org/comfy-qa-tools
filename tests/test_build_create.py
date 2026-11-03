@@ -76,7 +76,7 @@ def test_create_writes_the_build_into_the_box_s_host_list_entry(cli, tmp_path):
 def test_create_says_which_build_go_will_install(cli):
     result = cli("--os", "linux", "--gpu", "none", "--version", "v0.43.0", "--dry-run")
     assert result.exit_code == 0, result.output
-    assert "ComfyUI build, installed by `comfy-qat go`: ComfyUI v0.43.0" in result.output
+    assert "ComfyUI build, installed by the go command: ComfyUI v0.43.0" in result.output
 
 
 def test_create_with_no_build_says_the_default_and_writes_none(cli):

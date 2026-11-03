@@ -1311,7 +1311,7 @@ def test_no_length_of_refusal_puts_go_or_down_at_the_start_of_the_warning_s_line
     have: the host that clashes grows a character at a time, which carries the
     break across the end of the sentence. At least one of them has to push the
     names to the start of a line, or this proves nothing about the wrap."""
-    from commandlines import is_command, problems
+    from commandlines import is_command, problems, runs_if_pasted
 
     path = tmp_path / "hosts.toml"
     landed = 0
@@ -1327,7 +1327,10 @@ def test_no_length_of_refusal_puts_go_or_down_at_the_start_of_the_warning_s_line
         for line in takewhile(lambda line: line.startswith(under), lines[start + 1:]):
             text = line[len(under):]
             assert not is_command(text), f"a {length}-character name: {line!r}"
-            landed += text.lstrip("`").startswith(("comfy-qat go", "comfy-qat down"))
+            # Nor in backticks, which a shell runs as a command substitution
+            # pasted: the names are plain words in the sentence since CI-3.
+            assert not runs_if_pasted(text), f"a {length}-character name: {line!r}"
+            landed += text.startswith(("go or down", "down"))
         assert problems(lines) == [], (length, problems(lines))
     assert landed, "no length pushed the names to the start of a line"
 
