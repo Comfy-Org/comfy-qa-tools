@@ -1473,9 +1473,25 @@ def add_discovered_hosts(
         p.say(f"your host list could not be updated ({exc}), so nothing was added to it")
         return 0
 
+    from . import reservation as rsv
+    from .create import reserved_stop_lines
+
     for box, port in additions:
         state = "running" if box.running else "stopped"
         p.say(f"added {box.name} — {box.os}, {box.gpu or 'no GPU'}, {state}, port {port}")
+        # A RESERVED BOX GETS THE ENDING `discover` GIVES IT, from the same two
+        # functions. This wrote `gce_reservation` and then said only "added",
+        # so somebody running setup on a project where a colleague reserved a
+        # box learnt nothing of a bill that runs, stopped or not, until the box
+        # is deleted. Both steps for a running box: `delete` refuses one.
+        # Line by line, because `say.step` indents only the first line of what
+        # it is handed, which put each command level with its reason.
+        if box.reservation:
+            p.say(rsv.bill(box.name))
+            for block in (reserved_stop_lines(box.name) if box.running
+                          else [rsv.stop_line(box.name)]):
+                for line in block.splitlines():
+                    p.say(line)
     return len(additions)
 
 

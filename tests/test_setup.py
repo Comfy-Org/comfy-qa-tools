@@ -232,6 +232,48 @@ def test_setup_adds_cloud_boxes_without_anyone_typing_a_zone(tmp_path):
     assert any("added comfy-win" in line and "stopped" in line for line in p.said)
 
 
+BOUND_WIN = dict(COMFY_WIN, reservationAffinity={
+    "consumeReservationType": "SPECIFIC_RESERVATION",
+    "key": "compute.googleapis.com/reservation-name",
+    "values": ["comfy-win-rsv"],
+})
+
+
+@pytest.mark.parametrize("status", ["RUNNING", "TERMINATED"])
+def test_setup_says_what_an_adopted_reserved_box_bills_as_discover_does(tmp_path, status):
+    """`setup` adopts boxes through the same `new_hosts` `discover` uses, and
+    wrote `gce_reservation` correctly — but said only "added comfy-win — …,
+    running, port 8190", where `discover` says the box bills every hour until
+    it is deleted and prints what ends that. Somebody running `setup` on a
+    colleague's project is exactly who does not know the box is reserved."""
+    from comfy_qa import reservation as rsv
+    from comfy_qa.create import reserved_stop_lines
+
+    config = tmp_path / "hosts.toml"
+    responses = dict(READY, **{"compute instances list": [dict(BOUND_WIN, status=status)]})
+    p = prompts()
+    run_setup(gcloud(**responses), p, config_path=config)
+
+    assert 'gce_reservation = "comfy-win-rsv"' in config.read_text()
+    # The lines `discover` prints for the same box, in its order: the bill, then
+    # both steps for a running box (`delete` refuses one), or `delete` alone.
+    ending = [rsv.bill("comfy-win"),
+              *"\n".join(reserved_stop_lines("comfy-win") if status == "RUNNING"
+                         else [rsv.stop_line("comfy-win")]).splitlines()]
+    added = next(i for i, line in enumerate(p.said) if line.startswith("added comfy-win"))
+    assert p.said[added + 1:added + 1 + len(ending)] == ending, p.said
+
+
+def test_setup_says_nothing_about_a_reservation_an_adopted_box_does_not_have(tmp_path):
+    """The other side: an ordinary box is not told it bills like a reserved one."""
+    responses = dict(READY, **{"compute instances list": [dict(COMFY_WIN, status="RUNNING")]})
+    p = prompts()
+    run_setup(gcloud(**responses), p, config_path=tmp_path / "hosts.toml")
+
+    assert any(line.startswith("added comfy-win") for line in p.said), p.said
+    assert not any("reserved" in line for line in p.said), p.said
+
+
 def test_running_setup_twice_does_not_add_the_box_twice(tmp_path):
     config = tmp_path / "hosts.toml"
     responses = dict(READY, **{"compute instances list": [COMFY_WIN]})
