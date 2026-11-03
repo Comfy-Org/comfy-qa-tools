@@ -209,9 +209,13 @@ class FakeGcloud:
 
     def ssh(self, instance: str, zone: str, project: str, remote: str,
             *, stream: bool = True) -> int:
+        from comfy_qa.provision import CHANGING, INSTALLING
+
         self.calls.append(("ssh", instance, zone, project))
         self.remote.append(remote)
-        if "clone" in remote:  # the install script
+        # The install script, and since 1.4.0 the build change: both are
+        # comfy-cli on the box, told apart by the line each prints first.
+        if INSTALLING in remote or CHANGING in remote or "clone" in remote:
             if self.install_exit == 0 and self.install_works:
                 self.installed = True
             return _resolve(self.install_exit)
@@ -480,10 +484,18 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         mode = self.server.mode
+        pages = getattr(self.server, "pages", {})
         if mode == "garbage":
             body = b"<html>this is not ComfyUI</html>"
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
+        elif mode != "garbage" and self.path in pages:
+            # Anything else a test wants this ComfyUI to serve — the frontend's
+            # page and bundle, Manager's version route — as (type, body).
+            kind, body = pages[self.path]
+            body = body.encode() if isinstance(body, str) else body
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
         elif self.path.rstrip("/") != "/system_stats":
             self.send_response(404)
             self.end_headers()
@@ -504,16 +516,33 @@ class FakeComfyUI:
     on it until the install finishes is `reset` and then `serving`.
     """
 
-    def __init__(self, mode: str = "serving", payload: dict | None = None) -> None:
+    def __init__(self, mode: str = "serving", payload: dict | None = None,
+                 pages: dict | None = None) -> None:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.server.mode = mode
         self.server.payload = payload or SYSTEM_STATS
+        # Paths served besides /system_stats, as {path: (content type, body)}.
+        # Empty by default: a ComfyUI that serves nothing else, which is what
+        # every test written before 1.4.0 was written against.
+        self.server.pages = dict(pages or {})
         self.port = self.server.server_address[1]
         self.url = f"http://127.0.0.1:{self.port}"
         # A short poll interval only so shutdown is quick; nothing depends on it.
         self._thread = threading.Thread(
             target=lambda: self.server.serve_forever(poll_interval=0.02), daemon=True)
         self._thread.start()
+
+    @property
+    def pages(self) -> dict:
+        return self.server.pages
+
+    @property
+    def payload(self) -> dict:
+        return self.server.payload
+
+    @payload.setter
+    def payload(self, value: dict) -> None:
+        self.server.payload = value
 
     @property
     def mode(self) -> str:

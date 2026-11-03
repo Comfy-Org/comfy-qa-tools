@@ -639,3 +639,20 @@ def _render_like_a_pipe():
         os.environ.pop(var, None)
     os.environ.setdefault("COLUMNS", "120")
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_test_asks_github(monkeypatch):
+    """`build.check` asks GitHub whether a release, a PR or a commit exists
+    (S2-9). The network tripwire above stops a socket and not a process, and
+    the check prefers `gh api`, which is a process — so it is refused here by
+    name. A test that wants an answer hands `check` its own, or replaces
+    `build.github` itself."""
+    from comfy_qa import build
+
+    def refuse(path):
+        raise AssertionError(
+            f"this test asked the real GitHub for {path!r}. Give build.check an "
+            f"answer of its own (tests/test_build_choice.py, Hub).")
+
+    monkeypatch.setattr(build, "github", refuse)

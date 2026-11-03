@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import re
 
+from .build import COMFY_CLI_VERSION, CUDA_TAGS, DEFAULT, Build
 from .config import Host, declares_no_gpu
 from .osfamily import is_windows
 from .tunnel import COMFYUI_PORT
@@ -606,45 +607,140 @@ def repair_command(host: Host, *, force_torch: bool = False,
     )
 
 
-def install_command(host: Host, index: str | None = None) -> str:
-    """Set ComfyUI up from nothing, printing progress as it goes.
+# --- installing with comfy-cli ------------------------------------------------
+#
+# 1.4.0 hands the install to comfy-cli, on the box. It used to be a hand-rolled
+# `git clone` of whatever master was that minute, then pip by hand; it is now
+# `comfy install` with the build's own options (see `build.py`), so the tool
+# that picks the release, the PR or the commit is the one Comfy ships for the
+# purpose, and what this file adds around it is what comfy-cli does not do: the
+# prerequisites, a pinned comfy-cli of its own, the pin on torch, and a record
+# of what was asked for.
+#
+# Where things live. comfy-cli gets a venv of its own, beside ComfyUI rather than
+# inside it, because `comfy install` refuses a workspace that already exists and
+# is not a checkout — and a venv inside the workspace would be exactly that. Run
+# from a venv, comfy-cli builds the workspace its own `.venv`
+# (comfy_cli/resolve_python.py, `ensure_workspace_python`), which is the third
+# layout `WINDOWS_PYTHONS` and `LINUX_PYTHONS` already search.
+#
+# On Linux the checkout itself is made in `/opt/comfy-qat/ComfyUI` and
+# `/opt/comfyui` is a link to it. `/opt` belongs to root, and comfy-cli clones
+# into a directory it creates — so it cannot create `/opt/comfyui`, and a
+# `/opt/comfyui` made for it beforehand is a directory that exists and is not a
+# checkout, which it refuses. Everything else in this file keeps saying
+# `/opt/comfyui`, and a box from before 1.4.0, whose `/opt/comfyui` is a real
+# checkout, is used where it is.
+LINUX_TOOL = "/opt/comfy-qat"
+WINDOWS_TOOL = r"C:\comfy-qat"
+LINUX_CHECKOUT = f"{LINUX_TOOL}/ComfyUI"
+_LINUX_CLI_PY = f"{LINUX_TOOL}/venv/bin/python"
+_LINUX_CLI = f"{LINUX_TOOL}/venv/bin/comfy"
+_WINDOWS_CLI_PY = rf"{WINDOWS_TOOL}\venv\Scripts\python.exe"
+_WINDOWS_CLI = rf"{WINDOWS_TOOL}\venv\Scripts\comfy.exe"
+
+# What the box keeps about its build. `build.txt` is `Build.spec()`, the build it
+# was last asked to run; `frontend_root.txt` is where a frontend PR's build
+# landed, which only the box can know.
+LINUX_RECORD = f"{LINUX_TOOL}/build.txt"
+WINDOWS_RECORD = rf"{WINDOWS_TOOL}\build.txt"
+LINUX_FRONTEND_ROOT = f"{LINUX_TOOL}/frontend_root.txt"
+WINDOWS_FRONTEND_ROOT = rf"{WINDOWS_TOOL}\frontend_root.txt"
+
+# Node.js for building a frontend PR: the frontend's own package.json asks for
+# `>=26.8.2 <27` and pnpm 11 (read 2026-11-03), and 26.13.0 is the LTS release
+# nodejs.org listed that day. Only a frontend PR fetches it.
+NODE_VERSION = "v26.13.0"
+
+# What the install and the build change print first. The suite's fake box tells
+# the two apart by these, so they are words a reader of the log can see too.
+INSTALLING = "installing ComfyUI with comfy-cli"
+CHANGING = "changing the build with comfy-cli"
+# Printed only by a clean install, which is the one that deletes the checkout.
+CLEANING = "clean install: removing the ComfyUI checkout"
+
+# The Python that turns a frontend PR into a directory: comfy-cli's own builder,
+# the function `comfy launch --frontend-pr` calls (comfy_cli/command/install.py,
+# `handle_temporary_frontend_pr`), without the launch. No quote characters, so it
+# rides inside the single quotes of either shell unchanged; the marker it prints
+# comes in as an argument for the same reason.
+_FRONTEND_BUILDER = ("import sys;"
+                     "from comfy_cli.command.install import handle_temporary_frontend_pr as b;"
+                     "r=b(sys.argv[1]);print();print(sys.argv[2]+(r or str()))")
+
+
+def _cuda_for(index: str | None) -> str | None:
+    """comfy-cli's `--cuda-version` for a PyTorch index: `13.0` for `.../cu130`.
+
+    The box's driver still decides, exactly as before: the caller asks it with
+    `cuda_command` and passes the index `torch_index` chose. comfy-cli would
+    detect the same thing by itself; saying it explicitly keeps the choice this
+    tool has always made, and visible in the command it prints.
+    """
+    tag = (index or "").rstrip("/").rsplit("/", 1)[-1]
+    return CUDA_TAGS.get(tag)
+
+
+def comfy_install_args(host: Host, build: Build = DEFAULT, index: str | None = None
+                       ) -> list[str]:
+    """`comfy install`'s options for this box and build, unquoted."""
+    if declares_no_gpu(host):
+        gpu = ["--cpu"]
+    else:
+        gpu = ["--nvidia"]
+        cuda = build.cuda_version or _cuda_for(index)
+        if cuda:
+            gpu += ["--cuda-version", cuda]
+    manager = [] if build.manager else ["--skip-manager"]
+    return [*gpu, *build.backend_args(), *manager]
+
+
+def _sh_args(args: list[str]) -> str:
+    """The arguments as sh reads them. Only `#` needs quoting here: it starts a
+    comment, so `--pr #17497` would lose its value."""
+    return " ".join(f"'{arg}'" if arg.startswith("#") else arg for arg in args)
+
+
+def _ps_array(args: list[str]) -> str:
+    return "@(" + ", ".join(f"'{arg}'" for arg in args) + ")"
+
+
+def install_command(host: Host, index: str | None = None, *, build: Build | None = None,
+                    clean: bool = False) -> str:
+    """Set ComfyUI up from nothing with comfy-cli, printing progress as it goes.
 
     `index` is the PyTorch index this box's driver supports; the caller asks the
-    box with `cuda_command` and passes the answer. Without one the documented
-    fallback is used, which installs and runs — just not always as fast as the
-    card could.
+    box with `cuda_command` and passes the answer, and it reaches comfy-cli as
+    `--cuda-version`. A `+cuXXX` torch pin in `build` wins over it. A box
+    declared to have no GPU installs with `--cpu`, whatever was passed.
 
-    A box declared to have no GPU installs the CPU build, whatever was passed.
+    A checkout already there — one whose environment was broken, which is when
+    `check_command` sends a box here with main.py on it — is installed into with
+    `--restore` rather than deleted, so its custom nodes and models survive.
+    `clean` is the one that deletes it, and only when asked.
     """
-    if declares_no_gpu(host):
-        index = CPU_TORCH_INDEX
+    build = build or DEFAULT
     if is_windows(host):
-        # winget is present on Server 2022 images; git and python come from there.
-        return (
-            "powershell -NoProfile -NonInteractive -Command \""
-            "Write-Output 'installing prerequisites'; "
-            "winget install --id Git.Git -e --silent "
-            "--accept-source-agreements --accept-package-agreements; "
-            f"winget install --id Python.Python.{PYTHON_SERIES} -e --silent "
-            "--accept-source-agreements --accept-package-agreements; "
-            f"Write-Output 'cloning ComfyUI into {WINDOWS_ROOT}'; "
-            f"git clone https://github.com/comfyanonymous/ComfyUI.git '{WINDOWS_ROOT}'; "
-            # Without this the next line fails quietly and everything after it
-            # installs into whatever directory PowerShell happened to be in.
-            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
-            "{ Write-Output 'INSTALL_INCOMPLETE: the clone did not produce main.py'; "
-            "exit 1 }; "
-            f"Set-Location '{WINDOWS_ROOT}'; "
-            f"py -{PYTHON_SERIES} -m venv venv; "
-            "Write-Output 'installing torch (this is the slow part)'; "
-            ".\\venv\\Scripts\\python.exe -m pip install --upgrade pip; "
-            ".\\venv\\Scripts\\python.exe -m pip install torch torchvision torchaudio "
-            f"--index-url {index or TORCH_INDEX}; "
-            ".\\venv\\Scripts\\python.exe -m pip install -r requirements.txt; "
-            f"if (-not (Test-Path '{WINDOWS_ROOT}\\main.py')) "
-            "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; "
-            "Write-Output 'install complete'\""
-        )
+        return _windows_script(host, build, index, clean=clean, change=False)
+    return _linux_script(host, build, index, clean=clean, change=False)
+
+
+def change_command(host: Host, build: Build, index: str | None = None) -> str:
+    """Put a different build on a box that already has ComfyUI, keeping its nodes.
+
+    `comfy install --restore` on the existing checkout: comfy-cli checks out the
+    release, the PR or the commit in place and reinstalls requirements and
+    Manager, and nothing under `custom_nodes/` or `models/` is touched — they
+    are not part of the checkout. A build that names no backend leaves the
+    checkout where it is and changes only what it does name.
+    """
+    if is_windows(host):
+        return _windows_script(host, build, index, clean=False, change=True)
+    return _linux_script(host, build, index, clean=False, change=True)
+
+
+def _linux_script(host: Host, build: Build, index: str | None, *, clean: bool,
+                  change: bool) -> str:
     # `env DEBIAN_FRONTEND=noninteractive`, not `sudo DEBIAN_FRONTEND=...`:
     # command-line environment assignments go through sudoers, and a hardened
     # one refuses them outright. `env` is a binary run as root and always works.
@@ -658,54 +754,305 @@ def install_command(host: Host, index: str | None = None) -> str:
     apt = (f"sudo env DEBIAN_FRONTEND=noninteractive "
            f"apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT} -y -qq")
     series = " ".join(PYTHON_SERIES_SUPPORTED)
-    return (
-        "set -e; "
-        "echo 'installing prerequisites'; "
-        f"{apt} update; "
-        f"{apt} install git; "
+    args = comfy_install_args(host, build, index)
+    shown = " ".join(args)
+    parts = [
+        "set -e; ",
+        f"echo '{CHANGING if change else INSTALLING}: {build.describe()}'; "
+        .replace(" · ", ", "),
+        "echo 'installing prerequisites'; ",
+        f"{apt} update; ",
+        f"{apt} install git; ",
         # The interpreter is discovered, not assumed. `python3` is deliberately
         # last: on 24.04 it is 3.12 and fine, on 22.04 it is 3.10 and also fine,
         # but on an image that has moved to 3.13 it is the one answer that must
         # not win, so it is only reached when no supported series is installed.
-        f'PY=""; for v in {series}; do '
-        'if command -v "python$v" >/dev/null 2>&1; then PY="python$v"; break; fi; '
-        "done; "
-        f'if [ -z "$PY" ]; then for v in {series}; do '
-        f'if {apt} install "python$v-venv" >/dev/null 2>&1; '
-        'then PY="python$v"; break; fi; done; fi; '
-        'if [ -z "$PY" ]; then '
-        "echo 'INSTALL_INCOMPLETE: no supported python (3.10-3.12) on this image'; "
-        "exit 1; fi; "
+        f'PY=""; for v in {series}; do ',
+        'if command -v "python$v" >/dev/null 2>&1; then PY="python$v"; break; fi; ',
+        "done; ",
+        f'if [ -z "$PY" ]; then for v in {series}; do ',
+        f'if {apt} install "python$v-venv" >/dev/null 2>&1; ',
+        'then PY="python$v"; break; fi; done; fi; ',
+        'if [ -z "$PY" ]; then ',
+        "echo 'INSTALL_INCOMPLETE: no supported python (3.10-3.12) on this image'; ",
+        "exit 1; fi; ",
         # Debian and Ubuntu ship venv as a separate package, so a present
         # interpreter is not a usable one. Installing it is cheap and idempotent.
-        f'{apt} install "$PY-venv"; '
-        'echo "building with $PY"; '
-        f"echo 'cloning ComfyUI into {LINUX_ROOT}'; "
-        f"sudo mkdir -p {LINUX_ROOT} && sudo chown \"$USER\" {LINUX_ROOT}; "
-        f"git clone https://github.com/comfyanonymous/ComfyUI.git {LINUX_ROOT} || true; "
-        f"cd {LINUX_ROOT}; "
-        # --clear when one is already there. A venv built before python3.10-venv
+        f'{apt} install "$PY-venv"; ',
+        'echo "building with $PY"; ',
+        f'sudo mkdir -p {LINUX_TOOL} && sudo chown "$USER" {LINUX_TOOL}; ',
+        f"echo 'installing comfy-cli {COMFY_CLI_VERSION} into {LINUX_TOOL}/venv'; ",
+        # --clear when one is there and broken: a venv built before python3.x-venv
         # was installed has no pip in it, and `python -m venv` over the top of it
-        # leaves that as it is; --clear empties it first. Scoped to the venv
-        # directory, so a re-run never touches the clone or the models beside it.
-        'if ./venv/bin/python -m pip --version >/dev/null 2>&1; '
-        'then echo "reusing the venv"; '
-        'else "$PY" -m venv --clear venv; fi; '
-        # Without this the pip lines below run against a half-made venv and the
-        # error surfaces a hundred lines later as a missing module.
-        "if ! ./venv/bin/python -m pip --version >/dev/null 2>&1; then "
-        "echo 'INSTALL_INCOMPLETE: the venv has no pip'; exit 1; fi; "
-        "echo 'installing torch (this is the slow part)'; "
-        "./venv/bin/python -m pip install --upgrade pip; "
-        "./venv/bin/python -m pip install torch torchvision torchaudio"
-        + (f" --index-url {index}; " if index else "; ")
-        + "./venv/bin/python -m pip install -r requirements.txt; "
-        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo INSTALL_INCOMPLETE; exit 1; fi; "
-        "echo 'install complete'"
+        # leaves that as it is.
+        f"if {_LINUX_CLI_PY} -m pip --version >/dev/null 2>&1; ",
+        "then echo 'reusing the venv comfy-cli is in'; ",
+        f'else "$PY" -m venv --clear {LINUX_TOOL}/venv; fi; ',
+        f"if ! {_LINUX_CLI_PY} -m pip --version >/dev/null 2>&1; then ",
+        "echo 'INSTALL_INCOMPLETE: the venv for comfy-cli has no pip'; exit 1; fi; ",
+        f"{_LINUX_CLI_PY} -m pip install --quiet --upgrade pip; ",
+        f"{_LINUX_CLI_PY} -m pip install --quiet comfy-cli=={COMFY_CLI_VERSION}; ",
+        f"if [ ! -x {_LINUX_CLI} ]; then ",
+        "echo 'INSTALL_INCOMPLETE: comfy-cli did not install'; exit 1; fi; ",
+        # The exit tax. comfy-cli flushes telemetry at exit against a five-second
+        # deadline unless told not to (reference-comfy-cli-defects.md, defect 1),
+        # and it would otherwise pay it on every command it runs here. The other
+        # two keep its Rich output from dying on a byte the terminal cannot take.
+        "export DO_NOT_TRACK=1 PYTHONUTF8=1 PYTHONIOENCODING=utf-8; ",
+    ]
+    parts.append(_linux_pin(build))
+    if change:
+        parts += [
+            f"if [ ! -f {LINUX_ROOT}/main.py ]; then ",
+            f"echo 'INSTALL_INCOMPLETE: there is no ComfyUI in {LINUX_ROOT} to change'; ",
+            "exit 1; fi; ",
+            # A tag or a commit newer than the checkout's last fetch is not there
+            # to check out. comfy-cli fetches for a PR, not for these.
+            f"git -c safe.directory='*' -C {LINUX_ROOT} fetch --tags --quiet origin "
+            "|| echo 'could not fetch from origin - using what the checkout has'; ",
+            f"WS={LINUX_ROOT}; RESTORE=--restore; ",
+        ]
+    else:
+        if clean:
+            parts += [
+                f"echo '{CLEANING}, its custom nodes and its models'; ",
+                f"target=$(readlink -f {LINUX_ROOT} || echo {LINUX_ROOT}); ",
+                'case "$target" in /opt/?*) ;; *) ',
+                "echo 'INSTALL_INCOMPLETE: refusing to remove a checkout outside /opt'; ",
+                "exit 1;; esac; ",
+                f'sudo rm -rf "$target" {LINUX_ROOT}; ',
+            ]
+        parts += [
+            f"if [ -f {LINUX_ROOT}/main.py ]; then ",
+            # A checkout whose venv cannot run pip is why `check_command` said
+            # MISSING. The venv goes; the checkout, its nodes and models stay.
+            f"if [ -e {LINUX_ROOT}/venv ] && ! {LINUX_ROOT}/venv/bin/python -m pip "
+            "--version >/dev/null 2>&1; then echo 'rebuilding a venv that has no pip'; ",
+            f"rm -rf {LINUX_ROOT}/venv; fi; ",
+            f"WS={LINUX_ROOT}; RESTORE=--restore; ",
+            "else ",
+            f"if [ -e {LINUX_ROOT} ] && [ ! -L {LINUX_ROOT} ]; then ",
+            f"sudo rmdir {LINUX_ROOT} 2>/dev/null || {{ echo 'INSTALL_INCOMPLETE: "
+            f"{LINUX_ROOT} holds something that is not ComfyUI - move it aside and run "
+            "this again'; exit 1; }; fi; ",
+            # What an interrupted first attempt leaves: a clone with no main.py,
+            # which comfy-cli refuses as "not a valid git repository".
+            f"if [ -d {LINUX_CHECKOUT} ] && [ ! -f {LINUX_CHECKOUT}/main.py ]; then "
+            f"rm -rf {LINUX_CHECKOUT}; fi; ",
+            f'WS={LINUX_CHECKOUT}; RESTORE=""; fi; ',
+        ]
+    parts += [
+        "echo 'comfy-cli installs torch first (the slow part), then the "
+        "requirements, then Manager'; ",
+        f'echo "+ comfy --skip-prompt --workspace $WS install $RESTORE {shown}"; ',
+        f'{_LINUX_CLI} --skip-prompt --workspace "$WS" install $RESTORE {_sh_args(args)}; ',
+        f"if [ ! -e {LINUX_ROOT} ]; then sudo ln -s {LINUX_CHECKOUT} {LINUX_ROOT}; fi; ",
+        f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo INSTALL_INCOMPLETE; exit 1; fi; ",
+    ]
+    parts.append(_linux_frontend(build))
+    parts += [
+        f"printf '%s\\n' '{build.spec()}' > {LINUX_RECORD}; ",
+        "echo 'install complete'",
+    ]
+    return "".join(parts)
+
+
+def _linux_pin(build: Build) -> str:
+    constraint = build.constraint()
+    if not constraint:
+        return f"rm -f {LINUX_TOOL}/constraints.txt; unset PIP_CONSTRAINT; "
+    return (f"printf '%s\\n' '{constraint}' > {LINUX_TOOL}/constraints.txt; "
+            f"export PIP_CONSTRAINT={LINUX_TOOL}/constraints.txt; "
+            f"echo 'pinning {constraint} for every pip install comfy-cli runs'; ")
+
+
+def _linux_frontend(build: Build) -> str:
+    if not build.frontend_pr:
+        return f"rm -f {LINUX_FRONTEND_ROOT}; "
+    node = f"{LINUX_TOOL}/node"
+    tarball = (f"https://nodejs.org/dist/{NODE_VERSION}/"
+               f"node-{NODE_VERSION}-linux-x64.tar.xz")
+    return (
+        f"echo 'building frontend PR #{build.frontend_pr} with comfy-cli "
+        f"(Node.js {NODE_VERSION} and pnpm first)'; "
+        f"if [ ! -x {node}/bin/node ]; then mkdir -p {node}; "
+        f"curl -fsSL {tarball} | tar -xJ -C {node} --strip-components=1; fi; "
+        f"export PATH={node}/bin:$PATH; "
+        "command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@11; "
+        f"out=$({_LINUX_CLI_PY} -c '{_FRONTEND_BUILDER}' "
+        f"'#{build.frontend_pr}' 'FRONTEND_ROOT='); "
+        "printf '%s\\n' \"$out\"; "
+        "root=$(printf '%s\\n' \"$out\" | sed -n 's/^FRONTEND_ROOT=//p' | tail -n 1); "
+        "if [ -z \"$root\" ]; then "
+        "echo 'INSTALL_INCOMPLETE: the frontend PR did not build'; exit 1; fi; "
+        f"printf '%s\\n' \"$root\" > {LINUX_FRONTEND_ROOT}; "
     )
 
 
-def launch_command(host: Host) -> str:
+def _windows_script(host: Host, build: Build, index: str | None, *, clean: bool,
+                    change: bool) -> str:
+    """The same install on Windows Server. ASCII only, `Continue` throughout,
+    no `Split-Path`, judged by exit codes and artefacts — the three rules at
+    the top of this file, each of which cost a real box an afternoon."""
+    args = comfy_install_args(host, build, index)
+    root = WINDOWS_ROOT
+    parts = [
+        "powershell -NoProfile -NonInteractive -Command \"",
+        f"Write-Output '{CHANGING if change else INSTALLING}: "
+        f"{build.describe().replace(' · ', ', ')}'; ",
+        "Write-Output 'installing prerequisites'; ",
+        # winget is present on Server 2022 images; git and python come from there.
+        "winget install --id Git.Git -e --silent "
+        "--accept-source-agreements --accept-package-agreements; ",
+        f"winget install --id Python.Python.{PYTHON_SERIES} -e --silent "
+        "--accept-source-agreements --accept-package-agreements; ",
+        # winget changes the machine's PATH, not this session's, and comfy-cli
+        # needs git on PATH for every checkout it makes. Git's own directory is
+        # named too, for a session whose registry read comes back stale.
+        "$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + "
+        "[Environment]::GetEnvironmentVariable('Path', 'User') + "
+        "';C:\\Program Files\\Git\\cmd'; ",
+        f"New-Item -ItemType Directory -Force -Path '{WINDOWS_TOOL}' | Out-Null; ",
+        f"Write-Output 'installing comfy-cli {COMFY_CLI_VERSION} into "
+        f"{WINDOWS_TOOL}\\venv'; ",
+        f"if (-not (Test-Path '{_WINDOWS_CLI_PY}')) "
+        f"{{ py -{PYTHON_SERIES} -m venv '{WINDOWS_TOOL}\\venv' }}; ",
+        f"& '{_WINDOWS_CLI_PY}' -m pip install --quiet --upgrade pip; ",
+        f"& '{_WINDOWS_CLI_PY}' -m pip install --quiet comfy-cli=={COMFY_CLI_VERSION}; ",
+        f"if (-not (Test-Path '{_WINDOWS_CLI}')) "
+        "{ Write-Output 'INSTALL_INCOMPLETE: comfy-cli did not install'; exit 1 }; ",
+        # See the Linux half for these three.
+        "$env:DO_NOT_TRACK = '1'; $env:PYTHONUTF8 = '1'; $env:PYTHONIOENCODING = 'utf-8'; ",
+    ]
+    constraint = build.constraint()
+    if constraint:
+        parts += [
+            f"Set-Content -Path '{WINDOWS_TOOL}\\constraints.txt' -Value '{constraint}' "
+            "-Encoding ascii; ",
+            f"$env:PIP_CONSTRAINT = '{WINDOWS_TOOL}\\constraints.txt'; ",
+            f"Write-Output 'pinning {constraint} for every pip install comfy-cli runs'; ",
+        ]
+    else:
+        parts.append(f"Remove-Item -Path '{WINDOWS_TOOL}\\constraints.txt' -Force "
+                     "-ErrorAction SilentlyContinue; $env:PIP_CONSTRAINT = $null; ")
+    parts.append(f"$a = @('--skip-prompt', '--workspace', '{root}', 'install'); ")
+    if change:
+        parts += [
+            f"if (-not (Test-Path '{root}\\main.py')) {{ Write-Output "
+            f"'INSTALL_INCOMPLETE: there is no ComfyUI in {root} to change'; exit 1 }}; ",
+            f"& git -c safe.directory=* -C '{root}' fetch --tags --quiet origin 2>$null; ",
+            "$a += '--restore'; ",
+        ]
+    else:
+        if clean:
+            parts += [
+                f"Write-Output '{CLEANING}, its custom nodes and its models'; ",
+                f"if (Test-Path '{root}') {{ Remove-Item -Recurse -Force '{root}' }}; ",
+            ]
+        parts += [
+            f"if (Test-Path '{root}\\main.py') {{ $a += '--restore' }} ",
+            # An interrupted clone, which comfy-cli refuses as not a checkout.
+            f"elseif (Test-Path '{root}') {{ Remove-Item -Recurse -Force '{root}' }}; ",
+        ]
+    parts += [
+        f"$a += {_ps_array(args)}; ",
+        "Write-Output 'comfy-cli installs torch first (the slow part), then the "
+        "requirements, then Manager'; ",
+        "Write-Output ('+ comfy ' + ($a -join ' ')); ",
+        f"& '{_WINDOWS_CLI}' @a; ",
+        "if ($LASTEXITCODE -ne 0) "
+        "{ Write-Output ('INSTALL_INCOMPLETE: comfy install exited ' + $LASTEXITCODE); "
+        "exit 1 }; ",
+        f"if (-not (Test-Path '{root}\\main.py')) "
+        "{ Write-Output 'INSTALL_INCOMPLETE'; exit 1 }; ",
+    ]
+    parts.append(_windows_frontend(build))
+    parts += [
+        f"Set-Content -Path '{WINDOWS_RECORD}' -Value '{build.spec()}' -Encoding ascii; ",
+        "Write-Output 'install complete'\"",
+    ]
+    return "".join(parts)
+
+
+def _windows_frontend(build: Build) -> str:
+    if not build.frontend_pr:
+        return (f"Remove-Item -Path '{WINDOWS_FRONTEND_ROOT}' -Force "
+                "-ErrorAction SilentlyContinue; ")
+    node = rf"{WINDOWS_TOOL}\node-{NODE_VERSION}-win-x64"
+    archive = f"https://nodejs.org/dist/{NODE_VERSION}/node-{NODE_VERSION}-win-x64.zip"
+    return (
+        f"Write-Output 'building frontend PR #{build.frontend_pr} with comfy-cli "
+        f"(Node.js {NODE_VERSION} and pnpm first)'; "
+        f"if (-not (Test-Path '{node}\\node.exe')) {{ $ProgressPreference = "
+        f"'SilentlyContinue'; Invoke-WebRequest -Uri '{archive}' -OutFile "
+        f"'{WINDOWS_TOOL}\\node.zip' -UseBasicParsing; Expand-Archive -Path "
+        f"'{WINDOWS_TOOL}\\node.zip' -DestinationPath '{WINDOWS_TOOL}' -Force }}; "
+        f"$env:Path = '{node};' + $env:Path; "
+        f"if (-not (Test-Path '{node}\\pnpm.cmd')) "
+        f"{{ & '{node}\\npm.cmd' install -g pnpm@11 --prefix '{node}' }}; "
+        f"$out = (& '{_WINDOWS_CLI_PY}' -c '{_FRONTEND_BUILDER}' "
+        f"'#{build.frontend_pr}' 'FRONTEND_ROOT='); "
+        "$out | ForEach-Object { Write-Output $_ }; "
+        "$hit = $out | Where-Object { $_ -like 'FRONTEND_ROOT=*' } | Select-Object -Last 1; "
+        "$root = ''; if ($hit) { $root = $hit.Substring(14) }; "
+        "if (-not $root) { Write-Output 'INSTALL_INCOMPLETE: the frontend PR did not "
+        "build'; exit 1 }; "
+        f"Set-Content -Path '{WINDOWS_FRONTEND_ROOT}' -Value $root -Encoding ascii; "
+    )
+
+
+def record_command(host: Host, build: Build) -> str:
+    """Write the box's record and nothing else: a frontend RELEASE change.
+
+    ComfyUI fetches a frontend release itself when it starts, so moving to one
+    is a change of record and of launch arguments, not an install.
+    """
+    if is_windows(host):
+        return ("powershell -NoProfile -NonInteractive -Command \""
+                f"New-Item -ItemType Directory -Force -Path '{WINDOWS_TOOL}' | Out-Null; "
+                f"Set-Content -Path '{WINDOWS_RECORD}' -Value '{build.spec()}' "
+                "-Encoding ascii\"")
+    return (f'sudo mkdir -p {LINUX_TOOL} && sudo chown "$USER" {LINUX_TOOL}; '
+            f"printf '%s\\n' '{build.spec()}' > {LINUX_RECORD}")
+
+
+def facts_command(host: Host) -> str:
+    """Ask the box what it runs: the checkout's commit and branch, and its record.
+
+    Four lines, `KEY=value`, every one of them printed whatever is missing, and
+    exit 0 — "nothing recorded" is an answer. git is asked with
+    `safe.directory` open because the checkout belongs to whoever installed it,
+    and git refuses another user's repository otherwise.
+    """
+    if is_windows(host):
+        return (
+            "powershell -NoProfile -NonInteractive -Command \""
+            "$git = (Get-Command git -ErrorAction SilentlyContinue).Source; "
+            "if (-not $git) { $git = 'C:\\Program Files\\Git\\cmd\\git.exe' }; "
+            "$c = ''; $b = ''; "
+            f"if ((Test-Path '{WINDOWS_ROOT}\\.git') -and (Test-Path $git)) {{ "
+            f"$c = (& $git -c safe.directory=* -C '{WINDOWS_ROOT}' rev-parse HEAD "
+            "2>$null); "
+            f"$b = (& $git -c safe.directory=* -C '{WINDOWS_ROOT}' rev-parse "
+            "--abbrev-ref HEAD 2>$null) }; "
+            f"$r = ''; if (Test-Path '{WINDOWS_RECORD}') "
+            f"{{ $r = (Get-Content -Path '{WINDOWS_RECORD}' -TotalCount 1) }}; "
+            f"$f = ''; if (Test-Path '{WINDOWS_FRONTEND_ROOT}') "
+            f"{{ $f = (Get-Content -Path '{WINDOWS_FRONTEND_ROOT}' -TotalCount 1) }}; "
+            "Write-Output ('COMMIT=' + $c); Write-Output ('BRANCH=' + $b); "
+            "Write-Output ('RECORD=' + $r); Write-Output ('FRONTEND_ROOT=' + $f)\""
+        )
+    git = f"git -c safe.directory='*' -C {LINUX_ROOT}"
+    return (
+        f'echo "COMMIT=$({git} rev-parse HEAD 2>/dev/null)"; '
+        f'echo "BRANCH=$({git} rev-parse --abbrev-ref HEAD 2>/dev/null)"; '
+        f'echo "RECORD=$(head -n 1 {LINUX_RECORD} 2>/dev/null)"; '
+        f'echo "FRONTEND_ROOT=$(head -n 1 {LINUX_FRONTEND_ROOT} 2>/dev/null)"; '
+        "exit 0"
+    )
+
+
+def launch_command(host: Host, args: str = "") -> str:
     """Start ComfyUI in the foreground so its log streams back over SSH.
 
     The interpreter is discovered on the box rather than assumed: a ComfyUI
@@ -723,9 +1070,12 @@ def launch_command(host: Host) -> str:
 
     A box declared to have no GPU is started with `--cpu`. Without it ComfyUI
     looks for a CUDA device at startup and exits when there is none.
+
+    `args` is the build's own part of the command line — `Build.launch_args`:
+    `--enable-manager`, a frontend release or a frontend PR's directory.
     """
     listen = "127.0.0.1"
-    cpu = _cpu_flag(host)
+    cpu = _cpu_flag(host) + _extra(args)
     if is_windows(host):
         return (
             "powershell -NoProfile -NonInteractive -Command \""
@@ -745,6 +1095,16 @@ def launch_command(host: Host) -> str:
     )
 
 
+def _extra(args: str) -> str:
+    """The build's launch arguments, on the END of the line, after `--cpu`.
+
+    The end, for `_cpu_flag`'s reason: `alive_command` recognises a running
+    ComfyUI by `main.py --listen`, so nothing may come between the two.
+    """
+    args = " ".join(str(args or "").split())
+    return f" {args}" if args else ""
+
+
 def _cpu_flag(host: Host) -> str:
     """` --cpu` for a box declared to have no GPU, and nothing otherwise.
 
@@ -756,7 +1116,7 @@ def _cpu_flag(host: Host) -> str:
     return " --cpu" if declares_no_gpu(host) else ""
 
 
-def launch_detached_command(host: Host) -> str:
+def launch_detached_command(host: Host, args: str = "") -> str:
     """Start ComfyUI on the box and come straight back, with its log on the box.
 
     The same interpreter search as `launch_command`, and the same loopback bind
@@ -785,7 +1145,7 @@ def launch_detached_command(host: Host) -> str:
     conflating them is exactly the "a booted VM is up" mistake one level down.
     """
     listen = "127.0.0.1"
-    cpu = _cpu_flag(host)
+    cpu = _cpu_flag(host) + _extra(args)
     if is_windows(host):
         return (
             "powershell -NoProfile -NonInteractive -Command \""
