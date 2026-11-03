@@ -3217,10 +3217,10 @@ A reservation that no host list entry names is reported too — `1 reservation o
 releases it is printed under it: Google's `gcloud compute reservations delete …`
 when nothing is on it, or `comfy-qat discover` when a box is, so the box can be
 adopted and then deleted. Every project a declared box is on is read, and beside
-them the project your host list names — or, with no cloud box declared and no
-`project` line, the project gcloud is pointed at. That is where `create` makes a
-box, so it is where a `create --reserve` that stopped half-way leaves its
-reservation. If a project's reservations could not be read, the summary says
+them the project your host list names — or, whenever there is no `project` line,
+the project gcloud is pointed at, whether or not a cloud box is declared. That is
+where `create` makes a box, so it is where a `create --reserve` that stopped
+half-way leaves its reservation. If a project's reservations could not be read, the summary says
 `the project's reservations could not be checked … so this is not an all-clear`
 and prints the `gcloud compute reservations list` line for it. A run where a box
 refused to stop exits 1 and still says all of this.

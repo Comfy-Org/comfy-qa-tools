@@ -1850,6 +1850,40 @@ def _bound_live(gc, host: Host):
         return None
 
 
+def _projects_in_play(gc, hosts: list[Host], project: str | None
+                      ) -> tuple[list[str], bool]:
+    """Every project `down --all` has to read, and whether one could not be named.
+
+    Each project a declared box is on; then the one the host list names; and,
+    WHEN THE HOST LIST NAMES NONE, gcloud's current project as well. That last
+    clause is the whole of C1 (the step 1 audit's behaviour:F2). `create`
+    resolves its project through `project_for`, which falls back on gcloud's
+    when the host list has no `project` line — so with a box declared on `old`,
+    no line, and gcloud pointed at `new`, a box `create` made (or half made) is
+    on `new`. This used to ask gcloud only when there was no declared box at
+    all, so that run read `old` alone and could end on "Nothing is now." while
+    something billed on `new`.
+
+    The second value is True when gcloud's project was needed and the read
+    failed: the caller cannot then say it read every project `create` could
+    have used, and must not print an all-clear. A gcloud with NO project set
+    is not that — `create` refuses there, so nothing can have been made on it.
+    """
+    from .gcloud import GcloudError
+
+    projects = [*(h.gce_project for h in hosts if h.gce_project),
+                *([project] if project else [])]
+    unread = False
+    if not project:
+        try:
+            current = gc.current_project()
+        except (GcloudError, AttributeError):
+            current, unread = None, True
+        if current:
+            projects.append(current)
+    return list(dict.fromkeys(projects)), unread
+
+
 def _reservations_on(gc, hosts: list[Host], project: str | None = None):
     """Every reservation on every project in play: `{project: list | None}`.
 
@@ -1862,9 +1896,12 @@ def _reservations_on(gc, hosts: list[Host], project: str | None = None):
 
     EVERY project a declared box names, not the first one. A host list may
     name several, and a reservation on the second billed just as much while
-    only the first was read. With no cloud box declared and no project in the
-    host list it is the project gcloud is pointed at, which is then where a
-    `create` that stopped half-way left whatever it left.
+    only the first was read. With no project in the host list it is also the
+    project gcloud is pointed at, declared boxes or not, which is then where a
+    `create` that stopped half-way left whatever it left (C1). When gcloud's
+    project was needed and could not be read, it appears under the empty key
+    with None, so the summary withholds its all-clear rather than reading a
+    project it never named as an empty one.
 
     None for a project whose read did not come back — not `[]`. Read-and-empty
     is the only answer that may be printed as an all-clear. An empty mapping
@@ -1878,15 +1915,8 @@ def _reservations_on(gc, hosts: list[Host], project: str | None = None):
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
-                                   *([project] if project else [])]))
-    if not projects:
-        try:
-            current = gc.current_project()
-        except (GcloudError, AttributeError):
-            current = None
-        projects = [current] if current else []
-    found: dict[str, list | None] = {}
+    projects, unread = _projects_in_play(gc, hosts, project)
+    found: dict[str, list | None] = {"": None} if unread else {}
     for project in projects:
         try:
             found[project] = rsv.parse_all(gc.list_reservations(project))
@@ -1938,6 +1968,15 @@ def _say_reserved(gc, hosts: list[Host], reservations) -> None:
 
     declared = {(host.reservation, host.gce_zone, host.gce_project) for host in held}
     for project, found in reservations.items():
+        if found is None and not project:
+            # gcloud's own project, needed because the host list names none,
+            # and not readable — so there is no project ID to print a command
+            # for. `status` is the command that says what is wrong with gcloud.
+            _prose("\ngcloud's own project could not be read, so its "
+                   "reservations were not checked, and a reservation bills with "
+                   "its box stopped — so this is not an all-clear.")
+            say.result("  comfy-qat status")
+            continue
         if found is None:
             _prose("\nthe project's reservations could not be checked, and a "
                    "reservation bills with its box stopped — so this is not an "
@@ -4302,18 +4341,12 @@ def _undeclared_and_running(gc, hosts: list[Host], project: str | None = None
     # an old box on the old project and new work on the new one, a box running
     # on the new project in no entry was never read, and the run ended on
     # "Nothing is now." while it billed. Reservations were already read on both.
-    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
-                                   *([project] if project else [])]))
-    if not projects:
-        # No declared cloud host to take it from — which is the case this
-        # matters most in. Ask gcloud what project is configured.
-        try:
-            current = gc.current_project()
-        except (GcloudError, AttributeError):
-            return None
-        if not current:
-            return None
-        projects = [current]
+    projects, unread = _projects_in_play(gc, hosts, project)
+    if unread or not projects:
+        # gcloud's project was needed and could not be named — or there was no
+        # project to ask at all. Either way this run did not read where `create`
+        # could have put a box, so it has no all-clear to give.
+        return None
     # Declared means this box on this project: the same name on another project
     # is somebody else's box. An entry with no `gce_project` is matched by name
     # wherever it is found, as before, rather than called a stranger.

@@ -123,6 +123,14 @@ class Cloud:
         self.calls.append("list_instances")
         return []
 
+    def current_project(self):
+        # A read, answered: with no `project` line in the host list,
+        # `down --all` asks gcloud's project too, because that is where
+        # `create` would have made a box (C1). The same project the declared
+        # box is on, so the reads these tests count are the ones they always
+        # were.
+        return "proj"
+
     def gpu_quotas(self, project):
         # Answered rather than refused, for the same reason as the reads above:
         # `move` reads the ceiling whenever the box it would create wants a card,
@@ -761,6 +769,92 @@ def test_no_declared_cloud_hosts_does_not_mean_nothing_is_billing(tmp_path, monk
     assert "somebody-elses-box" in result.output
     assert "europe-west4-c" in result.output, "the command has to be runnable"
     assert "list_instances" in cloud.calls, "it never asked the project"
+    assert result.exit_code == 0
+
+
+DECLARED_ON_OLD_NO_PROJECT_LINE = """\
+[hosts.comfy-win]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "old"
+port         = 8190
+"""
+
+
+def test_down_all_reads_gcloud_s_project_when_the_host_list_names_none(
+        tmp_path, monkeypatch):
+    """C1, carried over from the step 1 audit (behaviour:F2).
+
+    A box is declared on `old`, the host list has no `project` line, and gcloud
+    is pointed at `new`. `create` makes its boxes on `new` in that state —
+    `host.project_for` falls back to gcloud's project — so a stray box or a
+    reservation a half-finished create left behind is on `new`. `down --all`
+    read only `old`, the declared box's project, and could close on
+    `Nothing is now.` while the stray billed on `new`.
+    """
+    from comfy_qa import gcloud as gcloud_module
+
+    class Split(Cloud):
+        def current_project(self):
+            self.calls.append("current_project")
+            return "new"
+
+        def instance_status(self, instance, zone, project):
+            return "TERMINATED"
+
+        def list_instances(self, project):
+            self.calls.append(f"list_instances {project}")
+            if project == "new":
+                return [{"name": "qatest-stray", "status": "RUNNING",
+                         "zone": ".../zones/us-west1-b"}]
+            return []
+
+        def list_reservations(self, project):
+            self.calls.append(f"list_reservations {project}")
+            return []
+
+    cloud = Split()
+    path = tmp_path / "hosts.toml"
+    path.write_text(DECLARED_ON_OLD_NO_PROJECT_LINE, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    result = CliRunner().invoke(app, ["down", "--all", "--config", str(path)])
+
+    assert "list_instances new" in cloud.calls, (
+        f"gcloud's project, where create would have put a box, was never read: "
+        f"{cloud.calls}")
+    assert "list_reservations new" in cloud.calls, cloud.calls
+    assert "qatest-stray" in result.output, result.output
+    assert "--project=new" in result.output, "the stop command has to reach it"
+    assert "Nothing is now." not in result.output, result.output
+    assert result.exit_code == 0
+
+
+def test_down_all_withholds_its_all_clear_when_gcloud_s_project_cannot_be_read(
+        tmp_path, monkeypatch):
+    """The other half of C1. With no `project` line, gcloud's project is one
+    `down --all` has to read; a gcloud that cannot name it leaves that project
+    unread, which is not the same as read and empty."""
+    from comfy_qa import gcloud as gcloud_module
+
+    class Broken(Cloud):
+        def current_project(self):
+            raise GcloudError("credentials expired")
+
+        def instance_status(self, instance, zone, project):
+            return "TERMINATED"
+
+    cloud = Broken()
+    path = tmp_path / "hosts.toml"
+    path.write_text(DECLARED_ON_OLD_NO_PROJECT_LINE, encoding="utf-8")
+    monkeypatch.setattr(gcloud_module, "Gcloud", lambda *a, **k: cloud)
+    result = CliRunner().invoke(app, ["down", "--all", "--config", str(path)])
+
+    assert "Nothing is now." not in result.output, result.output
+    assert "not an all-clear" in result.output, result.output
+    assert "--project=\n" not in result.output and "--project= " not in result.output
     assert result.exit_code == 0
 
 
