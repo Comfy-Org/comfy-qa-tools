@@ -279,7 +279,7 @@ Unknown fields are rejected rather than ignored, and the message names the typo 
 what it was probably meant to be:
 
 ```
-host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: build, gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.
 ```
 
 Switching OS means switching host: one box per OS, and nothing is ever reimaged.

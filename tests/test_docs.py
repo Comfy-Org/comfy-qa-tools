@@ -54,9 +54,9 @@ PACKAGE = ROOT / "comfy_qa"
 # invisible until it is named here. `HostFileError` subclasses `ConfigError` and
 # was missed on exactly that basis — which left every message in the module that
 # rewrites the host list during a move undocumented and unnoticed.
-ERROR_TYPES = ("BadParameter", "ConfigError", "GcloudError", "HostFileError",
-               "LifecycleError", "MoveError", "ProbeError", "SetupStopped",
-               "TunnelError")
+ERROR_TYPES = ("BadParameter", "BuildError", "ConfigError", "GcloudError",
+               "HostFileError", "LifecycleError", "MoveError", "ProbeError",
+               "SetupStopped", "TunnelError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and
@@ -364,6 +364,10 @@ EXCUSED = frozenset({
     # of clock", built in one place so five phases do not each word their own.
     # Its literal is collected at the constructor inside it.
     "out_of_time",
+    # `build.Unreachable` never reaches a person: it is how the two ways of
+    # asking GitHub say "could not ask at all", and `build._ask` turns it into
+    # the `BuildError` that is printed — whose literal is collected there.
+    "Unreachable",
 })
 
 
@@ -616,6 +620,12 @@ MESSAGE_FLOOR = {
     # `settle` rule in `_message_argument`.
     "ask.py": 1,
     "auth.py": 37,
+    # New in 1.4.0 with the build choice: every way a build can be refused before
+    # anything exists — two backends, two frontends, a tag or a PR or a commit
+    # that is not shaped like one, a torch pin that cannot be installed, a build
+    # line that will not read back, GitHub saying no and GitHub not answering.
+    # The module reads 20; floored at 18, on the rule under WORDING_FLOOR.
+    "build.py": 18,
     "commands.py": 6,
     "config.py": 37,
     # 51 until "every zone tried is out of capacity" was split into three. One
@@ -764,7 +774,11 @@ MESSAGE_FLOOR = {
 # an unreadable file, a stray top-level key and a project that is not an ID,
 # and setup failing to save one. The page reads 343. Raised to 335, half the
 # distance, on the rule above.
-ENTRY_FLOOR = 335
+# 335 until 1.4.0's build choice: every refusal of a build before anything
+# exists, the build that came up wrong, the host list's unreadable build line,
+# and the Windows driver that now installs itself. The page reads 361. Raised to
+# 352, half the distance, on the rule above.
+ENTRY_FLOOR = 352
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -794,7 +808,9 @@ ENTRY_FLOOR = 335
 # reason given beside ENTRY_FLOOR.
 # 380 until 1.3.1, for the entries named beside ENTRY_FLOOR: 397 quoted
 # wordings now. Raised to 388, half the distance, on the rule above.
-WORDING_FLOOR = 388
+# 388 until 1.4.0, for the entries named beside ENTRY_FLOOR: 417 quoted
+# wordings now. Raised to 406, inside the slack of 12, on the rule above.
+WORDING_FLOOR = 406
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

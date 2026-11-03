@@ -1440,21 +1440,141 @@ anything is billed rather than letting you find out. `cuda_installer.pyz` offers
 driving an older card would mean replacing Google's installer with a hand-rolled
 one — the same guess this tool declines to make on Windows, below.
 
-**Windows boxes do not**, and this tool does not pretend otherwise. Google
-documents exactly one way to install the driver on Windows Server, and it is a
-person at an Administrator PowerShell prompt. `comfy-qat create` prints those two
-commands when it finishes:
+**Windows boxes install it themselves too, since 1.4.0.** Until then Google
+documented exactly one way to install the driver on Windows Server — a person at an
+Administrator PowerShell prompt — and `comfy-qat create` printed those two commands
+for you to run. Google's page now documents the unattended route as well, under
+"Windows (automated)":
 
-```powershell
-Invoke-WebRequest https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 -OutFile C:\install_gpu_driver.ps1
-C:\install_gpu_driver.ps1
-```
+> To automatically install GPU drivers on Windows machine first boot, set the
+> sysprep-specialize-script-url metadata key for the new instance to
+> https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 .
 
-Compute Engine does have a `windows-startup-script-url` metadata key, and pointing
-it at that script would probably work. "Probably" is how a box gets created,
-billed, and found running on its CPU an hour later, so it is left as a deliberate
-seam rather than a guess: run the two commands once, by hand, and
-`comfy-qat stamp <name>` will show a `cuda:0` device instead of a CPU one.
+([Install GPU drivers](https://cloud.google.com/compute/docs/gpus/install-drivers-gpu),
+last updated 2026-10-26, read 2026-11-03.) That key, that URL and nothing of this
+tool's own is what `create` now sets on a Windows box with a card. The script is
+Google's: it checks the card is there and the driver is not before it does anything,
+and a specialize script runs once, on first boot, before the box accepts SSH — not
+on every boot as a startup script would. `comfy-qat go` waits for `nvidia-smi` on a
+Windows box with a card exactly as it does on Linux, and nothing is printed for you to
+run by hand. A box with no GPU gets no driver on either operating system.
+
+**`<name> still has no working GPU driver after 900s. The machine is running and
+billing.`** on a Windows box means Google's script did not finish. Its output goes to
+the serial console, not to a file you can SSH in to read — the specialize pass runs
+before SSH is up — so the fix names `gcloud compute instances get-serial-port-output
+<name> --zone=<zone> --project=<project>`, which reads it from here with nothing open
+on the box. On Linux the same sentence points at the installer's own log, as before.
+
+## Choosing the build
+
+`create`, `go` and `switch` take a build (1.4.0): `--version`, `--pr` or `--commit`
+for ComfyUI, `--frontend-version` or `--frontend-pr` for the frontend,
+`--manager/--no-manager` (Manager is on by default) and `--torch`. Everything below is
+refused **before Google is asked anything**, so none of it costs a box: it exits 2 and
+nothing exists that did not before.
+
+**`--version and --pr each choose the backend, so only one of them can be right: a
+release, a PR or a commit. Nothing was started.`**
+Two of `--version`, `--pr` and `--commit` were given. Each one names the ComfyUI to
+install, so together they are a mistake rather than an intention — comfy-cli would
+refuse the same pair on the box (`--pr cannot be used with --version or --commit`),
+but only after the box had booted and started billing. The fix line gives the two
+commands that are intentions; keep one.
+
+**`--frontend-version and --frontend-pr each choose the frontend, so only one of them
+can be right. Nothing was started.`**
+The same for the frontend: a release, or a PR built on the box, not both.
+
+**`--version 'v0.43' is not a release tag. Releases are numbered, as in v0.43.0.`**
+A release is a three-part version, `v` optional: `v0.43.0` or `0.43.0`. The same
+sentence comes with `--frontend-version` for a frontend release. The fix links the
+releases page.
+
+**`--pr 'abc' is not a pull request number. Give the number from the PR's address, as
+in --pr 17497.`**
+`--pr` and `--frontend-pr` take the number on the end of the PR's address. `#17497`
+is read as `17497`.
+
+**`--commit 'xyz' is not a commit. A commit is its hash, seven characters or more, as
+in --commit 426f5ee.`**
+A commit is given by its hash, in hex, at least git's seven-character short form.
+
+**`--torch 'latest' is not a PyTorch version. Give the version, with the CUDA build
+after a + if you want one, as in --torch 2.12.1+cu130.`**
+`--torch` pins a version, as PyTorch writes it. `2.12.1+cu130` is
+[Miles's recommendation for NVIDIA machines](machines.md#pinning-pytorch).
+
+**`--torch '2.12.1+cu999' names a CUDA build comfy-cli cannot install. It installs
+cu130, cu129, cu128, cu126, cu124, cu121, cu118.`**
+The CUDA build after the `+` has to be one comfy-cli's `--cuda-version` accepts.
+
+**`--torch '2.12.1+cu130' is a CUDA build, and this box has no GPU to run it on. A box
+with no GPU installs the CPU build of torch.`**
+A box with `gpu = "none"` installs the CPU build whatever is asked; pin the version
+alone, `--torch 2.12.1`.
+
+**`ComfyUI has no release v0.99.0, so there is nothing to install. Nothing was created
+or started.`**
+GitHub was asked, read-only, whether the tag exists, and it does not. The same for
+**`ComfyUI has no commit deadbeefcafe, so there is nothing to install. Nothing was
+created or started.`** and **`the frontend has no release v9.9.9, so ComfyUI would
+have nothing to download. Nothing was created or started.`** — a frontend release has
+to be a GitHub release, because that is what ComfyUI downloads at startup.
+
+**`ComfyUI has no pull request 99999999, so there is nothing to install. Nothing was
+created or started.`**
+No PR has that number. `the frontend has no pull request …` is the same for
+`--frontend-pr`.
+
+**`ComfyUI pull request 12 is closed, so its branch may be gone and is not under
+review. Nothing was created or started.`**
+A closed PR is not something to test: its branch may already be deleted, and nobody
+is reviewing it.
+
+**`ComfyUI pull request 12 is already merged, so its branch is not something to test
+on its own. Nothing was created or started.`**
+Its change is on the default branch now. For a ComfyUI PR the fix names the commit it
+landed as, `--commit <hash>`; for a frontend PR, the releases page.
+
+**`GitHub could not be asked whether that build exists (Name or service not known), so
+nothing was created or started.`**
+This machine could not reach GitHub at all — which is not GitHub saying no. The box
+would need it too, since comfy-cli clones from there, so nothing was started. The
+check uses `gh api` when the GitHub CLI is installed and signed in, and GitHub's
+public API otherwise.
+
+**`comfy-linux's build in your host list cannot be read: the build 'comfyui=v0.43
+frontend=default' has a word this tool does not read: 'colour=blue'. A build is
+comfyui=, frontend=, manager= and torch=.`**
+The `build` line in the host list entry does not read back. It is refused rather than
+taken for the default build — a host list that says one release and quietly gets the
+tip of master is the failure the whole feature exists to prevent. The words are
+listed under `build` in [hosts.md](hosts.md#fields). The same refusal for a manager
+word that is neither on nor off reads **`the build 'comfyui=default manager=maybe'
+says manager='maybe'; it is on or off.`**
+
+**`--no-install refuses to install, and a build option asks for one`**
+`go --no-install` and `switch --no-install` mean "never install", and a build option
+asks for an install or a build change. Drop one of them.
+
+**`comfy-linux came up on a different build from the one you asked for: ComfyUI
+0.42.1, not v0.43.0. It has not been reported as ready and nothing was opened.
+ComfyUI is still up on it, and the machine is billing.`**
+ComfyUI answered, and what it says it is contradicts the build that was asked for.
+Ready means the build you asked for, so no URL is printed, no browser is opened, and
+the command exits 1. What is read, and from where: the ComfyUI version and torch from
+the running server's `/system_stats`; the frontend from the bundle it is actually
+serving, not from the package installed beside it; Manager from whether Manager's own
+route answers; and the commit and PR from git in the checkout on the box. Each part
+that contradicts is named — `frontend 1.57.7, not v1.58.4` when ComfyUI could not
+fetch the frontend release and fell back to its own, `Manager off, not on` when the
+Manager package did not install. Nothing is torn down: the box is fine and ComfyUI is
+running, it is the build that is wrong. The fix runs the same command again, and
+points at `comfy-qat logs <name>` for why — a failed frontend download is in ComfyUI's
+own log. A part that cannot be read at all is said to be unconfirmed and does not
+block: `could not read the frontend it serves off the running ComfyUI, so that part
+of the build is not confirmed`.
 
 ## Starting and stopping
 
@@ -2270,7 +2390,7 @@ instead — an operating system, a card, or both as `os/card`. It used to be one
 240-character sentence carrying all three, which is the first message a new tester
 meets and took a second reading to untangle.
 
-**`host 'comfy-win': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.`**
+**`host 'comfy-win': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: build, gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.`**
 A misspelt field in `hosts.toml`. This used to be reported as five *missing*
 fields that were all present, because the required-field check ran first and the
 typo was invisible to it — so the message described a file quite unlike the one in
