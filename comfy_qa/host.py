@@ -1862,9 +1862,9 @@ def _reservations_on(gc, hosts: list[Host], project: str | None = None):
 
     EVERY project a declared box names, not the first one. A host list may
     name several, and a reservation on the second billed just as much while
-    only the first was read. With no cloud box declared it is the project
-    gcloud is pointed at, which is where a `create` that stopped half-way
-    left whatever it left.
+    only the first was read. With no cloud box declared and no project in the
+    host list it is the project gcloud is pointed at, which is then where a
+    `create` that stopped half-way left whatever it left.
 
     None for a project whose read did not come back — not `[]`. Read-and-empty
     is the only answer that may be printed as an all-clear. An empty mapping
@@ -4269,8 +4269,8 @@ def move_cmd(
 
 def _undeclared_and_running(gc, hosts: list[Host], project: str | None = None
                             ) -> list[tuple[str, str, str]] | None:
-    """Running instances on the project that no host entry names, as `(name,
-    zone, project)`.
+    """Running instances that no host entry names, on every project in play, as
+    `(name, zone, project)`.
 
     THE PROJECT GOES WITH EACH, because the caller prints Google's command to
     stop the box and that line has to reach where the box was found. It used to
@@ -4295,28 +4295,45 @@ def _undeclared_and_running(gc, hosts: list[Host], project: str | None = None
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    # A declared box's project first, as it always was; then the one the host
-    # list names; and gcloud's only when neither is there.
-    project = next((h.gce_project for h in hosts if h.gce_project), None) or project
-    if not project:
+    # EVERY PROJECT IN PLAY, as `_reservations_on` reads them: each one a
+    # declared box is on, then the one the host list names, and gcloud's only
+    # when there is neither. This read the FIRST declared box's project alone,
+    # and the host list's only when no box named one — so after a switch, with
+    # an old box on the old project and new work on the new one, a box running
+    # on the new project in no entry was never read, and the run ended on
+    # "Nothing is now." while it billed. Reservations were already read on both.
+    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
+                                   *([project] if project else [])]))
+    if not projects:
         # No declared cloud host to take it from — which is the case this
         # matters most in. Ask gcloud what project is configured.
         try:
-            project = gc.current_project()
+            current = gc.current_project()
         except (GcloudError, AttributeError):
             return None
-    if not project:
-        return None
-    declared = {h.gce_instance for h in hosts if h.gce_instance}
-    try:
-        instances = gc.list_instances(project)
-    except (GcloudError, AttributeError):
-        return None
-    return [
-        (i.get("name", ""), rsv.zone_of(i), project)
-        for i in instances or []
-        if i.get("name") not in declared and i.get("status") != "TERMINATED"
-    ]
+        if not current:
+            return None
+        projects = [current]
+    # Declared means this box on this project: the same name on another project
+    # is somebody else's box. An entry with no `gce_project` is matched by name
+    # wherever it is found, as before, rather than called a stranger.
+    declared = {(h.gce_instance, h.gce_project) for h in hosts
+                if h.gce_instance and h.gce_project}
+    anywhere = {h.gce_instance for h in hosts if h.gce_instance and not h.gce_project}
+    found: list[tuple[str, str, str]] = []
+    for where in projects:
+        try:
+            instances = gc.list_instances(where)
+        except (GcloudError, AttributeError):
+            # One unread project withholds the all-clear for all of them.
+            return None
+        found += [
+            (i.get("name", ""), rsv.zone_of(i), where)
+            for i in instances or []
+            if (i.get("name"), where) not in declared and i.get("name") not in anywhere
+            and i.get("status") != "TERMINATED"
+        ]
+    return found
 
 
 def _probe_fix(host: Host) -> str | None:

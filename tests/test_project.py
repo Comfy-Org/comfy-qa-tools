@@ -98,8 +98,11 @@ class Recorder:
     """
 
     def __init__(self, *, current: str | None = GCLOUDS, instances=(), quotas=None):
+        """`instances` is what every project holds, or a `{project: rows}` for
+        projects that hold different things — which after a switch they do."""
         self.current = current
-        self.instances = list(instances)
+        self.instances = (dict(instances) if isinstance(instances, dict)
+                          else list(instances))
         self.quotas = [L4_READY] if quotas is None else list(quotas)
         self.stopped: set[str] = set()
         self.calls: list[list[str]] = []
@@ -126,8 +129,10 @@ class Recorder:
         if key.startswith("quotas preferences list"):
             return []
         if key.startswith("compute instances list"):
+            rows = (self.instances.get(project, []) if isinstance(self.instances, dict)
+                    else self.instances)
             return [dict(row, zone=f"{URL}/{project}/zones/us-central1-a")
-                    for row in self.instances]
+                    for row in rows]
         if key.startswith("compute reservations list"):
             return []
         if key.startswith("compute accelerator-types list"):
@@ -428,6 +433,27 @@ def test_the_stop_down_all_prints_for_a_box_nobody_declared_reaches_that_project
     assert stops, result.output
     for line in stops:
         assert pasted(line, cloud) == CHOSEN, f"pasted, `{line}` acts on {pasted(line, cloud)}"
+
+
+def test_down_all_after_a_switch_reads_the_new_project_for_boxes_nobody_declared(qat):
+    """The state 1.3.1 documents after a switch: an old box on the old project,
+    new work on the new one. `down --all` read machines only on the project of
+    the first declared box, so a box running on the host list's own project and
+    in no entry went unread — and the run ended on `Nothing is now.` over it,
+    while that box went on billing. Its reservations were read on both."""
+    old_box = {"name": "old-box", "status": "RUNNING",
+               "disks": [{"boot": True, "licenses": ["x/licenses/ubuntu-2204-lts"]}]}
+    cloud = Recorder(current=GCLOUDS, instances={OLD: [old_box], CHOSEN: [RUNNING_L4]})
+    result = qat("down", "--all", cloud=cloud, declared=host_list(CHOSEN, box_in=OLD))
+
+    assert result.exit_code == 0, result.output
+    assert "Nothing is now" not in result.output, result.output
+    assert "stray-box" in result.output, result.output
+    stops = gcloud_lines(result.output, "gcloud compute instances stop")
+    assert [pasted(line, cloud) for line in stops] == [CHOSEN], result.output
+    listed = [call for call in cloud.calls if call[:3] == ["compute", "instances", "list"]]
+    assert {f"--project={OLD}", f"--project={CHOSEN}"} <= {
+        part for call in listed for part in call}, listed
 
 
 def test_the_stop_a_create_refused_on_the_ceiling_prints_reaches_that_project(qat):

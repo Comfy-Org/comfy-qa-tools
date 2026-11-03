@@ -2152,6 +2152,47 @@ def test_a_project_that_cannot_be_named_is_None_not_empty():
     assert host_module._undeclared_and_running(gc, [_LOCAL_ONLY]) is None
 
 
+class _ProjectsGc:
+    """A different answer per project, and a read that fails where told to."""
+
+    def __init__(self, by_project, failing=()):
+        self.by_project, self.failing, self.asked = by_project, set(failing), []
+
+    def current_project(self):
+        raise AssertionError("gcloud's project was read although one was in hand")
+
+    def list_instances(self, project):
+        self.asked.append(project)
+        if project in self.failing:
+            raise GcloudError("no")
+        return self.by_project.get(project, [])
+
+
+_ON_OLD = Host(name="comfy-win", kind="gce", port=8190, gce_instance="comfy-win",
+               gce_zone="us-central1-a", gce_project="old")
+
+
+def test_every_project_in_play_is_read_for_strangers_not_the_first_one():
+    """After a switch the host list names `new` and the declared box is on
+    `old`. A box running on `new` that no entry names is a stranger; reading
+    only `old` let `down --all` print `Nothing is now.` over it. The same name
+    on another project is a different box, so it is a stranger there too."""
+    gc = _ProjectsGc({"old": [_inst("comfy-win", "RUNNING", "us-central1-a")],
+                      "new": [_inst("stray", "RUNNING"),
+                              _inst("comfy-win", "RUNNING", "us-central1-a")]})
+    assert host_module._undeclared_and_running(gc, [_ON_OLD], "new") == [
+        ("stray", "us-central1-b", "new"), ("comfy-win", "us-central1-a", "new")]
+    assert gc.asked == ["old", "new"]
+
+
+@pytest.mark.parametrize("failing", ["old", "new"])
+def test_one_project_that_could_not_be_read_is_None_for_all_of_them(failing):
+    """An all-clear is a claim about every project in play, so one unread
+    project withholds it — whichever one it was."""
+    gc = _ProjectsGc({"old": [], "new": []}, failing=[failing])
+    assert host_module._undeclared_and_running(gc, [_ON_OLD], "new") is None
+
+
 # --- a printed command that stops to ask ---------------------------------------
 
 
