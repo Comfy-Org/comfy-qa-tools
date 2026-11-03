@@ -52,7 +52,9 @@ have these, which no live run asked for: a GPU install through comfy-cli on Linu
 (`--nvidia` with `--cuda-version`; every live install was `--cpu`), a `--torch` pin,
 an install with `--commit` (only its refusal ran), `--no-manager`, and custom nodes
 and models surviving a build change (none had been added to the box `switch`
-changed). Four fixes made after the live run, from the release's audit, have run
+changed), a build change on a Windows box (the one in-place change, `switch --pr`,
+ran on Linux), and the wrong-build refusal (no live box served a build other than
+the one asked for). Four fixes made after the live run, from the release's audit, have run
 only against the suite's fakes too: a PR asked for again after new commits being
 fetched again, a release held to its tag's commit, a backend chosen with no
 frontend getting the frontend it pins (and `--frontend-version pinned`), and the
@@ -203,8 +205,10 @@ build kept by every `create` a refusal hands back.
 - **IAP's `4047: 'Failed to lookup instance'` on a box just made is a box still
   starting.** The first `go` on the first two boxes the live run created, started
   7 s (Linux) and 19 s (Windows) after `create` returned, was refused with it
-  within seconds, and `go` reported a failed tunnel; the same command run again a
-  minute or two later opened its tunnel. `go` now waits it out.
+  within seconds, and `go` reported a failed tunnel. On Linux the same command,
+  run again about 40 s later, opened its tunnel; on Windows the retry two minutes
+  later already ran on code that waits 4047 out, and opened its tunnel. `go` now
+  waits it out.
 
 ### The suite
 
