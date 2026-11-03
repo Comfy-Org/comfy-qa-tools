@@ -157,8 +157,12 @@ def test_a_linux_box_with_no_gpu_gets_no_startup_script():
 
 
 def test_a_windows_box_with_no_gpu_still_gets_the_ssh_key():
-    """The one piece of metadata that is not about the card."""
-    assert cpu_box("windows").metadata == "enable-windows-ssh=TRUE"
+    """The one piece of metadata that is not about the card: SSH — the key,
+    and Google's specialize command that installs the server (1.4.0)."""
+    from comfy_qa.create import WINDOWS_SSH
+
+    assert cpu_box("windows").metadata == WINDOWS_SSH
+    assert WINDOWS_SSH.startswith("enable-windows-ssh=TRUE,")
 
 
 def test_a_gpu_box_still_gets_the_driver_script():
@@ -213,8 +217,10 @@ def test_the_create_for_a_windows_box_with_no_gpu_keeps_only_the_ssh_metadata():
     gc, calls = recording()
     create.create_in(gc, cpu_box("windows", "comfy-cpu-win"), "us-central1-a", PROJECT)
 
+    from comfy_qa.create import WINDOWS_SSH
+
     (argv,) = calls
-    assert "--metadata=enable-windows-ssh=TRUE" in argv
+    assert f"--metadata={WINDOWS_SSH}" in argv
     assert not [word for word in argv if word.startswith("--accelerator")]
     assert not [word for word in argv if word.startswith("--maintenance-policy")]
     assert not [word for word in argv if "startup-script" in word]

@@ -824,11 +824,11 @@ def test_the_card_name_written_to_the_host_list_is_the_one_discovery_reads_back(
 
 
 def test_a_windows_box_carries_the_ssh_metadata_and_a_linux_one_the_driver(cli):
-    from comfy_qa.create import WINDOWS_DRIVER_URL
+    from comfy_qa.create import WINDOWS_DRIVER_URL, WINDOWS_SSH
 
     windows = cli("--os", "windows", "--gpu", "l4", "--yes")
     assert windows.gc.created[0][2]["metadata"] == (
-        f"enable-windows-ssh=TRUE,sysprep-specialize-script-url={WINDOWS_DRIVER_URL}")
+        f"{WINDOWS_SSH},sysprep-specialize-script-url={WINDOWS_DRIVER_URL}")
     linux = cli("--os", "linux", "--gpu", "l4", "--yes")
     assert linux.gc.created[0][2]["metadata"].startswith("startup-script=#!/bin/bash")
     assert "," not in linux.gc.created[0][2]["metadata"]

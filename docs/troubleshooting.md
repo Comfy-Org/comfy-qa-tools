@@ -1640,8 +1640,19 @@ lacks the IAP tunnel role. The error prints the manual way in.
 **`comfy-win is running but not accepting commands after 300s`**
 The VM is powered on but its SSH server is not answering. RUNNING means booted, not
 ready, and Windows takes minutes to get the rest of the way. Past five minutes it is
-usually the `enable-windows-ssh` metadata or an IAP permission rather than slowness —
-the error prints the command to try by hand.
+usually the SSH metadata or an IAP permission rather than slowness — the error
+prints the command to try by hand.
+
+On Windows the metadata is two keys, not one. `enable-windows-ssh=TRUE` alone
+installs no SSH server: Google's own command for a Windows VM reachable over SSH
+also sets `sysprep-specialize-script-cmd` to `googet -noconfirm=true install
+google-compute-engine-ssh` ("Connect to Windows VMs using SSH"). `create` sets both
+since 1.4.0. Before that it set the first only, and on the step 2 live run
+(2026-11-03) a box made that way never listened on port 22 — its serial console
+said `Could not determine if openssh version is compatible: could not find
+version`. A box made before 1.4.0 that will not answer is quickest deleted and
+made again; Google documents installing the package on a running VM too, by RDP
+or a startup script and a reboot, on the same page.
 
 **`the ComfyUI install on comfy-win did not finish`**
 The install script exited non-zero. Its output is on your terminal above the error —

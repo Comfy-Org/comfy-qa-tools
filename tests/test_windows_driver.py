@@ -33,14 +33,41 @@ def _keys(metadata: str) -> dict:
     return dict(pair.split("=", 1) for pair in metadata.split(","))
 
 
+# Google's own command for a Windows VM that can be reached over SSH
+# ("Connect to Windows VMs using SSH", last updated 2026-10-26, read 2026-11-03):
+#
+#   gcloud compute instances create VM_NAME ... --metadata
+#     sysprep-specialize-script-cmd="googet -noconfirm=true install google-compute-engine-ssh",enable-windows-ssh=TRUE
+#
+# The key alone is not enough. Found live on 2026-11-03 (live-s2, evidence/16-18):
+# a box made with `enable-windows-ssh=TRUE` and nothing else never listened on 22,
+# its guest agent said "Could not determine if openssh version is compatible:
+# could not find version", and `go` waited out its 300s on IAP's "failed to
+# connect to backend ... port 22".
+SSH_INSTALL = "googet -noconfirm=true install google-compute-engine-ssh"
+
+
 def test_a_windows_gpu_box_is_created_with_google_s_driver_script():
     assert WINDOWS_DRIVER_URL == URL
     keys = _keys(WIN_L4.metadata)
-    assert keys == {"enable-windows-ssh": "TRUE", "sysprep-specialize-script-url": URL}
+    assert keys == {"enable-windows-ssh": "TRUE",
+                    "sysprep-specialize-script-cmd": SSH_INSTALL,
+                    "sysprep-specialize-script-url": URL}
 
 
 def test_a_windows_box_with_no_gpu_gets_no_driver():
-    assert WIN_NONE.metadata == "enable-windows-ssh=TRUE"
+    assert _keys(WIN_NONE.metadata) == {"enable-windows-ssh": "TRUE",
+                                        "sysprep-specialize-script-cmd": SSH_INSTALL}
+
+
+def test_every_windows_box_installs_the_ssh_server_google_says_it_needs():
+    """Without the package, nothing in this tool can reach the box: every
+    command it runs is `gcloud compute ssh`. Google's specialize scripts run
+    in a fixed order — `-cmd` second, `-url` fourth, both on the first boot —
+    so the SSH server and the driver do not race each other."""
+    for box in (WIN_L4, WIN_NONE):
+        assert _keys(box.metadata)["sysprep-specialize-script-cmd"] == SSH_INSTALL
+        assert "," not in SSH_INSTALL, "gcloud splits --metadata on commas"
 
 
 def test_no_manual_powershell_step_is_printed_or_needed():

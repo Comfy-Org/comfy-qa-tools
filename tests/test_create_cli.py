@@ -344,11 +344,11 @@ def test_the_box_is_created_with_the_machine_type_the_card_implies(cli):
 def test_a_windows_box_carries_the_ssh_metadata_and_is_told_about_the_driver(cli):
     """S2-10: the driver is installed by Google's script at first boot, so the
     box carries that key too, and nobody is handed a PowerShell step."""
-    from comfy_qa.create import WINDOWS_DRIVER_URL
+    from comfy_qa.create import WINDOWS_DRIVER_URL, WINDOWS_SSH
 
     result = cli("--os", "windows", "--gpu", "l4", "--yes")
     assert result.gc.created[2]["metadata"] == (
-        f"enable-windows-ssh=TRUE,sysprep-specialize-script-url={WINDOWS_DRIVER_URL}")
+        f"{WINDOWS_SSH},sysprep-specialize-script-url={WINDOWS_DRIVER_URL}")
     assert "installs the NVIDIA driver itself" in result.stdout
     assert "PowerShell" not in result.stdout and "Invoke-WebRequest" not in result.stdout
 

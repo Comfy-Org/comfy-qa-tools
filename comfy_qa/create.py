@@ -731,6 +731,26 @@ WINDOWS_DRIVER_URL = ("https://github.com/GoogleCloudPlatform/compute-gpu-instal
                       "/raw/main/windows/install_gpu_driver.ps1")
 WINDOWS_DRIVER_KEY = "sysprep-specialize-script-url"
 
+# THE SSH SERVER ITSELF, which `enable-windows-ssh=TRUE` does not install. Every
+# command this tool runs on a box is `gcloud compute ssh`, and Google's own
+# command for a Windows VM that can be reached that way carries both keys. Read
+# 2026-11-03, "Connect to Windows VMs using SSH" (last updated 2026-10-26),
+# https://cloud.google.com/compute/docs/connect/windows-ssh:
+#
+#   gcloud compute instances create VM_NAME --image-family=IMAGE_FAMILY \
+#     --image-project=windows-cloud --metadata sysprep-specialize-script-cmd=
+#     "googet -noconfirm=true install google-compute-engine-ssh",enable-windows-ssh=TRUE
+#
+# Found missing on the step 2 live run: a windows-2022 box made with the one key
+# never listened on 22 — its guest agent logged "Could not determine if openssh
+# version is compatible: could not find version" — and `go` waited out its 300s.
+# A specialize `-cmd` runs second on first boot and `-url` fourth ("Use startup
+# scripts on Windows VMs", "Order of execution"), so this and the driver script
+# above run one after the other, never at once. No comma in it: gcloud splits
+# `--metadata` on commas.
+WINDOWS_SSH_INSTALL = "googet -noconfirm=true install google-compute-engine-ssh"
+WINDOWS_SSH = f"enable-windows-ssh=TRUE,sysprep-specialize-script-cmd={WINDOWS_SSH_INSTALL}"
+
 
 @dataclass(frozen=True)
 class Blueprint:
@@ -771,10 +791,10 @@ class Blueprint:
     def metadata(self) -> str | None:
         """The `--metadata` value for this box.
 
-        Windows gets `enable-windows-ssh=TRUE`, without which nothing in this
-        tool can reach the machine: every command it runs goes over
-        `gcloud compute ssh`, and on Windows that key is what puts an SSH server
-        there at all. A Windows box with a card also gets Google's driver script
+        Windows gets `enable-windows-ssh=TRUE` and Google's specialize command
+        that installs the SSH server (`WINDOWS_SSH`), without which nothing in
+        this tool can reach the machine: every command it runs goes over
+        `gcloud compute ssh`. A Windows box with a card also gets Google's driver script
         as its sysprep specialize script (`WINDOWS_DRIVER_URL`). The URL holds
         no comma, so the two keys stay two.
 
@@ -789,9 +809,8 @@ class Blueprint:
         """
         if self.image.windows:
             if self.card.is_gpu:
-                return (f"enable-windows-ssh=TRUE,"
-                        f"{WINDOWS_DRIVER_KEY}={WINDOWS_DRIVER_URL}")
-            return "enable-windows-ssh=TRUE"
+                return f"{WINDOWS_SSH},{WINDOWS_DRIVER_KEY}={WINDOWS_DRIVER_URL}"
+            return WINDOWS_SSH
         if not self.card.is_gpu:
             return None
         return f"startup-script={LINUX_DRIVER}"
@@ -817,7 +836,8 @@ class Blueprint:
                 f"{self.disk_gb} GB pd-balanced boot disk from {self.image.family}",
             ]
             if self.image.windows:
-                lines.append("metadata enable-windows-ssh=TRUE, so this tool can reach it")
+                lines.append("metadata enable-windows-ssh=TRUE and Google's SSH package, "
+                             "so this tool can reach it")
             lines.append(self.build_line())
             lines.append(f"add {self.name} to the host list on the next free port")
             return lines
@@ -830,7 +850,8 @@ class Blueprint:
             f"{self.disk_gb} GB pd-balanced boot disk from {self.image.family}",
         ]
         if self.image.windows:
-            lines.append("metadata enable-windows-ssh=TRUE, so this tool can reach it")
+            lines.append("metadata enable-windows-ssh=TRUE and Google's SSH package, "
+                         "so this tool can reach it")
             lines.append(f"metadata {WINDOWS_DRIVER_KEY} installs the NVIDIA driver on "
                          f"first boot, with Google's own script")
         else:

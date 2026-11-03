@@ -742,7 +742,9 @@ def test_the_create_asks_for_the_image_family_and_the_disk_it_planned():
     assert seen["image_family"] == "windows-2022"
     assert seen["image_project"] == "windows-cloud"
     assert seen["disk_gb"] == 500
-    assert seen["metadata"] == (f"enable-windows-ssh=TRUE,"
+    from comfy_qa.create import WINDOWS_SSH
+
+    assert seen["metadata"] == (f"{WINDOWS_SSH},"
                                 f"sysprep-specialize-script-url={WINDOWS_DRIVER_URL}")
 
 
