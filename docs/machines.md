@@ -193,8 +193,8 @@ That is the whole thing. In order, it:
    it runs — Windows Server 2022 has no `winget` — and the Visual C++ runtime
    torch needs, from Microsoft, checked by its signature;
 4. launches it **on the box**, detached, with its output going to a log file
-   there — on Windows through WMI, because a process started from an SSH
-   session there ends with the session;
+   there — on Windows through WMI, because on a box `create` made, a process
+   started from an SSH session ended with the session;
 5. forwards a local port to it as soon as it is listening, waits until ComfyUI
    really answers, opens a browser on `http://127.0.0.1:<port>` — and gives you
    the prompt back.

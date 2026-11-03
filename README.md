@@ -28,8 +28,9 @@ run against real GCE hardware on both Linux and Windows**. 1.4.0 lets you choose
 the build — a ComfyUI release, PR or commit, a frontend, Manager (on by default)
 and a torch pin — installs it with comfy-cli on the box, shows the build that is
 running in `stamp`, and has a Windows GPU box install its own NVIDIA driver. The
-build choice ran on a real Linux box on 2026-11-03; the Windows half has not run
-on a real box yet — see [the changelog](CHANGELOG.md) for what did and did not.
+build choice ran on a real Linux box and a real Windows box, both with no GPU, on
+2026-11-03; a Windows GPU box installing its own driver has not run on a real box
+yet — see [the changelog](CHANGELOG.md) for what did and did not.
 
 What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
 cost columns in `list` — **was run on real Google Compute Engine boxes on

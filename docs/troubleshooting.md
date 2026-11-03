@@ -2114,9 +2114,9 @@ The box is up and no ComfyUI has ever been launched on it by this tool. That is 
 different fact from "the box is off", and it has a different fix: `comfy-qat go comfy-win`. The second sentence is the one that matters — the machine is on.
 
 Up to 1.3.1 a Windows box also said this straight after `go` had printed
-`STARTED`: the launch used `Start-Process`, and on Windows Server 2022 a process
-started that way from an SSH session ended with the session, before ComfyUI had
-opened its log. Since 1.4.0 it is started through WMI, whose process outlives the
+`STARTED`: the launch used `Start-Process`, and on the Windows Server 2022 box the
+1.4.0 live run made with `create`, a process started that way from an SSH session
+ended with the session, before ComfyUI had opened its log. Since 1.4.0 it is started through WMI, whose process outlives the
 session.
 
 **`stopped reading. ComfyUI is still running on comfy-win, and so is the machine.`**
