@@ -35,6 +35,7 @@ from comfy_qa.setup import (
     plan_quota, request_region, run_setup,
 )
 from comfy_qa.say import FIX_LABEL
+from fakes import said_and_printed
 from wording import said
 
 # --- the shapes, all from a live project -------------------------------------
@@ -251,7 +252,7 @@ def prompts(confirm=True):
 
     _confirm.said_when_asked = []  # type: ignore[attr-defined]
     p = Prompts(confirm=_confirm, ask=lambda q: "us-central1",
-                choose=lambda q, options: options[0], say=said.append)
+                choose=lambda q, options: options[0], say=said_and_printed(said))
     p.said = said           # type: ignore[attr-defined]
     p.asked = asked         # type: ignore[attr-defined]
     p.confirmed = _confirm  # type: ignore[attr-defined]
