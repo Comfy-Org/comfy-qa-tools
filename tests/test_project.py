@@ -212,6 +212,24 @@ def test_setup_with_a_new_project_replaces_the_old_line_and_keeps_the_boxes(
     assert box.gce_project == OLD
 
 
+def test_setup_help_says_project_replaces_the_line_in_an_existing_list():
+    """What the test above drives, said where it is read first. `setup --help`
+    said an existing host list is "read, never replaced" and only "appended to
+    by the discovery pass", and `--project` said "use this Google Cloud project
+    instead of asking" — so nothing a person reads before running it said that
+    `--project` writes the list's `project` line, over any already there."""
+    import typer
+
+    command = typer.main.get_command(app).commands["setup"]
+    said = " ".join((command.help or "").split())
+    (option,) = [param for param in command.params if param.name == "project"]
+    flag = " ".join((option.help or "").split())
+
+    assert "replacing any project already there" in said, said
+    assert "never replaced" not in said, "the line is replaced"
+    assert "host list's project line" in flag and "replacing" in flag, flag
+
+
 def test_nothing_in_the_package_can_set_gclouds_project():
     """The method is gone and no argv anywhere spells the call, so nothing can
     bring it back by a second route."""

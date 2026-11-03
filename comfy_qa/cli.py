@@ -131,7 +131,10 @@ Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
 @app.command("setup")
 def setup_cmd(
     project: Annotated[Optional[str], typer.Option(
-        "--project", help="Use this Google Cloud project instead of asking.")] = None,
+        "--project",
+        help="Use this Google Cloud project instead of asking, and write it as "
+             "the host list's project line, replacing any project already "
+             "there. gcloud's own project is left alone.")] = None,
     no_numpy: Annotated[bool, typer.Option(
         "--no-numpy",
         help="Do not install NumPy into gcloud's Python.")] = False,
@@ -176,7 +179,9 @@ def setup_cmd(
     This one writes: it makes sure you have a host list, so the file `--config`
     names — and ~/.config/comfy-qa-tools/hosts.toml when it is left off — is
     written if it is not there yet, and appended to by the discovery pass at the
-    end. An existing list is read, never replaced.
+    end. An existing list is kept, and so is every machine in it; the one line
+    setup rewrites is `project`, which `--project` sets, replacing any project
+    already there.
     """
     prompts = setup_mod.Prompts(
         # Default YES, which is the whole of "the request should already be
