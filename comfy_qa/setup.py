@@ -1089,9 +1089,9 @@ def _nothing_to_ask(held: list[str], stuck: list[str]) -> str:
     `comfy-qat quota` is in backticks because it comes after the card lists, so
     where a writer that wraps would break the line depends on how many cards
     there are. `step` prints this whole today; bare, the first writer to wrap it
-    could start a line with `comfy-qat quota to see where each card stands.`,
-    which reads as a command. `create`'s warning about a host list that stopped
-    loading did exactly that on the Linux runners.
+    could start a line with the command and the rest of the sentence after it,
+    which reads as a command and runs as none. `create`'s warning about a host
+    list that stopped loading did exactly that on the Linux runners.
     """
     if stuck and held:
         return (f"{', '.join(held)} granted; {', '.join(stuck)} at zero and "
