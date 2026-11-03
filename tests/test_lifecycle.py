@@ -1837,17 +1837,31 @@ RESERVED = Host(name="comfy-linux-2", kind="gce", port=8194, os="Ubuntu 22.04",
                 gce_project="proj",
                 extra=(("gce_reservation", "comfy-linux-2-rsv"),))
 
-RESERVED_TAIL = ("stop the box: comfy-qat down comfy-linux-2 — it is reserved, so "
-                 "the bill only stops with: comfy-qat delete comfy-linux-2 --yes")
+# Each command on a line of its own, under the reason for it. It was one
+# sentence, `stop the box: comfy-qat down comfy-linux-2 — it is reserved, so the
+# bill only stops with: …`, and the command a person copies out of the middle
+# of it carries the dash and the words after it, which `down` refuses (O25e).
+RESERVED_TAIL = ["stop the box:", "comfy-qat down comfy-linux-2",
+                 "it is reserved, so the bill only stops with:",
+                 "comfy-qat delete comfy-linux-2 --yes"]
+
+
+def _ends_with_the_reserved_tail(fix: str) -> bool:
+    """The last four lines of `fix` are the tail, with or without the `or `
+    that joins it to advice above it."""
+    last = [line.strip() for line in fix.splitlines()][-len(RESERVED_TAIL):]
+    return [last[0].removeprefix("or "), *last[1:]] == RESERVED_TAIL
 
 
 def test_the_fix_for_a_reserved_box_says_what_actually_stops_its_bill():
     from comfy_qa.lifecycle import _with_the_bill
 
     assert RESERVED.reservation == "comfy-linux-2-rsv", "the fixture is a reserved box"
-    assert _with_the_bill(RESERVED) == RESERVED_TAIL
+    assert [line.strip() for line in _with_the_bill(RESERVED).splitlines()] == RESERVED_TAIL
     fix = _with_the_bill(RESERVED, "look at the log:", "comfy-qat logs comfy-linux-2")
-    assert fix.splitlines()[-1].strip() == "or " + RESERVED_TAIL
+    assert [line.strip() for line in fix.splitlines()] == [
+        "look at the log:", "comfy-qat logs comfy-linux-2",
+        "or " + RESERVED_TAIL[0], *RESERVED_TAIL[1:]]
     assert "stop paying for it" not in fix, (
         "`down` does not stop a reserved box's bill, so it must not be offered as "
         "the way to stop paying")
@@ -1878,7 +1892,7 @@ def test_a_real_failure_on_a_reserved_box_carries_the_reserved_sentence(tmp_path
                         tunnel_dir=tmp_path)
 
     assert "running and billing" in str(caught.value)
-    assert RESERVED_TAIL in caught.value.fix
+    assert _ends_with_the_reserved_tail(caught.value.fix), caught.value.fix
     assert "stop paying for it" not in caught.value.fix
 
 
@@ -2227,15 +2241,26 @@ def _readers():
     from comfy_qa.gcloud import _missing_resource, classify, is_already_asked
     from comfy_qa.lifecycle import is_auth_failure, is_capacity_failure, suggested_zones
 
+    from comfy_qa.tunnel import (
+        _credentials_expired, _iap_refused, _nothing_listening, still_booting)
+
     return {"classify": classify, "is_capacity_failure": is_capacity_failure,
             "suggested_zones": suggested_zones,
             "_missing_resource": _missing_resource,
             "is_already_asked": lambda text: is_already_asked(GcloudError(text)),
-            "is_auth_failure": lambda text: is_auth_failure(GcloudError(text))}
+            "is_auth_failure": lambda text: is_auth_failure(GcloudError(text)),
+            # The tunnel's readers: what a dead tunnel's log says. `go` tells a
+            # box still booting from one with nothing listening by these, and a
+            # wrap at `port⏎22` turned the first into the second — "start
+            # ComfyUI first", on a box nobody can get onto yet.
+            "_iap_refused": _iap_refused, "still_booting": still_booting,
+            "_nothing_listening": _nothing_listening,
+            "_credentials_expired": _credentials_expired}
 
 
 def _real_texts():
     """Everything gcloud really printed that this suite holds, by name."""
+    import test_first_run as first_run
     import test_gcloud_auth as auth
     import test_prune as prune
 
@@ -2252,19 +2277,32 @@ def _real_texts():
         "no such instance": prune.NO_SUCH_INSTANCE.format(
             project="proj", zone="us-central1-a", name="ghostone"),
         "no such project": prune.NO_SUCH_PROJECT,
-        # Google's two refusals of a quota preference that is already there, as
-        # `test_setup_quota` and `gcloud._ALREADY_THERE` record them — read off
-        # the live API, with the middle elided where they elide it.
+        # Google's two refusals of a quota preference that is already there,
+        # word for word as `test_setup_quota` and `gcloud._ALREADY_THERE` record
+        # them — read off the live API, with the middle elided where they elide
+        # it.
         "quota preference already there": (
-            "Quota Preference with dimension '{gpu_family=NVIDIA_RTX_PRO_6000}' "
-            "already exist ... in location 'us-central1'"),
+            "Quota Preference with dimension '{}' already exist for container ..."),
         "quota preference in another location": (
             "Location in existing quota preference '...' does not match"),
+        # What gcloud wrote to a tunnel's log: the box still booting
+        # (`test_first_run`'s record of the failing run), nothing on the far
+        # ComfyUI port and an expired session (both as `test_tunnel` quotes
+        # gcloud's own words).
+        "tunnel log, box still booting": first_run.BOOTING_LOG,
+        "tunnel log, nothing on the port": (
+            "ERROR: (gcloud.compute.start-iap-tunnel) While checking if a "
+            "connection can be made: Error while connecting [4003: 'failed to "
+            "connect to backend']. (Failed to connect to port 8188)"),
+        "tunnel log, session expired": (
+            "ERROR: There was a problem refreshing your current auth tokens: "
+            "Reauthentication failed."),
     }
 
 
 READERS = ["classify", "is_capacity_failure", "suggested_zones", "_missing_resource",
-           "is_already_asked", "is_auth_failure"]
+           "is_already_asked", "is_auth_failure", "_iap_refused", "still_booting",
+           "_nothing_listening", "_credentials_expired"]
 
 
 def test_every_reader_is_wrapped():
@@ -2298,6 +2336,32 @@ def test_a_line_break_anywhere_in_googles_text_changes_no_reading(reader, name):
                        f"{len(wrong)} of {len(spaces)} spaces, e.g. {wrong[:3]}")
 
 
+def _tunnel_signs():
+    """Each tunnel reader and the phrases it looks for, read off `tunnel.py`."""
+    from comfy_qa import tunnel
+
+    return {"_credentials_expired": tunnel._CREDENTIAL_TROUBLE,
+            "still_booting": tunnel._STILL_BOOTING,
+            "_iap_refused": ("failed to connect to backend",)}
+
+
+@pytest.mark.parametrize("reader", sorted(_tunnel_signs()))
+def test_every_phrase_a_tunnel_reader_looks_for_is_read_wherever_it_is_broken(reader):
+    """The test above can only break the texts this suite holds, and the
+    tunnel's real logs carry a few of its phrases — `4003` and `reauth` are one
+    word, and stand in for the rest. So every phrase each tunnel reader looks
+    for is broken at each of its spaces too, inside a line of log, and has to
+    be read exactly as it is unbroken."""
+    read = _readers()[reader]
+    wrong = []
+    for sign in _tunnel_signs()[reader]:
+        for at in [i for i, ch in enumerate(sign) if ch == " "]:
+            broken = f"ERROR: something {sign[:at]}\n      {sign[at + 1:]} happened"
+            if not read(broken):
+                wrong.append(broken.replace("\n      ", "⏎"))
+    assert not wrong, f"{reader} misses: {wrong}"
+
+
 def test_the_readings_the_wraps_are_compared_against_are_the_real_ones():
     """Non-vacuity for the test above: a reader that answered the same nothing
     for every text would pass it. These are what each text really says."""
@@ -2319,4 +2383,10 @@ def test_the_readings_the_wraps_are_compared_against_are_the_real_ones():
     assert [name for name in texts if read["is_already_asked"](texts[name])] == [
         "quota preference already there", "quota preference in another location"]
     assert [name for name in texts if read["is_auth_failure"](texts[name])] == [
-        "expired session", "no account"]
+        "expired session", "no account", "tunnel log, session expired"]
+    assert [name for name in texts if read["still_booting"](texts[name])] == [
+        "tunnel log, box still booting"]
+    assert [name for name in texts if read["_nothing_listening"](texts[name])] == [
+        "tunnel log, nothing on the port"]
+    assert [name for name in texts if read["_credentials_expired"](texts[name])] == [
+        "expired session", "tunnel log, session expired"]

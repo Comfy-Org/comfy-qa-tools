@@ -411,10 +411,15 @@ def _with_the_bill(host: Host, *advice: str) -> str:
         # until the box is deleted — so "stop paying for it: comfy-qat down"
         # tells somebody the bill has stopped when it has not. Both commands,
         # in the order they are run, and which of them the bill answers to.
-        tail = (f"{'or ' if lines else ''}stop the box: {stop_paying(host)} — it "
-                f"is reserved, so the bill only stops with: comfy-qat delete "
-                f"{host.name} --yes")
-        return output.fix(*lines, tail)
+        #
+        # Each command alone on its line: this was one sentence, `stop the box:
+        # comfy-qat down <name> — it is reserved, so …`, and the command a
+        # person copies out of it carries the dash and the words after it,
+        # which `down` refuses as extra arguments (O25e).
+        return output.fix(*lines, f"{'or ' if lines else ''}stop the box:",
+                          stop_paying(host),
+                          "it is reserved, so the bill only stops with:",
+                          f"comfy-qat delete {host.name} --yes")
     tail = f"{'or ' if lines else ''}stop paying for it: {stop_paying(host)}"
     return output.fix(*lines, tail)
 
@@ -838,7 +843,11 @@ def bring_up(
                         host,
                         "look at the boot output on the box's serial console, or "
                         "stop it and start again:",
-                        f"comfy-qat down {host.name} && comfy-qat go {host.name}",
+                        # One command a line, as every fix prints them: the two
+                        # joined with `&&` was the one line in the package that
+                        # was two commands.
+                        f"comfy-qat down {host.name}",
+                        f"comfy-qat go {host.name}",
                     ),
                 ) from exc
             raise LifecycleError(
