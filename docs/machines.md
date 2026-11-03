@@ -187,7 +187,10 @@ That is the whole thing. In order, it:
    stamp immediately and nothing is installed or restarted;
 3. installs ComfyUI if the box has none — with comfy-cli, on the box, the build
    you chose (see [choosing the build](#choosing-the-build)) — on a pinned Python
-   3.12, with a torch built for whatever CUDA that box's driver reports;
+   3.12, with a torch built for whatever CUDA that box's driver reports. A
+   Windows box first gets Git and Python 3.12.10 from git-for-windows' and
+   python.org's own installers, each checked against its pinned SHA-256 before
+   it runs: Windows Server 2022 has no `winget`;
 4. launches it **on the box**, detached, with its output going to a log file
    there;
 5. forwards a local port to it as soon as it is listening, waits until ComfyUI

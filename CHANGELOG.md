@@ -117,6 +117,18 @@ against the suite's fakes.
   google-compute-engine-ssh`. A box made the old way on the live run never
   listened on port 22 and `go` waited out its 300 seconds. Every Windows box gets
   both now; the SSH package runs before the driver script on first boot.
+- **A Windows box gets Git and Python without `winget`.** The install got both
+  from `winget`, which Windows Server 2022 does not have — Microsoft lists it for
+  Windows 10, 11 and Server 2025 only. On the live run `go` printed `The term
+  'winget' is not recognized` twice, then found no `py` either, and stopped at
+  `INSTALL_INCOMPLETE: comfy-cli did not install`, so no Windows box has ever
+  installed ComfyUI from nothing. 1.3.0 and 1.3.1 have the same defect: their
+  Windows install calls the same two `winget` lines (as did 1.2.0). Git 2.56.0.4
+  and Python 3.12.10 now come from git-for-windows' and python.org's own
+  installers, each refused unless its SHA-256 is the pinned one, run silently,
+  and judged by its exit code and by the file it leaves; the venv is made with
+  that Python by its path, and a Windows launch puts Git on its PATH for
+  Manager.
 - **IAP's `4047: 'Failed to lookup instance'` on a box just made is a box still
   starting.** The first `go` on both boxes the live run created was refused with
   it about a minute after `create` returned, and `go` reported a failed tunnel;

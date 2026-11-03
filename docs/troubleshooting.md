@@ -1669,6 +1669,18 @@ not moved aside. The same command run again resumes: a clone that stopped half-w
 is removed and made again, and a checkout that is there is installed into with
 `--restore`, keeping its custom nodes and models.
 
+On Windows four more name Git or Python, which the script installs first when the
+box does not have them — from git-for-windows' and python.org's own installers,
+pinned to one file each, since Windows Server 2022 has no `winget`:
+`the Git installer did not download` (the download failed — the box could not
+reach GitHub, or python.org for Python); `... is not the file its publisher gives
+(its SHA-256 differs)` (it downloaded something else, or only part of it, and did
+not run it); `the Git installer exited N` (it ran and failed — run the same
+command again, or install it by hand over `rdp`); and `the Git installer finished
+but C:\Program Files\Git\cmd\git.exe is not there`. Up to 1.3.1 the script
+used `winget` instead, which is not on Windows Server 2022: such a box printed
+`The term 'winget' is not recognized` and stopped at `comfy-cli did not install`.
+
 **`the build on comfy-win could not be changed (exit 1). Its log is above; the
 checkout is where comfy-cli left it.`**
 A build change on a box that already has ComfyUI — `go` or `switch` with a build

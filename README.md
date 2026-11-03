@@ -336,7 +336,9 @@ service on this machine. It will not overwrite a host list you already have, and
 running `setup` again is safe — it skips whatever is already done.
 
 On a **cloud box**, `go` does install software: ComfyUI into `C:\ComfyUI`
-(Windows) or `/opt/comfyui` (Linux), with a Python 3.12 environment beside it.
+(Windows) or `/opt/comfyui` (Linux), with a Python 3.12 environment beside it —
+and on Windows, Git and Python 3.12 themselves, from their publishers' own
+installers, each checked by SHA-256 before it runs.
 That only ever happens on a declared `gce` host, never locally.
 
 ## Docs
