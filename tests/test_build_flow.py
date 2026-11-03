@@ -84,11 +84,12 @@ class Box(FakeGcloud):
     frontend PR's build landed, which only the box knows.
 
     A PR is checked out at the head GitHub has for it when comfy-cli runs —
-    `checkout_pr` fetches the PR's branch and resets onto it — so `hub` is the
-    same table the tool's own GitHub check reads, and what the record says the
-    head is plays no part. `stuck` is a checkout that does not move however it
-    is asked — a fetch that failed — so a flow that reports it ready anyway
-    fails here.
+    `checkout_pr` fetches the PR's branch and resets onto it — and a release at
+    its tag's commit, detached, as `checkout_stable_comfyui` leaves it. `hub` is
+    the same table the tool's own GitHub check reads, and what the record says
+    plays no part. `stuck` is a checkout that does not move however it is
+    asked — a fetch that failed — so a flow that reports it ready anyway fails
+    here.
     """
 
     def __init__(self, *, record: str = "", commit: str = TAG_SHA, branch: str = "HEAD",
@@ -123,15 +124,27 @@ class Box(FakeGcloud):
             self.port_holder = ""
             return 0
         written = re.search(r"(comfyui=\S+ frontend=\S+ manager=\S+ torch=\S+"
-                            r"(?: \w+_head=\w+)*)", remote)
+                            r"(?: \w+=\w+)*)", remote)
         if written and (INSTALLING in remote or CHANGING in remote
                         or "build.txt" in remote):
             self.record = written.group(1)
             pr = re.search(r"comfyui=pr:(\d+)", self.record)
-            if pr and not self.stuck and (INSTALLING in remote or CHANGING in remote):
+            tag = re.search(r"comfyui=(v[\d.]+)", self.record)
+            moves = not self.stuck and (INSTALLING in remote or CHANGING in remote)
+            if pr and moves:
                 pull = self.hub.get(f"{REPO}/pulls/{pr.group(1)}") or {}
                 self.branch = f"pr-{pr.group(1)}-solid-mode"
                 self.commit = (pull.get("head") or {}).get("sha") or PR_HEAD
+            elif tag and moves:
+                # git checks a tag out at the commit it names, through the tag
+                # object when the tag is annotated.
+                ref = (self.hub.get(f"{REPO}/git/ref/tags/{tag.group(1)}") or {}
+                       ).get("object") or {}
+                if ref.get("type") == "tag":
+                    ref = (self.hub.get(f"{REPO}/git/tags/{ref.get('sha')}") or {}
+                           ).get("object") or {}
+                self.branch = "HEAD"
+                self.commit = ref.get("sha") or TAG_SHA
         return super().ssh(instance, zone, project, remote, stream=stream)
 
 
@@ -627,6 +640,104 @@ def test_a_pr_already_at_its_head_is_confirmed_against_the_head_asked_for(world)
     assert not sent(world, CHANGING), "a checkout already at the head was changed"
     assert "already on the box" in result.output
     assert world.opened == [world.comfy.url]
+
+
+# --- S2-7: a release is its tag's commit, not its version string ----------------
+#
+# Audit finding behaviour:F3. For `--version v0.43.0` "ready" compared only the
+# version /system_stats reports, and anything that moves the checkout without
+# bumping it passes as the release: master's tip a day after the tag, a PR
+# branch that still says 0.43.0, Manager's own update. The box's own stamp line
+# said `(PR 17497, 9350a08d80)` under "ready". The tag's commit was fetched to
+# check the release exists, and thrown away.
+
+MASTER_TIP = "abcdef0123" + "4" * 30
+
+
+def _release_box(world: World, *, branch: str, commit: str, **rest) -> None:
+    """A box whose record says v0.43.0 and whose server says 0.43.0, with its
+    checkout somewhere that is not the tag."""
+    world.cloud(statuses=["RUNNING"], installed=True, branch=branch, commit=commit,
+                record="comfyui=v0.43.0 frontend=default manager=on torch=default",
+                **rest)
+
+
+@pytest.mark.parametrize("where, said", [
+    (("master", MASTER_TIP),
+     f"commit {MASTER_TIP[:10]}, not v0.43.0's commit {TAG_SHA[:10]}"),
+    (("pr-17497-solid-mode", PR_HEAD), "PR 17497, not v0.43.0"),
+], ids=["master-tip", "a-pr-branch"])
+@pytest.mark.parametrize("serving", [True, False], ids=["serving", "stopped"])
+def test_a_release_is_held_to_its_tag_s_commit_not_its_version_string(
+        world, where, said, serving):
+    if serving:
+        _already_serving(world)
+        _release_box(world, branch=where[0], commit=where[1], port_holder="4242 python")
+    else:
+        _release_box(world, branch=where[0], commit=where[1])
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--version", "v0.43.0")
+
+    assert result.exit_code == 0, result.output
+    assert said in flat(result.output), "said, not hidden"
+    (change,) = sent(world, CHANGING)
+    assert "--restore" in change and "'--version', '0.43.0'" in change
+    assert world.gc.commit == TAG_SHA and world.gc.branch == "HEAD"
+    assert f"ComfyUI 0.43.0 ({TAG_SHA[:10]})" in flat(result.output)
+    assert world.opened == [world.comfy.url]
+
+
+@pytest.mark.parametrize("where, said", [
+    (("master", MASTER_TIP),
+     f"commit {MASTER_TIP[:10]}, not v0.43.0's commit {TAG_SHA[:10]}"),
+    (("pr-17497-solid-mode", PR_HEAD), "PR 17497, not v0.43.0"),
+], ids=["master-tip", "a-pr-branch"])
+def test_a_release_whose_checkout_will_not_move_is_never_reported_ready(
+        world, where, said):
+    _release_box(world, branch=where[0], commit=where[1], stuck=True)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--version", "v0.43.0")
+
+    assert result.exit_code == 1, result.output
+    assert "came up on a different build from the one you asked for" in flat(
+        result.output)
+    assert said in flat(result.output)
+    assert world.opened == []
+
+
+def test_an_annotated_tag_is_held_to_the_commit_it_points_at(world):
+    """An annotated tag's ref names the tag object, not the commit. Compared
+    with that, every checkout of the release would be refused."""
+    tag_object = "7a9" * 13 + "7"
+    world.hub[f"{REPO}/git/ref/tags/v0.43.0"] = {
+        "object": {"sha": tag_object, "type": "tag"}}
+    world.hub[f"{REPO}/git/tags/{tag_object}"] = {
+        "object": {"sha": TAG_SHA, "type": "commit"}}
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--version", "v0.43.0")
+
+    assert result.exit_code == 0, result.output
+    assert world.opened == [world.comfy.url]
+
+
+def test_a_frontend_pr_is_said_to_be_unconfirmed(world):
+    """A frontend PR's build is served from the directory it landed in, and
+    nothing the running ComfyUI answers names the PR it was built from. It is
+    never compared, so it is said to be unconfirmed rather than passing in
+    silence as though it had been."""
+    world.cloud(statuses=["RUNNING"], installed=False,
+                frontend_root="/opt/comfy-qat/frontend-5678/dist")
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--frontend-pr", "5678")
+
+    assert result.exit_code == 0, result.output
+    assert ("could not read which frontend PR it serves off the running ComfyUI, so "
+            "that part of the build is not confirmed") in flat(result.output)
 
 
 def test_a_host_list_build_carries_no_pr_head_into_a_first_install(world):

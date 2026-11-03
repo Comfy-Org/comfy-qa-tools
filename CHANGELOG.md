@@ -98,12 +98,17 @@ changed).
 - **Ready means the build you asked for.** Once ComfyUI answers, what it is
   running is read back and compared with what was asked: the ComfyUI version and
   torch from `/system_stats`, the frontend from the bundle it is serving, Manager
-  from whether Manager answers, the commit and PR from git on the box, and a
-  PR's commit against the head GitHub reported for it. A contradiction is said
-  plainly — `ComfyUI 0.42.1, not v0.43.0`, `PR 17497 at 0000000000, not its head
-  9350a08d80` — with the command
+  from whether Manager answers, the commit and PR from git on the box. A
+  release is held to its tag's commit, not only its version string, which
+  master's tip and a PR branched from the tag report too; a PR is held to the
+  head GitHub reported for it. A contradiction is said plainly — `ComfyUI
+  0.42.1, not v0.43.0`, `commit abcdef0123, not v0.43.0's commit 426f5eea52`,
+  `PR 17497 at 0000000000, not its head 9350a08d80` — with the command
   that puts the build back, which names the whole build, Manager included, so that
   it holds a box that is still serving to it; nothing is reported ready or opened.
+  A part that cannot be read is said to be unconfirmed and does not block, and a
+  frontend PR is always one: nothing a running ComfyUI answers names the PR its
+  frontend was built from.
 - **`stamp` shows the build that is running**: `ComfyUI 0.43.0 (PR 17497,
   9350a08d80) · frontend 1.58.4 · Manager on · … · torch 2.14.1+cpu`, and the
   same in `--json` as `comfyui_commit`, `comfyui_pr`, `frontend_version` and

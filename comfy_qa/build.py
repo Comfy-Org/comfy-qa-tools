@@ -119,6 +119,12 @@ class Build:
     # against the commit the box actually checked out.
     pr_head: str | None = None
     frontend_pr_head: str | None = None
+    # The commit a release's tag points at, the same kind of fact: found by the
+    # check, never chosen. `compare=False` because a tag does not move, so two
+    # builds asking for v0.43.0 are the same build whether or not either has
+    # been checked yet. It is what "ready" holds a release to — the version
+    # string alone is said by master's tip too (audit finding behaviour:F3).
+    tag_commit: str | None = field(default=None, compare=False)
     # Which of the four choices a command line actually made: "backend",
     # "frontend", "manager", "torch". Not part of the build — two builds that
     # ask for the same thing are equal however they were asked — but it is what
@@ -190,6 +196,8 @@ class Build:
             words.append(f"pr_head={self.pr_head}")
         if self.frontend_pr_head:
             words.append(f"frontend_pr_head={self.frontend_pr_head}")
+        if self.tag_commit:
+            words.append(f"tag_commit={self.tag_commit}")
         return " ".join(words)
 
     def over(self, base: "Build | None") -> "Build":
@@ -202,7 +210,8 @@ class Build:
         result = base or DEFAULT
         if "backend" in self.named:
             result = replace(result, version=self.version, pr=self.pr,
-                             commit=self.commit, pr_head=self.pr_head)
+                             commit=self.commit, pr_head=self.pr_head,
+                             tag_commit=self.tag_commit)
         if "frontend" in self.named:
             result = replace(result, frontend=self.frontend,
                              frontend_pr=self.frontend_pr,
@@ -275,6 +284,19 @@ class Build:
                 unread.append("the ComfyUI version")
             elif comfyui_version.lstrip("v") != self.version.lstrip("v"):
                 wrong.append(f"ComfyUI {comfyui_version}, not {self.version}")
+            # And the checkout. The version string is what ComfyUI's own
+            # pyproject says, and master's tip the day after a tag says it too,
+            # as does a PR branched from it. The tag's commit is the release;
+            # a commit read off git that is not it, or a PR's branch, is not
+            # (audit finding behaviour:F3). The commit decides when both are
+            # known — a PR branch AT the tag's commit is the release's code.
+            at_tag = bool(self.tag_commit and commit and (
+                commit.startswith(self.tag_commit) or self.tag_commit.startswith(commit)))
+            if pr is not None and not at_tag:
+                wrong.append(f"PR {pr}, not {self.version}")
+            elif self.tag_commit and commit and not at_tag:
+                wrong.append(f"commit {commit[:10]}, not {self.version}'s commit "
+                             f"{self.tag_commit[:10]}")
         if self.pr:
             on_head = bool(self.pr_head and commit and commit == self.pr_head)
             if pr is None and not commit:
@@ -300,6 +322,11 @@ class Build:
                 unread.append("the frontend it serves")
             elif frontend.lstrip("v") != self.frontend.lstrip("v"):
                 wrong.append(f"frontend {frontend}, not {self.frontend}")
+        elif self.frontend_pr:
+            # The bundle says the version it was built as, and nothing a running
+            # ComfyUI answers names the PR it came from. Never compared, so it
+            # is said to be unconfirmed rather than passing as though checked.
+            unread.append("which frontend PR it serves")
         if manager is None:
             unread.append("whether Manager is running")
         elif (manager == "on") != self.manager:
@@ -338,13 +365,15 @@ class Build:
                 == replace(other, pr_head=None, frontend_pr_head=None))
 
     def choices(self) -> "Build":
-        """This build without the heads GitHub reported for it.
+        """This build without what GitHub reported for it.
 
         What the host list keeps. Its `build` is what was asked for, written the
         day `create` ran; a PR's head from that day is stale by the first `go`,
-        which checks the PR's branch out at whatever its head is then.
+        which checks the PR's branch out at whatever its head is then. A tag's
+        commit does not go stale, and is left out with the heads anyway: the
+        line is the choices, in the words a person reads and writes there.
         """
-        return replace(self, pr_head=None, frontend_pr_head=None)
+        return replace(self, pr_head=None, frontend_pr_head=None, tag_commit=None)
 
     # --- what comfy-cli and ComfyUI are handed --------------------------
 
@@ -546,7 +575,7 @@ def parse(spec: str | None) -> Build | None:
     for word in text.split():
         key, sep, value = word.partition("=")
         if not sep or key not in ("comfyui", "frontend", "manager", "torch",
-                                  "pr_head", "frontend_pr_head"):
+                                  "pr_head", "frontend_pr_head", "tag_commit"):
             raise BuildError(
                 f"the build {text!r} has a word this tool does not read: {word!r}. "
                 f"A build is comfyui=, frontend=, manager= and torch=.",
@@ -570,6 +599,7 @@ def parse(spec: str | None) -> Build | None:
     )
     return replace(chosen, pr_head=fields.get("pr_head") or None,
                    frontend_pr_head=fields.get("frontend_pr_head") or None,
+                   tag_commit=fields.get("tag_commit") or None,
                    named=frozenset())
 
 
@@ -648,10 +678,11 @@ def check(chosen: Build, ask=None) -> Build:
     """
     ask = ask or github
     if chosen.version:
-        _exists(ask, f"repos/{BACKEND_REPO}/git/ref/tags/{chosen.version}",
-                f"ComfyUI has no release {chosen.version}, so there is nothing to "
-                f"install. Nothing was created or started.",
-                _releases_fix("--version"))
+        body = _exists(ask, f"repos/{BACKEND_REPO}/git/ref/tags/{chosen.version}",
+                       f"ComfyUI has no release {chosen.version}, so there is nothing "
+                       f"to install. Nothing was created or started.",
+                       _releases_fix("--version"))
+        chosen = replace(chosen, tag_commit=_tag_commit(ask, body))
     if chosen.pr:
         head = _open_pr(ask, BACKEND_REPO, chosen.pr, "--pr", "ComfyUI")
         chosen = replace(chosen, pr_head=head)
@@ -673,6 +704,27 @@ def check(chosen: Build, ask=None) -> Build:
                         "the frontend")
         chosen = replace(chosen, frontend_pr_head=head)
     return chosen
+
+
+def _tag_commit(ask, ref) -> str | None:
+    """The commit a tag's ref points at, or None when GitHub would not say.
+
+    A lightweight tag's ref names the commit itself. An annotated one names a
+    TAG object, and the commit is one more read away (`git/tags/<sha>`): kept as
+    the tag object's hash, every honest checkout of the release would be refused
+    for being on "another" commit. A ref with no type is read as a commit, which
+    is what a lightweight tag is.
+    """
+    target = (ref or {}).get("object") if isinstance(ref, dict) else None
+    sha = str((target or {}).get("sha") or "")
+    if (target or {}).get("type") == "tag" and _COMMIT.match(sha):
+        status, body = _ask(ask, f"repos/{BACKEND_REPO}/git/tags/{sha}")
+        target = (body or {}).get("object") if status == 200 and isinstance(
+            body, dict) else None
+        if (target or {}).get("type", "commit") != "commit":
+            return None
+        sha = str((target or {}).get("sha") or "")
+    return sha.lower() if _COMMIT.match(sha) else None
 
 
 def _ask(ask, path: str):

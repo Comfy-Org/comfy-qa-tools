@@ -1591,7 +1591,10 @@ that contradicts is named — `frontend 1.57.7, not v1.58.4` when ComfyUI could 
 fetch the frontend release and fell back to its own, `Manager off, not on` when the
 Manager package did not install, `PR 17497 at 0000000000, not its head 9350a08d80`
 when the checkout is on the PR's branch but not at the head GitHub reports, which
-is what a fetch that failed leaves. Nothing is torn down: the box is fine and ComfyUI is
+is what a fetch that failed leaves. A release is its tag's commit, not its version
+string: `commit abcdef0123, not v0.43.0's commit 426f5eea52` is a checkout on
+master's tip that still reports 0.43.0, and `PR 17497, not v0.43.0` a PR branch
+that does. Nothing is torn down: the box is fine and ComfyUI is
 running, it is the build that is wrong. The fix is `comfy-qat go <name>` with the whole
 build named, Manager included even when it is the default, so for the default build it
 is `comfy-qat go <name> --manager`. A `go` that names no build onto a box that is
@@ -1599,7 +1602,9 @@ serving asks the box nothing, and would hand the same wrong ComfyUI over; named,
 box is held to that build and it is put back. The fix also points at
 `comfy-qat logs <name>` for why — a failed frontend download is in ComfyUI's own log. A part that cannot be read at all is said to be unconfirmed and does not
 block: `could not read the frontend it serves off the running ComfyUI, so that part
-of the build is not confirmed`.
+of the build is not confirmed`. A frontend PR is always said to be unconfirmed —
+`could not read which frontend PR it serves off the running ComfyUI` — because
+nothing the running ComfyUI answers names the PR its frontend was built from.
 
 ## Starting and stopping
 

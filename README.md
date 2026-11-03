@@ -191,7 +191,8 @@ pin (`--torch 2.12.1+cu130`); ComfyUI-Manager is on unless you say
 `--no-manager`. comfy-cli does the installing, on the box. A build that does not
 exist is refused before anything is created, a new build on an existing box
 keeps its custom nodes and models, and `go` reports a box ready only once the
-ComfyUI running on it says it is the build you asked for. With none of them,
+ComfyUI running on it, and git in its checkout, say it is the build you asked
+for. With none of them,
 it is the tip of ComfyUI's default branch, as before.
 [Choosing the build](docs/machines.md#choosing-the-build) has the whole of it.
 

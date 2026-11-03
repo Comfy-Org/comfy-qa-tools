@@ -297,10 +297,14 @@ what keeps the everyday command quick.
 is read back off the machine — never off what was asked for — and compared: the
 ComfyUI version and torch from the running server, the frontend from the bundle it
 is actually serving, Manager from whether Manager answers, the commit and PR from
-git in the checkout — a PR's commit held to the head GitHub reported for it. A
+git in the checkout. A release is held to its tag's own commit, not just the
+version string — master's tip the day after a tag, or a PR branched from it,
+reports the same version — and a PR to the head GitHub reported for it. A
 contradiction is said plainly, with the command that puts
 the build back, and nothing is reported ready or opened. A part that cannot be
-read is said to be unconfirmed and does not block.
+read is said to be unconfirmed and does not block. A frontend PR is always
+unconfirmed: the bundle says the version it was built as, and nothing a running
+ComfyUI answers names the PR it came from.
 
 ### Pinning PyTorch
 

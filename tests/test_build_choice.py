@@ -424,6 +424,59 @@ def test_a_part_that_agrees_is_not_a_contradiction(asked):
     assert asked.contradictions(**seen) == ([], [])
 
 
+TAG_SHA = SEEN["commit"]
+
+
+@pytest.mark.parametrize("asked, seen, said", [
+    # behaviour:F3. The version string is what /system_stats says, and master's
+    # tip a day after the tag says it too; the tag's own commit does not.
+    ({"version": "v0.43.0", "tag_commit": TAG_SHA}, {"commit": "abcdef0123" + "4" * 30},
+     ["commit abcdef0123, not v0.43.0's commit 426f5eea52"]),
+    ({"version": "v0.43.0", "tag_commit": TAG_SHA}, {"pr": 17497, "commit": PR_HEAD},
+     ["PR 17497, not v0.43.0"]),
+    # With no tag commit known — a record written before it was kept — a PR
+    # branch is still not a release.
+    ({"version": "v0.43.0"}, {"pr": 17497, "commit": PR_HEAD},
+     ["PR 17497, not v0.43.0"]),
+    ({"version": "v0.43.0", "tag_commit": TAG_SHA}, {}, []),
+], ids=["master-tip", "pr-branch", "pr-branch-no-tag-commit", "at-the-tag"])
+def test_a_release_is_its_tag_s_commit_not_its_version_string(asked, seen, said):
+    wrong, unread = Build(**asked).contradictions(**{**SEEN, **seen})
+    assert wrong == said
+    assert unread == []
+
+
+def test_a_frontend_pr_is_never_compared_so_it_is_unconfirmed():
+    """Nothing the running ComfyUI answers names the frontend PR it was built
+    from. Said to be unconfirmed, never passed in silence."""
+    wrong, unread = Build(frontend_pr=5678).contradictions(**SEEN)
+    assert wrong == []
+    assert unread == ["which frontend PR it serves"]
+
+
+def test_a_release_check_keeps_the_commit_its_tag_points_at():
+    lightweight = Hub({f"{REPO}/git/ref/tags/v0.43.0": {
+        "object": {"sha": TAG_SHA.upper(), "type": "commit"}}})
+    assert build_mod.check(Build(version="v0.43.0"), lightweight).tag_commit == TAG_SHA
+
+
+def test_an_annotated_tag_is_followed_to_its_commit():
+    """An annotated tag's ref names the TAG object; the commit is one more read
+    away. Kept as the tag object, every honest checkout would be refused."""
+    tag_object = "7a9" * 13 + "7"
+    hub = Hub({f"{REPO}/git/ref/tags/v0.43.0": {"object": {"sha": tag_object,
+                                                           "type": "tag"}},
+               f"{REPO}/git/tags/{tag_object}": {"object": {"sha": TAG_SHA,
+                                                            "type": "commit"}}})
+    assert build_mod.check(Build(version="v0.43.0"), hub).tag_commit == TAG_SHA
+
+
+def test_a_tag_commit_survives_the_record_and_never_reaches_the_host_list():
+    chosen = Build(version="v0.43.0", **{"tag_commit": TAG_SHA})
+    assert parse(chosen.spec()).tag_commit == TAG_SHA, "the box's record keeps it"
+    assert "tag_commit" not in chosen.choices().spec(), "the host list does not"
+
+
 def test_a_part_that_cannot_be_read_is_unconfirmed_never_a_contradiction():
     """The rule `stamp` keeps, and machines.md states: a part nobody can read
     is said to be unconfirmed and does not block. Manager unread is not off."""
