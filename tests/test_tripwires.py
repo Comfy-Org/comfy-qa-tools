@@ -118,6 +118,77 @@ def test_a_github_refusal_the_code_swallows_still_fails_the_test(no_test_asks_gi
     no_test_asks_github.clear()
 
 
+# --- and the teardown that fails the test, held by a test of its own ----------
+#
+# Audit item code:P1 (step 2): the tests above prove each refusal is KEPT, then
+# clear the list so their own teardown stays green — which means nothing in the
+# suite would notice if the teardown `pytest.fail` were deleted. Removing it left
+# every test passing. So each tripwire's own generator is driven here, in
+# process, the way pytest drives it: set up, trip it, and ask for the teardown,
+# which has to fail. Its own MonkeyPatch, so the trip lands on the copy under
+# test and never on this test's own autouse tripwires.
+
+
+def _trips():
+    import socket
+
+    from comfy_qa import build
+
+    return {
+        "no_test_asks_github": lambda: build.github("repos/Comfy-Org/ComfyUI/pulls/1"),
+        "no_test_reaches_the_network": lambda: socket.create_connection(
+            ("127.0.0.1", 8188), 0.2),
+    }
+
+
+# Every tripwire in conftest that keeps its refusals for teardown. A new one is
+# added here the day it lands, with its trip above.
+TRIPWIRES = ["no_test_asks_github", "no_test_reaches_the_network"]
+
+
+def test_every_tripwire_that_fails_at_teardown_is_held_here():
+    """Derived from conftest's source, not trusted: a fixture that yields the
+    refusals it keeps and fails at teardown is one of these, and one added
+    without being named in TRIPWIRES would be the code:P1 hole again."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).parent / "conftest.py").read_text(encoding="utf-8"))
+    found = sorted(
+        node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        and "yield refused" in ast.unparse(node) and "pytest.fail" in ast.unparse(node))
+    assert found == sorted(TRIPWIRES), found
+
+
+@pytest.mark.parametrize("name", TRIPWIRES)
+def test_a_tripwire_that_fired_fails_the_test_at_teardown(name):
+    import conftest
+
+    fixture = getattr(conftest, name).__wrapped__
+    with pytest.MonkeyPatch.context() as patch:
+        driven = fixture(patch)
+        refused = next(driven)
+        with pytest.raises(AssertionError):
+            _trips()[name]()
+        assert len(refused) == 1, refused
+        with pytest.raises(pytest.fail.Exception, match="tripwire fired"):
+            next(driven)
+
+
+@pytest.mark.parametrize("name", TRIPWIRES)
+def test_a_tripwire_that_never_fired_lets_the_test_pass(name):
+    """The other half: a teardown that failed every test would pass the test
+    above too."""
+    import conftest
+
+    fixture = getattr(conftest, name).__wrapped__
+    with pytest.MonkeyPatch.context() as patch:
+        driven = fixture(patch)
+        assert next(driven) == []
+        with pytest.raises(StopIteration):
+            next(driven)
+
+
 def test_loopback_is_not_a_leak():
     """The end-to-end tests run a real fake ComfyUI on 127.0.0.1 and really
     connect to it. Refusing that would make the tripwire unusable, so the rule is
