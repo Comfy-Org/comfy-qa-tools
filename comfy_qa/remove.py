@@ -215,7 +215,7 @@ def _held_for(gc, host, name: str, *, already_gone: bool):
             f"whether it would be released is not known. Nothing was deleted.",
             fix=say.fix("see it yourself, then run this again:",
                         f"gcloud compute reservations list --project={project}",
-                        f"comfy-qat delete {host.name}"))
+                        f"comfy-qat delete {host.name} --yes"))
 
     found = next((entry for entry in listed
                   if (entry.name, entry.zone) == (name, zone)), None)
@@ -232,7 +232,7 @@ def _held_for(gc, host, name: str, *, already_gone: bool):
             f"Nothing was deleted.",
             fix=say.fix("see it yourself, then run this again:",
                         f"gcloud compute reservations list --project={project}",
-                        f"comfy-qat delete {host.name}"))
+                        f"comfy-qat delete {host.name} --yes"))
 
     on_it = [str(instance.get("name") or "") for instance in instances
              if rsv.bound_to(instance) == name
@@ -279,7 +279,7 @@ def _held_for(gc, host, name: str, *, already_gone: bool):
             f"gcloud compute instances delete {host.gce_instance} --zone={zone} "
             f"--project={project} --delete-disks=all --quiet",
             "then take the entry out of your host list:",
-            f"comfy-qat delete {host.name}",
+            f"comfy-qat delete {host.name} --yes",
             "the reservation bills until it is released, by whoever it "
             "belongs to:",
             release))
@@ -368,7 +368,7 @@ def delete_cmd(
         if described is not None:
             _refuse(
                 f"no host is called {name!r}. Did you mean {described.name!r}?",
-                fix=f"comfy-qat delete {described.name}",
+                fix=f"comfy-qat delete {described.name} --yes",
             )
         _refuse(
             f"no host is called {name!r}. delete takes an exact name, never a "
@@ -508,6 +508,13 @@ def delete_cmd(
     for line in not_released:
         _say_not_released(line)
 
+    # EVERY `comfy-qat delete` THIS TOOL PRINTS CARRIES `--yes`, because of the
+    # two lines below. A printed delete is pasted — into a script, or run by an
+    # agent — as often as it is typed, and without the flag it stopped here
+    # with exit 2 and nothing deleted; for a reserved box that is the command
+    # that stops the bill (O25, the lesson D3 taught about gcloud's `--quiet`).
+    # The confirmation is still here for the person who types `delete` with no
+    # flag. `tests/test_reserved_cli.py` holds every printed one to it.
     if not yes:
         if not can_prompt():
             _refuse("this needs a terminal to confirm in", fix="add --yes if you are sure")
@@ -597,7 +604,7 @@ def _release_the_reservation(gc, host, held, *, box_deleted: bool) -> None:
                 "find out whether it went:",
                 f"gcloud compute reservations list --project={host.gce_project}",
                 f"then run it again — it carries on from whatever is left: "
-                f"comfy-qat delete {host.name}",
+                f"comfy-qat delete {host.name} --yes",
             ],
             note=("if it is still there it is still billing, with or without "
                   f"{host.name} on it"),
@@ -618,7 +625,7 @@ def _release_the_reservation(gc, host, held, *, box_deleted: bool) -> None:
                 f"list, as the only record of it.",
                 fix=say.fix("release it:", release,
                             "then run this again to take the entry out:",
-                            f"comfy-qat delete {host.name}"),
+                            f"comfy-qat delete {host.name} --yes"),
                 code=1)
         say.fail(
             f"could not release {held.name} ({exc}), so {host.name} was not "
@@ -626,7 +633,7 @@ def _release_the_reservation(gc, host, held, *, box_deleted: bool) -> None:
             fix=say.fix("release it yourself:", release,
                         "then run this again — it finds the reservation gone "
                         "and deletes the box:",
-                        f"comfy-qat delete {host.name}"),
+                        f"comfy-qat delete {host.name} --yes"),
             code=1)
     except inflight.Interrupted:
         releasing.give_up()
@@ -681,7 +688,7 @@ def _delete_the_box(gc, host, config, released=None, unreleased=None) -> None:
                 # asks the project when its own read fails, so if the box really
                 # did go, running it again finishes the job.
                 f"if it is gone, run it again — it now asks the project and "
-                f"takes the entry out: comfy-qat delete {host.name}",
+                f"takes the entry out: comfy-qat delete {host.name} --yes",
             ],
             note=(f"the entry is stale whichever way it went, and while "
                   f"[hosts.{host.name}] is there, `create --name {host.name}` "
@@ -717,7 +724,7 @@ def _delete_the_box(gc, host, config, released=None, unreleased=None) -> None:
                 f"is no longer billing for the card — but {host.name} itself "
                 f"was not deleted, and its disk still bills.",
                 say.fix("run it again to delete the box:",
-                        f"comfy-qat delete {host.name}"))
+                        f"comfy-qat delete {host.name} --yes"))
         if unreleased is not None:
             # The box-first order's half. Nothing was deleted and nothing was
             # released: the release comes after the box in this order and was
@@ -729,7 +736,7 @@ def _delete_the_box(gc, host, config, released=None, unreleased=None) -> None:
                 f"{unreleased.name} was not released either and is still "
                 f"billing.",
                 say.fix("run it again once the box can be deleted:",
-                        f"comfy-qat delete {host.name}"))
+                        f"comfy-qat delete {host.name} --yes"))
         say.fail(exc, code=1)
     except inflight.Interrupted:
         # A no-op in the ordinary case: the step was closed inside the

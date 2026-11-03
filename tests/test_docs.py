@@ -759,7 +759,12 @@ MESSAGE_FLOOR = {
 # to 327, which is past half the distance and deliberately so: three engineers'
 # messages landed in this one commit, the slack is 12, and half the distance
 # would leave the floor already stale on the day it was set.
-ENTRY_FLOOR = 327
+# 327 until 1.3.1: the stock-out after `--region` in the only region there is,
+# and the host list's own `project` line — the fallback note, the refusals for
+# an unreadable file, a stray top-level key and a project that is not an ID,
+# and setup failing to save one. The page reads 343. Raised to 335, half the
+# distance, on the rule above.
+ENTRY_FLOOR = 335
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -787,7 +792,9 @@ ENTRY_FLOOR = 327
 # Raised to 342, half the distance to today's 349, on the rule above.
 # 342 until the same commit: 386 quoted wordings now. Raised to 380, for the
 # reason given beside ENTRY_FLOOR.
-WORDING_FLOOR = 380
+# 380 until 1.3.1, for the entries named beside ENTRY_FLOOR: 397 quoted
+# wordings now. Raised to 388, half the distance, on the rule above.
+WORDING_FLOOR = 388
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -1717,7 +1724,9 @@ QUOTED_CONFIG_ERRORS = _quoted_config_errors()
 # 27 since 2026-09-08: the `os` field is validated now. It was the one field
 # with a silent, total failure — a misspelling handed a Windows box the whole
 # Linux command set and swapped `ssh` and `rdp` over, saying nothing.
-QUOTED_CONFIG_ERRORS_EXPECTED = 27
+# 29 since 1.3.1: the host list's `project` line, which refuses a stray key at
+# the top of the file and a value that is not a project ID.
+QUOTED_CONFIG_ERRORS_EXPECTED = 29
 
 
 def test_no_config_error_construction_matches_everything():
@@ -1955,25 +1964,29 @@ def test_the_create_sample_in_the_everyday_loop_is_what_a_dry_run_prints(
 
 
 def test_every_reserved_stop_line_the_docs_quote_is_the_one_the_tool_prints():
-    """`comfy-qat delete <name>   # the only thing that stops a reserved box's
-    bill …` is quoted on four pages, and it is the one line somebody acts on
-    to stop paying. Each quotation is held to `reservation.stop_line` for the
-    name it uses, so rewording the line fails here rather than leaving the docs
-    promising a sentence the tool no longer says."""
+    """`the only thing that stops a reserved box's bill …:` and, under it,
+    `comfy-qat delete <name> --yes` is quoted on four pages, and it is the one
+    command somebody runs to stop paying. Each quotation — both lines — is held
+    to `reservation.stop_line` for the name it uses, so rewording either fails
+    here rather than leaving the docs promising a sentence the tool no longer
+    says. (Two lines since O25: a `#` note on the end of the command was passed
+    to it as arguments by an interactive zsh.)"""
     from comfy_qa import reservation
 
     quoted = []
     for page in [*sorted(DOCS.glob("*.md")), ROOT / "README.md"]:
-        for line in page.read_text(encoding="utf-8").splitlines():
-            found = re.match(r"\s*comfy-qat delete (\S+)\s+# the only thing", line)
-            if found:
-                quoted.append((page.name, found.group(1), line))
+        lines = page.read_text(encoding="utf-8").splitlines()
+        for at, line in enumerate(lines[1:], start=1):
+            found = re.match(r"\s*comfy-qat delete (\S+)", line)
+            if found and lines[at - 1].strip().startswith("the only thing"):
+                quoted.append((page.name, found.group(1), lines[at - 1:at + 1]))
 
     assert len(quoted) >= 4, f"only {len(quoted)} quotations found: {quoted}"
     assert {"machines.md", "troubleshooting.md", "cost.md"} <= {
         page for page, _n, _l in quoted}
-    stale = [f"{page}: {line.strip()}" for page, name, line in quoted
-             if line.strip() != reservation.stop_line(name).strip()]
+    stale = [f"{page}: {block}" for page, name, block in quoted
+             if [line.strip() for line in block]
+             != [line.strip() for line in reservation.stop_line(name).splitlines()]]
     assert not stale, stale
 
 
@@ -2055,7 +2068,7 @@ def test_what_the_page_says_prune_prints_for_a_reserved_ghost_is_what_it_prints(
     assert result.exit_code == 0, result.output
     heading = next(line for line in result.stdout.splitlines()
                    if line.startswith("not on the project any more, and reserved"))
-    offered = next(line.split("#")[0].strip() for line in result.stdout.splitlines()
+    offered = next(line.strip() for line in result.stdout.splitlines()
                    if line.strip().startswith("comfy-qat delete"))
 
     passage = " ".join(_section(

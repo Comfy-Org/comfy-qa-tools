@@ -23,8 +23,10 @@ never collide on `PATH`.
 
 ## Status
 
-**1.3.0. Every command is implemented and tested, and everything up to 1.2.0 has
-run against real GCE hardware on both Linux and Windows**.
+**1.3.1. Every command is implemented and tested, and everything up to 1.2.0 has
+run against real GCE hardware on both Linux and Windows**. 1.3.1 tidies up after
+1.3.0 and keeps comfy-qat's Google project in its own host list — see
+[the changelog](CHANGELOG.md).
 
 What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
 cost columns in `list` — **was run on real Google Compute Engine boxes on

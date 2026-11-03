@@ -1020,23 +1020,28 @@ echo "=== V8 the list, offline and then live"; qat list; qat list --live
 ```
 
 - [ ] **V4** — created without reading GPU quota at all: no `GPUS_ALL_REGIONS`
-      line in its output. It ends on `comfy-qat down qa-cpu   # stop the machine,
-      stop paying` and says there is no driver to wait for. In the host list it
-      is `gpu = "none"`.
+      line in its output. It says there is no driver to wait for, and ends on
+      `stop the machine, stop paying:` with `comfy-qat down qa-cpu` alone on the
+      line under it — no `#` note after the command. In the host list it is
+      `gpu = "none"`.
 - [ ] **V5** — `go` serves it **without waiting for a driver**. It used to wait
       fifteen minutes for `nvidia-smi` on a machine with no NVIDIA hardware; a
       `go` that sits at a driver wait is that defect back. `stamp` prints a line
       naming a CPU device and no card, and is not refused as a mismatch. **Record
-      the stamp line verbatim** — what ComfyUI calls the device on a box with no
-      GPU has not been seen yet.
+      the stamp line verbatim.** The live run of 2026-10-07 saw it:
+      `qatest-cpu · local-git · ComfyUI 0.39.0 · linux · cpu (29GB) · torch
+      2.14.1+cpu · python 3.10.12` — ComfyUI calls the device `cpu`, its log
+      says `Device: cpu`, and it was started with `--cpu`.
 - [ ] **V6** — **the reservation is made first, then the box, in the same zone**:
       `reserving qa-rsv-rsv in <zone>` and then `creating qa-rsv on it`. It was
       not refused because `qa-cpu` is running — a box with no GPU holds none of
-      the GPU allowance. It ends on the bill sentence and two lines: `comfy-qat down
-      qa-rsv     # first — delete refuses a box that is running`, then `comfy-qat
-      delete qa-rsv   # the only thing that stops a reserved box's bill …`. It
-      **does not** print `stop paying`, and the `down` line is not described as
-      stopping the bill.
+      the GPU allowance. It ends on the bill sentence and two commands, each
+      alone on a line under the reason for it: `first stop it — delete refuses
+      a box that is running:` above `comfy-qat down qa-rsv`, then `the only thing
+      that stops a reserved box's bill — the box and its disk go too:` above
+      `comfy-qat delete qa-rsv --yes`. Neither command has a `#` note after it.
+      It **does not** print `stop paying`, and the `down` line is not described
+      as stopping the bill.
 - [ ] **V7** — read from Google, not from the tool: a reservation `qa-rsv-rsv`,
       `READY`, count 1, in use 1; and `qa-rsv` with `SPECIFIC_RESERVATION` naming
       it. If the box is there and unbound, or the reservation is in another zone,
@@ -1081,8 +1086,8 @@ echo "=== V14 down --all gives no all-clear"; qat down --all
 - [ ] **V10** — not refused. The reserved box is the whole GPU allowance and
       this needs none of it.
 - [ ] **V11** — stops the machine and says `qa-rsv was running. Stopped — but it
-      is reserved, so it is still billing.`, then the `comfy-qat delete qa-rsv`
-      line. It does **not** say `was billing. Stopped.`
+      is reserved, so it is still billing.`, then the `comfy-qat delete qa-rsv
+      --yes` line. It does **not** say `was billing. Stopped.`
 - [ ] **V11b** — the instance is `TERMINATED` and the reservation is still
       there, still `READY`. Record what `inUseCount` reads for a stopped box.
 - [ ] **V12** — `go` starts it in the **same zone** and serves; `stamp` names

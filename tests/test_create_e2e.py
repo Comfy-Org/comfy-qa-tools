@@ -30,11 +30,13 @@ import json
 import os
 import re
 import stat
+from itertools import takewhile
 
 import pytest
 from typer.testing import CliRunner
 
 from comfy_qa import gcloud as gcloud_module
+from comfy_qa import say
 from comfy_qa import zones as zones_module
 from comfy_qa.cli import app
 from comfy_qa.create import CARDS, image_for
@@ -352,7 +354,10 @@ def test_a_refusal_only_ever_suggests_a_gpu_name_the_tool_accepts(cli):
     result = cli("--os", "linux", "--gpu", "h100", "--dry-run",
                  gc=FakeGcloud(quotas=[ceiling(8)]))
     assert result.exit_code == 2
-    assert "--gpu h100," in result.output
+    # The command alone on its line: `--gpu h100` and nothing after it. It was
+    # `--gpu h100, then wait for Google`, read here up to the comma.
+    assert "comfy-qat quota request --gpu h100" in [
+        line.strip().removeprefix("to fix:").strip() for line in result.output.splitlines()]
     assert "--gpu h100-80gb" not in result.output
 
 
@@ -541,6 +546,46 @@ def test_the_number_of_attempts_is_capped_however_many_zones_google_suggests(cli
     assert result.exit_code == 1
     assert len(result.gc.created) == zones_module.MAX_ATTEMPTS
     assert "stopping after 6 zones" in result.stderr
+
+
+def test_the_capped_stockout_offers_the_same_box_to_put_somewhere_else(cli):
+    """The capped refusal hands back two templates, somewhere this did not
+    reach. For a box that was not reserved they were `comfy-qat create --region
+    <region>` and `comfy-qat create --zone <zone>` — no `--os`, `--gpu`, `--name`
+    or `--disk` — so, filled in and pasted with no terminal, each stopped at
+    "--os is required" and exited 2; and at a terminal it asked again for what
+    had been given, and made a box under another name with the default disk.
+
+    Each is compared with the arguments the create was given, and pasted back
+    with its placeholder filled in: the plan is the box that was asked for."""
+    from commandlines import flags, offered_argv
+
+    spares = [f"{region}-{letter}" for region in REGIONS for letter in "cdefgh"]
+    chain = {zone: STOCKOUT.format(zone=zone) for zone in ZONES}
+    chain[ZONES[0]] = SUGGESTS.format(zone=ZONES[0], other=spares[0])
+    for current, following in zip(spares, spares[1:]):
+        chain[current] = SUGGESTS.format(zone=current, other=following)
+    chain[spares[-1]] = STOCKOUT.format(zone=spares[-1])
+    asked = ["--os", "linux", "--gpu", "l4", "--name", "qatest-plain", "--disk", "400"]
+    result = cli(*asked, "--yes", gc=FakeGcloud(refuse=chain))
+    assert result.exit_code == 1
+    assert "stopping after 6 zones" in result.stderr
+
+    filled = {"<region>": "us-central1", "<zone>": "us-central1-b"}
+    templates = [words for words in offered_argv(result.output, "comfy-qat", "create")
+                 if set(filled) & set(words)]
+    assert len(templates) == 2, result.output
+    for words in templates:
+        offered = flags(words[2:])
+        where = {"--region", "--zone"} & set(offered)
+        assert len(where) == 1, words
+        assert {k: v for k, v in offered.items() if k not in where} == flags(asked), words
+
+        pasted = [filled.get(word, word) for word in words]
+        again = cli(*pasted[2:], "--dry-run")
+        assert again.exit_code == 0, f"`{' '.join(pasted)}`:\n{again.output}"
+        plan = " ".join(again.output.split())
+        assert "qatest-plain" in plan and "400 GB pd-balanced boot disk" in plan, plan
 
 
 # The near set is `zones.NEAREST_REGIONS` wide and this module measures five
@@ -1065,9 +1110,13 @@ def _invocations(text: str) -> list[list[str]]:
     """Every `comfy-qat ...` command in the output, split the way a shell would.
 
     A command ends where the prose around it resumes, and in this tool's fix
-    lines that is a `;`, a `,` or the end of the line — `comfy-qat quota request
-    --gpu v100 --region us-central1, then wait for Google` is one command and
-    four words of advice.
+    lines that is the end of the line — `comfy-qat quota request --gpu v100
+    --region us-central1, then wait for Google` was one command and four words
+    of advice, and pasted, the four words were arguments `quota request`
+    refused, so the advice has a line of its own now (O25e). A `;` or `,` still
+    ends one here, so a line that slipped back into that shape is still read as
+    the command a person would have meant, and `conftest`'s printed-command
+    check is what refuses the shape.
     """
     import shlex
 
@@ -1201,6 +1250,83 @@ def test_no_host_list_at_all_is_still_fine(cli):
     assert result.exit_code == 0
     assert "is up in" in result.output
     assert "[hosts.comfy-linux]" in result.hosts
+
+
+def test_a_host_list_that_was_never_there_did_not_stop_loading(cli):
+    """No host list when `create` starts and none when it picks the port is a
+    first run, not a file that broke while the box was being made. The second
+    read refused it — `no host list at …` — and the warning for a broken file
+    went out anyway: on the ordinary first-run path, telling a newcomer the host
+    list "stopped loading while this ran", to check a port against entries that
+    do not exist, and to fix a file that was never there.
+
+    This is how CI found the wrap in that warning's last line: the three tests
+    that printed it were all on this path, which should not have printed it."""
+    result = cli("--os", "linux", "--gpu", "l4", "--yes",
+                 declared=None, gc=card_cloud("l4"))
+
+    assert result.exit_code == 0
+    assert "stopped loading" not in result.output, result.output
+    assert "[hosts.comfy-linux]" in result.hosts
+
+
+class BreaksTheHostList(FakeGcloud):
+    """A create during which somebody adds a second host on a port already taken.
+
+    The one way into the warning `create` prints once the box is real: the file
+    loaded when the command started — it refuses outright otherwise — and does
+    not load when the port is chosen. Another terminal, or an editor saving
+    over it, is all it takes, and the create is minutes long. `name` is the host
+    that clashes, so the loader's refusal is as long as the test wants it."""
+
+    def __init__(self, path, name, **kwargs):
+        super().__init__(**kwargs)
+        self.path = path
+        self.name = name
+
+    def create_instance_from_image(self, name, zone, project, **kwargs):
+        super().create_instance_from_image(name, zone, project, **kwargs)
+        self.path.write_text(
+            f'{HOSTS}\n[hosts.{self.name}]\nkind = "local"\nport = 8188\n',
+            encoding="utf-8")
+
+
+def test_no_length_of_refusal_puts_go_or_down_at_the_start_of_the_warning_s_line(
+        cli, tmp_path):
+    """The warning names `go` and `down`, which both read the host list, AFTER
+    the loader's own refusal — and that refusal names what it objected to: the
+    host list's path, a host's name. So where the sentence wraps is decided by
+    how long those are. At the length the Linux runners' temp directory happened
+    to be, a line of it came out `comfy-qat go or comfy-qat down`: a command by
+    its position, and one `comfy-qat` refuses when it is pasted. A Mac's temp
+    path is past a whole line, and nothing is broken mid-word, so there the path
+    took a line to itself and the sentence after it started a fresh one whatever
+    the length — the same three tests passed, and CI was red on Ubuntu only with
+    nothing in the code that differed between the two.
+
+    So every length a name can have, rather than the one a runner happens to
+    have: the host that clashes grows a character at a time, which carries the
+    break across the end of the sentence. At least one of them has to push the
+    names to the start of a line, or this proves nothing about the wrap."""
+    from commandlines import is_command, problems
+
+    path = tmp_path / "hosts.toml"
+    landed = 0
+    for length in range(1, 64):
+        result = cli("--os", "linux", "--gpu", "l4", "--yes", config=path,
+                     gc=BreaksTheHostList(path, "s" * length))
+
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        start = next(index for index, line in enumerate(lines) if line.startswith(
+            f"{say.WARNING}your host list stopped loading while this ran"))
+        under = " " * len(say.WARNING)
+        for line in takewhile(lambda line: line.startswith(under), lines[start + 1:]):
+            text = line[len(under):]
+            assert not is_command(text), f"a {length}-character name: {line!r}"
+            landed += text.lstrip("`").startswith(("comfy-qat go", "comfy-qat down"))
+        assert problems(lines) == [], (length, problems(lines))
+    assert landed, "no length pushed the names to the start of a line"
 
 
 @pytest.mark.parametrize("region, expect", [

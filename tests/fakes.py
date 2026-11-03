@@ -39,6 +39,58 @@ from comfy_qa.gcloud import NOT_FOUND, GcloudError
 # ---------------------------------------------------------------- the cloud
 
 
+# The gcloud surfaces that act on a project. `billing accounts` is the one that
+# does not — it lists the accounts the signed-in user can see — and is named.
+_SCOPED_FIRST_WORDS = ("compute", "quotas", "services", "billing")
+_GLOBAL = (("billing", "accounts"),)
+
+
+def names_its_project(args) -> None:
+    """Refuse an argv that acts on a project without saying which.
+
+    Without `--project`, gcloud acts on whatever project it is pointed at — and
+    since 1.3.1 that need not be the one comfy-qat reads from the host list, so
+    a call that leaves it out acts on the wrong project the moment the two
+    differ. Every fake that stands in for `Gcloud.run` calls this first, and
+    `conftest.py` wraps the real `run` with it, so no argv in the suite reaches
+    an answer without being checked — however it was built.
+    """
+    words = [str(part) for part in args]
+    scoped = list(words)
+    if scoped[:1] in (["alpha"], ["beta"]):
+        scoped = scoped[1:]
+    if not scoped or tuple(scoped[:2]) in _GLOBAL:
+        return
+    if scoped[0] in _SCOPED_FIRST_WORDS or scoped[:2] == ["projects", "describe"]:
+        assert any(word.startswith("--project=") for word in words), (
+            f"gcloud {' '.join(words)} acts on a project and does not say which "
+            f"— without --project it acts on gcloud's own")
+
+
+def said_and_printed(said: list[str]):
+    """What a setup test hands `Prompts.say`: every line is kept in `said`, for
+    the test to assert on, AND printed through `say.step`, the writer
+    `comfy-qat setup` really prints it with.
+
+    KEPT ONLY, IT WAS NEVER READ. `conftest.every_printed_command_is_only_the_command`
+    reads what reaches `typer.echo`, and a list's `append` reaches nothing, so
+    the tests in `test_setup.py` and `test_setup_quota.py` — 465 when this was
+    found — printed nothing that check could see. One of them drove `setup
+    --no-quota-request --region africa-south1` all along, and the remedy it
+    printed — `To ask later: comfy-qat quota request --gpu h100 — note that
+    africa-south1 does not offer H100, …`, refused when pasted — passed a check
+    that was never shown it. Printed as well, it was the one line in those 465
+    tests the check refused.
+    """
+    from comfy_qa import say
+
+    def say_it(line: str) -> None:
+        said.append(line)
+        say.step(line)
+
+    return say_it
+
+
 def _resolve(spec, *args):
     """A scripted behaviour: raise it, call it, or return it."""
     if isinstance(spec, BaseException):
@@ -219,6 +271,7 @@ class FakeGcloud:
         held, and a fake that quietly returned None for everything would let that
         regress silently.
         """
+        names_its_project(args)
         self.calls.append(("run", tuple(args)))
         joined = " ".join(str(part) for part in args)
         if "disks list" in joined:

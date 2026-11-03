@@ -40,6 +40,7 @@ from comfy_qa.cli import app
 from comfy_qa.config import Host
 from comfy_qa.gcloud import GONE, GcloudError
 from comfy_qa.lifecycle import is_gone, running_elsewhere
+from fakes import names_its_project
 
 WIN = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022",
            gpu="L4", gce_instance="comfy-win", gce_zone="us-central1-a",
@@ -208,6 +209,7 @@ def test_a_stop_that_fails_where_nobody_can_ask_still_says_it_cannot_say(cli):
 
 class Deleting(Project):
     def run(self, args, **kwargs):
+        names_its_project(args)
         self.calls.append(" ".join(str(part) for part in args))
         return ""
 

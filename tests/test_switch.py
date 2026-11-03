@@ -306,7 +306,7 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
     assert "not a fault on your side" in said(result)
     assert "comfy-linux is untouched" in result.output
     assert "where you can test instead" in result.output
-    assert "comfy-qat switch comfy-linux   # Ubuntu 22.04, A100" in result.output
+    assert "Ubuntu 22.04, A100:\n      comfy-qat switch comfy-linux" in result.output
     assert "if it has to be comfy-win:" in result.output
     assert "comfy-qat move comfy-win --to us-central1-b" in result.output
     assert stops(result) == [], "the machine you were working on was stopped anyway"
@@ -563,7 +563,8 @@ def test_listing_asks_google_nothing_by_default(cli):
 def test_live_asks_google_and_says_stopped_rather_than_terminated(cli):
     result = cli("list", "--live", statuses={"comfy-win": "RUNNING"})
 
-    rows = {line.split()[0]: line for line in result.output.splitlines()[1:]}
+    rows = {line.split()[0]: line for line in result.output.splitlines()[1:]
+            if line.strip()}
     assert "running" in rows["comfy-win"]
     assert "stopped" in rows["comfy-linux"]
     assert "TERMINATED" not in result.output

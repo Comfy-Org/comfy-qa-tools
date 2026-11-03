@@ -210,7 +210,7 @@ def statuses(monkeypatch, checks):
     """Render `status` over exactly these checks."""
     from comfy_qa import auth
 
-    monkeypatch.setattr(auth, "run_checks", lambda gc: checks)
+    monkeypatch.setattr(auth, "run_checks", lambda gc, config=None: checks)
     monkeypatch.setattr(auth, "Gcloud", lambda *a, **k: None)
     return runner.invoke(app, ["status"])
 
@@ -397,7 +397,9 @@ def test_login_hands_over_the_commands_and_signs_nobody_in(monkeypatch):
 
     assert result.exit_code == 0
     assert "gcloud auth login" in result.output
-    assert "gcloud config set project" in result.output
+    # comfy-qat's own project, saved in the host list — never gcloud's setting.
+    assert "comfy-qat setup --project <your-project-id>" in result.output
+    assert "config set project" not in result.output
     assert "comfy-qat status" in result.output
 
 

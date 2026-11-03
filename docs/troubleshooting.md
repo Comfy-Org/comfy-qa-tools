@@ -263,7 +263,7 @@ destroyed because the network was down. Fix the access — usually
 `gcloud auth login`, or a project you no longer have rights on — and run it
 again. The other projects were still checked.
 
-**`on the project, and not in the zone the entry gives — the entry is wrong, the box is not gone, so nothing here was removed. Find where each one really is with gcloud compute instances list, then correct gce_zone by hand`**
+**`on the project, and not in the zone the entry gives — the entry is wrong, the box is not gone, so nothing here was removed. Find where each one really is, then correct gce_zone by hand`**
 The project has a machine of that name, in a zone your entry does not name. That
 is a wrong entry, not a missing box, and the two are worlds apart: the machine
 exists, is very likely running and billing, and this entry is the only thing in
@@ -272,10 +272,11 @@ your host list that names it — so removing it would leave a GPU running that
 
 It happens when the zone was typed by hand, when the box was recreated somewhere
 else from the console, or when a `move` did not finish. The repair is one field:
-find the zone the box is really in, then edit `gce_zone` in `hosts.toml`.
+find the zone the box is really in — the listing printed under the entries
+says — then edit `gce_zone` in `hosts.toml`. Narrowed to one box:
 
 ```sh
-gcloud compute instances list --filter="name=comfy-win"
+gcloud compute instances list --project=<the entry's gce_project> --filter="name=comfy-win"
 ```
 
 Ghosts are still pruned in the same run; these are listed separately because they
@@ -372,7 +373,10 @@ same thing to you: this card has already been asked for. Watch it with
 **`quota requests skipped (--no-quota-request). To ask later: comfy-qat
 quota request --gpu l4,t4`**
 You passed `--no-quota-request`, so setup reported what your project holds and
-asked Google for nothing. Ask later with the command it names.
+asked Google for nothing. Ask later with the command it names. If the `--region`
+you passed does not offer a card it would ask for, it says so first, and the
+command is on a line of its own without `--region`: `quota request` refuses a
+region that sells no such card.
 
 **`... is 0 and <machine-type> needs <n> vCPU, so this card cannot start even with GPU quota`**
 Only ever said about **N1** cards — T4, V100, P100, P4, K80 — which consume the
@@ -831,8 +835,8 @@ card, made in the console.
 
 **`GPUS_ALL_REGIONS is 1 and comfy-win is already running on it, so a new GPU box cannot start until that one stops. Nothing was created.`**
 Not a quota you need to raise — a box you need to stop. The fix hands over
-`gcloud compute instances stop <name> --zone=<zone>` rather than `comfy-qat
-down`, because the name is a **GCE instance** name: the box holding the only
+`gcloud compute instances stop <name> --zone=<zone> --project=<project>` rather
+than `comfy-qat down`, because the name is a **GCE instance** name: the box holding the only
 slot is usually one somebody started in the console, and `comfy-qat down`
 resolves host-list names and never `gce_instance`, so it would refuse the
 command it had just printed. Stopping it frees the allowance and the create then
@@ -890,7 +894,7 @@ What the fix prints depends on what the reservation is:
 
   ```sh
   comfy-qat down comfy-linux
-  comfy-qat delete comfy-linux
+  comfy-qat delete comfy-linux --yes
   ```
 
   Two lines because `delete` refuses a box that is running. The name is the one
@@ -1258,8 +1262,16 @@ The other half of the message above, and the difference is the whole point of
 both. This one really does mean everywhere: every region where this project holds
 the card's quota *and* Google offers the card was tried, so there is no `--region`
 left to name. It is printed only when nothing narrowed the search — after
-`--region` or `--zone` you get one of the two messages below instead. Nothing was made, so there is nothing to clean up and nothing to
+`--region` or `--zone` you get one of the messages below instead. Nothing was made, so there is nothing to clean up and nothing to
 stop. Wait, or use a card you also have quota for — `comfy-qat quota list`.
+
+**`every zone tried is out of T4 capacity: us-central1-a, us-central1-b. That is every zone this could use in us-central1, the region you named with --region, and the only region this project can use the card in, so there is nowhere left to try right now. Nothing was created and nothing is billing.`**
+The same "everywhere", reached after `--region`. The region you named is the
+only one where this project holds the card's quota and Google offers the card,
+so naming it narrowed nothing, and the same create without `--region` would try
+the same zones. That is why this offers no "drop `--region`": it used to, on
+exactly this project shape, and the command it handed over ended on the message
+above. Wait, or use a card you also have quota for — `comfy-qat quota list`.
 
 **`every zone tried is out of L4 capacity: us-central1-a, us-central1-b, us-central1-c. That is every zone this could use in us-central1, the region you named with --region — not everywhere this project can use the card. Nothing was created and nothing is billing.`**
 What you get after `--region` when that region is out. One region was tried
@@ -1269,9 +1281,11 @@ real project with 23 usable regions, this case used to print "every region this
 project can use the card in, so there is nowhere left to try" about the single
 region `--region` named.
 
-The fix line gives the same create without `--region`, which lets the tool pick
-from everywhere the grant reaches — keeping `--reserve` and the name when you
-asked for them. Or wait: a stockout usually clears in minutes to hours, and
+Printed only when there is somewhere else to go: another region with the card's
+quota where Google offers the card. The fix line gives the same create without
+`--region`, which lets the tool pick from everywhere the grant reaches — the same
+box, so the name, `--reserve` and a `--disk` other than the default all go with
+it. Or wait: a stockout usually clears in minutes to hours, and
 stock for a *reservation* is narrower and moves faster than stock for a plain
 box.
 
@@ -1309,7 +1323,7 @@ command at the end of a paragraph out of sight. Adopting it with
 `comfy-qat discover` is the other way out, and is second because it leaves
 the box running.
 
-**`your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before comfy-qat go or comfy-qat down`**
+**`` your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before `comfy-qat go` or `comfy-qat down` ``**
 The host list loaded when this command started — it refuses outright otherwise —
 and does not load now, so something edited it while the create was running. That
 is minutes, and another terminal or an editor is all it takes.
@@ -1545,7 +1559,7 @@ The machine and the tunnel are both fine — ComfyUI itself is not serving. **Th
 is billing while this is true**, which is why the fix line ends with
 `or stop paying for it: comfy-qat down comfy-win`. For a **reserved** box that
 tail reads `or stop the box: comfy-qat down comfy-win — it is reserved, so the
-bill only stops with: comfy-qat delete comfy-win`, here and on every other
+bill only stops with: comfy-qat delete comfy-win --yes`, here and on every other
 failure that ends this way: stopping a reserved box does not stop its bill. The
 error prints how to get onto it, which differs
 by OS: Windows needs a password reset and Remote Desktop over the tunnel, anything
@@ -1836,11 +1850,12 @@ state genuinely could not be read. The only thing still wrong is the record, and
 not be — a reservation outlives its box and bills at the card's rate with
 nothing on it — and the sentence is a different one:
 
-**`could not stop comfy-linux (<error>), and the project does not have it — the box no longer exists, but its reservation comfy-linux-rsv is still billing unless it was released too. Release it and clear the entry: comfy-qat delete comfy-linux`**
+**`could not stop comfy-linux (<error>), and the project does not have it — the box no longer exists, but its reservation comfy-linux-rsv is still billing unless it was released too. Release it and clear the entry: comfy-qat delete comfy-linux --yes`**
 
-`comfy-qat delete <name>` is the command for this, not `discover --prune`. It
-asks Google by name whether the reservation is still there, releases it if it
-is, and takes the entry out either way. `discover --prune` does **not** remove a
+`comfy-qat delete <name> --yes` is the command for this, not `discover --prune`.
+It asks Google by name whether the reservation is still there, releases it if it
+is, and takes the entry out either way — and with `--yes` it runs as printed,
+with nobody there to type the name back. `discover --prune` does **not** remove a
 reserved box's entry for exactly this reason: the entry is the last thing on
 your machine that names the reservation. It lists it under `not on the project
 any more, and reserved — the box is gone, but its reservation may still be
@@ -1917,9 +1932,10 @@ stops it, and the box carries on billing either way.
 **`stopped, and ComfyUI stopped with it — that is what Ctrl-C does here. comfy-win
 is still running, and a stopped ComfyUI on a running box still bills.`**
 
-Ctrl-C out of `go --follow`. Under it are three lines: `comfy-qat go comfy-win`
-to start ComfyUI again, `comfy-qat logs comfy-win` to watch it without stopping
-it, and `comfy-qat down comfy-win   # stop the box, stop paying`.
+Ctrl-C out of `go --follow`. Under it are three commands, each under the line
+that says what it is for: `comfy-qat go comfy-win` to start ComfyUI again,
+`comfy-qat logs comfy-win` to watch it without stopping it, and `comfy-qat down
+comfy-win` to stop the box, and stop paying.
 
 The message used to say only that the machine was still running, which is true
 and is not the part that surprises anyone. `--follow` and `comfy-qat logs` are
@@ -1933,8 +1949,10 @@ starts, and here, in what Ctrl-C prints.
 **`stopped. comfy-win is still running.`**
 The same interrupt without `--follow` — Ctrl-C while `go` is starting ComfyUI
 detached. Nothing was streaming, so there is nothing that went down with it; the
-box is running, and the line under it is `comfy-qat down comfy-win   # stop the
-box, stop paying`.
+box is running, and under it is `stop the box, stop paying:` with `comfy-qat down
+comfy-win` alone on the line below. For a reserved box it is the two that end
+its bill instead: `comfy-qat down comfy-win`, then `comfy-qat delete comfy-win
+--yes`, each under the line that says what it is for.
 
 **`could not read the ComfyUI log on comfy-win: ...`**
 The box would not run the command that reads the log. Usually the same causes as
@@ -2171,7 +2189,7 @@ three commands in the order they run:
 
 ```sh
 comfy-qat down comfy-linux
-comfy-qat delete comfy-linux
+comfy-qat delete comfy-linux --yes
 comfy-qat create --os linux --gpu l4 --reserve --name comfy-linux --zone <zone>
 ```
 
@@ -2302,8 +2320,8 @@ The boxes that can run right now, same OS first, and a box in the same zone list
 last and labelled — it may hit the same shortage. Pick one and carry on.
 
 **`no other machine is declared, so there is nowhere to switch to:`**
-You have one box and it cannot start. The line under it —
-`comfy-qat discover   # declare a box you already have` — will pick up
+You have one box and it cannot start. The command under it — `comfy-qat
+discover`, to declare a box you already have — will pick up
 anything already in your project; otherwise your options are to wait for capacity
 or to move the box.
 
@@ -2842,7 +2860,7 @@ certainty it cannot support, but the exact resource and the exact command:
 * **`go`, `up` and `switch`** name the machine, and it is declared, so
   `comfy-qat down <name>` reaches it. For a **reserved** box the undo goes on:
   `it is reserved, so stopping it does not stop its bill — that only stops
-  with:` and then `comfy-qat delete <name>`. `comfy-qat list --live` settles whether it
+  with:` and then `comfy-qat delete <name> --yes`. `comfy-qat list --live` settles whether it
   needs to.
 * **`switch`** is the only command that prints the second heading. On the
   GPU-ceiling path — the normal path when `GPUS_ALL_REGIONS`
@@ -3154,8 +3172,9 @@ gcloud compute reservations list --project=<project>
 `list --live` reads reservations only for projects a **declared cloud box** is
 on. With none declared it asks Google nothing — `--live` on a host list holding
 only `local` stays a loopback check that needs no login. `comfy-qat down --all`
-is the command that reads the project gcloud is pointed at in that case, and it
-names any reservation there with the command that releases it.
+is the command that reads a project in that case — the project your host list
+names, or the one gcloud is pointed at when it names none — and it names any
+reservation there with the command that releases it.
 
 ### Stopping a reserved box
 
@@ -3164,7 +3183,8 @@ stop its bill:
 
 ```
 comfy-linux was running. Stopped — but it is reserved, so it is still billing.
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 The same holds for a reserved box that was already stopped (`was not running —
@@ -3173,17 +3193,19 @@ read (`It is reserved, so it is billing either way`).
 
 `up`, `go` and `logs` leave a reserved box **running**, and `delete` refuses a
 running box (`is running, not stopped. Stop it first`, exit 2). So they end on
-two lines, in the order to run them, where for any other box they end on
-`comfy-qat down <name>   # stop the box, stop paying`:
+two steps, in the order to run them, where for any other box they end on
+`stop the box, stop paying:` and `comfy-qat down <name>` under it:
 
 ```
-  comfy-qat down comfy-linux     # first — delete refuses a box that is running
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  first stop it — delete refuses a box that is running:
+    comfy-qat down comfy-linux
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 `down` is there as a step and is labelled as one; it is never said to stop the
-bill. `disconnect` already prints its own `comfy-qat down <name>   # when the
-work is finished` and adds the `delete` line under it. `create --reserve` ends
+bill. `disconnect` already prints its own `comfy-qat down <name>`, under `when
+the work is finished:`, and adds the `delete` lines under it. `create --reserve` ends
 the same way as `go`.
 
 `down --all` never prints `Nothing is now.` while any declared box is reserved,
@@ -3197,13 +3219,14 @@ A reservation that no host list entry names is reported too — `1 reservation o
 <project> is billing and not in your host list` — and is not released, but what
 releases it is printed under it: Google's `gcloud compute reservations delete …`
 when nothing is on it, or `comfy-qat discover` when a box is, so the box can be
-adopted and then deleted. Every project a declared box is on is read, and with
-no cloud box declared at all, the project gcloud is pointed at — which is where
-a `create --reserve` that stopped half-way leaves its reservation. If a
-project's reservations could not be read, the summary says `the project's
-reservations could not be checked … so this is not an all-clear` and prints the
-`gcloud compute reservations list` line for it. A run where a box refused to
-stop exits 1 and still says all of this.
+adopted and then deleted. Every project a declared box is on is read, and beside
+them the project your host list names — or, with no cloud box declared and no
+`project` line, the project gcloud is pointed at. That is where `create` makes a
+box, so it is where a `create --reserve` that stopped half-way leaves its
+reservation. If a project's reservations could not be read, the summary says
+`the project's reservations could not be checked … so this is not an all-clear`
+and prints the `gcloud compute reservations list` line for it. A run where a box
+refused to stop exits 1 and still says all of this.
 
 ## Getting onto a box
 
@@ -3513,10 +3536,41 @@ one of two accounts is the usual cause.
 **`no active gcloud account`** / **`nobody signed in`**
 Run `gcloud auth login`.
 
-**`no project set`** / **`to fix: comfy-qat setup`**
-gcloud has no default project, so there is nothing to look in. `comfy-qat setup`
-picks one and sets it; `gcloud config set project <your-project-id>` does the same
-thing by hand.
+**`no project set`** / **`to fix: comfy-qat setup --project <id>`**
+Your host list has no `project` line and gcloud has no current project either, so
+there is nothing to look in. `comfy-qat setup --project <id>` writes the line;
+putting `project = "<id>"` at the top of the host list by hand does the same.
+This tool never sets gcloud's own project.
+
+**`project my-project — gcloud's current project, because your host list names none.`**
+Not a failure. Your host list has no `project` line, so this command used the
+project gcloud is pointed at, as comfy-qat always did — and says so, because that
+setting belongs to every gcloud command on the machine and may have moved for some
+other reason. Under it, on a line of its own, is the command that keeps comfy-qat
+on one project whatever gcloud is set to: `comfy-qat setup --project <id>`.
+
+**`could not read your host list (...), so the project it names is not known`**
+The host list is not valid TOML, or its `project` line is not a project ID, so
+which project it names cannot be told — and falling back to gcloud's then could
+send the command to a project the file does not mean. Nothing was asked of Google.
+Fix the file; the message in brackets says what is wrong with it.
+
+**`'projcet' at the top of the host list is not something it holds: only the project line and [hosts.<name>] tables go there. If it was meant to be the project, spell it project.`**
+Something above the first table that is not the project line. Refused rather than
+ignored: a misspelt `project` read as no line at all would send every command to
+gcloud's project instead. Spell it `project`, or move the key into the host it
+belongs to.
+
+**``project = 'My Project' is not a Google project ID — that is lowercase letters, digits and hyphens, starting with a letter. It is the ID, not the name — `gcloud projects list` shows both.``**
+Usually the project's display name, typed where its ID goes. `gcloud projects
+list` shows both; the ID is the one in the first column.
+
+**`your host list could not be updated (...), so the project was not saved and nothing after this ran`**
+`setup --project` writes the project into the host list through the same checked
+rewrite as every other change to it, and that rewrite refused — the reason is in
+brackets, and the file is as it was. Usually the host list already fails to load
+for some other reason; fix that, or add the `project = "<id>"` line by hand, and
+run setup again.
 
 **`no billing account linked to <project>`**
 A project without billing cannot start any instance. Link one in the console; the

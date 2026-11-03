@@ -32,7 +32,7 @@ from comfy_qa.gcloud import (
     GcloudError,
     classify,
 )
-from fakes import FakeGcloud
+from fakes import FakeGcloud, names_its_project
 
 
 def statuses_from(wanted, listings):
@@ -70,6 +70,7 @@ class Gated(Gcloud):
         self.events.append(("preflight", project))
 
     def run(self, args, *, parse_json=True, timeout=None):
+        names_its_project(args)
         self.events.append(("run", list(args), parse_json, timeout))
         return ""
 

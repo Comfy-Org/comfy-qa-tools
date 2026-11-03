@@ -365,6 +365,55 @@ def added(text: str, blocks: list[str]) -> str:
     return text.rstrip(ending) + ending + "".join(_in(ending, block) for block in blocks)
 
 
+# The `project = "<id>"` line, which may only sit above the first table: TOML
+# reads a key below a table header as belonging to that table. Group 1 is the
+# part kept, group 2 the line's own ending, for the reasons the port line keeps
+# them.
+PROJECT_LINE = re.compile(r'^([ \t]*project[ \t]*=[ \t]*)"[^"\r\n]*"' + _TRAILING,
+                          re.MULTILINE)
+
+# Written above the line the first time, so somebody opening the file knows
+# what it is and that it is safe to change.
+_PROJECT_NOTE = """\
+# The Google project comfy-qat works in: where `create` makes a box, what
+# `discover` lists, and what `quota` and `status` read. Change it here, or with
+# `comfy-qat setup --project <id>`. A box below keeps its own gce_project.
+"""
+
+
+def with_project(text: str, project: str) -> str:
+    """`text` with its `project` line saying `project`, in the file's own endings.
+
+    Replaced where it is, comment and all, when the file has one above its first
+    table; otherwise written, with a note, directly above that table. Never
+    below it: there TOML reads it as a field of the host whose header comes
+    before it. A line this cannot match — `project = 'x'`, single-quoted —
+    gets a second one written above the tables, and the file then has the key
+    twice, which `apply` refuses as not parsing. Refused, not guessed at.
+    """
+    ending = _line_ending(text)
+    first = FOLLOWING.search(text)
+    head = text[:first.start()] if first else text
+    found = PROJECT_LINE.search(head)
+    line = f'project = "{project}"'
+    if found:
+        return (text[:found.start()] + found.group(1) + f'"{project}"' + found.group(2)
+                + text[found.end():])
+    block = _in(ending, _PROJECT_NOTE + line + "\n\n")
+    at = first.start() if first else len(text)
+    return text[:at] + block + text[at:]
+
+
+def set_project(path: Path, project: str, *, initial: str) -> None:
+    """Write the project line into the host list, through `apply`'s checks.
+
+    The hosts are untouched, and `expect` says so: exactly the names that were
+    there. `initial` is the starter list, for a machine with none yet.
+    """
+    text = read(path) if path.exists() else initial
+    apply(path, with_project(text, project), expect=declared(text))
+
+
 def declared(text: str) -> set[str]:
     """Every host name this text declares. An empty set if it will not parse.
 

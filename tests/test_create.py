@@ -1134,7 +1134,7 @@ def test_a_reservation_holding_the_whole_ceiling_refuses_in_the_words_the_design
     assert problem.fix.splitlines()[0] == "stop it, then delete it to release the card:"
     assert [line.strip() for line in problem.fix.splitlines()[1:]] == [
         "comfy-qat down comfy-linux",
-        "comfy-qat delete comfy-linux",
+        "comfy-qat delete comfy-linux --yes",
     ]
 
 
@@ -1340,13 +1340,19 @@ def test_a_leftover_is_not_set_aside_for_a_box_that_is_not_being_reserved():
 
 
 def test_the_refusal_without_a_project_still_hands_over_a_command_that_parses():
-    """`project` is optional, and a command ending `--project=` is not one."""
+    """`project` is optional, and a command ending `--project=` is not one.
+
+    Nor is one without the flag, any more: it acts on gcloud's own project,
+    which since 1.3.1 need not be the one comfy-qat reads. With no project in
+    hand the line says where one goes, `--project=<your-project-id>`, which a
+    shell refuses as it stands rather than running it somewhere else."""
     theirs = held_for("x", ours=False, name="training-hold")
     check = check_quota(CARDS["t4"], [T4_QUOTA, ceiling(1)], [], reservations=[theirs])
 
     fix = check.problem().fix
-    assert "gcloud compute reservations delete training-hold --zone=us-central1-a" in fix
-    assert "--project" not in fix
+    assert ("gcloud compute reservations delete training-hold --zone=us-central1-a "
+            "--project=<your-project-id> --quiet") in fix
+    assert "--project= " not in fix and not fix.rstrip().endswith("--project=")
 
 
 # --- where a reserved box may go --------------------------------------------------
@@ -1575,7 +1581,7 @@ def test_the_entry_that_is_that_machine_is_named_by_its_own_label():
     assert [line.strip() for line in problem.fix.splitlines()] == [
         "stop it, then delete it to release the card:",
         "comfy-qat down my-t4-box",
-        "comfy-qat delete my-t4-box",
+        "comfy-qat delete my-t4-box --yes",
     ]
     assert "comfy-linux" not in problem.fix
 
@@ -1627,15 +1633,36 @@ def test_the_stockout_remedy_for_a_reserved_build_still_reserves():
             "--region us-east1") in caught.value.fix
 
 
-def test_the_stockout_remedy_for_a_plain_build_is_the_line_it_always_was():
+def test_the_stockout_remedy_for_a_plain_build_is_the_same_box_unreserved():
+    """No `--reserve` for a box that was not reserved — and, since O23, its
+    name, which the plain line used to drop: pasted back it made whatever box
+    the next run would name."""
     ordering = Ordering(zones=("us-central1-a",), regions=("us-central1", "us-east1"),
                         offering=("us-central1", "us-east1"))
     with pytest.raises(LifecycleError) as caught:
         build(Cloud(refuse={"us-central1-a": STOCKOUT}), LINUX_T4, ordering, PROJECT,
               lambda _line: None)
 
-    assert "comfy-qat create --os linux --gpu t4 --region us-east1;" in caught.value.fix
+    assert _creates(caught.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --name comfy-linux --region us-east1"]
     assert "--reserve" not in caught.value.fix
+
+
+def test_the_untried_region_remedy_keeps_the_disk_and_the_name_asked_for():
+    """O23's "same box", on the branch beside it: "try somewhere this did not
+    reach" rebuilt the command the same way and dropped `--disk` and a plain
+    box's `--name` too. It goes through `_same_box` now."""
+    ordering = Ordering(zones=("us-central1-a",), regions=("us-central1", "us-east1"),
+                        offering=("us-central1", "us-east1"))
+    asked = Blueprint(name="qatest-plain", image=IMAGES["linux"], card=CARDS["t4"],
+                      disk_gb=400)
+    with pytest.raises(LifecycleError) as caught:
+        build(Cloud(refuse={"us-central1-a": STOCKOUT}), asked, ordering, PROJECT,
+              lambda _line: None)
+
+    assert _creates(caught.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --name qatest-plain --disk 400 "
+        "--region us-east1"]
 
 
 # --- audit: what reserving leaves, said truthfully ----------------------------------
@@ -1687,11 +1714,12 @@ def test_the_limit_refusal_with_several_holders_deletes_an_undeclared_box_with_i
 
 
 def test_the_limit_refusal_with_no_project_still_takes_the_disk():
+    """And says where the project goes rather than leaving it to gcloud's."""
     check = check_quota(CARDS["t4"], [T4_QUOTA, ceiling(1)],
                         [bound("comfy-linux", "comfy-linux-rsv")],
                         reservations=[held_for("comfy-linux", in_use=1)])
     assert ("gcloud compute instances delete comfy-linux --zone=us-central1-a "
-            "--delete-disks=all --quiet") in [
+            "--project=<your-project-id> --delete-disks=all --quiet") in [
                 line.strip() for line in check.problem().fix.splitlines()]
 
 
@@ -1715,17 +1743,19 @@ def test_the_full_region_refusal_deletes_an_undeclared_box_with_its_disk(asked, 
 
 def test_no_instance_delete_this_module_hands_over_leaves_the_disk():
     """The sweep, kept. Every `instances delete` written in create.py carries
-    the flag in the same string, so a new one cannot be added without it."""
-    import inspect
+    the flag in the same string, so a new one cannot be added without it.
 
-    from comfy_qa import create as module
+    Read off the syntax tree (`printed.strings`), where a string written across
+    two source lines is one string: it was read a source line at a time, so the
+    string could not be broken where `--project` had to go in."""
+    from printed import strings
 
-    lines = [line for line in inspect.getsource(module).splitlines()
-             if "compute instances delete" in line and not line.strip().startswith("#")]
-    assert lines, "the remedy this guards has gone, or moved out of this module"
-    assert all("--delete-disks=all --quiet" in line for line in lines), (
+    found = [text for where, text in strings() if where.startswith("create.py:")
+             and "compute instances delete" in text]
+    assert found, "the remedy this guards has gone, or moved out of this module"
+    assert all("--delete-disks=all --quiet" in text for text in found), (
         "and --quiet with it: without it gcloud asks, and a script that cannot "
-        f"answer exits 1 with the box and its disk still billing — {lines}")
+        f"answer exits 1 with the box and its disk still billing — {found}")
 
 
 # --- recheck: the full-region refusal on the --zone path is handed the host list -----
@@ -1743,7 +1773,7 @@ def test_a_named_zone_in_a_full_region_names_a_declared_box_by_its_entry(tmp_pat
                 hosts=[entry("box-one", instance_name="one", zone="us-central1-b")])
 
     lines = [line.strip() for line in caught.value.fix.splitlines()]
-    assert "comfy-qat down box-one" in lines and "comfy-qat delete box-one" in lines
+    assert "comfy-qat down box-one" in lines and "comfy-qat delete box-one --yes" in lines
     assert not [line for line in lines if line.startswith("gcloud compute instances delete")]
 
 
@@ -1789,15 +1819,20 @@ def test_the_disk_size_remedy_for_a_plain_build_is_unchanged(disk):
 def test_the_card_that_cannot_be_driven_remedy_for_a_reserved_build_still_reserves():
     fix = _plan_refusal(gpu="p100", name="mybox").fix
     assert _creates(fix) == ["comfy-qat create --os linux --gpu t4 --reserve --name mybox"]
-    assert fix.startswith("comfy-qat create --os linux --gpu t4 --reserve --name mybox, "), (
-        "the comma still ends the command, for whoever parses it")
+    # The reason on its own line, and the command alone under it: the comma
+    # that used to end the command was read as its end only by this suite, and
+    # pasted, every word after it is an argument `create` refuses (O25e).
+    assert [line.strip() for line in fix.splitlines()] == [
+        "the same n1-standard-8 machine and the cheapest card that works:",
+        "comfy-qat create --os linux --gpu t4 --reserve --name mybox"]
 
 
 def test_the_card_that_cannot_be_driven_remedy_for_a_plain_build_is_unchanged():
     with pytest.raises(LifecycleError) as caught:
         plan(os_choice="linux", gpu="p100", name="mybox")
-    assert caught.value.fix.startswith(
-        "comfy-qat create --os linux --gpu t4, the same n1-standard-8 machine")
+    assert [line.strip() for line in caught.value.fix.splitlines()] == [
+        "the same n1-standard-8 machine and the cheapest card that works:",
+        "comfy-qat create --os linux --gpu t4"]
 
 
 def test_the_unknown_os_remedy_for_a_reserved_build_still_reserves():
@@ -1847,12 +1882,25 @@ def test_every_stockout_ending_hands_back_a_reserved_create(ordering, attempts, 
 
 
 @pytest.mark.parametrize("ordering,attempts,expected", [
+    # NOT unchanged either, since round two of O23: this held the capped
+    # ending to two bare templates, `comfy-qat create --region <region>` and
+    # `--zone <zone>`, which filled in and pasted with no terminal exit 2 on
+    # the `--os` they do not carry, and at a terminal make another name with
+    # the default disk. `_same_box`, as the reserved one has always been
+    # (`test_the_capped_stockout_offers_the_same_box_to_put_somewhere_else` in
+    # test_create_e2e.py pastes them back).
     (Ordering(zones=("us-central1-a", "us-east1-b"), regions=("us-central1", "us-east1")), 1,
-     ["comfy-qat create --region <region>", "comfy-qat create --zone <zone>"]),
+     ["comfy-qat create --os linux --gpu t4 --name comfy-linux --region <region>",
+      "comfy-qat create --os linux --gpu t4 --name comfy-linux --zone <zone>"]),
+    # NOT unchanged, and the one that is not: this held the named-zone ending
+    # to a bare `comfy-qat create`, which pasted with no terminal exits 2 on
+    # the `--os` it no longer carries. It is the same box now, as the reserved
+    # one has been (`test_the_same_box_without_zone_is_the_box_that_was_asked_
+    # for` in test_reserved_cli.py pastes it back).
     (Ordering(zones=("us-central1-a",), regions=("us-central1",), fall_through=False), 6,
-     ["comfy-qat create"]),
+     ["comfy-qat create --os linux --gpu t4 --name comfy-linux"]),
 ], ids=["capped", "named-zone"])
-def test_the_stockout_endings_for_a_plain_build_are_unchanged(ordering, attempts, expected):
+def test_the_stockout_endings_for_a_plain_build_are_the_same_box(ordering, attempts, expected):
     refuse = {"us-central1-a": STOCKOUT, "us-east1-b": STOCKOUT}
     with pytest.raises(LifecycleError) as caught:
         build(Cloud(refuse=refuse), LINUX_T4, ordering, PROJECT, lambda _line: None,
@@ -1894,10 +1942,12 @@ CREATE_REMEDIES = {
     "image_for": 1,               # no such operating system
     "plan": 4,                    # no-GPU-and-reserve (two), disk too small, too large
     "_refuse_the_leftover": 1,    # a reservation of this name that does not fit
-    "build": 4,                   # plain: capped (two) and named zone; untried regions
-    "_same_box": 1,               # reserved: capped (two) and named zone go through this
-    "_refuse_full": 1,            # the region's allowance is held
-    "_where_the_leftover_is": 1,  # the leftover is somewhere else
+    # Every "the same box, somewhere else", for every box: capped (two), the
+    # zone named, the region named, the untried regions, the region's allowance
+    # held and the leftover somewhere else. The capped plain pair, `_refuse_full`
+    # and `_where_the_leftover_is` each wrote their own until O23's second round,
+    # and each dropped `--disk`, and a plain box's `--name` with it.
+    "_same_box": 1,
 }
 
 
@@ -1966,7 +2016,7 @@ def test_the_box_that_is_really_on_it_is_named_by_its_own_host_list_entry():
     assert [line.strip() for line in fix.splitlines()] == [
         "stop it, then delete it to release the card:",
         "comfy-qat down my-label",
-        "comfy-qat delete my-label",
+        "comfy-qat delete my-label --yes",
     ]
 
 
@@ -2092,8 +2142,9 @@ def test_this_module_keeps_no_copy_of_helpers_the_reservation_module_exports():
 
 def test_the_release_command_this_module_prints_is_the_reservation_modules_own():
     """With and without a project. There was a trim here for a trailing
-    `--project=`; the function that writes the command now leaves the flag out
-    itself, so a second opinion about its shape is a second thing to drift."""
+    `--project=`; the function that writes the command now decides the flag
+    itself — the project, or `reservation.NO_PROJECT` where it goes — so a
+    second opinion about its shape is a second thing to drift."""
     from comfy_qa import create
 
     assert not hasattr(create, "_release_command")
@@ -2104,7 +2155,7 @@ def test_the_release_command_this_module_prints_is_the_reservation_modules_own()
 
     bare = check_quota(CARDS["t4"], [T4_QUOTA, ceiling(1)], [], reservations=[theirs])
     assert rsv.delete_command("training-hold", "us-central1-a", "") in bare.problem().fix
-    assert "--project" not in bare.problem().fix
+    assert f"--project={rsv.NO_PROJECT} --quiet" in bare.problem().fix
 
 
 # --- live pass D1: one region tried because it was named is not "every region" ------
@@ -2122,11 +2173,13 @@ US_CENTRAL1 = ("us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f
 
 
 def narrowed_to_one_region(blueprint, cloud):
+    """`--region us-central1` on a project that could use the card elsewhere
+    too — the live project had 23 regions. With nowhere else, see O23 below."""
     from dataclasses import replace
 
     ordering = replace(
         Ordering(zones=US_CENTRAL1, regions=("us-central1",), offering=("us-central1",)),
-        narrowed_to="us-central1")
+        narrowed_to="us-central1", elsewhere=("europe-west4",))
     with pytest.raises(LifecycleError) as caught:
         build(cloud, blueprint, ordering, PROJECT, lambda _line: None)
     return caught.value
@@ -2153,11 +2206,12 @@ def test_a_stockout_in_the_region_that_was_named_is_not_called_everywhere():
 
 
 def test_the_same_stockout_for_a_plain_box_offers_the_plain_command():
+    """Plain, and still the same box: its name goes with it (O23)."""
     refuse = {zone: STOCKOUT for zone in US_CENTRAL1}
     problem = narrowed_to_one_region(LINUX_T4, Cloud(refuse=refuse))
 
     assert "us-central1, the region you named with --region" in str(problem)
-    assert _creates(problem.fix) == ["comfy-qat create --os linux --gpu t4"]
+    assert _creates(problem.fix) == ["comfy-qat create --os linux --gpu t4 --name comfy-linux"]
     assert "--reserve" not in problem.fix
 
 
@@ -2195,7 +2249,8 @@ def test_the_ending_for_a_reserved_box_stops_it_before_it_deletes_it():
     from comfy_qa import create
 
     lines = create.next_steps(T4_BLUEPRINT, "us-central1-a")
-    down = "  comfy-qat down comfy-linux     # first — delete refuses a box that is running"
+    down = ("  first stop it — delete refuses a box that is running:\n"
+            "    comfy-qat down comfy-linux")
     delete = rsv.stop_line("comfy-linux")
 
     assert lines[-2:] == [down, delete]

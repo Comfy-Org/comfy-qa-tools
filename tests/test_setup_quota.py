@@ -35,6 +35,7 @@ from comfy_qa.setup import (
     plan_quota, request_region, run_setup,
 )
 from comfy_qa.say import FIX_LABEL
+from fakes import said_and_printed
 from wording import said
 
 # --- the shapes, all from a live project -------------------------------------
@@ -251,7 +252,7 @@ def prompts(confirm=True):
 
     _confirm.said_when_asked = []  # type: ignore[attr-defined]
     p = Prompts(confirm=_confirm, ask=lambda q: "us-central1",
-                choose=lambda q, options: options[0], say=said.append)
+                choose=lambda q, options: options[0], say=said_and_printed(said))
     p.said = said           # type: ignore[attr-defined]
     p.asked = asked         # type: ignore[attr-defined]
     p.confirmed = _confirm  # type: ignore[attr-defined]
@@ -5192,7 +5193,7 @@ def test_the_by_region_json_carries_the_same_correction(monkeypatch):
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)])
     # Without the table flag, for the reason above.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
 
     for row in payload["by_region"]:
         assert not re.fullmatch(r"\d+ regions", row["region"]), row
@@ -5256,7 +5257,7 @@ def test_the_by_region_json_carries_the_per_row_availability_verdict(monkeypatch
     # corresponding table, because `--json` emits the array either way and that
     # flag is what masked the defect for two rounds.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     by_place = {(r["gpu"], r["region"]): r["offered_here"]
                 for r in payload["by_region"]}
 
@@ -5313,7 +5314,7 @@ def test_a_bucket_row_is_not_given_an_availability_verdict(monkeypatch):
 
     # Without the table flag, for the reason above.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     bucket = next(r for r in payload["by_region"]
                   if r["gpu"] == "L4" and "any of" in r["region"])
     assert bucket["offered_here"] is None, bucket
@@ -6261,7 +6262,7 @@ def test_both_json_arrays_carry_the_same_keys(monkeypatch):
     cloud = Cloud(quotas=rtx_three_ways(), preferences=DENIED_RTX)
     # Without the table flag, for the reason above.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
 
     collapsed = {k for row in payload["gpus"] for k in row}
     per_region = {k for row in payload["by_region"] for k in row}
@@ -6434,7 +6435,7 @@ def test_json_by_region_carries_verdicts_without_the_table_flag(monkeypatch):
                   accelerators=stocking("us-central1", "nvidia-l4"))
 
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     k80 = [r for r in payload["by_region"] if r["gpu"] == "K80"]
 
     assert k80, "the fixture produced no K80 rows"
@@ -6451,7 +6452,7 @@ def test_the_two_surfaces_agree_without_the_table_flag(monkeypatch):
                   accelerators=stocking("us-central1", "nvidia-l4"))
 
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     table = quota_list(cloud, monkeypatch, "--by-region").output
 
     for row in [r for r in payload["by_region"] if r["gpu"] == "K80"]:
@@ -8338,6 +8339,35 @@ def test_the_skipped_remedy_does_not_name_a_region_that_sells_nothing(tmp_path):
     assert "--region africa-south1" not in later, later
     assert "africa-south1" in later, (
         "it still has to say the region asked for offers nothing")
+
+
+def test_why_the_region_is_left_off_is_said_before_the_command_not_after_it(
+        tmp_path):
+    """The test above made the remedy stop naming the region, and say why — on
+    the same line, AFTER the command, behind a dash:
+
+        To ask later: comfy-qat quota request --gpu h100 — note that
+        africa-south1 does not offer H100, so ask somewhere else
+
+    Pasted, an interactive zsh passes the dash and every word after it to
+    `comfy-qat`, which refuses them: exit 2, nothing asked. The check every
+    test's printed output goes through never saw it, though the test above
+    drives this exact line, because setup's tests recorded what it said and
+    never printed it (see `prompts`). So the note comes first, on a line that
+    ends introducing the command, and the command is a line of its own."""
+    from commandlines import is_command, problems
+
+    cloud = Cloud(quotas=THIS_PROJECT,
+                  accelerators=stocking("us-central1", "nvidia-h100-80gb"))
+    p = run(cloud, config_path=tmp_path / "hosts.toml", region="africa-south1",
+            quota_requests=False)
+
+    assert problems(p.said) == [], problems(p.said)
+    at = next(index for index, line in enumerate(p.said)
+              if "comfy-qat quota request" in line)
+    assert is_command(p.said[at].strip()), p.said[at]
+    assert "africa-south1 does not offer H100" in p.said[at - 1], p.said[at - 1:at + 1]
+    assert p.said[at - 1].endswith(":"), "the note has to introduce the command"
 
 
 def test_the_request_step_validates_its_own_region_when_called_directly():

@@ -1837,17 +1837,31 @@ RESERVED = Host(name="comfy-linux-2", kind="gce", port=8194, os="Ubuntu 22.04",
                 gce_project="proj",
                 extra=(("gce_reservation", "comfy-linux-2-rsv"),))
 
-RESERVED_TAIL = ("stop the box: comfy-qat down comfy-linux-2 — it is reserved, so "
-                 "the bill only stops with: comfy-qat delete comfy-linux-2")
+# Each command on a line of its own, under the reason for it. It was one
+# sentence, `stop the box: comfy-qat down comfy-linux-2 — it is reserved, so the
+# bill only stops with: …`, and the command a person copies out of the middle
+# of it carries the dash and the words after it, which `down` refuses (O25e).
+RESERVED_TAIL = ["stop the box:", "comfy-qat down comfy-linux-2",
+                 "it is reserved, so the bill only stops with:",
+                 "comfy-qat delete comfy-linux-2 --yes"]
+
+
+def _ends_with_the_reserved_tail(fix: str) -> bool:
+    """The last four lines of `fix` are the tail, with or without the `or `
+    that joins it to advice above it."""
+    last = [line.strip() for line in fix.splitlines()][-len(RESERVED_TAIL):]
+    return [last[0].removeprefix("or "), *last[1:]] == RESERVED_TAIL
 
 
 def test_the_fix_for_a_reserved_box_says_what_actually_stops_its_bill():
     from comfy_qa.lifecycle import _with_the_bill
 
     assert RESERVED.reservation == "comfy-linux-2-rsv", "the fixture is a reserved box"
-    assert _with_the_bill(RESERVED) == RESERVED_TAIL
+    assert [line.strip() for line in _with_the_bill(RESERVED).splitlines()] == RESERVED_TAIL
     fix = _with_the_bill(RESERVED, "look at the log:", "comfy-qat logs comfy-linux-2")
-    assert fix.splitlines()[-1].strip() == "or " + RESERVED_TAIL
+    assert [line.strip() for line in fix.splitlines()] == [
+        "look at the log:", "comfy-qat logs comfy-linux-2",
+        "or " + RESERVED_TAIL[0], *RESERVED_TAIL[1:]]
     assert "stop paying for it" not in fix, (
         "`down` does not stop a reserved box's bill, so it must not be offered as "
         "the way to stop paying")
@@ -1878,7 +1892,7 @@ def test_a_real_failure_on_a_reserved_box_carries_the_reserved_sentence(tmp_path
                         tunnel_dir=tmp_path)
 
     assert "running and billing" in str(caught.value)
-    assert RESERVED_TAIL in caught.value.fix
+    assert _ends_with_the_reserved_tail(caught.value.fix), caught.value.fix
     assert "stop paying for it" not in caught.value.fix
 
 
@@ -2165,3 +2179,214 @@ def test_the_real_stockout_names_no_other_zone_and_none_is_invented():
     from comfy_qa.lifecycle import suggested_zones
 
     assert suggested_zones(REAL_STOCKOUT) == []
+
+
+# --- O25: a box's name is not a stock-out, and one fold for every reader --------
+#
+# Found by the pre-merge check of 1.3.0. `stockout` was one of the four signs, and
+# a name can carry it: Google echoes the resource path in most of what it
+# refuses, so `qatest-stockout` turned an ordinary refusal into "the zone is out
+# of stock, try another" — the advice for a problem the user does not have. The
+# shape it was there for is Google's own state code, which is not a word but a
+# key and a value: `state:STOCKOUT`. A GCE name cannot hold a colon.
+
+
+@pytest.mark.parametrize("text", [
+    # Google's already-exists and not-found sentences, with a box whose name
+    # carries the word. Shaped as the real ones are: the not-found as live.md
+    # (g) captured it on 2026-10-07, the already-exists as gcloud prints it.
+    "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n"
+    " - The resource 'projects/p/zones/us-central1-a/instances/qatest-stockout' "
+    "already exists\n",
+    "ERROR: (gcloud.compute.reservations.describe) HTTPError 404: The resource "
+    "'projects/stately-timing-504610-p1/zones/us-central1-a/reservations/"
+    "stockout-rsv' was not found. This command is authenticated as a@b.c which is "
+    "the active account specified by the [core/account] property",
+    "ERROR: (gcloud.compute.instances.start) Required 'compute.instances.start' "
+    "permission for 'projects/p/zones/z/instances/stockout'",
+], ids=["already-exists", "not-found", "denied"])
+def test_a_refusal_about_a_box_named_stockout_is_not_a_stockout(text):
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert not is_capacity_failure(text)
+
+
+def test_the_real_texts_are_still_stockouts_without_the_bare_word():
+    """The pair, and what the narrower sign has to keep: the line-wrapped text
+    live.md captured, the start stock-out with its suggestion, and Google's state
+    code on its own."""
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert is_capacity_failure(REAL_STOCKOUT)
+    assert is_capacity_failure(_only("localizedMessage", "For more information"))
+    assert is_capacity_failure(STOCKOUT_OUTPUT)
+    assert is_capacity_failure(
+        "'NULL:0/NULL:0/NULL:0 (state:STOCKOUT, sub-state:STOCKOUT, resource type:compute)'")
+
+
+def _readers():
+    """Every reader of a phrase in gcloud's text, by name.
+
+    The three after the first three were left out when O25 folded those, and
+    each went on matching the raw text: wrapped, Google's not-found sentence
+    gave no resource path, an existing quota request read as a fresh refusal,
+    and an account that was never signed in read as a machine problem. Each
+    of those is wrong in the safe direction — `confirms_absent` raises, the
+    refusal is printed verbatim, `up` retries — but the docstring of `folded`
+    says every reader goes through it, and three did not.
+
+    The two that take an exception get one with no `kind`, so what is read is
+    the text: for `is_auth_failure` that is its fallback, the part that matches
+    phrases."""
+    from comfy_qa.gcloud import _missing_resource, classify, is_already_asked
+    from comfy_qa.lifecycle import is_auth_failure, is_capacity_failure, suggested_zones
+
+    from comfy_qa.tunnel import (
+        _credentials_expired, _iap_refused, _nothing_listening, still_booting)
+
+    return {"classify": classify, "is_capacity_failure": is_capacity_failure,
+            "suggested_zones": suggested_zones,
+            "_missing_resource": _missing_resource,
+            "is_already_asked": lambda text: is_already_asked(GcloudError(text)),
+            "is_auth_failure": lambda text: is_auth_failure(GcloudError(text)),
+            # The tunnel's readers: what a dead tunnel's log says. `go` tells a
+            # box still booting from one with nothing listening by these, and a
+            # wrap at `port⏎22` turned the first into the second — "start
+            # ComfyUI first", on a box nobody can get onto yet.
+            "_iap_refused": _iap_refused, "still_booting": still_booting,
+            "_nothing_listening": _nothing_listening,
+            "_credentials_expired": _credentials_expired}
+
+
+def _real_texts():
+    """Everything gcloud really printed that this suite holds, by name."""
+    import test_first_run as first_run
+    import test_gcloud_auth as auth
+    import test_prune as prune
+
+    return {
+        "reservations create stock-out (live.md P1)": REAL_STOCKOUT,
+        "instances start stock-out, with a suggestion": STOCKOUT_OUTPUT,
+        "disks create quota refusal": auth.REAL_QUOTA_REFUSAL,
+        "expired session": auth.REAUTH_OUTPUT,
+        "no account": auth.NO_ACCOUNT_OUTPUT,
+        "no project": auth.NO_PROJECT_OUTPUT,
+        "denied": auth.DENIED_OUTPUT,
+        # The live wordings `test_prune` holds for a describe of what is not
+        # there: the instance, and the project around it.
+        "no such instance": prune.NO_SUCH_INSTANCE.format(
+            project="proj", zone="us-central1-a", name="ghostone"),
+        "no such project": prune.NO_SUCH_PROJECT,
+        # Google's two refusals of a quota preference that is already there,
+        # word for word as `test_setup_quota` and `gcloud._ALREADY_THERE` record
+        # them — read off the live API, with the middle elided where they elide
+        # it.
+        "quota preference already there": (
+            "Quota Preference with dimension '{}' already exist for container ..."),
+        "quota preference in another location": (
+            "Location in existing quota preference '...' does not match"),
+        # What gcloud wrote to a tunnel's log: the box still booting
+        # (`test_first_run`'s record of the failing run), nothing on the far
+        # ComfyUI port and an expired session (both as `test_tunnel` quotes
+        # gcloud's own words).
+        "tunnel log, box still booting": first_run.BOOTING_LOG,
+        "tunnel log, nothing on the port": (
+            "ERROR: (gcloud.compute.start-iap-tunnel) While checking if a "
+            "connection can be made: Error while connecting [4003: 'failed to "
+            "connect to backend']. (Failed to connect to port 8188)"),
+        "tunnel log, session expired": (
+            "ERROR: There was a problem refreshing your current auth tokens: "
+            "Reauthentication failed."),
+    }
+
+
+READERS = ["classify", "is_capacity_failure", "suggested_zones", "_missing_resource",
+           "is_already_asked", "is_auth_failure", "_iap_refused", "still_booting",
+           "_nothing_listening", "_credentials_expired"]
+
+
+def test_every_reader_is_wrapped():
+    """The list the test below is parametrised over is the readers there are."""
+    assert sorted(READERS) == sorted(_readers())
+
+
+@pytest.mark.parametrize("reader", READERS)
+@pytest.mark.parametrize("name", list(_real_texts()))
+def test_a_line_break_anywhere_in_googles_text_changes_no_reading(reader, name):
+    """gcloud prints its errors as YAML and wraps them wherever the line runs
+    out — `is\\n      currently unavailable`, `does not\\n  have enough`. The
+    stock-out check folded whitespace for that in 1.3.0 (D5). `suggested_zones`
+    and `classify` read the same text and did not, so the same wrap that 1.3.0
+    fixed for one of them could still hide Google's suggested zone, or make an
+    expired session read as an unknown failure (O25).
+
+    Each real text, broken at every space in turn the way gcloud breaks it,
+    must read exactly as it does unbroken."""
+    read = _readers()[reader]
+    text = _real_texts()[name]
+    expected = read(text)
+    spaces = [i for i, ch in enumerate(text) if ch == " "]
+    assert spaces, "the fixture has no spaces to break at"
+    wrong = []
+    for at in spaces:
+        broken = text[:at] + "\n      " + text[at + 1:]
+        if read(broken) != expected:
+            wrong.append(f"...{text[max(0, at - 25):at]}⏎{text[at + 1:at + 25]}...")
+    assert not wrong, (f"{reader} reads {name} differently once it is wrapped at "
+                       f"{len(wrong)} of {len(spaces)} spaces, e.g. {wrong[:3]}")
+
+
+def _tunnel_signs():
+    """Each tunnel reader and the phrases it looks for, read off `tunnel.py`."""
+    from comfy_qa import tunnel
+
+    return {"_credentials_expired": tunnel._CREDENTIAL_TROUBLE,
+            "still_booting": tunnel._STILL_BOOTING,
+            "_iap_refused": ("failed to connect to backend",)}
+
+
+@pytest.mark.parametrize("reader", sorted(_tunnel_signs()))
+def test_every_phrase_a_tunnel_reader_looks_for_is_read_wherever_it_is_broken(reader):
+    """The test above can only break the texts this suite holds, and the
+    tunnel's real logs carry a few of its phrases — `4003` and `reauth` are one
+    word, and stand in for the rest. So every phrase each tunnel reader looks
+    for is broken at each of its spaces too, inside a line of log, and has to
+    be read exactly as it is unbroken."""
+    read = _readers()[reader]
+    wrong = []
+    for sign in _tunnel_signs()[reader]:
+        for at in [i for i, ch in enumerate(sign) if ch == " "]:
+            broken = f"ERROR: something {sign[:at]}\n      {sign[at + 1:]} happened"
+            if not read(broken):
+                wrong.append(broken.replace("\n      ", "⏎"))
+    assert not wrong, f"{reader} misses: {wrong}"
+
+
+def test_the_readings_the_wraps_are_compared_against_are_the_real_ones():
+    """Non-vacuity for the test above: a reader that answered the same nothing
+    for every text would pass it. These are what each text really says."""
+    from comfy_qa.gcloud import CREDENTIALS, DENIED, NO_ACCOUNT, NO_PROJECT, QUOTA, REAUTH
+
+    read = _readers()
+    texts = _real_texts()
+    assert read["suggested_zones"](texts["instances start stock-out, with a suggestion"]) == [
+        "us-central1-b"]
+    assert read["is_capacity_failure"](texts["reservations create stock-out (live.md P1)"])
+    assert [read["classify"](texts[name]) for name in (
+        "disks create quota refusal", "expired session", "no account", "no project",
+        "denied")] == [QUOTA, REAUTH, NO_ACCOUNT, NO_PROJECT, DENIED]
+    assert CREDENTIALS not in [read["classify"](text) for text in texts.values()]
+    assert [read["_missing_resource"](texts[name]) for name in (
+        "no such instance", "no such project", "denied")] == [
+        "projects/proj/zones/us-central1-a/instances/ghostone",
+        "projects/no-such-project-comfy-qa-9271", ""]
+    assert [name for name in texts if read["is_already_asked"](texts[name])] == [
+        "quota preference already there", "quota preference in another location"]
+    assert [name for name in texts if read["is_auth_failure"](texts[name])] == [
+        "expired session", "no account", "tunnel log, session expired"]
+    assert [name for name in texts if read["still_booting"](texts[name])] == [
+        "tunnel log, box still booting"]
+    assert [name for name in texts if read["_nothing_listening"](texts[name])] == [
+        "tunnel log, nothing on the port"]
+    assert [name for name in texts if read["_credentials_expired"](texts[name])] == [
+        "expired session", "tunnel log, session expired"]

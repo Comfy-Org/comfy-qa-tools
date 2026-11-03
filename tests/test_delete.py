@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from comfy_qa.cli import app
 from comfy_qa.gcloud import GcloudError
+from fakes import names_its_project
 
 HOSTS = """\
 [hosts.local]
@@ -81,6 +82,7 @@ class Cloud:
                 "disks": [{"boot": True, "source": f"https://x/disks/{name}-a"}]}
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         joined = " ".join(str(a) for a in args)
         if joined.startswith("compute disks describe"):
             self.calls.append(joined)
@@ -366,6 +368,7 @@ def test_an_interrupted_delete_says_the_record_may_now_be_wrong(capsys):
         """
 
         def run(self, args, **kwargs):
+            names_its_project(args)
             joined = " ".join(str(a) for a in args)
             if not joined.startswith("compute instances delete"):
                 return super().run(args, **kwargs)
@@ -435,6 +438,7 @@ def test_the_ticker_is_stopped_before_the_interrupt_report_prints(monkeypatch):
 
     class _Interrupted(Cloud):
         def run(self, args, **kwargs):
+            names_its_project(args)
             joined = " ".join(str(a) for a in args)
             if not joined.startswith("compute instances delete"):
                 return super().run(args, **kwargs)
@@ -630,6 +634,7 @@ class Project(Cloud):
                                      and row["zone"].endswith(f"/{zone}"))]
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         answer = super().run(args, **kwargs)
         joined = " ".join(str(a) for a in args)
         if joined.startswith("compute instances delete"):
@@ -806,7 +811,7 @@ def test_a_release_that_fails_keeps_the_box_and_the_entry_and_says_still_billing
     # Both commands, each whole on a line of its own.
     lines = [line.strip() for line in result.output.splitlines()]
     assert RELEASE in lines
-    assert "comfy-qat delete comfy-linux" in lines
+    assert "comfy-qat delete comfy-linux --yes" in lines
 
 
 def test_the_rerun_a_failed_release_prints_finishes_the_job(cli, tmp_path):
@@ -817,7 +822,7 @@ def test_the_rerun_a_failed_release_prints_finishes_the_job(cli, tmp_path):
     first = cli("delete", "comfy-linux", cloud=cloud, declared=RESERVED,
                 input="comfy-linux\n")
     rerun = next(line.strip() for line in first.output.splitlines()
-                 if line.strip() == "comfy-qat delete comfy-linux")
+                 if line.strip() == "comfy-qat delete comfy-linux --yes")
 
     after = Project(reservations=[], instances=cloud.instances)
     second = cli(*rerun.split()[1:], cloud=after, input="comfy-linux\n", keep=True)
@@ -863,7 +868,7 @@ def test_a_box_that_will_not_delete_after_the_release_says_which_half_happened(
             "longer billing for the card — but comfy-linux itself was not "
             "deleted, and its disk still bills.") in flat(result.output)
     assert "comfy-linux" in entries(tmp_path)
-    assert "comfy-qat delete comfy-linux" in [
+    assert "comfy-qat delete comfy-linux --yes" in [
         line.strip() for line in result.output.splitlines()]
 
 
@@ -1009,7 +1014,7 @@ def test_the_way_out_of_a_shared_reservation_runs_and_leaves_it_alone(cli, tmp_p
     lines = [line.strip() for line in first.output.splitlines()]
     assert ("gcloud compute instances delete comfy-linux --zone=us-central1-c "
             "--project=proj --delete-disks=all --quiet") in lines
-    rerun = next(line for line in lines if line == "comfy-qat delete comfy-linux")
+    rerun = next(line for line in lines if line == "comfy-qat delete comfy-linux --yes")
 
     after = gone_from_google(cloud)
     second = cli(*rerun.split()[1:], cloud=after, input="comfy-linux\n", keep=True)
@@ -1104,7 +1109,7 @@ def test_a_box_first_delete_that_fails_says_the_reservation_was_never_released(
     assert "the instance is locked" in said, "and Google's own reason is still there"
     assert "was released" not in said
     assert "comfy-linux" in entries(tmp_path)
-    assert "comfy-qat delete comfy-linux" in [
+    assert "comfy-qat delete comfy-linux --yes" in [
         line.strip() for line in result.output.splitlines()]
 
 

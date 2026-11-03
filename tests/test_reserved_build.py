@@ -596,12 +596,13 @@ def test_what_is_said_after_a_reserved_box_exists_is_the_bill_and_what_stops_it(
     assert lines == [
         "comfy-linux is installing the NVIDIA driver from its startup script, "
         "which reboots it once or twice. `comfy-qat go` waits that out.",
-        "  comfy-qat go comfy-linux     # install ComfyUI and serve it",
+        "  install ComfyUI and serve it:\n    comfy-qat go comfy-linux",
         "comfy-linux is reserved. Google holds its capacity and bills for it every "
         "hour — running or stopped — until the box is deleted.",
-        "  comfy-qat down comfy-linux     # first — delete refuses a box that is running",
-        "  comfy-qat delete comfy-linux   # the only thing that stops a reserved "
-        "box's bill — the box and its disk go too",
+        "  first stop it — delete refuses a box that is running:\n"
+        "    comfy-qat down comfy-linux",
+        "  the only thing that stops a reserved box's bill — the box and its disk "
+        "go too:\n    comfy-qat delete comfy-linux --yes",
     ]
     assert not [line for line in lines if "stop paying" in line], (
         "`down` is a step towards `delete`, and is never offered as what stops "

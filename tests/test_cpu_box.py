@@ -593,8 +593,8 @@ def test_what_is_said_after_a_linux_box_with_no_gpu_exists():
     assert lines == [
         "comfy-cpu has no GPU, so there is no driver to wait for. ComfyUI will "
         "run on its CPU, which is slow.",
-        "  comfy-qat go comfy-cpu     # install ComfyUI and serve it",
-        "  comfy-qat down comfy-cpu   # stop the machine, stop paying",
+        "  install ComfyUI and serve it:\n    comfy-qat go comfy-cpu",
+        "  stop the machine, stop paying:\n    comfy-qat down comfy-cpu",
     ]
 
 
@@ -604,7 +604,7 @@ def test_what_is_said_after_a_windows_box_with_no_gpu_exists_hands_over_no_drive
     assert "install_gpu_driver" not in text
     assert "NVIDIA" not in text
     assert "comfy-cpu-win has no GPU" in text
-    assert "comfy-qat down comfy-cpu-win   # stop the machine, stop paying" in text
+    assert "stop the machine, stop paying:\n    comfy-qat down comfy-cpu-win" in text
 
 
 def test_what_is_said_after_a_gpu_box_exists_is_unchanged():
@@ -613,8 +613,8 @@ def test_what_is_said_after_a_gpu_box_exists_is_unchanged():
     assert create.next_steps(t4, "us-central1-a") == [
         "comfy-linux is installing the NVIDIA driver from its startup script, "
         "which reboots it once or twice. `comfy-qat go` waits that out.",
-        "  comfy-qat go comfy-linux     # install ComfyUI and serve it",
-        "  comfy-qat down comfy-linux   # stop the machine, stop paying",
+        "  install ComfyUI and serve it:\n    comfy-qat go comfy-linux",
+        "  stop the machine, stop paying:\n    comfy-qat down comfy-linux",
     ]
 
 

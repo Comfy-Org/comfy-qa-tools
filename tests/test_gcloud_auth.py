@@ -30,6 +30,7 @@ from comfy_qa.gcloud import (
     classify,
     explain_failure,
 )
+from fakes import names_its_project
 
 # Copied from a real failure on this machine, gcloud 579.0.0. The wrapper
 # sentence ("problem refreshing your current auth tokens") is generic; the word
@@ -78,6 +79,7 @@ class Fake(Gcloud):
         return "<fake>"
 
     def run(self, args, *, parse_json=True, timeout=None):
+        names_its_project(args)
         key = " ".join(args)
         self.calls.append(key)
         for prefix, value in self.answers.items():
@@ -139,7 +141,9 @@ def test_a_missing_project_is_never_answered_with_a_sign_in():
     assert classify(NO_PROJECT_OUTPUT) == NO_PROJECT
     message, fix, _ = explain_failure(NO_PROJECT_OUTPUT, "", 1)
     assert message == "no project set"
-    assert "config set project" in fix
+    # comfy-qat's own setting since 1.3.1 — setting gcloud's moved every other
+    # gcloud user on the machine with it.
+    assert fix == "comfy-qat setup --project <your-project-id>"
 
 
 def test_a_denied_permission_keeps_gcloud_own_words():
@@ -204,7 +208,7 @@ def test_no_project_stops_the_preflight_with_its_own_answer(monkeypatch):
         gc.start_instance("comfy-win", "us-central1-a", None)
 
     assert caught.value.kind == NO_PROJECT
-    assert "config set project" in caught.value.fix
+    assert caught.value.fix == "comfy-qat setup --project <your-project-id>"
 
 
 def test_a_denied_permission_counts_as_proof_not_as_a_blockage(monkeypatch):

@@ -618,11 +618,14 @@ def undrivable(card: Card, image: Image | None = None,
         f"{card.architecture} has none, so no module loads at all: the box would "
         f"boot, bill, and never see its own GPU. Cards that do work: "
         f"{', '.join(drivable_cards())}.",
-        # The comma is load-bearing: a fix line is read as a command up to the
-        # first comma or semicolon, so prose after an em-dash would be parsed as
-        # more flags. `tests/test_create_e2e.py::_invocations` is what reads it.
-        fix=(f"comfy-qat create --os {os_key} --gpu t4{asked}, the same n1-standard-8 "
-             f"machine and the cheapest card that works"),
+        # The reason on its own line and the command alone under it. This was
+        # `comfy-qat create --os linux --gpu t4, the same n1-standard-8 machine
+        # and the cheapest card that works`, on the reading that a fix line is a
+        # command up to its first comma — and pasted, every word after the comma
+        # is an argument `create` refuses (O25e).
+        fix=output.fix("the same n1-standard-8 machine and the cheapest card that "
+                       "works:",
+                       f"comfy-qat create --os {os_key} --gpu t4{asked}"),
         kind=NO_DRIVER,
     )
 
@@ -866,8 +869,8 @@ def card_for(gpu: str) -> Card:
             f"{gpu} is a real card and this tool has no machine type for it, so "
             f"it cannot create one. This tool can create: "
             f"{', '.join(drivable_cards())}.",
-            fix="comfy-qat quota list — what this project holds, including "
-                "cards this tool cannot order",
+            fix=output.fix("what this project holds, including cards this tool "
+                           "cannot order:", "comfy-qat quota list"),
             kind=NO_QUOTA,
         )
     raise LifecycleError(
@@ -877,7 +880,7 @@ def card_for(gpu: str) -> Card:
         # with cards that produce a billing box whose GPU never comes up.
         f"no card called {gpu!r}. This tool can create: "
         f"{', '.join(drivable_cards())}.",
-        fix="comfy-qat quota list — the cards this project is allowed",
+        fix=output.fix("the cards this project is allowed:", "comfy-qat quota list"),
         kind=NO_QUOTA,
     )
 
@@ -899,6 +902,22 @@ def _asked_for(reserve: bool, name: str | None) -> str:
     if not reserve:
         return ""
     return " --reserve" + (f" --name {_clean(name)}" if name else "")
+
+
+def besides_where(name: str | None, disk: int) -> str:
+    """`--name <name> --disk <gb>`: what a create rewritten before `plan` has
+    run carries besides `--os`, `--gpu`, `--reserve` and where.
+
+    `_same_box`'s rule, for the refusals that come before there is a blueprint
+    to build it from — `--zone` with `--region`, and a region that is not one.
+    Both kept the name for a reserved build only and the disk for none, so a box
+    asked for as `--name qatest-plain --disk 400` came back as another name with
+    the default 200 GB (O23b). The name whenever one was given; the disk
+    whenever it is not the default, the only case leaving it off changes.
+    """
+    parts = [f"--name {_clean(name)}" if name else "",
+             f"--disk {disk}" if disk != DEFAULT_DISK_GB else ""]
+    return " ".join(part for part in parts if part)
 
 
 def image_for(os_choice: str, asked: str = "") -> Image:
@@ -1274,8 +1293,8 @@ class QuotaCheck:
         BOTH BRANCHES read this, because the last time one of them was corrected
         the other was not, and that was the fourteenth instance of exactly that.
         """
-        plain = (f"comfy-qat quota request --gpu {self.typed}"
-                 f"{self._where}, then wait for Google")
+        plain = (f"comfy-qat quota request --gpu {self.typed}{self._where}\n"
+                 f"then wait for Google.")
         if not self.refused_in:
             return plain
         # NAME THEM. `<one of them>` sent the reader to `--by-region`, whose
@@ -1297,14 +1316,15 @@ class QuotaCheck:
             return (f"Google already refused {self.card} in {refused}, and no "
                     f"other region both meters it and sells it — so there is "
                     f"nowhere else to ask.\n"
-                    f"comfy-qat quota list --by-region  # what this project does "
-                    f"hold")
+                    f"what this project does hold:\n"
+                    f"comfy-qat quota list --by-region")
         picks = ", ".join(self.elsewhere[:3])
         return (f"Google already refused {self.card} in {refused}, so asking "
-                f"there again will not help. Ask somewhere else:\n"
+                f"there again will not help. Ask somewhere else — {picks}:\n"
                 f"comfy-qat quota request --gpu {self.typed} --region "
-                f"{self.elsewhere[0]}  # or {picks}\n"
-                f"comfy-qat quota list --by-region  # every region it is metered in")
+                f"{self.elsewhere[0]}\n"
+                f"every region it is metered in:\n"
+                f"comfy-qat quota list --by-region")
 
     @property
     def _where(self) -> str:
@@ -1405,9 +1425,11 @@ class QuotaCheck:
                 f"GPUS_ALL_REGIONS is {self.global_limit} on this project — that is the "
                 f"ceiling across every card, whatever the {self.card} grant says, and "
                 f"{self.needed} is needed. Nothing was created.",
-                fix="comfy-qat quota request --gpu l4 --region us-central1 asks for "
-                    "a card; raising the project-wide ceiling is a separate request at "
-                    "https://console.cloud.google.com/iam-admin/quotas",
+                fix=output.fix(
+                    "a card's own quota is asked for with:",
+                    "comfy-qat quota request --gpu l4 --region us-central1",
+                    "raising the project-wide ceiling is a separate request, at:",
+                    "https://console.cloud.google.com/iam-admin/quotas"),
                 kind=NO_QUOTA,
             )
         if (self.reserved and self.global_limit is not None
@@ -1434,14 +1456,18 @@ class QuotaCheck:
         if (self.running and self.global_limit is not None
                 and self.global_limit != UNLIMITED
                 and self.global_limit < self.needed + self.held):
-            first = _stop_the_box(*self.running[0])
+            # The reason above the command, and the command alone: this was
+            # `gcloud compute instances stop <box> --zone=<zone> — stop the one
+            # you are not using, then run this again`, which pasted hands gcloud
+            # every word after the dash (O25e).
+            first = _stop_the_box(*self.running[0], self.project)
             if len(self.running) == 1:
                 return LifecycleError(
                     f"GPUS_ALL_REGIONS is {self.global_limit} and "
                     f"{self.running_names[0]} is already running on it, so a new GPU "
                     f"box cannot start until that one stops. Nothing was created.",
-                    fix=f"{first} — stop the one you are not using, then run this "
-                        f"again",
+                    fix=output.fix("stop the one you are not using, then run this "
+                                   "again:", first),
                     kind=NO_QUOTA,
                 )
             return LifecycleError(
@@ -1449,7 +1475,8 @@ class QuotaCheck:
                 f"boxes are already running on it, holding "
                 f"{self.held - self.reserved_cards} of it between "
                 f"them: {', '.join(self.running_names)}. Nothing was created.",
-                fix=f"{first} — stop the ones you are not using, then run this again",
+                fix=output.fix("stop the ones you are not using, then run this "
+                               "again:", first),
                 kind=NO_QUOTA,
             )
         if self.unread:
@@ -1457,13 +1484,12 @@ class QuotaCheck:
             # function: a running box holding the ceiling is a fact, and it
             # refuses whether or not the reservations could be listed. What is
             # left is a create about to reserve against a number nobody has.
-            listing = "gcloud compute reservations list"
             return LifecycleError(
                 "could not read this project's reservations, so how many it "
                 "already holds is not known. Nothing was reserved and nothing was "
                 "created.",
-                fix=(f"{listing} --project={self.project}" if self.project
-                     else listing),
+                fix=(f"gcloud compute reservations list "
+                     f"--project={self.project or rsv.NO_PROJECT}"),
                 kind=NO_QUOTA,
             )
         # Last, and read the docstring before moving it: everything above is a
@@ -1482,7 +1508,7 @@ class QuotaCheck:
         return None
 
 
-def _stop_the_box(name: str, zone: str) -> str:
+def _stop_the_box(name: str, zone: str, project: str | None) -> str:
     """The command that stops a GPU box holding the project-wide ceiling.
 
     Deliberately gcloud's and not `comfy-qat down <name>`. `config.resolve`
@@ -1498,10 +1524,14 @@ def _stop_the_box(name: str, zone: str) -> str:
     on the floor. When it is genuinely absent, say how to find it rather than
     printing a command with a hole in it.
     """
+    # `--project`, for the reason `reservation.NO_PROJECT` gives.
+    project = project or rsv.NO_PROJECT
     if not zone:
-        return (f"gcloud compute instances list   # find {name}'s zone, then "
-                f"gcloud compute instances stop {name} --zone=<zone>")
-    return f"gcloud compute instances stop {name} --zone={zone}"
+        return (f"find {name}'s zone:\n"
+                f"gcloud compute instances list --project={project}\n"
+                f"then stop it there:\n"
+                f"gcloud compute instances stop {name} --zone=<zone> --project={project}")
+    return f"gcloud compute instances stop {name} --zone={zone} --project={project}"
 
 
 def _cards(count: int) -> str:
@@ -1560,14 +1590,14 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
         # one. gcloud asks before deleting; pasted where nobody can answer — a
         # script, an agent — it exits 1 having deleted nothing, and the box, its
         # disk and its reservation all go on billing behind an error.
-        where = f"--zone={zone} --project={project}" if project else f"--zone={zone}"
-        # One line, flags and all, so a test can hold the three together.
-        gone = "gcloud compute instances delete {box} {where} --delete-disks=all --quiet"
-        return [*(gone.format(box=box, where=where) for box in on[(name, zone)]),
+        # And `--project`, always, for the reason `reservation.NO_PROJECT` gives.
+        # One string, flags and all, so a test can hold the four together.
+        return [*(f"gcloud compute instances delete {box} --zone={zone} "
+                  f"--project={project or rsv.NO_PROJECT} --delete-disks=all --quiet"
+                  for box in on[(name, zone)]),
                 rsv.delete_command(name, zone, project)]
 
-    look = "gcloud compute instances list"
-    look = f"{look} --project={project}" if project else look
+    look = f"gcloud compute instances list --project={project or rsv.NO_PROJECT}"
 
     if len(holders) == 1:
         name, zone, _held, box = holders[0]
@@ -1575,7 +1605,7 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
             label = labels[(name, zone)]
             return output.fix("stop it, then delete it to release the card:",
                               f"comfy-qat down {label}",
-                              f"comfy-qat delete {label}")
+                              f"comfy-qat delete {label} --yes")
         if on.get((name, zone)):
             there = " and ".join(on[(name, zone)])
             return output.fix(
@@ -1603,7 +1633,7 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
     for name, zone, _held, _box in holders:
         if (name, zone) in labels:
             label = labels[(name, zone)]
-            lines += [f"comfy-qat down {label}", f"comfy-qat delete {label}"]
+            lines += [f"comfy-qat down {label}", f"comfy-qat delete {label} --yes"]
         elif on.get((name, zone)):
             lines += box_commands(name, zone)
         else:
@@ -2022,10 +2052,17 @@ def _as_reserved(blueprint: Blueprint) -> str:
 def _same_box(blueprint: Blueprint) -> str:
     """`comfy-qat create` for this box, complete up to where it goes.
 
-    Reserved and named when the box is; the plain command when it is not.
+    Everything that was asked for except where. It was rebuilt from `--os`,
+    `--gpu` and, for a reserved box, `--reserve --name` — so a box asked for
+    with `--disk 400` was offered back with the default 200 GB, and a plain box
+    asked for by name came back as whatever name the next run would pick
+    (O23). The name now goes with every box, and the disk whenever it is not
+    the default, which is the only case leaving it off changes anything.
     """
+    named = _as_reserved(blueprint) or f" --name {blueprint.name}"
+    disk = f" --disk {blueprint.disk_gb}" if blueprint.disk_gb != DEFAULT_DISK_GB else ""
     return (f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key}"
-            f"{_as_reserved(blueprint)}")
+            f"{named}{disk}")
 
 
 def _wanted(card: Card) -> str:
@@ -2189,8 +2226,8 @@ def _reservation_unaccounted(gc: Gcloud, blueprint: Blueprint, zone: str,
             f"Google refused to reserve {name} in {zone}: {exc}. Nothing was "
             f"created and nothing is billing.",
             fix=output.fix(exc.fix,
-                           f"gcloud compute reservations list --project={project}"
-                           f"   # to see for yourself that nothing was left"),
+                           "to see for yourself that nothing was left:",
+                           f"gcloud compute reservations list --project={project}"),
             kind=CREATE_FAILED,
         ) from exc
     found = ("the reservation is on the project anyway" if absent is False else
@@ -2432,16 +2469,19 @@ def build(
             # someone who has just been told a whole neighbourhood is short to
             # name one machine room in it.
             #
-            # Two spellings. The plain one is a template and has always been;
-            # for a reserved build a template that leaves the reservation out is
-            # the command for a different box, so that one is written in full.
-            fix=("wait and run the same command again, ask for a region this did not "
-                 "reach: comfy-qat create --region <region>, or name a zone yourself: "
-                 "comfy-qat create --zone <zone>"
-                 if not blueprint.reserve else
-                 f"wait and run the same command again, ask for a region this did "
-                 f"not reach: {_same_box(blueprint)} --region <region>, or name a "
-                 f"zone yourself: {_same_box(blueprint)} --zone <zone>"),
+            # `_same_box` for EVERY box. The plain one was a bare template —
+            # `comfy-qat create --region <region>`, no `--os`, `--gpu`, `--name`
+            # or `--disk` — so filled in and pasted with no terminal it exited 2
+            # at the first question it could not ask, and at a terminal it made
+            # a box under another name with the default disk (O23b). And each
+            # command on a line of its own, under the reason for it: they were
+            # spliced into one sentence with commas, which pasted are arguments.
+            fix=output.fix(
+                "wait and run the same command again, or ask for a region this did "
+                "not reach:",
+                f"{_same_box(blueprint)} --region <region>",
+                "or name a zone yourself:",
+                f"{_same_box(blueprint)} --zone <zone>"),
             kind=EXHAUSTED,
         )
 
@@ -2479,22 +2519,30 @@ def build(
             # AND WHAT WAS ASKED FOR, for a reserved build. Without `--reserve`
             # this line, pasted back, makes an unreserved box — under `--yes`,
             # without a question. The name goes with it so the rerun is the same
-            # box. Its siblings in `order_zones` already carried the flag.
-            fix=(f"try somewhere this did not reach: comfy-qat create "
-                 f"--os {blueprint.image.key} --gpu {blueprint.card.key}"
-                 f"{_as_reserved(blueprint)} --region "
-                 f"{untried[0]}; or wait and run the same command again — a stockout "
-                 f"is usually minutes to hours"),
+            # box. Its siblings in `order_zones` already carried the flag. It is
+            # `_same_box` now, as the region-named remedy below is, so `--disk`
+            # and a plain box's `--name` cannot be dropped here and kept there.
+            fix=output.fix(
+                "try somewhere this did not reach:",
+                f"{_same_box(blueprint)} --region {untried[0]}",
+                "or wait and run the same command again — a stockout is usually "
+                "minutes to hours."),
             kind=EXHAUSTED,
         )
 
-    if ordering.offering and ordering.narrowed_to:
+    if ordering.offering and ordering.narrowed_to and ordering.elsewhere:
         # ONE REGION WAS TRIED BECAUSE ONE WAS NAMED. The branch below says
         # "every region this project can use the card in, so there is nowhere
         # left to try" — true when nothing narrowed the search, and printed on
         # a real project with 23 usable regions about the one `--region` named.
         # What is true is smaller, and the way out is to stop narrowing: the
         # same box, without `--region`.
+        #
+        # ONLY WHEN THERE IS SOMEWHERE ELSE. On a project whose one usable
+        # region is the one named, "not everywhere" was false and "drop
+        # --region" handed over a command that tried the very same zones and
+        # ended on the sentence below (O23). That case goes to the sentence
+        # below, which is then true, and says why.
         raise LifecycleError(
             f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
             f"{', '.join(tried)}. That is every zone this could use in "
@@ -2508,12 +2556,17 @@ def build(
         )
 
     if ordering.offering:
+        # Named, and the only region there is: said, so that "nowhere left"
+        # after `--region` does not read as the false sentence D1 was.
+        scope = (f"every zone this could use in {ordering.narrowed_to}, the region "
+                 f"you named with --region, and the only region this project can "
+                 f"use {_thing(blueprint.card)} in"
+                 if ordering.narrowed_to else
+                 f"every region this project can use {_thing(blueprint.card)} in")
         raise LifecycleError(
             f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
-            f"{', '.join(tried)}. That is every region this project can use "
-            f"{_thing(blueprint.card)} "
-            f"in, so there is nowhere left to try right now. Nothing was created and "
-            f"nothing is billing.",
+            f"{', '.join(tried)}. That is {scope}, so there is nowhere left to try "
+            f"right now. Nothing was created and nothing is billing.",
             fix=("wait and run the same command again — a stockout is usually minutes "
                  "to hours — or ask for a different card: comfy-qat quota list"
                  if blueprint.card.is_gpu else
@@ -2525,14 +2578,18 @@ def build(
     # Nothing ranked anything, so this frame cannot say how wide the search was
     # and must not guess. `--zone` is the case: one zone, by request, and a
     # sentence about how many regions were considered would be an invention.
+    #
+    # `_same_box` for EVERY box, as the `--region` remedy above is. The plain
+    # one was a bare `comfy-qat create`: no `--os`, `--gpu`, `--name` or
+    # `--disk`, so pasted with no terminal it exited 2 on the first question it
+    # could not ask, and at a terminal it asked again for what had been given
+    # and made a box under another name. Only the reserved one went through
+    # `_same_box`, which is how "the same box" stayed a claim about one branch.
     raise LifecycleError(
         f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
         f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
         f"is billing.",
-        fix=("wait and run the same command again — a stockout is usually minutes to "
-             "hours — or drop --zone and let this pick: comfy-qat create"
-             if not blueprint.reserve else
-             f"wait and run the same command again — a stockout is usually minutes "
+        fix=(f"wait and run the same command again — a stockout is usually minutes "
              f"to hours — or drop --zone and let this pick: {_same_box(blueprint)}"),
         kind=EXHAUSTED,
     )
@@ -2591,7 +2648,8 @@ def reserved_stop_lines(name: str) -> list[str]:
 
 def _down_first(name: str) -> str:
     """The step before `delete`, said as a step."""
-    return f"  comfy-qat down {name}     # first — delete refuses a box that is running"
+    return output.offer(f"comfy-qat down {name}",
+                        "first stop it — delete refuses a box that is running")
 
 
 def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
@@ -2619,7 +2677,8 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
             f"{blueprint.name} is installing the NVIDIA driver from its startup "
             f"script, which reboots it once or twice. `comfy-qat go` waits that "
             f"out.")
-    lines.append(f"  comfy-qat go {blueprint.name}     # install ComfyUI and serve it")
+    lines.append(output.offer(f"comfy-qat go {blueprint.name}",
+                              "install ComfyUI and serve it"))
     if blueprint.reserve:
         # NOT `comfy-qat down ... # stop paying`. For a reserved box that line
         # is false: `down` stops the machine and the reservation goes on billing
@@ -2632,7 +2691,8 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
         lines.append(_down_first(blueprint.name))
         lines.append(rsv.stop_line(blueprint.name))
         return lines
-    lines.append(f"  comfy-qat down {blueprint.name}   # stop the machine, stop paying")
+    lines.append(output.offer(f"comfy-qat down {blueprint.name}",
+                              "stop the machine, stop paying"))
     return lines
 
 
@@ -2806,11 +2866,13 @@ def order_zones(
                 #
                 # Found by sweeping for suggestions composed rather than asked
                 # for, two lines below a comment about this exact trap.
-                fix=(f"check the zone name first — a typo reads as a region "
-                     f"this project has no quota in: gcloud compute zones list "
-                     f"--filter=name={zone}; then either drop --zone and let "
-                     f"this pick, or ask for the card: comfy-qat quota "
-                     f"request --gpu {blueprint.card.key}"),
+                fix=output.fix(
+                    "check the zone name first — a typo reads as a region this "
+                    "project has no quota in:",
+                    f"gcloud compute zones list --filter=name={zone} "
+                    f"--project={project}",
+                    "then either drop --zone and let this pick, or ask for the card:",
+                    f"comfy-qat quota request --gpu {blueprint.card.key}"),
                 kind=NO_QUOTA,
             )
         if region_of(zone) in full:
@@ -2874,12 +2936,15 @@ def order_zones(
                 f"this project has no {blueprint.card.name} quota in {region}, so "
                 f"nothing can start there. It holds {blueprint.card.name} in "
                 f"{_grant_reaches(check)}. Nothing was created.",
-                fix=(f"check the region name first — a typo reads as a region "
-                     f"this project has no quota in: gcloud compute regions "
-                     f"list --filter=name={region}; then either drop --region "
-                     f"and let this pick, or ask for the card there: "
-                     f"comfy-qat quota request --gpu {blueprint.card.key} "
-                     f"--region {region}"),
+                fix=output.fix(
+                    "check the region name first — a typo reads as a region this "
+                    "project has no quota in:",
+                    f"gcloud compute regions list --filter=name={region} "
+                    f"--project={project}",
+                    "then either drop --region and let this pick, or ask for the "
+                    "card there:",
+                    f"comfy-qat quota request --gpu {blueprint.card.key} "
+                    f"--region {region}"),
                 kind=NO_QUOTA,
             )
 
@@ -2898,6 +2963,11 @@ def order_zones(
         accelerator=blueprint.card.accelerator,
         machine_type=blueprint.machine_type,
         regions=regions, config=config, probe=probe, fleet=fleet,
+        # Where the same create without `--region` could go: the other regions
+        # with quota whose own allowance is not already held. `choose` says
+        # which of them offer the card at all, from the catalogue it reads.
+        narrowed_away=[name for name in check.regions
+                       if named and name != named and name not in full],
     )
     ordering = replace(ordering, narrowed_to=named)
     if not taken:
@@ -2971,13 +3041,14 @@ def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str]
     """
     card = blueprint.card
     detail = "; ".join(f"{name} ({_held_words(full[name])})" for name in asked)
-    reserve = _as_reserved(blueprint)
     lines: list[str] = []
     roomy = [name for name in check.regions if name not in full]
     if roomy:
+        # `_same_box`, so it is the box that was asked for: this was rebuilt
+        # from `--os`, `--gpu` and the reservation, and a box asked for with
+        # `--name second --disk 400` came back as another name and 200 GB.
         lines += ["somewhere with room:",
-                  f"comfy-qat create --os {blueprint.image.key} --gpu {card.key}"
-                  f"{reserve} --region {roomy[0]}"]
+                  f"{_same_box(blueprint)} --region {roomy[0]}"]
     mine = [found for found in reservations or []
             if any(rsv.held_in(name, card.accelerator, [], [found]) for name in asked)]
     holders = rsv.holders(mine)
@@ -2987,8 +3058,9 @@ def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str]
             declared_boxes(holders, instances, hosts, project)))
     for instance in rsv.outside(instances, reservations):
         if any(rsv.held_in(name, card.accelerator, [instance], None) for name in asked):
-            lines.append(f"{_stop_the_box(instance.get('name') or '', rsv.zone_of(instance))}"
-                         f"   # a running box holding one")
+            lines.append("a running box is holding one — stop it:")
+            lines.append(_stop_the_box(instance.get('name') or '', rsv.zone_of(instance),
+                                       project))
     raise LifecycleError(
         f"this project's {card.name} allowance is already held in "
         f"{'every region it could go' if len(asked) > 1 else 'the region asked for'}: "
@@ -3013,8 +3085,8 @@ def _where_the_leftover_is(blueprint: Blueprint, leftover, project: str, *,
             f"reservation cannot be moved. Nothing was created.",
             fix=output.fix(
                 "carry on where it is:",
-                f"comfy-qat create --os {blueprint.image.key} --gpu "
-                f"{blueprint.card.key} --reserve --name {blueprint.name} --zone {at}",
+                # `_same_box`: the reservation and its name, and the disk.
+                f"{_same_box(blueprint)} --zone {at}",
                 "or release it and start again:",
                 rsv.delete_command(leftover.name, at, project),
             ),
@@ -3057,19 +3129,20 @@ def _order_without_a_card(
     # lines apart, and its own comment records the two drifting.
     outside: tuple[str, str, str, str] | None = None
     if zone and regions and region_of(zone) not in set(regions):
-        outside = (region_of(zone), f"in {zone}", "zone",
-                   f"zones list --filter=name={zone}")
+        outside = (region_of(zone), f"in {zone}", "zone", zone)
     elif not zone and region and regions and region not in set(regions):
-        outside = (region, "there", "region", f"regions list --filter=name={region}")
+        outside = (region, "there", "region", region)
     if outside is not None:
-        place, where, flag, listing = outside
+        place, where, flag, typed = outside
         raise LifecycleError(
             f"this project has no CPU quota for {machine} in {place}, so nothing "
             f"can start {where}. It has room for it in {_grant_reaches(check)}. "
             f"Nothing was created.",
-            fix=(f"check the {flag} name first — a typo reads as somewhere this "
-                 f"project has no quota in: gcloud compute {listing}; then drop "
-                 f"--{flag} and let this pick"),
+            fix=output.fix(
+                f"check the {flag} name first — a typo reads as somewhere this "
+                f"project has no quota in:",
+                f"gcloud compute {flag}s list --filter=name={typed} --project={project}",
+                f"then drop --{flag} and let this pick."),
             kind=NO_QUOTA,
         )
 
@@ -3096,11 +3169,15 @@ def _order_without_a_card(
         # nothing" — the right reading for a card and the wrong one for this.
         sold = zones_with_machine_type(gc.machine_type_zones(project, machine), machine)
         regions = sorted({region_of(place) for place in sold})
+    # The card path's `narrowed_away`, for the same sentence: where the same
+    # create without `--region` could have gone.
+    narrowed_away = [name for name in regions if region and name != region]
     if region:
         regions = [name for name in regions if name == region]
 
     return choose(gc, project, accelerator=None, machine_type=machine,
-                  regions=regions, config=config, probe=probe, fleet=fleet)
+                  regions=regions, config=config, probe=probe, fleet=fleet,
+                  narrowed_away=narrowed_away)
 
 
 def nowhere(blueprint: Blueprint, ordering: Ordering, project: str) -> LifecycleError:
@@ -3110,9 +3187,10 @@ def nowhere(blueprint: Blueprint, ordering: Ordering, project: str) -> Lifecycle
             f"no region this project has CPU quota in offers {blueprint.machine_type}")
         return LifecycleError(
             f"nowhere to put {blueprint.name}: {detail}. Nothing was created.",
-            fix=(f"gcloud compute machine-types list --project={project} "
-                 f"--filter=name={blueprint.machine_type} — where Google offers the "
-                 f"machine at all"),
+            fix=output.fix(
+                "where Google offers the machine at all:",
+                f"gcloud compute machine-types list --project={project} "
+                f"--filter=name={blueprint.machine_type}"),
             kind=NO_ZONE,
         )
     detail = ordering.notes[0] if ordering.notes else (
@@ -3121,8 +3199,11 @@ def nowhere(blueprint: Blueprint, ordering: Ordering, project: str) -> Lifecycle
     )
     return LifecycleError(
         f"nowhere to put {blueprint.name}: {detail}. Nothing was created.",
-        fix=(f"gcloud compute accelerator-types list --project={project} "
-             f"--filter=name={blueprint.card.accelerator} — where Google offers the "
-             f"card at all; comfy-qat quota list --by-region — where you may use it"),
+        fix=output.fix(
+            "where Google offers the card at all:",
+            f"gcloud compute accelerator-types list --project={project} "
+            f"--filter=name={blueprint.card.accelerator}",
+            "and where you may use it:",
+            "comfy-qat quota list --by-region"),
         kind=NO_ZONE,
     )

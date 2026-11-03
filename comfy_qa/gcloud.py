@@ -228,9 +228,12 @@ _ADVICE: dict[str, tuple[str | None, str | None]] = {
     REAUTH: ("your gcloud session has expired", "gcloud auth login"),
     CREDENTIALS: ("gcloud could not refresh your sign-in", "gcloud auth login"),
     NO_ACCOUNT: ("no active gcloud account", "gcloud auth login"),
-    NO_PROJECT: ("no project set", "gcloud config set project <your-project-id>"),
+    # comfy-qat's own setting, not gcloud's: see `current_project`.
+    NO_PROJECT: ("no project set", "comfy-qat setup --project <your-project-id>"),
     NETWORK: ("could not reach Google Cloud", "check your network, then try again"),
-    DENIED: (None, "comfy-qat status — check which account you are using"),
+    # The reason above the command, and the command alone: pasted with the
+    # note after it, `comfy-qat status` is refused for its extra arguments (O25e).
+    DENIED: (None, "check which account you are using:\ncomfy-qat status"),
     # gcloud's own sentence names the metric, the limit and the region, which is
     # everything needed; only the fix is worth adding.
     QUOTA: (None, "raise the limit at https://console.cloud.google.com/iam-admin/quotas "
@@ -259,20 +262,45 @@ def _missing_resource(text: str | None) -> str:
 
     Split out from `confirms_absent` so the parsing can be tested against the
     real sentences on its own, without a fake cloud in the way.
+
+    Read through `folded`, as every phrase in gcloud's text is: wrapped as
+    `was not\\n      found`, the raw match found nothing and an instance that
+    was gone read as "something larger" not existing. The path comes back
+    lowercased with the rest, which loses nothing: a GCE project, zone,
+    instance or reservation name cannot hold a capital, and both callers
+    compare it lowered anyway.
     """
-    found = _MISSING.search(text or "")
+    found = _MISSING.search(folded(text))
     return found.group(1) if found else ""
+
+
+def folded(text: str | None) -> str:
+    """`text` lowercased, with every run of whitespace one space.
+
+    gcloud prints its errors as YAML and wraps them wherever the line runs out,
+    so a sentence this tool looks for arrives as `is\\n      currently
+    unavailable` or `does not\\n  have enough resources`. Every reader that
+    matches a phrase in what gcloud printed goes through this, and through
+    nothing else, so they cannot disagree about where a sentence breaks: the
+    stock-out check was folded after the live pass (D5), while `classify` and
+    `lifecycle.suggested_zones` went on matching the raw text, so the wrap that
+    was fixed for one of them could still hide a suggested zone or make a
+    missing project read as an unknown failure (O25).
+    """
+    return " ".join((text or "").lower().split())
 
 
 def classify(text: str) -> str:
     """Name the kind of failure in everything gcloud printed.
 
     Reads the full output rather than the one-line summary, for the same reason
-    the stockout check does: gcloud's summary line is sometimes `---`.
+    the stockout check does: gcloud's summary line is sometimes `---`. Folded
+    first, on both sides: one sign carries the two spaces Google puts after a
+    full stop (`exceeded.  limit:`), and a folded text has only ever one.
     """
-    lowered = (text or "").lower()
+    lowered = folded(text)
     for kind, signs in _SIGNS:
-        if any(sign in lowered for sign in signs):
+        if any(folded(sign) in lowered for sign in signs):
             return kind
     return UNKNOWN
 
@@ -668,7 +696,7 @@ class Gcloud:
         if not project:
             raise GcloudError(
                 "no project set",
-                fix="gcloud config set project <your-project-id>",
+                fix="comfy-qat setup --project <your-project-id>",
                 kind=NO_PROJECT,
             )
 
@@ -684,7 +712,8 @@ class Gcloud:
         the one this is preventing.
         """
         try:
-            self.run(["projects", "describe", project], timeout=PREFLIGHT_TIMEOUT)
+            self.run(["projects", "describe", project, f"--project={project}"],
+                     timeout=PREFLIGHT_TIMEOUT)
         except GcloudError as exc:
             if exc.kind == DENIED:
                 self.proven = True
@@ -706,7 +735,7 @@ class Gcloud:
         never in the middle of it.
         """
         code = self.run_interactive(
-            ["projects", "describe", project, "--format=none"]
+            ["projects", "describe", project, f"--project={project}", "--format=none"]
         )
         if code != 0:
             raise failure
@@ -726,9 +755,6 @@ class Gcloud:
     def list_projects(self) -> list[dict]:
         return self.run(["projects", "list"]) or []
 
-    def set_project(self, project: str) -> None:
-        self.run(["config", "set", "project", project], parse_json=False)
-
     # --- the specific calls this tool makes -------------------------------
 
     def active_account(self) -> str | None:
@@ -739,13 +765,24 @@ class Gcloud:
         return None
 
     def current_project(self) -> str | None:
+        """gcloud's OWN project setting, which comfy-qat only falls back to.
+
+        There is no `set_project` beside this any more. comfy-qat's project is
+        the `project` line in its host list, written by `setup --project`;
+        setting gcloud's moved every other gcloud user on the machine with it.
+        """
         value = self.run(["config", "get-value", "project"], parse_json=False)
         value = (value or "").strip()
         # gcloud prints this literal string when nothing is set.
         return None if value in ("", "(unset)") else value
 
     def billing_enabled(self, project: str) -> bool:
-        info = self.run(["billing", "projects", "describe", project]) or {}
+        # `--project` as well as the positional name, which is what the command
+        # reads. Every call here that acts on a project names it with the flag,
+        # so whatever gcloud's own project is set to never decides where one
+        # lands — and a test holds every method to that by its argv.
+        info = self.run(["billing", "projects", "describe", project,
+                         f"--project={project}"]) or {}
         return bool(info.get("billingEnabled"))
 
     def compute_quotas(self, project: str) -> list[dict]:
@@ -1237,10 +1274,15 @@ class Gcloud:
             f"gcloud reset the Windows password on {instance} and exited without "
             f"an error, but the answer carried no credentials: {_shape(answer)}. "
             f"There is no password to hand over, so nothing was forwarded.",
+            # `--quiet`, as the call above sends it: without it gcloud stops to
+            # ask before resetting, and pasted into a script that is an exit 1
+            # and no password. Its three siblings in host.py have had it since
+            # the live pass; this one was split across two literals and the
+            # guard read only two files, so it was missed (O25).
             fix=(
                 f"run it yourself and read what comes back: gcloud compute "
                 f"reset-windows-password {instance} --zone={zone} "
-                f"--project={project}"
+                f"--project={project} --quiet"
             ),
         )
 
@@ -1841,9 +1883,12 @@ def is_already_asked(exc: BaseException) -> bool:
     still arranged to be benign in the direction it can be wrong: a message this
     does not recognise falls through to "the request was refused: <verbatim>",
     which is true, non-fatal, and prints the reason.
+
+    Folded, on both sides, as `classify` is: gcloud wraps what it prints, and
+    `already\\n      exist` was such a message this did not recognise.
     """
-    text = str(exc).lower()
-    return any(phrase in text for phrase in _ALREADY_THERE)
+    text = folded(str(exc))
+    return any(folded(phrase) in text for phrase in _ALREADY_THERE)
 
 
 def console_quota_url(project: str) -> str:

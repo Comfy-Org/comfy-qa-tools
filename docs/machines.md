@@ -104,8 +104,10 @@ is running:
 ```
 comfy-linux is reserved. Google holds its capacity and bills for it every hour —
 running or stopped — until the box is deleted.
-  comfy-qat down comfy-linux     # first — delete refuses a box that is running
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  first stop it — delete refuses a box that is running:
+    comfy-qat down comfy-linux
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 The `down` line is a step and says so. It is never described as what stops the
@@ -351,6 +353,9 @@ comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  not tunnel
 comfy-linux  gce    Ubuntu 22.04         T4    http://127.0.0.1:8191  not tunnelled  yes
 comfy-cpu    gce    Ubuntu 22.04         none  http://127.0.0.1:8192  not tunnelled  no
 
+on your-project-id: comfy-win, comfy-linux, comfy-cpu
+new boxes go to your-project-id, the project your host list names
+
 STATE is only what this machine already knows — whether a tunnel is open.
 RESERVED is what your host list says. A reserved box bills every hour, running or stopped.
   --live asks Google what each box is doing and this machine whether ComfyUI is answering,
@@ -362,6 +367,11 @@ always shown. A tunnel is what makes a cloud box answer on `127.0.0.1`, so
 `tunnelled` is the honest answer to "which box am I looking at". Your local
 install has no tunnel to have, which is why it reads `-` here: nothing was
 asked about it, and nothing is claimed.
+
+Under the table, which project each cloud box is on — from its own entry — and
+where a new one will go, from the host list's `project` line. They differ after
+you switch projects: a box made before the switch stays on the old project and is
+still reached there. See [the project](hosts.md#the-project).
 
 RESERVED is the column about money that a stopped box does not settle. Here it is
 read from your host list — the `gce_reservation` line `create --reserve` and
@@ -384,6 +394,9 @@ local        local  -                    -     http://127.0.0.1:8188  serving  -
 comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  running  no        21d  200 GB
 comfy-linux  gce    Ubuntu 22.04         T4    http://127.0.0.1:8191  stopped  yes       3d   200 GB
 comfy-cpu    gce    Ubuntu 22.04         none  http://127.0.0.1:8192  stopped  no        5h   100 GB
+
+on your-project-id: comfy-win, comfy-linux, comfy-cpu
+new boxes go to your-project-id, the project your host list names
 
 A reserved box bills every hour, running or stopped, until it is deleted.
 
@@ -429,8 +442,10 @@ This is not a fault on your side, and retrying in the same zone will not help.
 comfy-linux is untouched — you still have the machine you were on
 
 where you can test instead, easiest first:
-    comfy-qat switch comfy-linux   # Ubuntu 22.04, A100
-    comfy-qat switch local         # local install
+    Ubuntu 22.04, A100:
+      comfy-qat switch comfy-linux
+    local install:
+      comfy-qat switch local
 
 if it has to be comfy-win:
     Google says us-central1-b has capacity right now:
@@ -480,7 +495,8 @@ running, and `down` says so rather than `was billing. Stopped.`:
 
 ```
 comfy-linux was running. Stopped — but it is reserved, so it is still billing.
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 `down <name>` asks the box itself, not only your host list. A box bound to a

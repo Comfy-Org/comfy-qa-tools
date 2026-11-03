@@ -115,10 +115,13 @@ First run — one command.
 Sign-in, project, billing, GPU quota and your host list, in one pass. It asks only
 where the decision is genuinely yours, and says what it is doing as it goes.
 
-Afterwards:
+Afterwards, to see your machines:
 
-  comfy-qat list      see your machines
-  comfy-qat status    re-check readiness at any time
+  comfy-qat list
+
+and to re-check readiness at any time:
+
+  comfy-qat status
 
 Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
   getting-started.md   this, with the reasoning
@@ -131,7 +134,10 @@ Full docs: https://github.com/Comfy-Org/comfy-qa-tools/tree/main/docs
 @app.command("setup")
 def setup_cmd(
     project: Annotated[Optional[str], typer.Option(
-        "--project", help="Use this Google Cloud project instead of asking.")] = None,
+        "--project",
+        help="Use this Google Cloud project instead of asking, and write it as "
+             "the host list's project line, replacing any project already "
+             "there. gcloud's own project is left alone.")] = None,
     no_numpy: Annotated[bool, typer.Option(
         "--no-numpy",
         help="Do not install NumPy into gcloud's Python.")] = False,
@@ -176,7 +182,9 @@ def setup_cmd(
     This one writes: it makes sure you have a host list, so the file `--config`
     names — and ~/.config/comfy-qa-tools/hosts.toml when it is left off — is
     written if it is not there yet, and appended to by the discovery pass at the
-    end. An existing list is read, never replaced.
+    end. An existing list is kept, and so is every machine in it; the one line
+    setup rewrites is `project`, which `--project` sets, replacing any project
+    already there.
     """
     prompts = setup_mod.Prompts(
         # Default YES, which is the whole of "the request should already be
@@ -216,8 +224,17 @@ def setup_cmd(
     remote = [host for host in hosts if host.is_remote]
     say.result(f"\nready — {say.count(len(hosts), 'machine')}, "
                f"{len(remote)} in the cloud")
-    say.result("  comfy-qat list        see them")
-    say.result("  comfy-qat stamp local what a machine is, exactly")
+    # The reason above each command, and the command alone, as every other
+    # ending prints them. These two were a table — `comfy-qat list        see
+    # them` — and pasted, each is refused for its extra arguments (O25e).
+    say.result(say.offer("comfy-qat list", "see them"))
+    # And `stamp` only for a machine there is: `stamp local` was printed to a
+    # host list with no `local` in it, where it answers "nothing declared
+    # matches 'local'".
+    here = next((host for host in hosts if host.kind == "local"), None)
+    if here is not None:
+        say.result(say.offer(f"comfy-qat stamp {here.name}",
+                             "what a machine is, exactly"))
     if not remote:
         # This used to send a newcomer to the Google Cloud console, or to editing
         # a TOML file by hand, at the end of the command whose whole job is

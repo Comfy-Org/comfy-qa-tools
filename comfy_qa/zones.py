@@ -183,6 +183,14 @@ class Ordering:
     # in, so there is nowhere left to try" — on a project with 23.
     narrowed_to: str = ""
 
+    # With `narrowed_to` set: the OTHER regions this project could use the card
+    # (or, for a box with no GPU, the machine) in — quota there, and Google
+    # offering it there. What decides whether "drop --region" is a way out.
+    # Empty is the case the narrower sentence was false about: the region named
+    # is the only one there is, so the same create without `--region` tries the
+    # same zones, and what is true is "nowhere left to try right now" (O23).
+    elsewhere: tuple[str, ...] = ()
+
     def __bool__(self) -> bool:
         return bool(self.zones)
 
@@ -478,6 +486,7 @@ def choose(
     regions: list[str], config: Path | None = None, probe=None,
     nearest: int = NEAREST_REGIONS, limit: int = MAX_ATTEMPTS,
     path: Path | None = None, fleet: list[str] | None = None,
+    narrowed_away: list[str] | tuple[str, ...] = (),
 ) -> Ordering:
     """The zones to try, best first. Read-only: nothing here creates anything.
 
@@ -493,6 +502,12 @@ def choose(
 
     `accelerator=None` is a box with no GPU. There is then no card to look for,
     and the zones come from the machine type alone — see `_choose_without_a_card`.
+
+    `narrowed_away` is the regions with quota the caller left out because
+    `--region` named another. Nothing is ranked there or measured; they are
+    only checked against the catalogue already read here, which covers every
+    zone, so that `Ordering.elsewhere` can say whether any of them would have
+    had the card at all. No call is added for it.
     """
     if not regions:
         return Ordering(zones=(), regions=())
@@ -502,9 +517,11 @@ def choose(
 
     if accelerator is None:
         return _choose_without_a_card(gc, project, machine_type, regions,
-                                      ranked_regions, scores, limit, fleet)
+                                      ranked_regions, scores, limit, fleet,
+                                      narrowed_away)
 
     offered = zones_offering(gc.accelerator_types(project, accelerator), accelerator)
+    elsewhere = _also_offered(offered, narrowed_away)
     in_quota = [zone for zone in offered if region_of(zone) in set(regions)]
     if not in_quota:
         return Ordering(
@@ -559,7 +576,7 @@ def choose(
             notes.extend(_scope(picked, settled, home, offering))
             return Ordering(
                 zones=tuple(picked), regions=tuple(ranked_regions), latency=scores,
-                notes=tuple(notes), offering=offering,
+                notes=tuple(notes), offering=offering, elsewhere=elsewhere,
             )
         reason = reason or f"{_nearest(nearest)} no {machine_type}"
 
@@ -570,9 +587,16 @@ def choose(
     )
 
 
+def _also_offered(zones: list[str], regions) -> tuple[str, ...]:
+    """Which of `regions` hold at least one of `zones`, in the order given."""
+    have = {region_of(zone) for zone in zones}
+    return tuple(region for region in regions if region in have)
+
+
 def _choose_without_a_card(gc, project: str, machine_type: str, regions: list[str],
                            ranked_regions: list[str], scores: dict[str, float],
-                           limit: int, fleet: list[str] | None) -> Ordering:
+                           limit: int, fleet: list[str] | None,
+                           narrowed_away=()) -> Ordering:
     """`choose`, for a box with no GPU: where the machine type is sold.
 
     One read instead of two. With a card the zones come from where the CARD is
@@ -613,6 +637,7 @@ def _choose_without_a_card(gc, project: str, machine_type: str, regions: list[st
     return Ordering(
         zones=tuple(picked), regions=tuple(ranked_regions), latency=scores,
         notes=tuple(notes), offering=offering,
+        elsewhere=_also_offered(sold, narrowed_away),
     )
 
 

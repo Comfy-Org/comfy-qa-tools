@@ -67,11 +67,41 @@ def test_reading_the_real_config_is_deliberately_still_possible():
     (REAL_CONFIG_DIR / "hosts.toml").exists()
 
 
-def test_a_socket_to_anywhere_but_this_machine_is_refused():
+def test_a_socket_to_anywhere_but_this_machine_is_refused(no_test_reaches_the_network):
     import socket
 
     with pytest.raises(AssertionError, match="opened a socket"):
         socket.create_connection(("compute.us-central1.rep.googleapis.com", 443))
+    # Seen to fire, so the teardown check need not fail this test for it.
+    no_test_reaches_the_network.clear()
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+@pytest.mark.parametrize("port", [8188, 8189, 8190])
+def test_loopback_to_a_port_a_real_comfyui_lives_on_is_refused(
+        no_test_reaches_the_network, host, port):
+    """Loopback is allowed, but not there: whatever answers on these ports is
+    the developer's own ComfyUI or tunnel, and a test reading it measures their
+    machine. Refused before any connection is made."""
+    import socket
+
+    with pytest.raises(AssertionError, match="the developer's own ComfyUI"):
+        socket.create_connection((host, port), 0.2)
+    no_test_reaches_the_network.clear()
+
+
+def test_a_refusal_the_code_swallows_still_fails_the_test(no_test_reaches_the_network):
+    """`CliRunner` catches whatever a command raises and turns it into exit code
+    1, so a refusal raised inside a command can vanish into a test that accepts
+    exit 1. Every refusal is kept for the teardown check, caught or not."""
+    import socket
+
+    try:
+        socket.create_connection(("127.0.0.1", 8188), 0.2)
+    except AssertionError:
+        pass
+    assert len(no_test_reaches_the_network) == 1
+    no_test_reaches_the_network.clear()
 
 
 def test_loopback_is_not_a_leak():

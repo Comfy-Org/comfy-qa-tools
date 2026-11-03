@@ -53,6 +53,7 @@ from test_create_cli import (  # noqa: F401  (the fixture is used by name)
     reservation_row,
 )
 from test_host_costs import _mutating_gcloud_methods
+from fakes import names_its_project
 
 RSV = "comfy-linux-rsv"
 
@@ -61,10 +62,11 @@ RSV = "comfy-linux-rsv"
 # it cannot fail.
 BILL = ("comfy-linux is reserved. Google holds its capacity and bills for it "
         "every hour — running or stopped — until the box is deleted.")
-DELETE_LINE = ("  comfy-qat delete comfy-linux   # the only thing that stops a "
-               "reserved box's bill — the box and its disk go too")
-FIRST_DOWN = ("  comfy-qat down comfy-linux     # first — delete refuses a box "
-              "that is running")
+# Two lines each: the reason, then the command alone, so it runs as pasted (O25).
+DELETE_LINE = ("  the only thing that stops a reserved box's bill — the box and its "
+               "disk go too:\n    comfy-qat delete comfy-linux --yes")
+FIRST_DOWN = ("  first stop it — delete refuses a box that is running:\n"
+              "    comfy-qat down comfy-linux")
 
 # A host list that already holds one reserved box, the way `create --reserve`
 # writes it.
@@ -150,6 +152,7 @@ class Project(FakeGcloud):
         return dict(self._box(name) or {})
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         joined = " ".join(str(part) for part in args)
         if joined.startswith("compute disks describe"):
             self.calls.append("disks describe")
@@ -207,8 +210,13 @@ def offered(output: str) -> list[str]:
     # the label is taken off: `to fix: comfy-qat create …` is an offer too, and
     # a reader that only saw indented lines never saw that one.
     lines = [line.strip().removeprefix("to fix:").strip() for line in output.splitlines()]
+    # Not the one every command prints before it starts, on a host list with no
+    # `project` line, as these are (`host.project_for`): it is about the host
+    # list, not an answer to what was refused, and it is a line of its own now
+    # rather than the end of a sentence.
     return [line.split("  #")[0].strip() for line in lines
-            if line.startswith("comfy-qat ")]
+            if line.startswith("comfy-qat ")
+            and line != "comfy-qat setup --project <id>"]
 
 
 def test_the_set_of_mutating_calls_is_derived_and_knows_about_reservations():
@@ -279,14 +287,13 @@ def test_a_reserved_create_ends_on_the_bill_and_not_on_stop_paying(run):
     # Both steps, in order: the box is running, and `delete` refuses a running
     # box. The rule is not that `down` is absent — it is that `down` is never
     # said to stop the bill, and `delete` is.
-    assert DELETE_LINE in lines and FIRST_DOWN in lines
-    assert lines.index(FIRST_DOWN) + 1 == lines.index(DELETE_LINE)
+    assert f"{FIRST_DOWN}\n{DELETE_LINE}\n" in ending
     assert "stop paying" not in ending
-    for line in lines:
-        if "comfy-qat down" in line:
-            why = line.partition("#")[2]
+    for at, line in enumerate(lines):
+        if line.strip().startswith("comfy-qat down"):
+            why = lines[at - 1]
             assert "bill" not in why and "paying" not in why, line
-    assert "bill" in DELETE_LINE.partition("#")[2]
+    assert "bill" in DELETE_LINE.splitlines()[0]
 
 
 def test_the_confirmation_for_a_reserved_box_says_what_a_yes_costs(run):
@@ -376,7 +383,7 @@ def test_a_second_gpu_box_is_refused_while_a_reservation_holds_the_ceiling(run, 
     # Not the running-box remedy, which cannot work here.
     assert "stop the one you are not using" not in result.output
     assert offered(result.output) == ["comfy-qat down comfy-linux",
-                                      "comfy-qat delete comfy-linux"]
+                                      "comfy-qat delete comfy-linux --yes"]
 
 
 def test_the_two_commands_the_limit_refusal_prints_run_and_free_the_card(run):
@@ -659,8 +666,8 @@ def test_a_box_with_no_gpu_is_written_as_none_and_told_of_no_driver(run):
     ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
     assert "has no GPU, so there is no driver to wait for" in flat(ending)
     assert "NVIDIA" not in ending
-    assert "  comfy-qat down comfy-linux   # stop the machine, stop paying" \
-        in ending.splitlines()
+    assert "  stop the machine, stop paying:\n    comfy-qat down comfy-linux" \
+        in ending
 
 
 def test_a_reservation_holding_the_whole_gpu_ceiling_does_not_refuse_a_box_with_no_gpu(run):
@@ -700,8 +707,7 @@ def test_discover_adopts_a_reserved_box_with_its_reservation_and_says_what_it_co
     assert ("their-box is reserved. Google holds its capacity and bills for it "
             "every hour — running or stopped — until the box is deleted."
             ) in flat(result.stdout)
-    assert ("  comfy-qat delete their-box   # the only thing that stops a reserved "
-            "box's bill — the box and its disk go too") in result.stdout.splitlines()
+    assert DELETE_LINE.replace("comfy-linux", "their-box") + "\n" in result.stdout
     # Stopped, so `delete` is the next step and no `down` is put before it.
     assert "comfy-qat down" not in result.stdout
 
@@ -714,13 +720,9 @@ def test_discover_adopting_a_reserved_box_that_is_running_says_to_stop_it_first(
     result = run("discover", cloud=Project(instances=[found]))
 
     assert result.exit_code == 0, result.output
-    lines = result.stdout.splitlines()
-    first = ("  comfy-qat down their-box     # first — delete refuses a box that "
-             "is running")
-    delete = ("  comfy-qat delete their-box   # the only thing that stops a "
-              "reserved box's bill — the box and its disk go too")
-    assert first in lines and delete in lines
-    assert lines.index(first) + 1 == lines.index(delete)
+    first = FIRST_DOWN.replace("comfy-linux", "their-box")
+    delete = DELETE_LINE.replace("comfy-linux", "their-box")
+    assert f"{first}\n{delete}\n" in result.stdout
     assert "stop paying" not in result.stdout
 
 
@@ -732,6 +734,39 @@ def test_discover_says_nothing_about_reserving_for_a_box_that_is_not(run):
     assert "[hosts.plain-box]" in result.hosts
     assert "gce_reservation" not in result.hosts
     assert "reserved" not in result.stdout
+
+
+@pytest.mark.parametrize("reserved_first", [True, False],
+                         ids=["reserved-first", "unreserved-first"])
+def test_discover_adopts_a_mix_of_reserved_and_unreserved_boxes(run, reserved_first):
+    """O22, found by the pre-merge check of 1.3.0: a reserved row had six cells
+    and every other row five, and the table padding read every row as long as
+    the first — so a mix crashed with an IndexError, in either order, after
+    printing its heading and before writing anything. It is the mix `discover`
+    is sent to adopt: `create --reserve` that could not write the host list
+    points here, and any other box missing from the list makes it a mix.
+
+    A box with no GPU beside a reserved one, as the live pass had them. Both
+    are written, and only the reserved one says it is."""
+    held = box("their-box", status="TERMINATED", bound="their-rsv")
+    plain = box("qatest-cpu", status="RUNNING", bound=None, card=False)
+    for row in (held, plain):
+        row["disks"][0]["licenses"] = [f"{URL}/global/licenses/ubuntu-2204-lts"]
+    found = [held, plain] if reserved_first else [plain, held]
+    result = run("discover", cloud=Project(instances=found))
+
+    assert result.exit_code == 0, result.output
+    assert result.exception is None, repr(result.exception)
+    assert "[hosts.their-box]" in result.hosts
+    assert "[hosts.qatest-cpu]" in result.hosts
+    assert result.hosts.count("gce_reservation") == 1
+    assert 'gce_reservation = "their-rsv"' in result.hosts
+    rows = {line.split()[0]: line for line in result.stdout.splitlines()
+            if line.startswith("  ") and ("port " in line)}
+    assert "reserved (their-rsv)" in rows["their-box"]
+    assert "reserved" not in rows["qatest-cpu"]
+    assert "no GPU" in rows["qatest-cpu"]
+    assert "added 2 hosts" in result.stdout
 
 
 # --- move ---------------------------------------------------------------------
@@ -753,7 +788,7 @@ def test_every_line_the_refused_move_of_a_reserved_box_prints_runs(run):
     lines = offered(refused.output)
     assert lines == [
         "comfy-qat down comfy-linux",
-        "comfy-qat delete comfy-linux",
+        "comfy-qat delete comfy-linux --yes",
         "comfy-qat create --os linux --gpu l4 --reserve --name comfy-linux "
         "--zone europe-west4-b",
     ]
@@ -847,7 +882,7 @@ def test_a_box_declared_under_another_label_is_named_by_that_label_and_it_runs(r
                   "--reserve", "--yes", cloud=cloud, declared=declared)
 
     assert offered(refused.output) == ["comfy-qat down gpu-box",
-                                       "comfy-qat delete gpu-box"]
+                                       "comfy-qat delete gpu-box --yes"]
     for line in offered(refused.output):
         again = run(*shlex.split(line)[1:], cloud=cloud, tty=True, answer="gpu-box\n")
         assert again.exit_code == 0, f"`{line}` did not run:\n{again.output}"
@@ -1006,8 +1041,8 @@ def test_prune_does_not_drop_a_reserved_box_whose_reservation_may_still_bill(run
     assert ("not on the project any more, and reserved — the box is gone, but its "
             "reservation may still be billing, so the entry was kept:") in said
     assert f"reservation {RSV})" in said
-    assert ("  comfy-qat delete comfy-linux   # releases the reservation if it is "
-            "still there, and takes the entry out") in result.stdout.splitlines()
+    assert ("  this releases the reservation if it is still there, and takes the "
+            "entry out:\n    comfy-qat delete comfy-linux --yes\n") in result.stdout
     assert len(cloud._reservations) == 1, "prune is not what releases it"
 
 
@@ -1163,6 +1198,414 @@ def test_a_region_whose_card_is_held_names_the_declared_box_that_holds_it(run):
     assert result.exit_code == 2, result.output
     assert "allowance is already held in the region asked for" in flat(result.output)
     assert mutating(cloud) == []
-    assert ["comfy-qat down comfy-linux", "comfy-qat delete comfy-linux"] == [
+    assert ["comfy-qat down comfy-linux", "comfy-qat delete comfy-linux --yes"] == [
         line for line in offered(result.output)
         if line.startswith(("comfy-qat down", "comfy-qat delete"))]
+
+
+# --- the --region stock-out, after the live pass (O23) ------------------------
+#
+# 1.3.0 stopped a stock-out under `--region` being called "every region this
+# project can use the card in". The pre-merge check then found three things
+# about what replaced it: on a project whose only usable region is the one
+# named, the new sentence ("not everywhere") was false and its "drop --region"
+# remedy retried the same zones; the "same box" that remedy offers dropped
+# `--disk`, and `--name` for a box that was not reserved; and the no-GPU half
+# of the wiring that tells `build` a region was named was held by no test.
+#
+# Every stock-out here is Google's real text from live.md P1 — the line-wrapped
+# `reservations create` refusal — with the zone it names swapped in, and the
+# same text refuses a plain box's create.
+
+
+def _real_stockout(zone: str) -> str:
+    from test_lifecycle import REAL_STOCKOUT
+
+    return REAL_STOCKOUT.replace("us-central1-a", zone)
+
+
+def t4_project(regions, zones, *, at="reserve", cpu_regions=None):
+    """A project that holds T4 quota in `regions` and offers T4 in `zones`,
+    every one of which is out of stock — at the reservation, or at the box."""
+    refuse = {zone: _real_stockout(zone) for zone in zones}
+    compute = None
+    if cpu_regions is not None:
+        compute = [{"quotaId": "CPUS-per-project-region",
+                    "dimensionsInfos": [{"details": {"value": "200"},
+                                         "applicableLocations": list(cpu_regions)}]},
+                   {"quotaId": "CPUS-ALL-REGIONS-per-project",
+                    "dimensionsInfos": [{"details": {"value": "32"},
+                                         "applicableLocations": []}]}]
+    return Project(
+        accelerators=[{"name": "nvidia-tesla-t4", "zone": zone} for zone in zones],
+        machines=[{"name": "n1-standard-8", "zone": f"{URL}/zones/{zone}"}
+                  for zone in zones],
+        quotas=[grant(1, "NVIDIA-T4-GPUS-per-project-region") | {
+                    "dimensionsInfos": [{"details": {"value": "1"},
+                                         "applicableLocations": list(regions)}]},
+                ceiling(1)],
+        compute=compute,
+        **({"refuse_reserve": refuse} if at == "reserve" else {"refuse": refuse}))
+
+
+ONE_REGION = (["us-central1"], ["us-central1-a", "us-central1-b"])
+TWO_REGIONS = (REGIONS, ZONES)
+
+
+def creates(output: str) -> list[str]:
+    """Every whole `comfy-qat create …` the output offers, as argv, cut where the
+    prose after it starts. Templates — `<region>` — are left out."""
+    said = flat(output)
+    found = []
+    for piece in said.split("comfy-qat create")[1:]:
+        for stop in ("; or ", ", or ", " — or "):
+            piece = piece.split(stop)[0]
+        words = shlex.split("comfy-qat create" + piece.rstrip(". "))
+        if not any(word.startswith("<") for word in words):
+            found.append(words)
+    return found
+
+
+@pytest.mark.parametrize("reserve", [True, False], ids=["reserved", "plain"])
+def test_a_named_region_that_is_the_only_one_offers_no_way_out_that_cannot_help(
+        run, reserve):
+    """O23a. When the region `--region` named is the only one this project can
+    use the card in, "not everywhere this project can use the card" is false,
+    and "drop --region and let this pick" hands over a command that tries the
+    very same zones. What is true is the sentence the unnarrowed search ends
+    on: there is nowhere left to try right now."""
+    asked = ["--reserve", "--name", "qatest-rsv"] if reserve else ["--name", "qatest-plain"]
+    cloud = t4_project(*ONE_REGION, at="reserve" if reserve else "create")
+    result = run("create", "--os", "linux", "--gpu", "t4", *asked,
+                 "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "every zone tried is out of T4 capacity: us-central1-a, us-central1-b." in said
+    assert "not everywhere" not in said
+    assert "drop --region" not in said
+    assert ("the only region this project can use the card in, so there is "
+            "nowhere left to try right now") in said
+    assert "Nothing was created and nothing is billing." in said
+    assert mutating(cloud).count("create_reservation" if reserve
+                                 else "create_instance_from_image") == 2
+
+
+def test_a_named_region_with_others_beside_it_still_offers_to_drop_it(run):
+    """The pair: with a second region this project can use the card in, the
+    narrower sentence is the true one and dropping `--region` can help."""
+    cloud = t4_project(*TWO_REGIONS)
+    result = run("create", "--os", "linux", "--gpu", "t4", "--reserve", "--name",
+                 "qatest-rsv", "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert ("us-central1, the region you named with --region — not everywhere this "
+            "project can use the card") in said
+    assert "drop --region and let this pick" in said
+    assert "nowhere left to try" not in said
+
+
+@pytest.mark.parametrize("asked", [
+    ["--reserve", "--name", "qatest-rsv", "--disk", "400"],
+    ["--name", "qatest-plain"],
+    ["--name", "qatest-plain", "--disk", "400"],
+], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk"])
+def test_the_same_box_without_region_is_the_box_that_was_asked_for(run, asked):
+    """O23b. The remedy is "the same create, without --region". It was rebuilt
+    from `--os`, `--gpu` and, for a reserved box, `--reserve --name` — so a
+    box asked for with `--disk 400` was offered back with the default 200 GB,
+    and a plain box asked for by name came back as `comfy-linux`.
+
+    Compared with the arguments it was given: everything but `--region` and
+    `--yes`, and nothing else. And pasted back, its plan is that box."""
+    reserve = "--reserve" in asked
+    cloud = t4_project(*TWO_REGIONS, at="reserve" if reserve else "create")
+    argv = ["create", "--os", "linux", "--gpu", "t4", *asked,
+            "--region", "us-central1", "--yes"]
+    result = run(*argv, cloud=cloud)
+    assert result.exit_code == 1, result.output
+
+    offered_back = [words for words in creates(result.output) if "--region" not in words]
+    assert len(offered_back) == 1, creates(result.output)
+    words = offered_back[0][1:]
+
+    def flags(argv):
+        pairs, rest = {}, list(argv)
+        while rest:
+            word = rest.pop(0)
+            if word.startswith("--"):
+                pairs[word] = rest.pop(0) if rest and not rest[0].startswith("--") else True
+        return pairs
+
+    expected = flags(argv[1:])
+    expected.pop("--region")
+    expected.pop("--yes")
+    assert flags(words[1:]) == expected
+
+    again = run(*words, "--dry-run", cloud=t4_project(*TWO_REGIONS))
+    assert again.exit_code == 0, again.output
+    name = asked[asked.index("--name") + 1]
+    disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
+    plan = flat(again.output)
+    assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+
+
+@pytest.mark.parametrize("asked", [
+    ["--reserve", "--name", "qatest-rsv", "--disk", "400"],
+    ["--name", "qatest-plain"],
+    ["--name", "qatest-plain", "--disk", "400"],
+], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk"])
+def test_the_same_box_without_zone_is_the_box_that_was_asked_for(run, asked):
+    """O23b's sibling, after `--zone`. "drop --zone and let this pick" was
+    followed by `_same_box` for a reserved box and by a bare `comfy-qat create`
+    for every other — no `--os`, no `--gpu`, no `--name`, no `--disk` — which,
+    pasted with no terminal, stops at the first question it cannot ask and
+    exits 2. At a terminal it asks for an operating system and a card that
+    were already given, and makes a box under another name.
+
+    Compared with the arguments it was given: everything but `--zone` and
+    `--yes`, and nothing else. And pasted back, its plan is that box."""
+    reserve = "--reserve" in asked
+    cloud = t4_project(*TWO_REGIONS, at="reserve" if reserve else "create")
+    argv = ["create", "--os", "linux", "--gpu", "t4", *asked,
+            "--zone", "us-central1-a", "--yes"]
+    result = run(*argv, cloud=cloud)
+    assert result.exit_code == 1, result.output
+    assert "drop --zone and let this pick" in flat(result.output)
+
+    offered_back = [words for words in creates(result.output) if "--zone" not in words]
+    assert len(offered_back) == 1, creates(result.output)
+    words = offered_back[0][1:]
+
+    def flags(argv):
+        pairs, rest = {}, list(argv)
+        while rest:
+            word = rest.pop(0)
+            if word.startswith("--"):
+                pairs[word] = rest.pop(0) if rest and not rest[0].startswith("--") else True
+        return pairs
+
+    expected = flags(argv[1:])
+    expected.pop("--zone")
+    expected.pop("--yes")
+    assert flags(words[1:]) == expected
+
+    again = run(*words, "--dry-run", cloud=t4_project(*TWO_REGIONS), tty=False)
+    assert again.exit_code == 0, again.output
+    name = asked[asked.index("--name") + 1]
+    disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
+    plan = flat(again.output)
+    assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+
+
+# --- every "the same box, somewhere else" keeps the box (O23b, the class) -----
+#
+# `_same_box` fixed the two stock-out remedies O23b named. Five other places
+# hand back "the same create, somewhere else", and each was still rebuilt from
+# the flags its author thought of: a box asked for with `--name second --disk
+# 400` was offered back as `comfy-qat create --os linux --gpu l4 --region
+# europe-west4` — another name, and the default 200 GB — and pasted under
+# `--yes` that is the box that gets made.
+
+
+PLAIN = ("--name", "qatest-plain", "--disk", "400")
+HELD = ("--reserve", "--name", "comfy-linux", "--disk", "400")
+
+
+def _room_elsewhere():
+    return a_project_holding_one_reserved_box(quotas=[grant(1), ceiling(4)])
+
+
+def _left_in_b():
+    return Project(reservations=[ours(zone="us-central1-b")])
+
+
+ELSEWHERE = {
+    # (what was asked besides --os/--gpu, where it was asked, the project,
+    #  the host list, the flags that say where)
+    "a region whose allowance is held, plain": (
+        PLAIN, ("--region", "us-central1"), _room_elsewhere, WITH_A_RESERVED_BOX,
+        {"--region"}),
+    "a region whose allowance is held, reserved": (
+        ("--reserve", "--name", "second", "--disk", "400"), ("--region", "us-central1"),
+        _room_elsewhere, WITH_A_RESERVED_BOX, {"--region"}),
+    "a reservation left in another zone": (
+        HELD, ("--zone", "europe-west4-a"), _left_in_b, HOSTS, {"--zone"}),
+    "--zone and --region together, plain": (
+        PLAIN, ("--zone", "us-central1-a", "--region", "europe-west4"), Project, HOSTS,
+        {"--zone", "--region"}),
+    "--zone and --region together, reserved": (
+        HELD, ("--zone", "us-central1-a", "--region", "europe-west4"), Project, HOSTS,
+        {"--zone", "--region"}),
+    "a region in the wrong case, plain": (
+        PLAIN, ("--region", "US-CENTRAL1"), Project, HOSTS, {"--region"}),
+    "a region in the wrong case, reserved": (
+        HELD, ("--region", "US-CENTRAL1"), Project, HOSTS, {"--region"}),
+}
+
+
+@pytest.mark.parametrize("why", list(ELSEWHERE))
+def test_every_same_box_somewhere_else_is_the_box_that_was_asked_for(run, why):
+    """Each refusal's "somewhere else" command is compared with the arguments
+    the refused create was given: the same flags, except where — one place
+    instead of the one refused — and without `--yes`. Then it is pasted back
+    with `--dry-run` and no terminal, and the plan is that box: its name, and
+    its disk."""
+    from commandlines import flags, offered_argv
+
+    asked, where, project, declared, places = ELSEWHERE[why]
+    argv = ["create", "--os", "linux", "--gpu", "l4", *asked, *where, "--yes"]
+    result = run(*argv, cloud=project(), declared=declared)
+    assert result.exit_code == 2, result.output
+
+    wanted = {flag: value for flag, value in flags(argv[1:]).items()
+              if flag not in places | {"--yes"}}
+    elsewhere = [words for words in offered_argv(result.output, "comfy-qat", "create")
+                 if places & set(words) and not any(w.startswith("<") for w in words)]
+    assert elsewhere, f"{why}: nothing offered somewhere else:\n{result.output}"
+    for words in elsewhere:
+        offered_flags = flags(words[2:])
+        assert len(places & set(offered_flags)) == 1, words
+        assert {flag: value for flag, value in offered_flags.items()
+                if flag not in places} == wanted, (
+            f"{why}: `{' '.join(words)}` is not the box `{' '.join(argv)}` asked for")
+
+        again = run(*words[1:], "--dry-run", cloud=project(), tty=False)
+        assert again.exit_code == 0, f"`{' '.join(words)}`:\n{again.output}"
+        plan = flat(again.output)
+        name = asked[asked.index("--name") + 1]
+        assert name in plan and "400 GB pd-balanced boot disk" in plan, plan
+
+
+def test_a_box_with_no_gpu_says_the_region_it_was_named(run):
+    """O23c. `order_zones` tells `build` that `--region` narrowed the search on
+    two paths, and only the card's was held by a test: with the no-GPU half
+    removed, `create --gpu none --region us-central1` went back to calling one
+    region "every region this project can use the machine in" — the live
+    pass's D1 — with the whole suite green."""
+    cloud = Project(refuse={zone: _real_stockout(zone) for zone in ZONES})
+    result = run("create", "--os", "linux", "--gpu", "none", "--name", "qatest-cpu",
+                 "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "out of n1-standard-8 capacity: us-central1-a, us-central1-b." in said
+    assert ("us-central1, the region you named with --region — not everywhere this "
+            "project can use the machine") in said
+    assert "every region this project can use" not in said
+
+
+def test_a_box_with_no_gpu_in_its_only_region_says_there_is_nowhere_else(run):
+    """O23a for the machine: CPU quota in one region only."""
+    cloud = t4_project(*ONE_REGION, at="create", cpu_regions=["us-central1"])
+    result = run("create", "--os", "linux", "--gpu", "none", "--name", "qatest-cpu",
+                 "--region", "us-central1", "--yes", cloud=cloud)
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "drop --region" not in said and "not everywhere" not in said
+    assert ("the only region this project can use the machine in, so there is "
+            "nowhere left to try right now") in said
+
+
+# --- a printed `comfy-qat delete` runs as printed, with nobody to ask (O25) ------
+#
+# `delete` asks for the box's name at a terminal and, with none, refuses: "this
+# needs a terminal to confirm in — add --yes if you are sure". Every `comfy-qat
+# delete <name>` the tool printed for somebody to paste was therefore a command
+# that exits 2 from a script or an agent, and for a reserved box that is the
+# command that stops the bill. The same lesson D3 taught about gcloud's
+# deletes and `--quiet`. Each one here is run with no terminal and no input.
+
+
+def test_every_delete_the_package_prints_carries_yes():
+    """Read off every string in the package. The command runs to the end of
+    its line, or to the `;`, ` — ` or `#` that starts what follows it.
+
+    Whatever follows `delete`, not only an f-string's hole: this matched
+    `\\{\\}`, so `comfy-qat delete comfy-linux` with the name typed out passed
+    without `--yes`. The package holds no such line; the first one is caught."""
+    import re
+
+    from printed import strings
+
+    found = []
+    for where, text in strings():
+        for match in re.finditer(r"comfy-qat delete \S+", text):
+            command = re.split(r"\n|; | — |\s#|`", text[match.start():])[0]
+            found.append(where)
+            assert "--yes" in command.split(), f"{where} prints: {command}"
+    assert len(found) >= 15, f"only {len(found)} — the walk no longer reaches them"
+
+
+def test_the_delete_a_reserved_create_ends_on_runs_with_no_terminal(run):
+    """The ending of `create --reserve`: `down`, then `delete`. Pasted in the
+    order printed, where nobody can type the box's name, both run, and the
+    reservation and the box are gone."""
+    cloud = Project()
+    made = run("create", "--os", "linux", "--gpu", "l4", "--reserve", "--yes",
+               cloud=cloud)
+    assert made.exit_code == 0, made.output
+    lines = [line for line in offered(made.output)
+             if line.startswith(("comfy-qat down", "comfy-qat delete"))]
+    assert [line.split()[1] for line in lines] == ["down", "delete"], lines
+
+    for line in lines:
+        again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+        assert again.exit_code == 0, f"`{line}` did not run:\n{again.output}"
+
+    assert cloud._reservations == [], "the reservation is still billing"
+    assert cloud._instances == []
+    assert "[hosts.comfy-linux]" not in again.hosts
+
+
+def test_the_delete_a_refused_move_hands_over_runs_with_no_terminal(run):
+    cloud = a_project_holding_one_reserved_box()
+    refused = run("move", "comfy-linux", "--to", "europe-west4-b", cloud=cloud,
+                  declared=WITH_A_RESERVED_BOX)
+    (line,) = [line for line in offered(refused.output)
+               if line.startswith("comfy-qat delete")]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == []
+
+
+def test_the_delete_prune_offers_for_a_reserved_ghost_runs_with_no_terminal(run):
+    cloud = Project(reservations=[ours()])
+    pruned = run("discover", "--prune", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+    (line,) = [line for line in offered(pruned.output)
+               if line.startswith("comfy-qat delete")]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == []
+    assert "[hosts.comfy-linux]" not in again.hosts
+
+
+def test_the_delete_a_failed_release_hands_over_runs_with_no_terminal(run):
+    """`delete` that could not release the reservation says to release it
+    yourself and run `delete` again. Run again, with nobody to ask, it
+    finishes."""
+    cloud = a_project_holding_one_reserved_box()
+    real = cloud.delete_reservation
+
+    def refused(*args, **kwargs):
+        cloud.delete_reservation = real
+        raise GcloudError("permission denied")
+
+    cloud.delete_reservation = refused
+    failed = run("delete", "comfy-linux", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+    assert failed.exit_code == 1, failed.output
+    (line,) = [line for line in offered(failed.output)
+               if line.startswith("comfy-qat delete")]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == [] and cloud._instances == []

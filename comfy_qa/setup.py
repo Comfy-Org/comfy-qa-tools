@@ -112,11 +112,55 @@ def ensure_signed_in(gc: Gcloud, p: Prompts, *, interactive: bool) -> str:
     return account
 
 
-def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | None) -> str:
+def _save_project(p: Prompts, path: Path, project: str) -> None:
+    """Write the project into the host list, and say where it went."""
+    from .host import STARTER
+    from .hostfile import HostFileError, set_project
+
+    try:
+        set_project(path, project, initial=STARTER)
+    except HostFileError as exc:
+        raise SetupStopped(
+            f"your host list could not be updated ({exc}), so the project was not "
+            f"saved and nothing after this ran",
+            fix=f'put project = "{project}" at the top of {path}, then run this again',
+        ) from exc
+    p.say(f"project set to {project} — saved in {path}, so comfy-qat works there "
+          f"whatever gcloud's own project is")
+
+
+def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | None,
+                   path: Path | None = None) -> str:
+    """The project setup works on, which is the one comfy-qat keeps.
+
+    COMFY-QAT'S OWN, IN THE HOST LIST — see `config.PROJECT_KEY` — AND NEVER
+    GCLOUD'S. This ran `gcloud config set project`, so choosing a project for
+    this tool chose it for every other gcloud user on the machine as well, and
+    anything else that set gcloud's project took comfy-qat with it. `--project`
+    and a project picked from the list are both written to the host list's
+    `project` line now, through the same checked rewrite as every other change
+    to that file, and gcloud's setting is not touched.
+
+    Without `--project`, the host list's line wins; then gcloud's current
+    project, used as-is and said to be gcloud's, which is what setup did
+    before there was a line to read.
+    """
+    from .config import ConfigError, declared_project
+
+    path = path or DEFAULT_CONFIG_PATH
     if wanted:
-        gc.set_project(wanted)
-        p.say(f"project set to {wanted}")
+        _save_project(p, path, wanted)
         return wanted
+
+    try:
+        named = declared_project(path)
+    except ConfigError as exc:
+        raise SetupStopped(f"could not read your host list ({exc})",
+                           fix="fix the file, then run this again") from exc
+    if named:
+        p.say(f"project {named} — from your host list. To use another: "
+              f"comfy-qat setup --project <id>")
+        return named
 
     current = gc.current_project()
     if current:
@@ -126,8 +170,9 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
         # tool just made on the user's behalf. Somebody who has been working in
         # another project all week gets their GPU quota requested somewhere they
         # did not intend, and the only clue was a noun.
-        p.say(f"project {current} — gcloud's current project, used as-is. "
-              f"To use another: comfy-qat setup --project <id>")
+        p.say(f"project {current} — gcloud's current project, used as-is because "
+              f"your host list names none. To keep comfy-qat on one project: "
+              f"comfy-qat setup --project <id>")
         return current
 
     projects = [proj.get("projectId") for proj in gc.list_projects() if proj.get("projectId")]
@@ -146,8 +191,7 @@ def ensure_project(gc: Gcloud, p: Prompts, *, interactive: bool, wanted: str | N
     else:
         chosen = p.choose("Which project?", projects)
 
-    gc.set_project(chosen)
-    p.say(f"project set to {chosen}")
+    _save_project(p, path, chosen)
     return chosen
 
 
@@ -1041,19 +1085,26 @@ def _nothing_to_ask(held: list[str], stuck: list[str]) -> str:
 
     Three different situations shared one sentence — "Nothing was missing anyway"
     — and only the first of them was that.
+
+    `comfy-qat quota` is in backticks because it comes after the card lists, so
+    where a writer that wraps would break the line depends on how many cards
+    there are. `step` prints this whole today; bare, the first writer to wrap it
+    could start a line with the command and the rest of the sentence after it,
+    which reads as a command and runs as none. `create`'s warning about a host
+    list that stopped loading did exactly that on the Linux runners.
     """
     if stuck and held:
         return (f"{', '.join(held)} granted; {', '.join(stuck)} at zero and "
                 f"already refused, so there is nothing left to ask for. "
-                f"Run comfy-qat quota to see where each card stands.")
+                f"Run `comfy-qat quota` to see where each card stands.")
     if stuck:
         return (f"{', '.join(stuck)} at zero and already refused, so there is "
-                f"nothing that can be asked for. Run comfy-qat quota to see "
+                f"nothing that can be asked for. Run `comfy-qat quota` to see "
                 f"where each card stands.")
     if held:
         return (f"nothing was missing — {', '.join(held)} granted. Run "
-                f"comfy-qat quota to see where each card stands.")
-    return "run comfy-qat quota to see where each card stands."
+                f"`comfy-qat quota` to see where each card stands.")
+    return "run `comfy-qat quota` to see where each card stands."
 
 
 def _unsold_here(gc, project: str, plan: list[QuotaAsk], region: str) -> list[str]:
@@ -1091,15 +1142,15 @@ def _require_real_region(gc, project: str, quotas: list[dict] | None,
     """
     if region is None or quotas is None:
         return
-    from .auth import region_problem
+    from .auth import region_problem, spliced
 
     wrong = region_problem(gc, project, quotas, region)
     if wrong:
         raise SetupStopped(
             wrong[0],
-            fix=("\n".join(f"comfy-qat setup {line}" for line in wrong[1])
-                 or "comfy-qat quota list --by-region  # every region this "
-                    "project meters"),
+            fix=("\n".join(spliced(wrong[1], "comfy-qat setup"))
+                 or "every region this project meters:\n"
+                    "comfy-qat quota list --by-region"),
         )
 
 
@@ -1185,9 +1236,6 @@ def ensure_quota_requests(
             QuotaAsk(card, card.upper(), REQUEST, "")
             for card in (missing or "").split(",") if card], region) if region else []
         where = f" --region {region}" if region and not unsold else ""
-        no_good = (f" — note that {region} does not offer "
-                   f"{', '.join(unsold)}, so ask somewhere else"
-                   if unsold else "")
         # "NOTHING WAS MISSING" WAS A CLAIM ABOUT THE PROJECT, and `missing` is a
         # list of cards that could be ASKED FOR — a refused card does not submit,
         # so three cards at zero came out as nothing missing. Different facts, on
@@ -1195,10 +1243,23 @@ def ensure_quota_requests(
         # premise is stated back to them.
         held, stuck = _held_and_stuck(plan_quota(quotas, _prefs(gc, project),
                                                  region=region))
-        p.say("quota requests skipped (--no-quota-request). "
-              + (f"To ask later: comfy-qat quota request --gpu {missing}{where}"
-                 f"{no_good}"
-                 if missing else _nothing_to_ask(held, stuck)))
+        skipped = "quota requests skipped (--no-quota-request). "
+        if not missing:
+            p.say(skipped + _nothing_to_ask(held, stuck))
+        elif unsold:
+            # WHY THE REGION IS LEFT OFF IS SAID FIRST, and the command is a line
+            # of its own. The reason used to ride after the command, behind a dash
+            # — `comfy-qat quota request --gpu h100 — note that africa-south1 does
+            # not offer H100, so ask somewhere else` — and pasted, an interactive
+            # zsh hands the dash and every word after it to `comfy-qat`, which
+            # refuses them: exit 2, nothing asked. The shape `say.offer` gives
+            # every other offered command: a line that ends in the colon that
+            # introduces it, then the command, two spaces deeper.
+            p.say(f"{skipped}{region} does not offer {', '.join(unsold)}, so ask "
+                  f"somewhere else. To ask later:")
+            p.say(f"  comfy-qat quota request --gpu {missing}")
+        else:
+            p.say(f"{skipped}To ask later: comfy-qat quota request --gpu {missing}{where}")
         return []
     if quotas is None:
         return []
@@ -1248,8 +1309,7 @@ def ensure_quota_requests(
                 f"{where} does not offer {', '.join(blind)} — a granted "
                 f"request there buys a box that can never start, and a quota "
                 f"preference cannot be withdrawn",
-                fix=f"comfy-qat quota list --region {where}  # what this "
-                    f"region actually offers",
+                fix=f"what this region actually offers:\ncomfy-qat quota list --region {where}",
             )
     asking = [ask for ask in plan if ask.submits]
 
@@ -1430,9 +1490,25 @@ def add_discovered_hosts(
         p.say(f"your host list could not be updated ({exc}), so nothing was added to it")
         return 0
 
+    from . import reservation as rsv
+    from .create import reserved_stop_lines
+
     for box, port in additions:
         state = "running" if box.running else "stopped"
         p.say(f"added {box.name} — {box.os}, {box.gpu or 'no GPU'}, {state}, port {port}")
+        # A RESERVED BOX GETS THE ENDING `discover` GIVES IT, from the same two
+        # functions. This wrote `gce_reservation` and then said only "added",
+        # so somebody running setup on a project where a colleague reserved a
+        # box learnt nothing of a bill that runs, stopped or not, until the box
+        # is deleted. Both steps for a running box: `delete` refuses one.
+        # Line by line, because `say.step` indents only the first line of what
+        # it is handed, which put each command level with its reason.
+        if box.reservation:
+            p.say(rsv.bill(box.name))
+            for block in (reserved_stop_lines(box.name) if box.running
+                          else [rsv.stop_line(box.name)]):
+                for line in block.splitlines():
+                    p.say(line)
     return len(additions)
 
 
@@ -1476,13 +1552,15 @@ def run_setup(
     # forever, which is a real outcome from a run that otherwise produced nothing.
     ensure_tunnel_speed(gc, p, skip=no_numpy)
     ensure_signed_in(gc, p, interactive=interactive)
-    chosen = ensure_project(gc, p, interactive=interactive, wanted=project)
     # Before billing and quota, for the same reason NumPy goes before the account
     # sequence: it depends on nothing but the config path, and a newcomer stopped
     # at billing should still end the run owning something. They did not — and
     # getting-started.md:64 tells them "`setup` has already written your host
     # list", which was false for exactly the person most likely to be reading it.
+    #
+    # And before the project, now: the project is saved IN the host list.
     path = ensure_host_list(p, config_path)
+    chosen = ensure_project(gc, p, interactive=interactive, wanted=project, path=path)
     ensure_billing(gc, p, chosen)
     quotas = ensure_gpu_quota(gc, p, chosen, region=region)
     # ABOVE EVERY EARLY RETURN, and above every consumer. This check lived inside

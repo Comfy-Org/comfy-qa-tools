@@ -41,6 +41,12 @@ checks billing is linked, sorts out GPU quota, and writes your host list — tel
 you what it is doing at each step and asking only where the decision is genuinely
 yours.
 
+The project it picks is kept in your host list, as a `project = "<id>"` line, and
+not in gcloud's own settings: `comfy-qat setup --project <id>` sets it, and setting
+it again later is how comfy-qat moves to another project. Boxes already made stay
+in the project they were made in, and stay usable there until you delete them.
+[hosts.md](hosts.md#the-project) has the details.
+
 A browser opens for the Google sign-in. That part has to be you: this tool never
 stores a credential, and never sees one. gcloud keeps its own and refreshes them.
 
@@ -141,6 +147,9 @@ comfy-qat list
 NAME         KIND   OS            GPU  URL                    STATE          RESERVED
 local        local  -             -    http://127.0.0.1:8188  -              -
 comfy-linux  gce    Ubuntu 22.04  L4   http://127.0.0.1:8190  not tunnelled  no
+
+on your-project-id: comfy-linux
+new boxes go to your-project-id, the project your host list names
 ```
 
 RESERVED is `no` for an ordinary box, which bills only while it runs. A box made

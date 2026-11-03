@@ -69,7 +69,7 @@ from hashlib import blake2s
 from pathlib import Path
 
 from .config import DEFAULT_CONFIG_PATH, Host
-from .gcloud import Relay
+from .gcloud import Relay, folded
 
 COMFYUI_PORT = 8188
 
@@ -615,8 +615,13 @@ def _iap_refused(said: str) -> bool:
     One error code, 4003, for "the tunnel could not be joined to anything at the
     other end". It says nothing at all about which end is at fault; the port it
     names is what does.
+
+    FOLDED, as every reader of gcloud's text is (`gcloud.folded`). This and the
+    two below matched the log lowered and nothing more, so a line broken at
+    `port⏎22` read a box still booting as one with nothing listening — and
+    `go` told it to start ComfyUI first, on a box nobody can get onto yet.
     """
-    lowered = (said or "").lower()
+    lowered = folded(said)
     return "failed to connect to backend" in lowered or "4003" in lowered
 
 
@@ -646,7 +651,7 @@ def still_booting(said: str) -> bool:
     advice — for a session that had not expired. Retrying the identical command
     four minutes later worked, unchanged.
     """
-    lowered = (said or "").lower()
+    lowered = folded(said)
     if any(mark in lowered for mark in _STILL_BOOTING):
         return True
     # A bare 4003 with no port named. `gcloud compute ssh` only ever dials 22, so
@@ -677,7 +682,7 @@ _CREDENTIAL_TROUBLE = (
 
 
 def _credentials_expired(said: str) -> bool:
-    lowered = (said or "").lower()
+    lowered = folded(said)
     return any(mark in lowered for mark in _CREDENTIAL_TROUBLE)
 
 
@@ -848,7 +853,11 @@ def open_tunnel(
             f"a tunnel called {host.name!r} is already open (pid {existing.pid}), but it "
             f"goes to {existing.instance} in {existing.zone} on port {existing.port}, "
             f"not to {host.gce_instance} in {host.gce_zone} on port {host.port}.",
-            fix=f"comfy-qat down {host.name}, then open this one",
+            # The command alone on its line, and what follows it on the next:
+            # `comfy-qat down comfy-win, then open this one` pasted is refused
+            # for the words after the comma (O25e).
+            fix=(f"close that one first:\n        comfy-qat down {host.name}\n"
+                 f"        then open this one again."),
         )
 
     try:

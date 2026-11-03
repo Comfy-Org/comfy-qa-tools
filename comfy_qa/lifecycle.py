@@ -40,7 +40,7 @@ from typing import Callable
 from . import inflight
 from . import say as output
 from .config import Host, declares_no_gpu, has_gpu
-from .gcloud import GONE, Gcloud, GcloudError
+from .gcloud import GONE, Gcloud, GcloudError, folded
 from .osfamily import family, is_windows
 from .stamp import ProbeError, Stamp, fetch, mismatch
 from .tunnel import (
@@ -295,7 +295,15 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None,
 
 
 _CAPACITY_SIGNS = (
-    "stockout",
+    # The state code `state:STOCKOUT, sub-state:STOCKOUT`, and never the bare
+    # word. That form is how the test written with the first stock-out fix (#17)
+    # has it; the live message that fix came from is not on record, and no real
+    # refusal kept since carries the code, so it is a sign kept rather than one
+    # seen. Google echoes the resource path in most of what it refuses, so
+    # a box called `qatest-stockout` turned an already-exists or a not-found
+    # into "the zone is out of stock, try another" — advice for a problem the
+    # user does not have (O25). A GCE name cannot hold a colon.
+    "state:stockout",
     "does not have enough resources",
     "resource_pool_exhausted",
     "is currently unavailable in the",
@@ -325,7 +333,7 @@ def is_capacity_failure(message: str | None) -> bool:
     # text a real stock-out printed on 2026-10-06, two of these phrases found
     # nothing and recognition rested on the `code:` line alone — one field
     # Google could rename.
-    lowered = " ".join((message or "").lower().split())
+    lowered = folded(message)
     return any(sign in lowered for sign in _CAPACITY_SIGNS)
 
 
@@ -336,7 +344,10 @@ def suggested_zones(message: str | None) -> list[str]:
     thing this tool can do with the error — as long as it repeats zones and only
     zones: `--to or` is not a command anyone can run.
     """
-    match = _SUGGESTED_ZONES.search(message or "")
+    # Folded, as the stock-out check is and with the same function: the
+    # sentence is in the YAML gcloud wraps, and "trying your\n      request in
+    # the" matched nothing until it was (O25).
+    match = _SUGGESTED_ZONES.search(folded(message))
     if not match:
         return []
     found = []
@@ -403,10 +414,15 @@ def _with_the_bill(host: Host, *advice: str) -> str:
         # until the box is deleted — so "stop paying for it: comfy-qat down"
         # tells somebody the bill has stopped when it has not. Both commands,
         # in the order they are run, and which of them the bill answers to.
-        tail = (f"{'or ' if lines else ''}stop the box: {stop_paying(host)} — it "
-                f"is reserved, so the bill only stops with: comfy-qat delete "
-                f"{host.name}")
-        return output.fix(*lines, tail)
+        #
+        # Each command alone on its line: this was one sentence, `stop the box:
+        # comfy-qat down <name> — it is reserved, so …`, and the command a
+        # person copies out of it carries the dash and the words after it,
+        # which `down` refuses as extra arguments (O25e).
+        return output.fix(*lines, f"{'or ' if lines else ''}stop the box:",
+                          stop_paying(host),
+                          "it is reserved, so the bill only stops with:",
+                          f"comfy-qat delete {host.name} --yes")
     tail = f"{'or ' if lines else ''}stop paying for it: {stop_paying(host)}"
     return output.fix(*lines, tail)
 
@@ -424,7 +440,7 @@ def _undo_a_start(host: Host) -> list[str]:
             f"comfy-qat down {host.name}",
             "it is reserved, so stopping it does not stop its bill — that only "
             "stops with:",
-            f"comfy-qat delete {host.name}",
+            f"comfy-qat delete {host.name} --yes",
             "or check first, if you would rather look:",
             "comfy-qat list --live",
         ]
@@ -477,8 +493,11 @@ def is_auth_failure(exc: GcloudError) -> bool:
     """
     if getattr(exc, "is_auth", False):
         return True
-    lowered = f"{exc} {getattr(exc, 'raw', '')}".lower()
-    return any(sign in lowered for sign in (
+    # Folded, on both sides, like every other reader of gcloud's text: the
+    # signs are sentences out of output gcloud wraps, and `You do not\n
+    # currently have an active account` matched none of them raw.
+    lowered = folded(f"{exc} {getattr(exc, 'raw', '')}")
+    return any(folded(sign) in lowered for sign in (
         "reauthentication failed",
         "refreshing your current auth tokens",
         "do not currently have an active account",
@@ -827,7 +846,11 @@ def bring_up(
                         host,
                         "look at the boot output on the box's serial console, or "
                         "stop it and start again:",
-                        f"comfy-qat down {host.name} && comfy-qat go {host.name}",
+                        # One command a line, as every fix prints them: the two
+                        # joined with `&&` was the one line in the package that
+                        # was two commands.
+                        f"comfy-qat down {host.name}",
+                        f"comfy-qat go {host.name}",
                     ),
                 ) from exc
             raise LifecycleError(
@@ -2318,7 +2341,7 @@ def read_logs(
         raise LifecycleError(
             f"{host.name} is not running, so it has no ComfyUI and no log to "
             f"follow. Whatever it was writing stopped when the machine did.",
-            fix=f"comfy-qat go {host.name}   # start the box and ComfyUI on it",
+            fix=output.fix("start the box and ComfyUI on it:", f"comfy-qat go {host.name}"),
             refusal=True,
         )
 
@@ -2337,8 +2360,8 @@ def read_logs(
             f"has started ComfyUI there. The machine is running and billing.",
             fix=_with_the_bill(
                 host,
-                f"comfy-qat go {host.name}   # start it, and this will have "
-                "something to read",
+                "start it, and this will have something to read:",
+                f"comfy-qat go {host.name}",
             ),
             refusal=True,
         )
@@ -2745,7 +2768,7 @@ def put_away(
                 f"have it — the box no longer exists, but its reservation "
                 f"{host.reservation} is still billing unless it was released "
                 f"too. Release it and clear the entry: comfy-qat delete "
-                f"{host.name}")
+                f"{host.name} --yes")
             return "idle"
         if after is None and is_gone(gc, host):
             # `{exc}` first, so the sentence after it is one uninterrupted run

@@ -26,6 +26,7 @@ from .config import (
     DEFAULT_CONFIG_PATH,
     ConfigError,
     Host,
+    declared_project,
     describe,
     load,
     resolve,
@@ -130,6 +131,49 @@ port = {COMFYUI_DEFAULT_PORT}
 
 def _config_option() -> Path:
     return DEFAULT_CONFIG_PATH
+
+
+# What every command that finds no project anywhere says to do about it.
+NO_PROJECT_FIX = "comfy-qat setup --project <id>"
+
+
+def project_for(gc, config: Optional[Path]) -> str | None:
+    """The Google project a command acts on: the host list's, or else gcloud's.
+
+    The host list's `project` line first — comfy-qat's own setting, see
+    `config.PROJECT_KEY`. Without one, gcloud's current project, which is what
+    every command used before there was a line to read — and it SAYS SO, on
+    stderr, because a project nobody chose for this tool is the one most likely
+    to be the wrong one, and the only clue used to be a project ID in passing.
+
+    None when neither has one; the caller refuses with `NO_PROJECT_FIX`. A host
+    list that cannot be read is refused here, rather than read as "names none":
+    falling back on the strength of a typo elsewhere in the file would send the
+    command to a project the file may not mean.
+
+    Never for a box that is already in the list. Each of those carries its own
+    `gce_project`, and that is where it is started, stopped and deleted, so a
+    box made before the line changed is still reachable after.
+    """
+    try:
+        named = declared_project(config)
+    except ConfigError as exc:
+        say.fail(f"could not read your host list ({exc}), so the project it names "
+                 f"is not known", fix="fix the file, then run this again", code=2,
+                 blank_line=False)
+    if named:
+        return named
+    current = gc.current_project()
+    if current:
+        # The command on a line of its own, under the reason for it, as every
+        # other ending prints one. It was the end of this sentence, and `detail`
+        # wrapped the sentence at 96 columns with the project ID in front of it:
+        # a long ID broke the line between `--project` and `<id>`.
+        say.detail(f"project {current} — gcloud's current project, because your host "
+                   f"list names none.")
+        say.detail("to keep comfy-qat on one project whatever gcloud is set to:")
+        say.detail(f"  {NO_PROJECT_FIX}")
+    return current
 
 
 # A tenth of `stamp.TIMEOUT`. The question here is "is ComfyUI answering on
@@ -241,6 +285,30 @@ def _states(hosts: list[Host], *, live: bool, found=None) -> dict[str, str]:
     return states
 
 
+def _say_projects(hosts: list[Host], config: Optional[Path]) -> None:
+    """`on <project>: <boxes>`, one line per project, and where new boxes go.
+
+    Offline, like plain `list`: the boxes' projects are what their entries say,
+    and the host list's own project is its `project` line. When it has none,
+    where a new box goes is gcloud's setting, which this does not ask.
+    """
+    by_project: dict[str, list[str]] = {}
+    for host in hosts:
+        if host.is_remote and host.gce_project:
+            by_project.setdefault(host.gce_project, []).append(host.name)
+    try:
+        named = declared_project(config)
+    except ConfigError:
+        named = None
+    if not by_project and not named:
+        return
+    say.result("")
+    for project, names in by_project.items():
+        say.result(f"on {project}: {', '.join(names)}")
+    if named:
+        say.result(f"new boxes go to {named}, the project your host list names")
+
+
 @app.command("list")
 def list_cmd(
     config: ConfigOption = None,
@@ -302,6 +370,14 @@ def list_cmd(
     # the same machines two commands later — did not have any.
     for line in say.rows(table):
         say.result(line)
+
+    # EACH BOX'S PROJECT, UNDER THE TABLE RATHER THAN IN IT. Each box is
+    # started, stopped and deleted in the project its own entry names, whatever
+    # the host list's `project` line says now — so after a switch, this is where
+    # a box still on the old project shows up as one. A line per project and not
+    # a column: an ID is twenty-odd characters, and a column of the same one
+    # repeated pushed the --live table past the width it is held to for pasting.
+    _say_projects(hosts, config)
 
     # Without --live the STATE column knows about tunnels and nothing else, so a
     # cloud box that is running looks the same as one that is off, and a local
@@ -676,9 +752,9 @@ def discover_cmd(
     path = config or DEFAULT_CONFIG_PATH
     gc = Gcloud()
     try:
-        project = gc.current_project()
+        project = project_for(gc, path)
         if not project:
-            say.fail("no project set", fix="comfy-qat setup", code=2,
+            say.fail("no project set", fix=NO_PROJECT_FIX, code=2,
                      blank_line=False)
         instances = gc.list_instances(project)
     except GcloudError as exc:
@@ -739,7 +815,9 @@ def discover_cmd(
              "running" if box.running else "stopped", f"port {port}",
              # Only on a row that has one. `stopped` beside a reservation is the
              # pair that reads as costing nothing, so it is said in the table
-             # and again, as a sentence, once the box has been adopted.
+             # and again, as a sentence, once the box has been adopted. So the
+             # rows are not all one length, which `say.rows` allows for — it
+             # did not, and a mix of the two crashed (O22).
              *((f"reserved ({box.reservation})",) if box.reservation else ()))
             for box, port in additions
         ]):
@@ -766,8 +844,9 @@ def discover_cmd(
             say.result(f"  {host.name}  ({host.gce_instance} in {host.gce_zone}, "
                        f"{owner}; reservation {host.reservation})")
         for host, _owner in held_ghosts:
-            say.result(f"  comfy-qat delete {host.name}   # releases the "
-                       f"reservation if it is still there, and takes the entry out")
+            say.result(say.offer(f"comfy-qat delete {host.name} --yes",
+                                 "this releases the reservation if it is still "
+                                 "there, and takes the entry out"))
 
     if ghosts:
         # Named one per line with the project that was asked, because "3 entries
@@ -796,12 +875,20 @@ def discover_cmd(
         # `gce_zone` by hand is the whole repair: nothing about the box is wrong.
         say.warn("\non the project, and not in the zone the entry gives — the "
                  "entry is wrong, the box is not gone, so nothing here was "
-                 "removed. Find where each one really is with gcloud compute "
-                 "instances list, then correct gce_zone by hand")
+                 "removed. Find where each one really is, then correct gce_zone "
+                 "by hand")
         for host, owner in misplaced:
             say.result(f"  {host.name}  ({host.gce_instance} is not in "
                        f"{host.gce_zone} on {owner}, and {owner} has one by "
                        f"that name)")
+        # The listing that says where, offered on a line of its own and on the
+        # project each entry names. It was named in the middle of the warning —
+        # `with gcloud compute instances list, then correct …` — and pasted as
+        # written it lists gcloud's own project, which since comfy-qat keeps a
+        # project of its own need not be the one the entry is about.
+        for owner in dict.fromkeys(owner for _host, owner in misplaced):
+            say.result(say.offer(f"gcloud compute instances list --project={owner}",
+                                 f"where each one on {owner} really is"))
     if unconfirmed:
         # The listing said absent and the second read did not agree. Two ways in,
         # and the message carries which: Google described the machine after all,
@@ -1207,10 +1294,14 @@ def create_cmd(
         # And `--reserve`, when it was typed. Left off a rewritten command it
         # is not a detail: with nobody to ask, the box would be made unreserved.
         chosen += {True: "--reserve ", False: "--no-reserve "}.get(reserve, "")
-        # And the name, for a reserved build, as every other rewritten create
-        # carries it: a reservation is found again by its box's name.
-        chosen += f"{create_mod._asked_for(True, name).removeprefix(' --reserve').strip()} " \
-            if reserve and name else ""
+        # And the name and the disk, for every box, as `_same_box` carries them
+        # on every rewritten create (O23b): this kept the name for a reserved
+        # build only and the disk for none, so a box asked for as
+        # `--name qatest-plain --disk 400` came back under whatever name the
+        # next run picks, with the default 200 GB — and pasted under `--yes`,
+        # that is the box that gets made.
+        besides = create_mod.besides_where(name, disk)
+        chosen += f"{besides} " if besides else ""
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
             "pins one zone, --region asks for a choice within one region",
@@ -1330,9 +1421,9 @@ def create_cmd(
 
     gc = Gcloud()
     try:
-        project = gc.current_project()
+        project = project_for(gc, config)
         if not project:
-            say.fail("no project set", fix="comfy-qat setup", code=2,
+            say.fail("no project set", fix=NO_PROJECT_FIX, code=2,
                      blank_line=False)
         instances = gc.list_instances(project)
         # The first place `create` goes quiet, and long enough that silence reads
@@ -1372,14 +1463,19 @@ def create_cmd(
         wrong = (region_problem(gc, project, quotas, region, membership=False)
                  if card.is_gpu else None)
         if wrong:
-            # ` --reserve --name <name>` for a reserved build, from the one
-            # function every rewritten create takes it from.
-            held = create_mod._asked_for(bool(reserve), name)
+            # ` --reserve` for a reserved build, and the name and the disk for
+            # every box, so the command handed back is the box asked for: this
+            # carried `--name` for a reserved build only and `--disk` for none.
+            from .auth import spliced
+
+            held = "".join(f" {part}" for part in (
+                "--reserve" if reserve else "", create_mod.besides_where(name, disk))
+                if part)
             say.fail(wrong[0],
-                     fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
-                                   f"{gpu}{held} {line}" for line in wrong[1]],
-                                 "comfy-qat quota list --by-region  # every "
-                                 "region this project meters"),
+                     fix=say.fix(*spliced(wrong[1], f"comfy-qat create --os {os_choice} "
+                                                    f"--gpu {gpu}{held}"),
+                                 "every region this project meters:",
+                                 "comfy-qat quota list --by-region"),
                      code=2)
     except GcloudError as exc:
         _refused(exc)
@@ -1479,20 +1575,39 @@ def create_cmd(
     try:
         port = next_ports(load(path), 1)[0]
     except ConfigError as exc:
-        # Said out loud, and NOT refused. The file loaded at the top of this
-        # command — that check is now a refusal — so reaching here means it broke
-        # while the create was running, and by now the box is real and billing.
-        # Refusing at this point would leave a GPU running with no entry naming
-        # it, which is the worse of the two, so the entry still goes in on the
-        # best port this run knows about. What it must not do is stay quiet: the
-        # port may collide with one in the part of the file that no longer
-        # parses, and the sign-off below offers `go` and `down`, which both call
-        # `load` and will exit 2 until the file is fixed.
         port = next_ports(hosts, 1)[0]
-        say.warn(f"your host list stopped loading while this ran ({exc}), so "
-                 f"port {port} was chosen from the file as it was before — check "
-                 f"it against the entries that no longer parse, and fix the file "
-                 f"before comfy-qat go or comfy-qat down")
+        # NO FILE IS NOT A BROKEN FILE, here as at the top, and it has to be
+        # asked the same way. A first run has no host list when it starts and
+        # none now — the append below writes it — and `load` refuses that with
+        # `no host list at …`, the same exception as a file that will not parse.
+        # Taken for the second, the ordinary first `create` told a newcomer
+        # their host list "stopped loading while this ran", to check the port
+        # against entries that do not exist, and to fix a file that was never
+        # there.
+        if path.exists():
+            # Said out loud, and NOT refused. The file loaded at the top of this
+            # command — that check is now a refusal — so reaching here means it
+            # broke while the create was running, and by now the box is real and
+            # billing. Refusing at this point would leave a GPU running with no
+            # entry naming it, which is the worse of the two, so the entry still
+            # goes in on the best port this run knows about. What it must not do
+            # is stay quiet: the port may collide with one in the part of the
+            # file that no longer parses, and the sign-off below offers `go` and
+            # `down`, which both call `load` and will exit 2 until the file is
+            # fixed.
+            #
+            # `go` and `down` ARE IN BACKTICKS, and that is the fix for a line
+            # this printed that was a command nobody should paste. They come
+            # after the loader's refusal, which names a path or a host, so where
+            # `warn` breaks the sentence depends on how long those are; bare, a
+            # break at the space in front of them started a line `comfy-qat go
+            # or comfy-qat down`, which reads as a command and which `comfy-qat`
+            # refuses. Quoted, a wrapped line starts with the backtick, whatever
+            # the length.
+            say.warn(f"your host list stopped loading while this ran ({exc}), so "
+                     f"port {port} was chosen from the file as it was before — check "
+                     f"it against the entries that no longer parse, and fix the file "
+                     f"before `comfy-qat go` or `comfy-qat down`")
 
     # Still a bare append, and deliberately, having been through `hostfile.add`
     # and taken back out.
@@ -1728,7 +1843,7 @@ def _stop_line(host: Host, *, reserved: bool | None = None,
 
             return "\n".join(reserved_stop_lines(host.name))
         return rsv.stop_line(host.name)
-    return f"  {stop_paying(host)}   # stop the box, stop paying"
+    return say.offer(stop_paying(host), "stop the box, stop paying")
 
 
 def _bound_live(gc, host: Host):
@@ -1754,7 +1869,7 @@ def _bound_live(gc, host: Host):
         return None
 
 
-def _reservations_on(gc, hosts: list[Host]):
+def _reservations_on(gc, hosts: list[Host], project: str | None = None):
     """Every reservation on every project in play: `{project: list | None}`.
 
     The other half of "am I still paying for anything". `down --all` stops
@@ -1766,18 +1881,24 @@ def _reservations_on(gc, hosts: list[Host]):
 
     EVERY project a declared box names, not the first one. A host list may
     name several, and a reservation on the second billed just as much while
-    only the first was read. With no cloud box declared it is the project
-    gcloud is pointed at, which is where a `create` that stopped half-way
-    left whatever it left.
+    only the first was read. With no cloud box declared and no project in the
+    host list it is the project gcloud is pointed at, which is then where a
+    `create` that stopped half-way left whatever it left.
 
     None for a project whose read did not come back — not `[]`. Read-and-empty
     is the only answer that may be printed as an all-clear. An empty mapping
     is "there was no project to ask", which is not an all-clear either.
+
+    `project` is the one the host list names, when it names one, and it is
+    asked as well: it is where `create` puts a new box, so after a switch it
+    is the project a half-finished create left something on, and no declared
+    box may name it yet.
     """
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    projects = list(dict.fromkeys(h.gce_project for h in hosts if h.gce_project))
+    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
+                                   *([project] if project else [])]))
     if not projects:
         try:
             current = gc.current_project()
@@ -1861,17 +1982,19 @@ def _say_reserved(gc, hosts: list[Host], reservations) -> None:
         try:
             instances = gc.list_instances(project)
         except (GcloudError, AttributeError):
-            say.result(f"  gcloud compute reservations list --project={project}"
-                       f"   # which of them has a box on it could not be read")
+            say.result(say.offer(f"gcloud compute reservations list --project={project}",
+                                 "which of them has a box on it could not be read, "
+                                 "so look"))
             continue
         empty = {(entry.name, entry.zone) for entry in rsv.orphans(others, instances)}
         for entry in others:
             if (entry.name, entry.zone) in empty:
-                say.result(f"  {rsv.delete_command(entry.name, entry.zone, project)}"
-                           f"   # nothing is on it")
+                say.result(say.offer(rsv.delete_command(entry.name, entry.zone, project),
+                                     f"nothing is on {entry.name} — release it"))
             else:
-                say.result(f"  comfy-qat discover   # a box is on {entry.name}: "
-                           f"adopt it, then `comfy-qat delete` it")
+                say.result(say.offer("comfy-qat discover",
+                                     f"a box is on {entry.name} — adopt it, then "
+                                     f"`comfy-qat delete` it"))
 
 
 # The four words `put_away` answers with, from nine `return` statements. Named
@@ -2059,7 +2182,7 @@ def disconnect_cmd(
     # So the offer lives here, unconditionally, in this tool's shape for an
     # offered command, and `put_away`'s block is the story on stderr. One
     # instruction, once, and neither stream is empty on any path.
-    say.result(f"  comfy-qat down {host.name}   # when the work is finished")
+    say.result(say.offer(f"comfy-qat down {host.name}", "when the work is finished"))
     if host.reservation:
         # `down` is still how the machine is stopped when the work is done, so
         # the line above stays. What it must not be left to imply is that the
@@ -2090,7 +2213,7 @@ def down_cmd(
     that by naming each box in turn is how one gets missed. It reads the
     project's reservations before it says nothing is.
     """
-    from .gcloud import Gcloud
+    from .gcloud import Gcloud, GcloudError
     from .lifecycle import put_away
 
     if everything:
@@ -2102,6 +2225,12 @@ def down_cmd(
         except ConfigError as exc:
             say.fail(exc, code=2, blank_line=False)
         gc = Gcloud()
+        # The host list's own project, when it names one, for the two reads
+        # below that ask the PROJECT rather than a box. Offline: no box needs it.
+        try:
+            named = declared_project(config)
+        except ConfigError as exc:
+            say.fail(exc, code=2, blank_line=False)
         if not hosts:
             # "nothing can be billing" was a flat assertion about the PROJECT
             # made without asking it, on the one path where this tool knows
@@ -2112,19 +2241,25 @@ def down_cmd(
             # four lines below, so it never ran here. That is the shape of half
             # tonight's defects: the fix was real and did not reach the branch
             # that needed it most.
-            strangers = _undeclared_and_running(gc, hosts)
+            # And with no box to take a project from, the project is the host
+            # list's or gcloud's — said, when it is gcloud's.
+            try:
+                named = project_for(gc, config)
+            except GcloudError:
+                named = None
+            strangers = _undeclared_and_running(gc, hosts, named)
             if strangers:
                 say.result(
                     f"you have declared no cloud machines, but "
                     f"{say.count(len(strangers), 'machine')} on this project is "
-                    f"running: {', '.join(n for n, _ in strangers)}."
+                    f"running: {', '.join(n for n, _, _ in strangers)}."
                 )
                 say.result("  not stopped — this tool only operates what you "
                            "declare:")
-                for name, zone in strangers:
+                for name, zone, where in strangers:
                     say.result(f"  gcloud compute instances stop {name} "
-                               f"--zone={zone}")
-                say.result("  comfy-qat discover   # or adopt them first")
+                               f"--zone={zone} --project={where}")
+                say.result(say.offer("comfy-qat discover", "or adopt them first"))
             elif strangers is None:
                 say.result("no cloud machines are declared, and the project "
                            "could not be checked — so this is not an all-clear.")
@@ -2134,7 +2269,7 @@ def down_cmd(
                            "running on the project either")
             # Nothing running is not nothing billing: a reservation with no
             # box on it is neither declared nor running.
-            reservations = _reservations_on(gc, hosts)
+            reservations = _reservations_on(gc, hosts, named)
             if not _nothing_reserved(reservations):
                 _say_reserved(gc, hosts, reservations)
             return
@@ -2189,12 +2324,12 @@ def down_cmd(
         # manage is beyond what `down` was asked to do, and the surprise would be
         # worse than the bill. Saying nothing about it is what makes the summary
         # a lie.
-        strangers = _undeclared_and_running(gc, hosts)
+        strangers = _undeclared_and_running(gc, hosts, named)
         # AND THE RESERVATIONS, for the same reason and with the same three
         # answers. A stopped box that is reserved bills exactly as it did
         # running, so "everything is stopped" stopped being the same sentence as
         # "nothing is billing" the day a box could be reserved.
-        reservations = _reservations_on(gc, hosts)
+        reservations = _reservations_on(gc, hosts, named)
         reserved = [h for h in hosts if h.reservation]
 
         if failed:
@@ -2280,12 +2415,14 @@ def down_cmd(
             say.result(
                 f"\n{say.count(len(strangers), 'machine')} on this project is "
                 f"running and not in your host list: "
-                f"{', '.join(n for n, _ in strangers)}."
+                f"{', '.join(n for n, _, _ in strangers)}."
             )
             say.result("  not stopped — this tool only operates what you declare:")
-            for name, zone in strangers:
-                say.result(f"  gcloud compute instances stop {name} --zone={zone}")
-            say.result("  comfy-qat discover   # or adopt them and use `down --all`")
+            for name, zone, where in strangers:
+                say.result(f"  gcloud compute instances stop {name} --zone={zone} "
+                           f"--project={where}")
+            say.result(say.offer("comfy-qat discover",
+                                 "or adopt them and use `down --all`"))
         if reserved or not _nothing_reserved(reservations):
             _say_reserved(gc, hosts, reservations)
         return
@@ -2518,7 +2655,7 @@ def ssh_cmd(
         say.fail(
             f"{host.name} is not running, so there is nothing to open a shell "
             f"on. SSH needs the machine up, not just declared.",
-            fix=f"comfy-qat up {host.name}   # start it, then ssh again",
+            fix=say.fix("start it, then ssh again:", f"comfy-qat up {host.name}"),
             code=2,
         )
 
@@ -2601,7 +2738,7 @@ def rdp_cmd(
             f"{host.name} is not running, so its password was not reset and there "
             f"is nothing to forward RDP to. The password in use on it is "
             f"unchanged.",
-            fix=f"comfy-qat up {host.name}   # start it, then rdp again",
+            fix=say.fix("start it, then rdp again:", f"comfy-qat up {host.name}"),
             code=2,
         )
 
@@ -2882,18 +3019,19 @@ def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
 
     options = alternatives(hosts, host)[:3]
     if options:
-        commands = [f"comfy-qat switch {other.name}" for other in options]
-        width = max(len(command) for command in commands)
         say.error("where you can test instead, easiest first:", "")
-        for other, command in zip(options, commands):
+        for other in options:
             note = ""
             if other.gce_zone and other.gce_zone == host.gce_zone:
                 note = ", same zone — it may hit the same shortage"
-            say.detail(f"{command.ljust(width)}   # {describe(other)}{note}")
+            # What it is, then the command alone under it: see `say.offer`.
+            say.detail(f"{describe(other)}{note}:")
+            say.detail(f"  comfy-qat switch {other.name}")
     else:
         say.error("no other machine is declared, so there is nowhere to switch to:",
                   "")
-        say.detail("comfy-qat discover   # declare a box you already have")
+        say.detail("declare a box you already have:")
+        say.detail("  comfy-qat discover")
 
     if exc.fix:
         say.error(f"if it has to be {host.name}:", "")
@@ -3074,9 +3212,9 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
             say.result(f"\nstopped, and ComfyUI stopped with it — that is what "
                        f"Ctrl-C does here. {host.name} is still running, and a "
                        f"stopped ComfyUI on a running box still bills.")
-            say.result(f"  comfy-qat go {host.name}   # start ComfyUI again")
-            say.result(f"  comfy-qat logs {host.name}   # watch it without "
-                       "stopping it")
+            say.result(say.offer(f"comfy-qat go {host.name}", "start ComfyUI again"))
+            say.result(say.offer(f"comfy-qat logs {host.name}",
+                                 "watch it without stopping it"))
         else:
             say.result(f"\nstopped. {host.name} is still running.")
         say.result(_stop_line(host))
@@ -3090,7 +3228,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     # The URL is last on purpose. ComfyUI announces its own address — correct on
     # the box, wrong here — and whatever is said after it is what gets opened.
     say.result(f"\nComfyUI is running on {host.name} and this terminal is free.")
-    say.result(f"  comfy-qat logs {host.name}   # follow its log, on the box")
+    say.result(say.offer(f"comfy-qat logs {host.name}", "follow its log, on the box"))
     say.result(_stop_line(host))
     say.result(f"\nopen {host.url}")
 
@@ -3541,7 +3679,7 @@ def _how_to_free(gc, host: Host, held: _Held,
             "a reserved box frees its card only when it is deleted:",
             *[line for other in held.declared
               for line in (f"comfy-qat down {other.name}",
-                           f"comfy-qat delete {other.name}")])
+                           f"comfy-qat delete {other.name} --yes")])
     project = host.gce_project or ""
     try:
         instances = gc.list_instances(project)
@@ -3689,7 +3827,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
         # and "your box was already up" is the difference the user is paying for.
         say.result(f"{host.name} is already running in {host.gce_zone}, which has "
                    f"capacity — no move needed, and this command changed nothing.")
-        say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+        say.result(say.offer(f"comfy-qat go {host.name}", "tunnel to it and serve"))
         say.result(_stop_line(host))
         return None
 
@@ -3710,7 +3848,8 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     say.result(f"{host.name} already has capacity where it is, in "
                f"{host.gce_zone} — no move needed. It was stopped, so it was "
                f"started to ask Google and has been stopped again.")
-    say.result(f"  comfy-qat go {host.name}     # start it and serve, when you want it")
+    say.result(say.offer(f"comfy-qat go {host.name}",
+                         "start it and serve, when you want it"))
     return None
 
 
@@ -3806,7 +3945,7 @@ def _refuse_to_move_a_reserved_box(host: Host, to: str | None) -> None:
             "to have it somewhere else, delete it and make it again there.",
             "Its disk goes with it, so the ComfyUI on it is installed afresh:",
             f"comfy-qat down {host.name}",
-            f"comfy-qat delete {host.name}",
+            f"comfy-qat delete {host.name} --yes",
             again),
         code=2)
 
@@ -4121,7 +4260,7 @@ def move_cmd(
     # so a moved box billed silently from the moment the move finished.
     say.result(f"\n{host.name} is now in {target}, running and billing from now. "
                f"Same name, same port {port}.")
-    say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+    say.result(say.offer(f"comfy-qat go {host.name}", "tunnel to it and serve"))
     say.result(_stop_line(host))
 
     was = "running and still billing" if plan.source_running else "stopped"
@@ -4147,8 +4286,17 @@ def move_cmd(
             say.detail(line)
 
 
-def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | None:
-    """Running instances on the project that no host entry names.
+def _undeclared_and_running(gc, hosts: list[Host], project: str | None = None
+                            ) -> list[tuple[str, str, str]] | None:
+    """Running instances that no host entry names, on every project in play, as
+    `(name, zone, project)`.
+
+    THE PROJECT GOES WITH EACH, because the caller prints Google's command to
+    stop the box and that line has to reach where the box was found. It used to
+    print `gcloud compute instances stop <name> --zone=<zone>` with no
+    `--project`, which pasted acts on gcloud's own project — not the one listed
+    here, now that comfy-qat keeps a project of its own in the host list: "not
+    found" there, and the box named as running goes on billing.
 
     `down --all` iterates the host list, so a box nobody declared is not merely
     unstopped — it is unreachable by every sentence the command prints. That was
@@ -4166,26 +4314,45 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | No
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    project = next((h.gce_project for h in hosts if h.gce_project), None)
-    if not project:
+    # EVERY PROJECT IN PLAY, as `_reservations_on` reads them: each one a
+    # declared box is on, then the one the host list names, and gcloud's only
+    # when there is neither. This read the FIRST declared box's project alone,
+    # and the host list's only when no box named one — so after a switch, with
+    # an old box on the old project and new work on the new one, a box running
+    # on the new project in no entry was never read, and the run ended on
+    # "Nothing is now." while it billed. Reservations were already read on both.
+    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
+                                   *([project] if project else [])]))
+    if not projects:
         # No declared cloud host to take it from — which is the case this
         # matters most in. Ask gcloud what project is configured.
         try:
-            project = gc.current_project()
+            current = gc.current_project()
         except (GcloudError, AttributeError):
             return None
-    if not project:
-        return None
-    declared = {h.gce_instance for h in hosts if h.gce_instance}
-    try:
-        instances = gc.list_instances(project)
-    except (GcloudError, AttributeError):
-        return None
-    return [
-        (i.get("name", ""), rsv.zone_of(i))
-        for i in instances or []
-        if i.get("name") not in declared and i.get("status") != "TERMINATED"
-    ]
+        if not current:
+            return None
+        projects = [current]
+    # Declared means this box on this project: the same name on another project
+    # is somebody else's box. An entry with no `gce_project` is matched by name
+    # wherever it is found, as before, rather than called a stranger.
+    declared = {(h.gce_instance, h.gce_project) for h in hosts
+                if h.gce_instance and h.gce_project}
+    anywhere = {h.gce_instance for h in hosts if h.gce_instance and not h.gce_project}
+    found: list[tuple[str, str, str]] = []
+    for where in projects:
+        try:
+            instances = gc.list_instances(where)
+        except (GcloudError, AttributeError):
+            # One unread project withholds the all-clear for all of them.
+            return None
+        found += [
+            (i.get("name", ""), rsv.zone_of(i), where)
+            for i in instances or []
+            if (i.get("name"), where) not in declared and i.get("name") not in anywhere
+            and i.get("status") != "TERMINATED"
+        ]
+    return found
 
 
 def _probe_fix(host: Host) -> str | None:
@@ -4213,9 +4380,12 @@ def _probe_fix(host: Host) -> str | None:
     return say.fix(
         f"no tunnel to {host.name} is open, so nothing here answers {host.url} — "
         f"and {host.gce_instance} may simply be stopped.",
-        f"comfy-qat open {host.name}   # tunnel to a box that is already running",
-        f"comfy-qat go {host.name}     # start it and tunnel, in one step",
-        "comfy-qat list --live        # which of the two it is",
+        "tunnel to a box that is already running:",
+        f"comfy-qat open {host.name}",
+        "or start it and tunnel, in one step:",
+        f"comfy-qat go {host.name}",
+        "which of the two it is:",
+        "comfy-qat list --live",
     )
 
 
