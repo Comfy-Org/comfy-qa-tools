@@ -14,14 +14,14 @@ as printed, and gcloud errors that were misread; and two places the 1.3.0 docs
 were behind the facts.
 
 **What ran on real Google boxes for this release, on 2026-11-03, on commit
-`acf517c`** — the last commit to change anything but this entry: `discover`
-adopting a reserved box with no GPU beside an unreserved one, neither in a host
-list that has no local machine in it. 1.3.0 crashed on the same two boxes; this
-adopts both, on ports 8191 and 8192, and marks only the reserved one. Then
-`down` and `delete --yes` — for the reserved box exactly as `discover` printed
-them — run with no terminal, stopped and deleted both boxes and released the
-reservation. Everything else here ran against the suite's fakes only. `setup`
-was not run live, because it can ask Google for quota.
+`acf517c`**: `discover` adopting a reserved box with no GPU beside an unreserved
+one, neither in a host list that has no local machine in it. 1.3.0 crashed on
+the same two boxes; this adopts both, on ports 8191 and 8192, and marks only the
+reserved one. Then `down` and `delete --yes` — for the reserved box exactly as
+`discover` printed them — run with no terminal, stopped and deleted both boxes
+and released the reservation. The commits after `acf517c` change none of the
+code that run used. Everything else here ran against the suite's fakes only.
+`setup` was not run live, because it can ask Google for quota.
 
 ### Changed
 
@@ -83,12 +83,22 @@ was not run live, because it can ask Google for quota.
   on billing. Every printed gcloud command that acts on a project carries
   `--project` now; with none in hand it reads `--project=<your-project-id>`,
   which a shell refuses as it stands, rather than running somewhere else.
+- **`down --all` after a project switch looks on the new project too.** With
+  an old box on the old project and new work on the one the host list names, it
+  looked for running boxes nobody declared on the old project only, and could
+  end on `Nothing is now.` while one ran on the new project and billed. It reads
+  every project a declared box is on and the host list's now, and gives no
+  all-clear if any of them could not be read.
+- **`setup` says what an adopted reserved box bills.** It added the box with
+  its reservation and said only that it was added; it now says, as `discover`
+  does, that the box bills every hour, running or stopped, until it is deleted,
+  and prints the commands that end that.
 - **The printed `reset-windows-password` command carries `--quiet`.** The one
   printed when a reset answers with no credentials did not, so it stopped to ask
   from a script; the check for it now reads every module.
 - **A box named `…stockout…` is not a stock-out.** The bare word was one of the
   signs, and Google repeats a box's name in most of what it refuses, so an
-  already-exists error read as "out of capacity, try another zone". Google's own
+  already-exists error read as "out of capacity, try another zone". A
   `state:STOCKOUT` code is still recognised, as is the real wrapped text.
 - **A line break in gcloud's text no longer hides what it says.** Only the
   stock-out check folded whitespace before matching; Google's suggested zone and
@@ -111,7 +121,9 @@ Between them: no printed delete or reset stops to ask, no printed command
 carries anything but the command or is broken across lines by the tool, and
 every printed gcloud command that acts on a project names it. And no argv
 reaches gcloud, or a fake standing in for it, without its project, however it
-was built.
+was built. No test asks a ComfyUI running on the machine that runs the suite:
+three did, on 127.0.0.1:8188, and the network check now refuses 8188 to 8190
+even on loopback, and fails the test when the code it ran caught the refusal.
 
 ## 1.3.0 — reserved boxes, a limit on them, and a box with no GPU
 

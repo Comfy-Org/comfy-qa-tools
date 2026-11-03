@@ -295,8 +295,11 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None,
 
 
 _CAPACITY_SIGNS = (
-    # Google's state code, `state:STOCKOUT, sub-state:STOCKOUT`, and never the
-    # bare word. Google echoes the resource path in most of what it refuses, so
+    # The state code `state:STOCKOUT, sub-state:STOCKOUT`, and never the bare
+    # word. That form is how the test written with the first stock-out fix (#17)
+    # has it; the live message that fix came from is not on record, and no real
+    # refusal kept since carries the code, so it is a sign kept rather than one
+    # seen. Google echoes the resource path in most of what it refuses, so
     # a box called `qatest-stockout` turned an already-exists or a not-found
     # into "the zone is out of stock, try another" — advice for a problem the
     # user does not have (O25). A GCE name cannot hold a colon.
