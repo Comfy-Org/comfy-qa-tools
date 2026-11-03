@@ -2149,32 +2149,41 @@ def test_a_project_that_cannot_be_named_is_None_not_empty():
 # --- a printed command that stops to ask ---------------------------------------
 
 
-def test_no_gcloud_command_these_files_print_for_pasting_stops_to_ask():
-    """`gcloud compute instances delete` and `reset-windows-password` both stop
-    for a "(Y/n)?" unless they are told `--quiet`. Printed for somebody to
-    paste, a command that waits is one that exits 1 from a script and does
-    nothing — and for a delete, what it did not delete goes on billing. Found
-    on a real project, on the reservation delete; these are its siblings in
-    `host.py` and `remove.py`.
+# The gcloud commands that stop for a "(Y/n)?" unless they are told `--quiet`.
+_PROMPTS = re.compile(r"gcloud compute (?:instances delete|reservations delete|disks "
+                      r"delete|snapshots delete|reset-windows-password) \{")
 
-    Read off the source: every place one of the two is BUILT, as an f-string
-    taking a name, has `--quiet` before the statement ends.
+
+def test_no_gcloud_command_the_package_prints_for_pasting_stops_to_ask():
+    """`gcloud compute instances delete`, the other deletes and
+    `reset-windows-password` all stop for a "(Y/n)?" unless they are told
+    `--quiet`. Printed for somebody to paste, a command that waits is one that
+    exits 1 from a script and does nothing — and for a delete, what it did not
+    delete goes on billing. Found on a real project, on the reservation delete.
+
+    EVERY MODULE, not the two this used to read. It read `host.py` and
+    `remove.py` by name, so `gcloud.py`'s `reset-windows-password` — printed
+    when the reset answers with no credentials — went out without `--quiet`
+    after 1.3.0 had given its three siblings the flag (O25). And it matched the
+    command as ONE literal, which that one was not: it was split across two
+    adjacent strings. The syntax tree has already joined those, so it is read
+    there.
+
+    The command runs to the end of its line, or to the `;` or ` — ` that
+    starts the prose after it.
     """
-    import inspect
-    import re
+    from printed import strings
 
-    from comfy_qa import host, remove
-
-    built = re.compile(
-        r'f"gcloud compute (?:instances delete|reset-windows-password) \{')
-    found = 0
-    for module in (host, remove):
-        source = inspect.getsource(module)
-        for match in built.finditer(source):
-            found += 1
-            # To the end of the call the string is an argument of.
-            rest = source[match.start():]
-            statement = rest[:re.search(r"\)\s*\n|\],?\s*\n", rest).end()]
-            assert "--quiet" in statement, (
-                f"{module.__name__}: prints a command that prompts:\n{statement}")
-    assert found >= 5, f"only {found} found — the pattern no longer matches the source"
+    found = []
+    for where, text in strings():
+        for match in _PROMPTS.finditer(text):
+            command = re.split(r"\n|; | — ", text[match.start():])[0]
+            found.append(where)
+            assert "--quiet" in command.split(), (
+                f"{where} prints a command that stops to ask: {command}")
+    # Non-vacuity, by module as well as by count: a walk that only reached one
+    # file would find several there and pass.
+    modules = {where.split(":")[0] for where in found}
+    assert len(found) >= 10, f"only {len(found)} found — the walk no longer reaches them"
+    assert {"gcloud.py", "host.py", "remove.py", "relocate.py", "reservation.py",
+            "create.py"} <= modules, sorted(modules)

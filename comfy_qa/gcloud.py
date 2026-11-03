@@ -1237,10 +1237,15 @@ class Gcloud:
             f"gcloud reset the Windows password on {instance} and exited without "
             f"an error, but the answer carried no credentials: {_shape(answer)}. "
             f"There is no password to hand over, so nothing was forwarded.",
+            # `--quiet`, as the call above sends it: without it gcloud stops to
+            # ask before resetting, and pasted into a script that is an exit 1
+            # and no password. Its three siblings in host.py have had it since
+            # the live pass; this one was split across two literals and the
+            # guard read only two files, so it was missed (O25).
             fix=(
                 f"run it yourself and read what comes back: gcloud compute "
                 f"reset-windows-password {instance} --zone={zone} "
-                f"--project={project}"
+                f"--project={project} --quiet"
             ),
         )
 
