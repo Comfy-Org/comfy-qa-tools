@@ -1320,7 +1320,7 @@ command at the end of a paragraph out of sight. Adopting it with
 `comfy-qat discover` is the other way out, and is second because it leaves
 the box running.
 
-**`your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before comfy-qat go or comfy-qat down`**
+**`` your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before `comfy-qat go` or `comfy-qat down` ``**
 The host list loaded when this command started — it refuses outright otherwise —
 and does not load now, so something edited it while the create was running. That
 is minutes, and another terminal or an editor is all it takes.

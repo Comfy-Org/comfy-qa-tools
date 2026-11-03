@@ -1595,10 +1595,19 @@ def create_cmd(
             # file that no longer parses, and the sign-off below offers `go` and
             # `down`, which both call `load` and will exit 2 until the file is
             # fixed.
+            #
+            # `go` and `down` ARE IN BACKTICKS, and that is the fix for a line
+            # this printed that was a command nobody should paste. They come
+            # after the loader's refusal, which names a path or a host, so where
+            # `warn` breaks the sentence depends on how long those are; bare, a
+            # break at the space in front of them started a line `comfy-qat go
+            # or comfy-qat down`, which reads as a command and which `comfy-qat`
+            # refuses. Quoted, a wrapped line starts with the backtick, whatever
+            # the length.
             say.warn(f"your host list stopped loading while this ran ({exc}), so "
                      f"port {port} was chosen from the file as it was before — check "
                      f"it against the entries that no longer parse, and fix the file "
-                     f"before comfy-qat go or comfy-qat down")
+                     f"before `comfy-qat go` or `comfy-qat down`")
 
     # Still a bare append, and deliberately, having been through `hostfile.add`
     # and taken back out.

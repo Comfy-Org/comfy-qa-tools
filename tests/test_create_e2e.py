@@ -30,11 +30,13 @@ import json
 import os
 import re
 import stat
+from itertools import takewhile
 
 import pytest
 from typer.testing import CliRunner
 
 from comfy_qa import gcloud as gcloud_module
+from comfy_qa import say
 from comfy_qa import zones as zones_module
 from comfy_qa.cli import app
 from comfy_qa.create import CARDS, image_for
@@ -1266,6 +1268,65 @@ def test_a_host_list_that_was_never_there_did_not_stop_loading(cli):
     assert result.exit_code == 0
     assert "stopped loading" not in result.output, result.output
     assert "[hosts.comfy-linux]" in result.hosts
+
+
+class BreaksTheHostList(FakeGcloud):
+    """A create during which somebody adds a second host on a port already taken.
+
+    The one way into the warning `create` prints once the box is real: the file
+    loaded when the command started — it refuses outright otherwise — and does
+    not load when the port is chosen. Another terminal, or an editor saving
+    over it, is all it takes, and the create is minutes long. `name` is the host
+    that clashes, so the loader's refusal is as long as the test wants it."""
+
+    def __init__(self, path, name, **kwargs):
+        super().__init__(**kwargs)
+        self.path = path
+        self.name = name
+
+    def create_instance_from_image(self, name, zone, project, **kwargs):
+        super().create_instance_from_image(name, zone, project, **kwargs)
+        self.path.write_text(
+            f'{HOSTS}\n[hosts.{self.name}]\nkind = "local"\nport = 8188\n',
+            encoding="utf-8")
+
+
+def test_no_length_of_refusal_puts_go_or_down_at_the_start_of_the_warning_s_line(
+        cli, tmp_path):
+    """The warning names `go` and `down`, which both read the host list, AFTER
+    the loader's own refusal — and that refusal names what it objected to: the
+    host list's path, a host's name. So where the sentence wraps is decided by
+    how long those are. At the length the Linux runners' temp directory happened
+    to be, a line of it came out `comfy-qat go or comfy-qat down`: a command by
+    its position, and one `comfy-qat` refuses when it is pasted. A Mac's temp
+    path is past a whole line, and nothing is broken mid-word, so there the path
+    took a line to itself and the sentence after it started a fresh one whatever
+    the length — the same three tests passed, and CI was red on Ubuntu only with
+    nothing in the code that differed between the two.
+
+    So every length a name can have, rather than the one a runner happens to
+    have: the host that clashes grows a character at a time, which carries the
+    break across the end of the sentence. At least one of them has to push the
+    names to the start of a line, or this proves nothing about the wrap."""
+    from commandlines import is_command, problems
+
+    path = tmp_path / "hosts.toml"
+    landed = 0
+    for length in range(1, 64):
+        result = cli("--os", "linux", "--gpu", "l4", "--yes", config=path,
+                     gc=BreaksTheHostList(path, "s" * length))
+
+        assert result.exit_code == 0, result.output
+        lines = result.output.splitlines()
+        start = next(index for index, line in enumerate(lines) if line.startswith(
+            f"{say.WARNING}your host list stopped loading while this ran"))
+        under = " " * len(say.WARNING)
+        for line in takewhile(lambda line: line.startswith(under), lines[start + 1:]):
+            text = line[len(under):]
+            assert not is_command(text), f"a {length}-character name: {line!r}"
+            landed += text.lstrip("`").startswith(("comfy-qat go", "comfy-qat down"))
+        assert problems(lines) == [], (length, problems(lines))
+    assert landed, "no length pushed the names to the start of a line"
 
 
 @pytest.mark.parametrize("region, expect", [
