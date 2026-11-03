@@ -538,3 +538,34 @@ def test_stamp_says_nothing_it_could_not_read(world):
 
     found = json.loads(result.stdout)
     assert "frontend_version" not in found and "comfyui_commit" not in found
+
+
+# --- what the install says it is about to show --------------------------------
+
+
+def test_a_windows_install_says_what_it_installs_and_not_apt(world):
+    """Live on 2026-11-03 (live-s2, evidence/44): `go` on a Windows box said
+    "what follows is the box's own output — apt, git, then pip" above a log
+    that installs Git and Python from their publishers' installers. Windows
+    has no apt, and a line that names the wrong steps is one more reason to
+    believe the install has gone wrong while it is fine."""
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--version", "v0.43.0")
+
+    assert result.exit_code == 0, result.output
+    assert "apt" not in result.output
+    assert "Git and Python, then comfy-cli and pip" in result.output
+
+
+@pytest.mark.parametrize("os_name, steps", [
+    ("Windows Server 2022", "Git and Python, then comfy-cli and pip"),
+    ("Ubuntu 22.04", "apt, then comfy-cli and pip"),
+])
+def test_each_install_names_its_own_steps(os_name, steps):
+    from comfy_qa.config import Host
+
+    host = Host(name="b", kind="gce", port=8191, os=os_name, gpu="L4",
+                gce_instance="b", gce_zone="z", gce_project="p")
+    assert steps in lifecycle.install_preamble(host)

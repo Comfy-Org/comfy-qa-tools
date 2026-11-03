@@ -1175,6 +1175,22 @@ def wait_for_port(
 DRIVER_TIMEOUT = 900
 
 
+def install_preamble(host: Host) -> str:
+    """The line above the box's own install log: whose steps follow, in order,
+    and which stretch of them is silent.
+
+    Each operating system names its own. Windows said "apt, git, then pip" on
+    the first live install that got that far, above a log that installs Git
+    and Python from their publishers and has no apt anywhere in it.
+    """
+    steps = ("Git and Python, then comfy-cli and pip" if is_windows(host)
+             else "apt, then comfy-cli and pip")
+    wheels = ("torch, torchvision and torchaudio" if declares_no_gpu(host)
+              else "torch, torchvision, torchaudio and the CUDA runtime")
+    return (f"  what follows is the box's own output — {steps}. The quiet stretch "
+            f"is {wheels}, which download without progress lines.")
+
+
 def wait_for_driver(
     gc: Gcloud,
     host: Host,
@@ -1443,14 +1459,7 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     # them is four wheels being fetched with no per-file progress — which is the
     # point at which a person decides it has hung and presses Ctrl-C. The `still
     # going` lines below are the clock; nothing else in that stretch is one.
-    if declares_no_gpu(host):
-        say("  what follows is the box's own output — apt, git, then pip. The "
-            "quiet stretch is torch, torchvision and torchaudio, which download "
-            "without progress lines.")
-    else:
-        say("  what follows is the box's own output — apt, git, then pip. The quiet "
-            "stretch is torch, torchvision, torchaudio and the CUDA runtime, which "
-            "download without progress lines.")
+    say(install_preamble(host))
     # `finally`, not three `give_up()` calls on the paths we thought of. This
     # ticker runs on a THREAD — the only two in this module that do; every other
     # `output.slow` here passes background=False and has nothing to stop. So an
