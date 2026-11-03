@@ -3,6 +3,83 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.3.1 — its own Google project, and the leftovers from 1.3.0
+
+Two things. comfy-qat now keeps **its own Google project**, so moving it to a new
+project is one line and moves nothing else on the machine. And what the check
+before 1.3.0 merged left open is fixed: a crash in `discover`; a `--region`
+stock-out that was wrong on a one-region project, offered back a box that was
+not the one asked for, and was half untested; five ways a printed command did
+not run as printed or a gcloud error was misread; and two places the 1.3.0 docs
+were behind the facts.
+
+**What ran on real Google boxes for this release, on 2026-11-03:** `discover`
+adopting a reserved box with no GPU beside an unreserved one — 1.3.0 crashed on
+it there, this adopts both — and the `down` and `delete --yes` it printed,
+pasted with no terminal. Everything else here ran against the suite's fakes
+only. `setup` was not run live, because it can ask Google for quota.
+
+### Changed
+
+- **comfy-qat keeps its own Google project, in the host list.** One
+  `project = "<id>"` line at the top of the host list says where `create` makes a
+  box, what `discover` lists, and what `quota` and `status` read. `setup
+  --project <id>` writes it, and no longer runs `gcloud config set project` —
+  that moved every other gcloud user on the machine with comfy-qat. Every gcloud
+  call that acts on a project now names it with `--project`, so the line reaches
+  Google whatever gcloud is set to. Without the line, gcloud's current project
+  is used, as before, and each command that does says so. A misspelt line, or a
+  project's display name where its ID goes, is refused rather than ignored.
+- **Switching project keeps the old boxes reachable.** Each entry keeps its own
+  `gce_project`, so a box made before the switch is still started, stopped and
+  deleted where it is, until you delete it; there is no move between projects.
+  `list` says which project each box is on, and where a new one will go.
+- **A printed command is a command and nothing else.** Offered commands carried
+  their reason as a trailing `# note`, which an interactive zsh — as it starts,
+  without `interactivecomments` — passed to the command as arguments, and the
+  command refused them. The reason is now a line of its own above the command.
+- **Every printed `comfy-qat delete` carries `--yes`**, so it runs from a
+  script or an agent; without it, it stopped to ask for the box's name and
+  exited 2 with nothing deleted — and for a reserved box it is the command that
+  stops the bill. Typing `delete` yourself still asks.
+
+### Fixed
+
+- **`discover` crashed on a mix of reserved and unreserved boxes**, neither in
+  the host list — an `IndexError` after its heading, with nothing adopted. It
+  is the mix it is sent to adopt after `create --reserve` could not write the
+  host list.
+- **A stock-out after `--region` on a project with one usable region** said
+  "not everywhere this project can use the card" and offered "drop --region",
+  which tried the same zones again. It now says that region is the only one and
+  there is nowhere left to try.
+- **"The same box" offered after a stock-out is the same box.** It dropped
+  `--disk`, and `--name` for a box that was not reserved, so pasted back it made
+  a 200 GB box under another name. The untried-regions remedy beside it had the
+  same gap.
+- **The printed `reset-windows-password` command carries `--quiet`.** The one
+  printed when a reset answers with no credentials did not, so it stopped to ask
+  from a script; the check for it now reads every module.
+- **A box named `…stockout…` is not a stock-out.** The bare word was one of the
+  signs, and Google repeats a box's name in most of what it refuses, so an
+  already-exists error read as "out of capacity, try another zone". Google's own
+  `state:STOCKOUT` code is still recognised, as is the real wrapped text.
+- **A line break in gcloud's error no longer hides what it says.** Only the
+  stock-out check folded whitespace before matching; Google's suggested zone and
+  the kind of error (an expired session, a missing project) are now read through
+  the same fold.
+- **The 1.3.0 entry below** said the live run found four defects; it found ten,
+  and four were fixed. It had no line for the stock-out text fix. And the
+  acceptance pack still said the device name on a box with no GPU had not been
+  seen: the live run recorded it, `cpu`.
+
+### The suite
+
+One new test file, for the project setting, and the rest beside what each fix
+touches, each written to fail on 1.3.0 first. A walk of every string in every
+module now backs two guards that used to read two files by name: no printed
+delete or reset stops to ask, and no printed command carries a `#` note.
+
 ## 1.3.0 — reserved boxes, a limit on them, and a box with no GPU
 
 Three things a box could not be until now, and one column that follows from the
