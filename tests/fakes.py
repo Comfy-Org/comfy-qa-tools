@@ -39,6 +39,34 @@ from comfy_qa.gcloud import NOT_FOUND, GcloudError
 # ---------------------------------------------------------------- the cloud
 
 
+# The gcloud surfaces that act on a project. `billing accounts` is the one that
+# does not — it lists the accounts the signed-in user can see — and is named.
+_SCOPED_FIRST_WORDS = ("compute", "quotas", "services", "billing")
+_GLOBAL = (("billing", "accounts"),)
+
+
+def names_its_project(args) -> None:
+    """Refuse an argv that acts on a project without saying which.
+
+    Without `--project`, gcloud acts on whatever project it is pointed at — and
+    since 1.3.1 that need not be the one comfy-qat reads from the host list, so
+    a call that leaves it out acts on the wrong project the moment the two
+    differ. Every fake that stands in for `Gcloud.run` calls this first, and
+    `conftest.py` wraps the real `run` with it, so no argv in the suite reaches
+    an answer without being checked — however it was built.
+    """
+    words = [str(part) for part in args]
+    scoped = list(words)
+    if scoped[:1] in (["alpha"], ["beta"]):
+        scoped = scoped[1:]
+    if not scoped or tuple(scoped[:2]) in _GLOBAL:
+        return
+    if scoped[0] in _SCOPED_FIRST_WORDS or scoped[:2] == ["projects", "describe"]:
+        assert any(word.startswith("--project=") for word in words), (
+            f"gcloud {' '.join(words)} acts on a project and does not say which "
+            f"— without --project it acts on gcloud's own")
+
+
 def _resolve(spec, *args):
     """A scripted behaviour: raise it, call it, or return it."""
     if isinstance(spec, BaseException):
@@ -219,6 +247,7 @@ class FakeGcloud:
         held, and a fake that quietly returned None for everything would let that
         regress silently.
         """
+        names_its_project(args)
         self.calls.append(("run", tuple(args)))
         joined = " ".join(str(part) for part in args)
         if "disks list" in joined:

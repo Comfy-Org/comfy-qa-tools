@@ -26,6 +26,7 @@ import pytest
 import typer
 
 from comfy_qa import say
+from fakes import names_its_project
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -172,8 +173,8 @@ def test_the_fix_under_a_refusal_is_not_wrapped_with_it(capsys):
     """The asymmetry is the point. A refusal is read and a fix is pasted, and a
     command broken across two lines is the one part of a message meant to be
     copied becoming the one part that cannot be."""
-    command = ("comfy-qat create --os linux --gpu t4, the same n1-standard-8 "
-               "machine and the cheapest card that works")
+    command = ("comfy-qat create --os windows --gpu a100-80gb --reserve --name "
+               "comfy-win-2 --disk 400 --zone us-central1-a")
     say.error(LONG, command)
 
     fix = [line for line in capsys.readouterr().err.splitlines()
@@ -209,12 +210,88 @@ def test_nothing_is_broken_in_the_middle_of_a_word(capsys):
     assert url in err, err
 
 
+# --- no writer breaks a command it is handed -----------------------------------
+#
+# `wrapped` is the one wrapper, and it wrapped whatever it was handed, commands
+# included. Two came out of it in two pieces once their values were in: `move`'s
+# note about a slower boot disk hands `warn` Google's `disks delete … --quiet`,
+# and `--project` and `--quiet` landed on the next line, so the first line,
+# copied, deletes on gcloud's project and stops to ask; and the sentence every
+# command prints when it falls back to gcloud's project ended on `comfy-qat
+# setup --project <id>`, which `detail` broke between `--project` and `<id>`.
+# Neither is a string anywhere — each is a value meeting a width — so the rule
+# is held for every line in the package that offers a command, at many widths.
+
+_WRITERS = {
+    # `error`'s problem half, `explain`'s gutter and `warn`'s label: the three
+    # prefixes `wrapped` is called with.
+    "error": ("", ""),
+    "explain": (f"{say.STEP_INDENT}{say.GUTTER} ", f"{say.STEP_INDENT}{say.GUTTER} "),
+    "warn": (say.WARNING, " " * len(say.WARNING)),
+}
+
+
+@pytest.mark.parametrize("writer", sorted(_WRITERS))
+def test_no_writer_breaks_a_command_in_anything_the_package_says(writer):
+    """Every line of every string in the package that offers a command — a
+    command on its own, or one a sentence ends on after its colon — is handed
+    to `wrapped` with each writer's prefix, its values filled in at three
+    lengths and, for a sentence, pushed along by up to a line of words in front
+    of it, so the width falls everywhere along it. Every command has to come
+    out whole on one line.
+
+    The command up to where prose resumes after it, if it does: a note riding
+    on a command is the other guard's business (`commandlines.shape`), and this
+    one asks only whether the command itself survives the wrap."""
+    from commandlines import _PROSE_RESUMES, is_command, offered
+    from printed import strings
+
+    def command_part(command: str) -> str:
+        resumes = _PROSE_RESUMES.search(command)
+        return command[:resumes.start()] if resumes else command
+
+    first, rest = _WRITERS[writer]
+    seen, broken = 0, []
+    for where, text in strings():
+        for line in text.splitlines():
+            for fill in ("x", "x" * 9, "x" * 30):
+                filled = line.replace("{}", fill).strip()
+                commands = [command_part(command) for command in offered(filled)]
+                if not commands:
+                    continue
+                shifts = [""] if is_command(filled) else [
+                    "word " * count for count in range(0, 24, 2)]
+                for lead in shifts:
+                    out = say.wrapped(lead + filled, first=first, rest=rest)
+                    for command in commands:
+                        seen += 1
+                        if not any(command in printed for printed in out):
+                            broken.append(f"{where}: {command!r} -> {out}")
+    assert not broken, f"{len(broken)} broken, e.g.\n" + "\n".join(broken[:5])
+    assert seen >= 1000, f"only {seen} commands wrapped — the walk is broken"
+
+
+def test_a_command_a_sentence_ends_on_is_moved_whole_to_the_next_line(capsys):
+    """What `wrapped` does instead: the command is one word to it, so when it
+    does not fit after its colon it goes to the next line in one piece. The
+    sentence in front of it still wraps. Pushed along a word at a time, so the
+    width falls at every point of the command once."""
+    command = "comfy-qat delete qatest-reserved-box --yes"
+    for count in range(0, 24):
+        say.explain(f"{'word ' * count}it is reserved, so the bill only stops with: "
+                    f"{command}")
+
+        lines = capsys.readouterr().err.splitlines()
+        assert [line for line in lines if command in line], (count, lines)
+        assert all(len(line) <= say.PROSE_WIDTH for line in lines), lines
+
+
 def test_a_long_command_offered_as_a_fact_is_left_whole(capsys):
-    """`detail` carries command rows with `#` notes past 96 columns, and those
-    must survive being copied. `_is_prose` is what tells them apart — the same
-    predicate `write_fix` uses."""
-    row = ("comfy-qat switch comfy-win-2   # Windows Server 2022, A100-80GB, "
-           "same zone — it may hit the same shortage")
+    """`detail` carries commands past 96 columns, and those must survive being
+    copied. `_is_prose` is what tells them apart — the same predicate
+    `write_fix` uses."""
+    row = ("comfy-qat create --os windows --gpu a100-80gb --reserve --name "
+           "comfy-win-2 --disk 400 --zone us-central1-a")
     say.detail(row)
 
     assert capsys.readouterr().err == f"    {row}\n"
@@ -235,11 +312,11 @@ def test_a_long_sentence_given_to_detail_is_wrapped_and_guttered(capsys):
 
 def test_one_line_of_detail_is_left_exactly_where_it_was(capsys):
     """Every existing caller of `detail` hands it one line — a resource row, a
-    command with a `#` note, a sentence — and the gutter is not for those. A
-    command with a mark in front of it cannot be copied without editing."""
-    say.detail("comfy-qat switch comfy-win   # the other box")
+    command, a sentence — and the gutter is not for those. A command with a
+    mark in front of it cannot be copied without editing."""
+    say.detail("comfy-qat switch comfy-win")
 
-    assert capsys.readouterr().err == "    comfy-qat switch comfy-win   # the other box\n"
+    assert capsys.readouterr().err == "    comfy-qat switch comfy-win\n"
 
 
 def test_a_paragraph_handed_to_detail_goes_through_the_gutter(capsys):
@@ -337,6 +414,10 @@ def test_an_empty_fix_prints_no_label(capsys):
     assert capsys.readouterr().err.splitlines() == ["", "it broke"]
 
 
+# Hands `write_fix` `#` notes of its own, to show how it lays them out. The tool
+# prints none any more (O25), so this is the writer's behaviour, not the tool's
+# output, and the printed-command check is told not to read it.
+@pytest.mark.prints_its_own_text
 def test_the_notes_beside_a_run_of_commands_are_in_one_column(capsys):
     """The gap used to be typed at the call site, so it was counted by eye.
 
@@ -355,6 +436,8 @@ def test_the_notes_beside_a_run_of_commands_are_in_one_column(capsys):
     assert rest[-1].endswith("comfy-qat list --live      # which of the two it is")
 
 
+# The same, for two groups.
+@pytest.mark.prints_its_own_text
 def test_a_column_is_shared_by_the_commands_it_belongs_to_and_no_others(capsys):
     """A prose line ends a run. Two groups, two columns — a column shared across
     a paragraph break lines nothing up with anything."""
@@ -374,7 +457,7 @@ def test_a_sentence_among_the_commands_gets_a_line_of_its_own(capsys):
     four commands, a sentence introducing two of them, and a remark about what a
     snapshot costs, all reading as things to paste."""
     say.error("interrupted", say.fix(
-        "gcloud compute snapshots delete comfy-linux-snap",
+        "gcloud compute snapshots delete comfy-linux-snap --project=proj --quiet",
         "comfy-qat down comfy-win",
         "or check first, if you would rather look:",
         "comfy-qat list --live",
@@ -1253,6 +1336,7 @@ class _HalfFinishedMove:
                 "creationTimestamp": "2026-08-25T07:38:24.167-07:00", **extra}
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         joined = " ".join(str(part) for part in args)
         if "disks list" in joined:
             return [
@@ -1340,3 +1424,27 @@ def test_no_delete_command_reaches_stdout_from_a_dry_run(tmp_path, monkeypatch):
         f"{result.stdout.count('--quiet')} delete command(s) on stdout: "
         f"{result.stdout!r}"
     )
+
+
+def test_the_note_a_move_prints_hands_over_its_delete_whole(tmp_path, monkeypatch):
+    """The note about a slower boot disk goes through `warn`, and `warn` wrapped
+    the delete in it at 96 columns: `gcloud compute disks delete comfy-win-a-b
+    --zone=us-central1-b` on one line and `--project=… --quiet` on the next, so
+    the line a person copies deletes on gcloud's project, and stops to ask.
+
+    Every physical line carrying a delete has all of it: the command first, its
+    project and its `--quiet` on that same line."""
+    result = _run(["move", "comfy-win", "--to", "us-central1-b", "--dry-run"],
+                  tmp_path, monkeypatch, _HalfFinishedMove())
+
+    assert result.exit_code == 0, result.output
+    assert "slower boot disk" in " ".join(result.stderr.split()), (
+        "fixture drifted — the note this is about was not printed")
+    deletes = [line for line in result.stderr.splitlines()
+               if re.search(r"gcloud compute \S+ delete ", line)]
+    assert any("disks delete comfy-win-a-b" in line for line in deletes), result.stderr
+    for line in deletes:
+        words = line.split()
+        assert words[0] == "gcloud", f"something is in front of the command: {line!r}"
+        assert "--quiet" in words and "--project=a-project" in words, (
+            f"a delete split across lines: {line!r}")

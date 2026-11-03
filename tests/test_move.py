@@ -22,6 +22,8 @@ that question.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from comfy_qa.config import ConfigError, Host
@@ -49,6 +51,7 @@ from comfy_qa.relocate import (
     would_not_load,
     survey,
 )
+from fakes import names_its_project
 
 PROJECT = "stately-timing-504610-p1"
 URL = f"https://www.googleapis.com/compute/v1/projects/{PROJECT}"
@@ -921,6 +924,7 @@ def test_a_disk_type_that_will_not_fit_falls_back_rather_than_failing():
 
     class Cloud:
         def run(self, args, **kwargs):
+            names_its_project(args)
             attempts.append(" ".join(args))
             if "--type=pd-balanced" in args:
                 raise GcloudError("Quota 'SSD_TOTAL_GB' exceeded", kind=QUOTA,
@@ -947,6 +951,7 @@ def test_a_failure_that_is_not_about_the_allowance_still_stops_the_move():
 
     class Cloud:
         def run(self, args, **kwargs):
+            names_its_project(args)
             raise GcloudError("permission denied", kind=DENIED, raw="")
 
     with pytest.raises(GcloudError, match="permission denied"):
@@ -1787,6 +1792,40 @@ def test_the_same_path_reports_the_leftovers_without_clean_and_deletes_none(
     assert "disks delete comfy-win-a-b" in result.output, "with its delete line"
     assert cloud.find_disk("comfy-win-a-b", "us-central1-b"), "and nothing deleted"
     assert cloud.find_snapshot("comfy-win-a-move-b")
+
+
+@pytest.mark.parametrize("cloud,argv", [
+    (lambda: Cloud(disks=[SOURCE], instances=[INSTANCE],
+                   snapshots=[SPARE, ANCESTOR_SNAPSHOT]),
+     ("comfy-win", "--to", "us-central1-b", "--clean", "--yes")),
+    (lambda: Cloud(disks=[SOURCE, ORPHAN_DISK], snapshots=[ORPHAN_SNAPSHOT],
+                   instances=[dict(INSTANCE)]),
+     ("comfy-win", "--yes")),
+    (lambda: Cloud(disks=[SOURCE], instances=[INSTANCE],
+                   snapshots=[SPARE, ANCESTOR_SNAPSHOT]),
+     ("comfy-win", "--to", "us-central1-b", "--dry-run")),
+], ids=["the closing report", "nothing to move", "before the confirm"])
+def test_every_delete_a_leftovers_report_prints_is_whole_on_its_line(
+        tmp_path, monkeypatch, cloud, argv):
+    """A leftovers report prints Google's delete line for each thing still
+    billing, and those lines ran past 96 columns: the writer took them for
+    prose and wrapped them, so `--quiet` — and in one, `--project` — landed on
+    the next line behind a gutter. Copying the first line gives a delete that
+    stops to ask; run where nobody answers, it deletes nothing and the snapshot
+    goes on billing.
+
+    Every physical line that starts a `gcloud … delete` carries `--project` and
+    `--quiet` on that same line, and nothing else is in front of it."""
+    result = _cli_move(tmp_path, monkeypatch, cloud(), *argv)
+
+    deletes = [line for line in result.output.splitlines()
+               if re.search(r"gcloud compute \S+ delete ", line)]
+    assert deletes, result.output
+    for line in deletes:
+        words = line.split()
+        assert words[0] == "gcloud", f"something is in front of the command: {line!r}"
+        assert "--quiet" in words and any(w.startswith("--project=") for w in words), (
+            f"a delete split across lines: {line!r}")
 
 
 # --- a reserved box is not moved ----------------------------------------------

@@ -180,8 +180,8 @@ def detail(text: str) -> None:
     """A fact belonging to the step above it.
 
     One line stays one line, at the indent it has always had — most callers of
-    this hand over a resource row, a command with a `#` note, or a short
-    sentence, and an indent is the right shape for all three.
+    this hand over a resource row, a command, or a short sentence, and an indent
+    is the right shape for all three.
 
     PROSE THAT WILL NOT FIT ON A LINE GOES THROUGH `explain`, whether or not it
     already has a newline in it. Newlines were the first test here and they were
@@ -192,12 +192,20 @@ def detail(text: str) -> None:
     answer does not depend on how it was typed.
 
     `_is_prose` decides, and it is the same predicate `write_fix` uses to tell a
-    sentence from a thing to paste. A COMMAND IS NEVER WRAPPED: `comfy-qat
-    switch comfy-win   # same zone, it may hit the same shortage` runs past 96
-    columns and is the one kind of line that must survive being copied whole.
+    sentence from a thing to paste. A COMMAND IS NEVER WRAPPED: `gcloud compute
+    snapshots delete <name> --project=<id> --quiet` runs past 96 columns and is
+    the one kind of line that must survive being copied whole.
+
+    ASKED OF THE TEXT, NOT OF ITS INDENT. A caller that hands over `  gcloud …`
+    — `move`'s leftovers report puts each delete two spaces under the thing it
+    deletes — was read as prose because `_is_prose` saw two spaces where it
+    looks for `gcloud`, and the delete was wrapped at 96 columns: `--quiet` on
+    the next line behind a gutter, and the first line, copied, a delete that
+    stops to ask.
     """
     body = str(text)
-    if "\n" in body or (_is_prose(body) and len(DETAIL_INDENT) + len(body) > PROSE_WIDTH):
+    if "\n" in body or (_is_prose(body.strip())
+                        and len(DETAIL_INDENT) + len(body) > PROSE_WIDTH):
         explain(body)
         return
     typer.echo(f"{DETAIL_INDENT}{body}", err=True)
@@ -238,6 +246,17 @@ def wrapped(text: str, *, first: str = "", rest: str | None = None) -> list[str]
 
     Existing newlines are kept as paragraph breaks: each line is wrapped on its
     own and a blank one stays blank.
+
+    NOR IS A COMMAND BROKEN, for the same reason and more so. A line that is a
+    command is left whole at its indent, and a command a sentence ends on, after
+    the colon that introduces it, is one word here — when it does not fit, it
+    goes to the next line in one piece. Both were broken: `move`'s note about a
+    slower boot disk hands `warn` Google's `disks delete … --project=… --quiet`,
+    and the flags that make it safe to paste landed on the next line; and the
+    sentence that ends `To keep comfy-qat on one project …: comfy-qat setup
+    --project <id>` was broken between `--project` and `<id>` by a long project
+    ID in front of it. Each line, copied, is a different command from the one
+    that was printed.
     """
     rest = first if rest is None else rest
     out: list[str] = []
@@ -248,15 +267,57 @@ def wrapped(text: str, *, first: str = "", rest: str | None = None) -> list[str]
             # strips it for the same reason.
             out.append("")
             continue
+        indent = first if not out else rest
+        if _is_command(line.strip()):
+            out.append(f"{indent}{line.rstrip()}")
+            continue
         # `width` counts the indent, so it is the whole line's width and not the
         # text's. The first line of the whole block gets `first`; everything
         # after it, including the first line of a later paragraph, gets `rest`.
-        out += textwrap.wrap(
-            line.rstrip(), width=PROSE_WIDTH,
-            initial_indent=first if not out else rest, subsequent_indent=rest,
+        out += [piece.replace(_HELD, " ") for piece in textwrap.wrap(
+            _hold_together(line.rstrip()), width=PROSE_WIDTH,
+            initial_indent=indent, subsequent_indent=rest,
             break_long_words=False, break_on_hyphens=False,
-        )
+        )]
     return out
+
+
+# The programs a command this tool prints for pasting starts with — the ones
+# `write_fix` takes for a command, less the interpreters and paths that start
+# lines of scripts sent to a box rather than lines anybody pastes.
+_COMMAND_PROGRAMS = ("comfy-qat ", "gcloud ", "ssh ", "scp ")
+
+# A command a sentence ends on: after the colon that introduces it, up to where
+# prose resumes, if it does — a full stop, comma or semicolon before a space or
+# the end, or a dash between spaces.
+_INTRODUCED = re.compile(r"(?<=: )(?:comfy-qat|gcloud|ssh|scp) \S")
+_PROSE_RESUMES = re.compile(r"[.,;](?=\s|$)|\s[—–]\s")
+
+# What stands in for a space inside a command while `textwrap` reads the line.
+# Not a character `textwrap` breaks at, and not one any message carries.
+_HELD = "\x00"
+
+
+def _is_command(line: str) -> bool:
+    """A line that is a command, as opposed to a sentence that starts with a
+    program's name: it starts with one, and does not end the way a sentence
+    does."""
+    return line.startswith(_COMMAND_PROGRAMS) and not line.endswith((".", ":"))
+
+
+def _hold_together(line: str) -> str:
+    """`line` with the spaces inside each command it ends a sentence on held,
+    so `textwrap` takes the command for one word."""
+    held, at = [], 0
+    for match in _INTRODUCED.finditer(line):
+        start = match.start()
+        if start < at:
+            continue
+        end = _PROSE_RESUMES.search(line, start)
+        stop = end.start() if end else len(line)
+        held += [line[at:start], line[start:stop].replace(" ", _HELD)]
+        at = stop
+    return "".join(held) + line[at:]
 
 
 def explain(text: str) -> None:
