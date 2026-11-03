@@ -14,27 +14,39 @@ on the box.** `stamp` says **the build that is actually running**, read off the
 machine. And `create` gives a Windows GPU box Google's own driver script at first
 boot, so nothing is left to run by hand.
 
-**What ran on real Google boxes for this release, on 2026-11-03, on commit
-`0e63be5`** — the build code; the commits after it change the docs, how IAP's
-4047 is read, one sentence, and the Windows SSH metadata. On a Linux box with no
-GPU: `create --version v0.43.0 --frontend-version v1.58.4` wrote the build into
-the host list; `go` installed it with comfy-cli in four minutes; and `stamp`
-showed ComfyUI 0.43.0 at the tag's own commit `426f5eea52`, frontend 1.58.4 —
-served, while the package v0.43.0 installed beside it is 1.57.4 — Manager on, and
-torch 2.14.1+cpu. Then `switch --pr 17497` changed the build in place in a
-minute, and `stamp` showed `PR 17497, 9350a08d80`, the PR's head on GitHub. The
-box was stopped and deleted with `down` and `delete`.
+**What ran on real Google boxes for this release, on 2026-11-03.** On commit
+`0e63be5` (the build code), a Linux box with no GPU: `create --version v0.43.0
+--frontend-version v1.58.4` wrote the build into the host list; `go` installed it
+with comfy-cli in four minutes; and `stamp` showed ComfyUI 0.43.0 at the tag's own
+commit `426f5eea52`, frontend 1.58.4 — served, while the package v0.43.0 installed
+beside it is 1.57.4 — Manager on, and torch 2.14.1+cpu. Then `switch --pr 17497`
+changed the build in place in a minute, and `stamp` showed `PR 17497, 9350a08d80`,
+the PR's head on GitHub. The box was stopped and deleted with `down` and `delete`.
 
-**What did not run.** The Windows boxes. The first one never accepted SSH:
-`create` had set `enable-windows-ssh=TRUE` without the SSH package Google says a
-Windows VM needs — a defect older than this release, found here and fixed below —
-and it was deleted. The machine running the checks then slept for eight hours,
-and gcloud's sign-in had to be renewed before anything else could be asked of
-Google. So a Windows box getting a named release, the one GPU run (a Windows L4
-whose driver Google's script installs), and the read-back that nothing named
-`qatest-` is left on the project were not run. The comfy-cli install on Windows,
-the Windows driver automation and a frontend PR built on a box have run only
-against the suite's fakes.
+On `e5d8e73`, every refusal of bad input was asked of the real GitHub with gcloud
+signed out, so each answer came back before any gcloud call: a release, a PR and a
+commit that do not exist, a closed PR, a merged PR (pointed at its merge commit),
+a frontend release that does not exist, and two backends at once.
+
+Then a Windows Server 2022 box with no GPU, made by `create --version v0.42.1` on
+`e5d8e73` with the SSH package fix below, answered SSH within a minute. The first
+`go` on it (`a38d549`) installed Git and Python from their publishers' installers
+and comfy-cli installed v0.42.1, but ComfyUI could not start, for two
+more reasons older than this release, found then and fixed below: the Visual C++
+runtime torch needs was not there, and a process started from an SSH session did
+not outlive it. On `ecb3557`, `go --clean` installed the runtime and
+v0.42.1 again in 8m38s and served it, and `stamp` showed `ComfyUI 0.42.1
+(63be2f9b82)` — tag v0.42.1's own commit on GitHub — frontend 1.55.18, Manager on,
+torch 2.15.0+cpu and Python 3.12.10. It was stopped and deleted. After everything,
+nothing named `qatest-` was left on the project in instances, reservations, disks
+or snapshots, and the project ran no instance at all.
+
+**What did not run.** The one GPU run. `create --os windows --gpu l4 --version
+v0.43.0 --no-reserve` on `ecb3557` had the quota and found no L4 free in any of
+the six zones it tried (us-central1-a and -b, us-west4-c and -a, us-west1-a and
+-b), so it created nothing, and it was not tried again. So Google's Windows driver
+script at first boot, a Windows install with `--nvidia`, and `stamp` showing a GPU
+have run only against the suite's fakes. So has a frontend PR built on a box.
 
 ### Added
 
