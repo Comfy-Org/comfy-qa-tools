@@ -24,7 +24,10 @@ box could not be run, for lack of stock. That run observed the three things
 about Google this release had assumed — a reservation counts against GPU quota
 as a running box does, one for a card built into its machine type is made
 without naming the card, and one can be released while a stopped box still
-targets it — and found four defects, fixed below. Paths that need a GPU ceiling
+targets it — and found ten defects. Four were fixed before release, below; the
+other six were not: a "nothing is billing" said while another box from the same
+host list was running, "stop paying" for an unreserved box whose disk still
+bills after `down`, and four cosmetic ones. Paths that need a GPU ceiling
 above 1 have not been run for real; see Phase V of
 [the acceptance pack](docs/test-criteria.md).
 
@@ -117,7 +120,11 @@ above 1 have not been run for real; see Phase V of
   exits 1 with the thing still billing. After `create --reserve`, `go`, `up` and
   `logs` on a reserved box the remedy is two lines, `comfy-qat down` then
   `comfy-qat delete` — `delete` alone is refused while the box runs. A stock-out
-  after `--region` says it tried that region, not "every region".
+  after `--region` says it tried that region, not "every region". And a
+  stock-out is recognised in the text Google really prints: gcloud line-wraps
+  the error, and three of the four phrases it was recognised by did not match
+  the wrapped text, so recognition rested on one. They are matched after
+  folding whitespace, tested against the real wrapped text.
 - `down <name>` trusted the host list alone, and told a box that was reserved
   without a `gce_reservation` line `was billing. Stopped.` It now reads the
   instance's own record, as `delete` does: bound to a reservation, it gets the

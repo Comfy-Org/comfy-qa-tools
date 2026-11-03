@@ -1027,8 +1027,10 @@ echo "=== V8 the list, offline and then live"; qat list; qat list --live
       fifteen minutes for `nvidia-smi` on a machine with no NVIDIA hardware; a
       `go` that sits at a driver wait is that defect back. `stamp` prints a line
       naming a CPU device and no card, and is not refused as a mismatch. **Record
-      the stamp line verbatim** — what ComfyUI calls the device on a box with no
-      GPU has not been seen yet.
+      the stamp line verbatim.** The live run of 2026-10-07 saw it:
+      `qatest-cpu · local-git · ComfyUI 0.39.0 · linux · cpu (29GB) · torch
+      2.14.1+cpu · python 3.10.12` — ComfyUI calls the device `cpu`, its log
+      says `Device: cpu`, and it was started with `--cpu`.
 - [ ] **V6** — **the reservation is made first, then the box, in the same zone**:
       `reserving qa-rsv-rsv in <zone>` and then `creating qa-rsv on it`. It was
       not refused because `qa-cpu` is running — a box with no GPU holds none of
