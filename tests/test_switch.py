@@ -563,7 +563,8 @@ def test_listing_asks_google_nothing_by_default(cli):
 def test_live_asks_google_and_says_stopped_rather_than_terminated(cli):
     result = cli("list", "--live", statuses={"comfy-win": "RUNNING"})
 
-    rows = {line.split()[0]: line for line in result.output.splitlines()[1:]}
+    rows = {line.split()[0]: line for line in result.output.splitlines()[1:]
+            if line.strip()}
     assert "running" in rows["comfy-win"]
     assert "stopped" in rows["comfy-linux"]
     assert "TERMINATED" not in result.output

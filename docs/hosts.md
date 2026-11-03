@@ -30,6 +30,40 @@ it read minutes earlier: creating a box takes minutes, and a `discover` in anoth
 terminal meanwhile would have taken the port it was about to hand out. Two hosts on
 one port is the failure you cannot diagnose from the outside.
 
+## The project
+
+One line at the top, above every table, says which Google project comfy-qat works
+in:
+
+```toml
+project = "your-project-id"
+```
+
+It is where `create` makes a new box, what `discover` lists, and what `quota` and
+`status` read. `comfy-qat setup --project <id>` writes it, and it is this tool's
+own: gcloud's project setting is not read while this line is there, and nothing
+here ever changes gcloud's — so other gcloud work on the same machine does not move
+comfy-qat, and comfy-qat does not move it. It is the ID, not the project's display
+name; `gcloud projects list` shows both.
+
+Without the line, the tool uses gcloud's current project, as it always did, and
+each command that does says so:
+
+```
+project my-project — gcloud's current project, because your host list names none.
+```
+
+**Switching to another project** is that line. Run `comfy-qat setup --project
+<new-id>` (add `--no-quota-request` if the new project should not be asked for GPU
+quota yet), or change the line by hand. From then on new boxes go to the new
+project. **Boxes already in the list stay where they are**: each entry carries its
+own `gce_project`, and that is where `up`, `down`, `go` and `delete` reach it, so a
+box in the old project stays usable — and stays billing, if it is running or
+reserved — until you delete it. There is no move between projects: `move` changes
+zone within one. To have a box on the new project, `create` it there and `delete`
+the old one. `comfy-qat list` says which project each box is on, and where a new
+one will go.
+
 ## Fields
 
 | field | applies to | meaning |

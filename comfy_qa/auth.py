@@ -43,6 +43,7 @@ from .quota import (
     readiness,
     summarise,
 )
+from .config import ConfigError, declared_project
 from .gcloud import (
     DENIED,
     Gcloud,
@@ -53,6 +54,7 @@ from .gcloud import (
     console_quota_url,
     quota_request_command,
 )
+from .host import CONFIG_INHERITED, NO_PROJECT_FIX, ConfigOption, project_for
 
 app = typer.Typer(help="Google Cloud sign-in, billing and GPU quota.")
 quota_app = typer.Typer(help="GPU quota: what you have, and how to ask for more.")
@@ -74,11 +76,15 @@ class Check:
     fix: str | None = None
 
 
-def run_checks(gc: Gcloud) -> list[Check]:
+def run_checks(gc: Gcloud, config=None) -> list[Check]:
     """Check readiness in order, stopping at the first failure.
 
     Stopping is deliberate: every later check depends on the earlier ones, so
     reporting five failures when one thing is wrong is noise.
+
+    `config` is the host list, whose `project` line is the project checked —
+    see `host.project_for`, which this follows without printing, because here
+    the row itself says where the project came from.
     """
     results: list[Check] = []
 
@@ -101,16 +107,23 @@ def run_checks(gc: Gcloud) -> list[Check]:
     results.append(Check("account", True, account))
 
     try:
-        project = gc.current_project()
-    except GcloudError as exc:
-        results.append(Check("project", False, str(exc), exc.fix or "gcloud config set project <id>"))
+        project = declared_project(config)
+    except ConfigError as exc:
+        results.append(Check("project", False, f"could not read your host list ({exc})",
+                             "fix the file, then run this again"))
         return results
+    where = "from your host list"
     if not project:
-        results.append(Check(
-            "project", False, "no project set", "gcloud config set project <id>",
-        ))
+        try:
+            project = gc.current_project()
+        except GcloudError as exc:
+            results.append(Check("project", False, str(exc), exc.fix or NO_PROJECT_FIX))
+            return results
+        where = "gcloud's current project — your host list names none"
+    if not project:
+        results.append(Check("project", False, "no project set", NO_PROJECT_FIX))
         return results
-    results.append(Check("project", True, project))
+    results.append(Check("project", True, f"{project} ({where})"))
 
     try:
         billing = gc.billing_enabled(project)
@@ -727,9 +740,14 @@ def _record(row, limit, where, status, pool, drivable, cpu_blocked,
 @app.command("status")
 def status_cmd(
     as_json: Annotated[bool, typer.Option("--json", help="Machine-readable output.")] = False,
+    config: ConfigOption = None,
 ) -> None:
-    """Am I signed in, on which project, with billing and GPU quota?"""
-    checks = run_checks(Gcloud())
+    """Am I signed in, on which project, with billing and GPU quota?
+
+    The project is the one your host list names, or gcloud's current one when it
+    names none — and the row says which.
+    """
+    checks = run_checks(Gcloud(), config)
 
 
     if as_json:
@@ -781,12 +799,17 @@ def login_cmd() -> None:
     """
     say.result("run these, then `comfy-qat status`:\n")
     say.result("  gcloud auth login")
-    say.result("  gcloud config set project <your-project-id>")
+    # comfy-qat's own project, in the host list, not gcloud's: see
+    # `config.PROJECT_KEY`.
+    say.result(f"  {NO_PROJECT_FIX.replace('<id>', '<your-project-id>')}")
 @quota_app.callback(invoke_without_command=True)
 def quota_default(ctx: typer.Context) -> None:
     """Showing what you can run is the safe default."""
     if ctx.invoked_subcommand is None:
-        ctx.invoke(quota_list_cmd, as_json=False, region=None, by_region=False)
+        # The root `--config` too: an invoke fills no option it is not given,
+        # and the host list is where the project is read from.
+        ctx.invoke(quota_list_cmd, as_json=False, region=None, by_region=False,
+                   config=ctx.meta.get(CONFIG_INHERITED))
 
 
 @quota_app.command("list")
@@ -797,15 +820,20 @@ def quota_list_cmd(
     as_json: Annotated[bool, typer.Option(
         "--json", help="Print JSON instead of the table: project, gpus (one per card), "
                        "by_region (one per card and place).")] = False,
+    config: ConfigOption = None,
 ) -> None:
-    """What can I run today, what is waiting on Google, what did I never ask for."""
+    """What can I run today, what is waiting on Google, what did I never ask for.
+
+    On the project your host list names, or gcloud's current one when it names
+    none — said, when it is gcloud's.
+    """
     # BEFORE THE MINUTE-LONG READ. Empty, zone-shaped and wrong-case need no API
     # call at all, and asking afterwards cost 51 seconds to reject a typo.
     _stop_on_region_shape(region)
 
     gc = Gcloud()
     try:
-        project = _require_project(gc)
+        project = _require_project(gc, config)
         # Google's quota API is slow enough that a silent minute reads as a hang,
         # so the step says how long it should take and then keeps saying it is
         # still there. On stderr, which is what keeps `--json` a document.
@@ -1571,6 +1599,7 @@ def quota_request_cmd(
         "--validate-only", help="Ask Google whether the request is valid and create "
                                 "nothing. Stronger than --dry-run, which only prints: "
                                 "this one reaches Google and checks the real thing.")] = False,
+    config: ConfigOption = None,
 ) -> None:
     """Ask Google for GPU quota — several cards at once — then wait for the answer.
 
@@ -1578,6 +1607,9 @@ def quota_request_cmd(
     the right move when approval is the slow part. Submitting is instant; approval
     is not, and may go to a human. A brand-new account with no billing history is
     often refused until it has been billed once.
+
+    On the project your host list names, or gcloud's current one when it names
+    none — said, when it is gcloud's.
     """
     # THE PARSED LIST, NOT THE RAW FLAG. This was `if not gpu and not quota_id`,
     # a truthiness test on the string, so `--gpu ,` — or `,,,`, or ` , `, or two
@@ -1632,7 +1664,7 @@ def quota_request_cmd(
 
     gc = Gcloud()
     try:
-        project = _require_project(gc)
+        project = _require_project(gc, config)
         quotas = gc.gpu_quotas(project)
     except GcloudError as exc:
         # The exception carries the command that fixes it — dropping it left
@@ -2317,10 +2349,11 @@ def quota_request_cmd(
         raise typer.Exit(code=75)
 
 
-def _require_project(gc: Gcloud) -> str:
-    project = gc.current_project()
+def _require_project(gc: Gcloud, config=None) -> str:
+    """The host list's project, or gcloud's — see `host.project_for`."""
+    project = project_for(gc, config)
     if not project:
-        raise GcloudError("no project set", fix="comfy-qat setup")
+        raise GcloudError("no project set", fix=NO_PROJECT_FIX)
     return project
 
 

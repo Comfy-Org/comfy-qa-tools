@@ -228,7 +228,8 @@ _ADVICE: dict[str, tuple[str | None, str | None]] = {
     REAUTH: ("your gcloud session has expired", "gcloud auth login"),
     CREDENTIALS: ("gcloud could not refresh your sign-in", "gcloud auth login"),
     NO_ACCOUNT: ("no active gcloud account", "gcloud auth login"),
-    NO_PROJECT: ("no project set", "gcloud config set project <your-project-id>"),
+    # comfy-qat's own setting, not gcloud's: see `current_project`.
+    NO_PROJECT: ("no project set", "comfy-qat setup --project <your-project-id>"),
     NETWORK: ("could not reach Google Cloud", "check your network, then try again"),
     DENIED: (None, "comfy-qat status — check which account you are using"),
     # gcloud's own sentence names the metric, the limit and the region, which is
@@ -686,7 +687,7 @@ class Gcloud:
         if not project:
             raise GcloudError(
                 "no project set",
-                fix="gcloud config set project <your-project-id>",
+                fix="comfy-qat setup --project <your-project-id>",
                 kind=NO_PROJECT,
             )
 
@@ -702,7 +703,8 @@ class Gcloud:
         the one this is preventing.
         """
         try:
-            self.run(["projects", "describe", project], timeout=PREFLIGHT_TIMEOUT)
+            self.run(["projects", "describe", project, f"--project={project}"],
+                     timeout=PREFLIGHT_TIMEOUT)
         except GcloudError as exc:
             if exc.kind == DENIED:
                 self.proven = True
@@ -724,7 +726,7 @@ class Gcloud:
         never in the middle of it.
         """
         code = self.run_interactive(
-            ["projects", "describe", project, "--format=none"]
+            ["projects", "describe", project, f"--project={project}", "--format=none"]
         )
         if code != 0:
             raise failure
@@ -744,9 +746,6 @@ class Gcloud:
     def list_projects(self) -> list[dict]:
         return self.run(["projects", "list"]) or []
 
-    def set_project(self, project: str) -> None:
-        self.run(["config", "set", "project", project], parse_json=False)
-
     # --- the specific calls this tool makes -------------------------------
 
     def active_account(self) -> str | None:
@@ -757,13 +756,24 @@ class Gcloud:
         return None
 
     def current_project(self) -> str | None:
+        """gcloud's OWN project setting, which comfy-qat only falls back to.
+
+        There is no `set_project` beside this any more. comfy-qat's project is
+        the `project` line in its host list, written by `setup --project`;
+        setting gcloud's moved every other gcloud user on the machine with it.
+        """
         value = self.run(["config", "get-value", "project"], parse_json=False)
         value = (value or "").strip()
         # gcloud prints this literal string when nothing is set.
         return None if value in ("", "(unset)") else value
 
     def billing_enabled(self, project: str) -> bool:
-        info = self.run(["billing", "projects", "describe", project]) or {}
+        # `--project` as well as the positional name, which is what the command
+        # reads. Every call here that acts on a project names it with the flag,
+        # so whatever gcloud's own project is set to never decides where one
+        # lands — and a test holds every method to that by its argv.
+        info = self.run(["billing", "projects", "describe", project,
+                         f"--project={project}"]) or {}
         return bool(info.get("billingEnabled"))
 
     def compute_quotas(self, project: str) -> list[dict]:

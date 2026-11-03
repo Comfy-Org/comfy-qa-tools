@@ -3523,10 +3523,40 @@ one of two accounts is the usual cause.
 **`no active gcloud account`** / **`nobody signed in`**
 Run `gcloud auth login`.
 
-**`no project set`** / **`to fix: comfy-qat setup`**
-gcloud has no default project, so there is nothing to look in. `comfy-qat setup`
-picks one and sets it; `gcloud config set project <your-project-id>` does the same
-thing by hand.
+**`no project set`** / **`to fix: comfy-qat setup --project <id>`**
+Your host list has no `project` line and gcloud has no current project either, so
+there is nothing to look in. `comfy-qat setup --project <id>` writes the line;
+putting `project = "<id>"` at the top of the host list by hand does the same.
+This tool never sets gcloud's own project.
+
+**`project my-project — gcloud's current project, because your host list names none. To keep comfy-qat on one project whatever gcloud is set to: comfy-qat setup --project <id>`**
+Not a failure. Your host list has no `project` line, so this command used the
+project gcloud is pointed at, as comfy-qat always did — and says so, because that
+setting belongs to every gcloud command on the machine and may have moved for some
+other reason. To keep comfy-qat on one project: `comfy-qat setup --project <id>`.
+
+**`could not read your host list (...), so the project it names is not known`**
+The host list is not valid TOML, or its `project` line is not a project ID, so
+which project it names cannot be told — and falling back to gcloud's then could
+send the command to a project the file does not mean. Nothing was asked of Google.
+Fix the file; the message in brackets says what is wrong with it.
+
+**`'projcet' at the top of the host list is not something it holds: only the project line and [hosts.<name>] tables go there. If it was meant to be the project, spell it project.`**
+Something above the first table that is not the project line. Refused rather than
+ignored: a misspelt `project` read as no line at all would send every command to
+gcloud's project instead. Spell it `project`, or move the key into the host it
+belongs to.
+
+**`project = 'My Project' is not a Google project ID — that is lowercase letters, digits and hyphens, starting with a letter. It is the ID, not the name: gcloud projects list shows both.`**
+Usually the project's display name, typed where its ID goes. `gcloud projects
+list` shows both; the ID is the one in the first column.
+
+**`your host list could not be updated (...), so the project was not saved and nothing after this ran`**
+`setup --project` writes the project into the host list through the same checked
+rewrite as every other change to it, and that rewrite refused — the reason is in
+brackets, and the file is as it was. Usually the host list already fails to load
+for some other reason; fix that, or add the `project = "<id>"` line by hand, and
+run setup again.
 
 **`no billing account linked to <project>`**
 A project without billing cannot start any instance. Link one in the console; the

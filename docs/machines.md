@@ -351,6 +351,9 @@ comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  not tunnel
 comfy-linux  gce    Ubuntu 22.04         T4    http://127.0.0.1:8191  not tunnelled  yes
 comfy-cpu    gce    Ubuntu 22.04         none  http://127.0.0.1:8192  not tunnelled  no
 
+on your-project-id: comfy-win, comfy-linux, comfy-cpu
+new boxes go to your-project-id, the project your host list names
+
 STATE is only what this machine already knows — whether a tunnel is open.
 RESERVED is what your host list says. A reserved box bills every hour, running or stopped.
   --live asks Google what each box is doing and this machine whether ComfyUI is answering,
@@ -362,6 +365,11 @@ always shown. A tunnel is what makes a cloud box answer on `127.0.0.1`, so
 `tunnelled` is the honest answer to "which box am I looking at". Your local
 install has no tunnel to have, which is why it reads `-` here: nothing was
 asked about it, and nothing is claimed.
+
+Under the table, which project each cloud box is on — from its own entry — and
+where a new one will go, from the host list's `project` line. They differ after
+you switch projects: a box made before the switch stays on the old project and is
+still reached there. See [the project](hosts.md#the-project).
 
 RESERVED is the column about money that a stopped box does not settle. Here it is
 read from your host list — the `gce_reservation` line `create --reserve` and
@@ -384,6 +392,9 @@ local        local  -                    -     http://127.0.0.1:8188  serving  -
 comfy-win    gce    Windows Server 2022  L4    http://127.0.0.1:8190  running  no        21d  200 GB
 comfy-linux  gce    Ubuntu 22.04         T4    http://127.0.0.1:8191  stopped  yes       3d   200 GB
 comfy-cpu    gce    Ubuntu 22.04         none  http://127.0.0.1:8192  stopped  no        5h   100 GB
+
+on your-project-id: comfy-win, comfy-linux, comfy-cpu
+new boxes go to your-project-id, the project your host list names
 
 A reserved box bills every hour, running or stopped, until it is deleted.
 

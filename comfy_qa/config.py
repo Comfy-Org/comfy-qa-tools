@@ -513,6 +513,89 @@ def _parse_host(name: str, raw: object) -> Host:
     )
 
 
+# --- the project -----------------------------------------------------------
+#
+# THE GOOGLE PROJECT COMFY-QAT WORKS IN IS ITS OWN SETTING, AND IT LIVES HERE: one
+# `project = "<id>"` line at the top of the host list, above the first table.
+# It used to be gcloud's — `setup --project` ran `gcloud config set project`, and
+# every command asked `gcloud config get-value project` — so this tool and every
+# other gcloud user on the machine shared one setting. Moving comfy-qat to a new
+# project moved everything else with it, and anything else that set gcloud's
+# project moved comfy-qat.
+#
+# The host list, rather than a second file, because it is already the one thing
+# `--config` names: a host list made for a test run carries its own project with
+# it, and switching is one line that `setup --project` writes through the same
+# checked rewrite every other change to this file goes through. Each box keeps
+# the `gce_project` its own entry names, so a box made in the old project is
+# still stopped, started and deleted there after the line changes.
+#
+# Absent is allowed, and means "gcloud's current project", which is what this
+# tool did before; the commands that fall back say so when they do.
+PROJECT_KEY = "project"
+
+# The shape of a project ID: lowercase letters, digits and hyphens, starting with
+# a letter — with the older domain-scoped form, `example.com:my-project`, so a
+# dot and a colon too. The ID, not the display name: `gcloud projects list`
+# shows both, and the name is the one with capitals and spaces. Google's length
+# rule is left to Google; this is here to refuse the name, not to re-implement
+# the console.
+_PROJECT_ID = re.compile(r"^[a-z][a-z0-9.:-]*[a-z0-9]$")
+
+# What may sit at the top of the host list. Anything else is refused, not
+# ignored: a misspelt `project` line read as no line at all would send every
+# billable call to gcloud's project instead, which may be somebody else's.
+_TOP_LEVEL = ("hosts", PROJECT_KEY)
+
+
+def _project_in(data: dict) -> str | None:
+    """The `project` line of an already-decoded host list, checked, or None."""
+    stray = [key for key in data if key not in _TOP_LEVEL]
+    if stray:
+        raise ConfigError(
+            f"{stray[0]!r} at the top of the host list is not something it holds: "
+            f"only the project line and [hosts.<name>] tables go there. If it was "
+            f"meant to be the project, spell it project."
+        )
+    if PROJECT_KEY not in data:
+        return None
+    value = data[PROJECT_KEY]
+    if not isinstance(value, str) or not _PROJECT_ID.match(value):
+        raise ConfigError(
+            f"{PROJECT_KEY} = {value!r} is not a Google project ID — that is "
+            f"lowercase letters, digits and hyphens, starting with a letter. It is "
+            f"the ID, not the name: gcloud projects list shows both."
+        )
+    return value
+
+
+def declared_project(path: Path | None = None) -> str | None:
+    """The project the host list names, or None — offline, like the rest of this file.
+
+    None when there is no host list yet, as well as when it has no `project`
+    line: a machine nobody has set up has no project of its own, which is the
+    same answer. A file that is not TOML, or whose `project` line is not a
+    project ID, is a ConfigError, because "could not tell" is not "names none" —
+    and falling back to gcloud's project then would send a command somewhere
+    the file may not mean.
+
+    Only the top of the file is judged here. A host further down that `load`
+    refuses does not hide a project line that is itself fine: `setup` reads this
+    to know where to work, and it goes on past a host list it cannot load
+    rather than stopping there.
+    """
+    path = path or DEFAULT_CONFIG_PATH
+    if not path.exists():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        # `load` words each of these, and says what to do about it.
+        load(path)
+        raise
+    return _project_in(data)
+
+
 def parse(data: dict) -> list[Host]:
     """Validate an already-decoded hosts.toml. Raises ConfigError on any problem.
 
@@ -526,7 +609,6 @@ def parse(data: dict) -> list[Host]:
         raise ConfigError(
             f"expected a host list of [hosts.<name>] tables, got {type(data).__name__}"
         )
-
     hosts_table = data.get("hosts")
     if not isinstance(hosts_table, dict) or not hosts_table:
         # Refusing is deliberate and troubleshooting.md says why: a tool that
@@ -556,6 +638,11 @@ def parse(data: dict) -> list[Host]:
             "no [hosts.<name>] tables found — the file parses, and declares no "
             "machines. Every host is a table named for it, like [hosts.local]."
         )
+
+    # Checked with everything else, so a bad `project` line is refused by every
+    # command that reads the file and by every rewrite before it lands. After
+    # the tables: a file with none at all has a better sentence above.
+    _project_in(data)
 
     hosts = [_parse_host(name, raw) for name, raw in hosts_table.items()]
 

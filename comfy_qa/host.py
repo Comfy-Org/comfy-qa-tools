@@ -26,6 +26,7 @@ from .config import (
     DEFAULT_CONFIG_PATH,
     ConfigError,
     Host,
+    declared_project,
     describe,
     load,
     resolve,
@@ -130,6 +131,44 @@ port = {COMFYUI_DEFAULT_PORT}
 
 def _config_option() -> Path:
     return DEFAULT_CONFIG_PATH
+
+
+# What every command that finds no project anywhere says to do about it.
+NO_PROJECT_FIX = "comfy-qat setup --project <id>"
+
+
+def project_for(gc, config: Optional[Path]) -> str | None:
+    """The Google project a command acts on: the host list's, or else gcloud's.
+
+    The host list's `project` line first — comfy-qat's own setting, see
+    `config.PROJECT_KEY`. Without one, gcloud's current project, which is what
+    every command used before there was a line to read — and it SAYS SO, on
+    stderr, because a project nobody chose for this tool is the one most likely
+    to be the wrong one, and the only clue used to be a project ID in passing.
+
+    None when neither has one; the caller refuses with `NO_PROJECT_FIX`. A host
+    list that cannot be read is refused here, rather than read as "names none":
+    falling back on the strength of a typo elsewhere in the file would send the
+    command to a project the file may not mean.
+
+    Never for a box that is already in the list. Each of those carries its own
+    `gce_project`, and that is where it is started, stopped and deleted, so a
+    box made before the line changed is still reachable after.
+    """
+    try:
+        named = declared_project(config)
+    except ConfigError as exc:
+        say.fail(f"could not read your host list ({exc}), so the project it names "
+                 f"is not known", fix="fix the file, then run this again", code=2,
+                 blank_line=False)
+    if named:
+        return named
+    current = gc.current_project()
+    if current:
+        say.detail(f"project {current} — gcloud's current project, because your host "
+                   f"list names none. To keep comfy-qat on one project whatever gcloud "
+                   f"is set to: {NO_PROJECT_FIX}")
+    return current
 
 
 # A tenth of `stamp.TIMEOUT`. The question here is "is ComfyUI answering on
@@ -241,6 +280,30 @@ def _states(hosts: list[Host], *, live: bool, found=None) -> dict[str, str]:
     return states
 
 
+def _say_projects(hosts: list[Host], config: Optional[Path]) -> None:
+    """`on <project>: <boxes>`, one line per project, and where new boxes go.
+
+    Offline, like plain `list`: the boxes' projects are what their entries say,
+    and the host list's own project is its `project` line. When it has none,
+    where a new box goes is gcloud's setting, which this does not ask.
+    """
+    by_project: dict[str, list[str]] = {}
+    for host in hosts:
+        if host.is_remote and host.gce_project:
+            by_project.setdefault(host.gce_project, []).append(host.name)
+    try:
+        named = declared_project(config)
+    except ConfigError:
+        named = None
+    if not by_project and not named:
+        return
+    say.result("")
+    for project, names in by_project.items():
+        say.result(f"on {project}: {', '.join(names)}")
+    if named:
+        say.result(f"new boxes go to {named}, the project your host list names")
+
+
 @app.command("list")
 def list_cmd(
     config: ConfigOption = None,
@@ -302,6 +365,14 @@ def list_cmd(
     # the same machines two commands later — did not have any.
     for line in say.rows(table):
         say.result(line)
+
+    # EACH BOX'S PROJECT, UNDER THE TABLE RATHER THAN IN IT. Each box is
+    # started, stopped and deleted in the project its own entry names, whatever
+    # the host list's `project` line says now — so after a switch, this is where
+    # a box still on the old project shows up as one. A line per project and not
+    # a column: an ID is twenty-odd characters, and a column of the same one
+    # repeated pushed the --live table past the width it is held to for pasting.
+    _say_projects(hosts, config)
 
     # Without --live the STATE column knows about tunnels and nothing else, so a
     # cloud box that is running looks the same as one that is off, and a local
@@ -676,9 +747,9 @@ def discover_cmd(
     path = config or DEFAULT_CONFIG_PATH
     gc = Gcloud()
     try:
-        project = gc.current_project()
+        project = project_for(gc, path)
         if not project:
-            say.fail("no project set", fix="comfy-qat setup", code=2,
+            say.fail("no project set", fix=NO_PROJECT_FIX, code=2,
                      blank_line=False)
         instances = gc.list_instances(project)
     except GcloudError as exc:
@@ -1332,9 +1403,9 @@ def create_cmd(
 
     gc = Gcloud()
     try:
-        project = gc.current_project()
+        project = project_for(gc, config)
         if not project:
-            say.fail("no project set", fix="comfy-qat setup", code=2,
+            say.fail("no project set", fix=NO_PROJECT_FIX, code=2,
                      blank_line=False)
         instances = gc.list_instances(project)
         # The first place `create` goes quiet, and long enough that silence reads
@@ -1756,7 +1827,7 @@ def _bound_live(gc, host: Host):
         return None
 
 
-def _reservations_on(gc, hosts: list[Host]):
+def _reservations_on(gc, hosts: list[Host], project: str | None = None):
     """Every reservation on every project in play: `{project: list | None}`.
 
     The other half of "am I still paying for anything". `down --all` stops
@@ -1775,11 +1846,17 @@ def _reservations_on(gc, hosts: list[Host]):
     None for a project whose read did not come back — not `[]`. Read-and-empty
     is the only answer that may be printed as an all-clear. An empty mapping
     is "there was no project to ask", which is not an all-clear either.
+
+    `project` is the one the host list names, when it names one, and it is
+    asked as well: it is where `create` puts a new box, so after a switch it
+    is the project a half-finished create left something on, and no declared
+    box may name it yet.
     """
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    projects = list(dict.fromkeys(h.gce_project for h in hosts if h.gce_project))
+    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
+                                   *([project] if project else [])]))
     if not projects:
         try:
             current = gc.current_project()
@@ -2092,7 +2169,7 @@ def down_cmd(
     that by naming each box in turn is how one gets missed. It reads the
     project's reservations before it says nothing is.
     """
-    from .gcloud import Gcloud
+    from .gcloud import Gcloud, GcloudError
     from .lifecycle import put_away
 
     if everything:
@@ -2104,6 +2181,12 @@ def down_cmd(
         except ConfigError as exc:
             say.fail(exc, code=2, blank_line=False)
         gc = Gcloud()
+        # The host list's own project, when it names one, for the two reads
+        # below that ask the PROJECT rather than a box. Offline: no box needs it.
+        try:
+            named = declared_project(config)
+        except ConfigError as exc:
+            say.fail(exc, code=2, blank_line=False)
         if not hosts:
             # "nothing can be billing" was a flat assertion about the PROJECT
             # made without asking it, on the one path where this tool knows
@@ -2114,7 +2197,13 @@ def down_cmd(
             # four lines below, so it never ran here. That is the shape of half
             # tonight's defects: the fix was real and did not reach the branch
             # that needed it most.
-            strangers = _undeclared_and_running(gc, hosts)
+            # And with no box to take a project from, the project is the host
+            # list's or gcloud's — said, when it is gcloud's.
+            try:
+                named = project_for(gc, config)
+            except GcloudError:
+                named = None
+            strangers = _undeclared_and_running(gc, hosts, named)
             if strangers:
                 say.result(
                     f"you have declared no cloud machines, but "
@@ -2136,7 +2225,7 @@ def down_cmd(
                            "running on the project either")
             # Nothing running is not nothing billing: a reservation with no
             # box on it is neither declared nor running.
-            reservations = _reservations_on(gc, hosts)
+            reservations = _reservations_on(gc, hosts, named)
             if not _nothing_reserved(reservations):
                 _say_reserved(gc, hosts, reservations)
             return
@@ -2191,12 +2280,12 @@ def down_cmd(
         # manage is beyond what `down` was asked to do, and the surprise would be
         # worse than the bill. Saying nothing about it is what makes the summary
         # a lie.
-        strangers = _undeclared_and_running(gc, hosts)
+        strangers = _undeclared_and_running(gc, hosts, named)
         # AND THE RESERVATIONS, for the same reason and with the same three
         # answers. A stopped box that is reserved bills exactly as it did
         # running, so "everything is stopped" stopped being the same sentence as
         # "nothing is billing" the day a box could be reserved.
-        reservations = _reservations_on(gc, hosts)
+        reservations = _reservations_on(gc, hosts, named)
         reserved = [h for h in hosts if h.reservation]
 
         if failed:
@@ -4149,7 +4238,8 @@ def move_cmd(
             say.detail(line)
 
 
-def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | None:
+def _undeclared_and_running(gc, hosts: list[Host],
+                            project: str | None = None) -> list[tuple[str, str]] | None:
     """Running instances on the project that no host entry names.
 
     `down --all` iterates the host list, so a box nobody declared is not merely
@@ -4168,7 +4258,9 @@ def _undeclared_and_running(gc, hosts: list[Host]) -> list[tuple[str, str]] | No
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    project = next((h.gce_project for h in hosts if h.gce_project), None)
+    # A declared box's project first, as it always was; then the one the host
+    # list names; and gcloud's only when neither is there.
+    project = next((h.gce_project for h in hosts if h.gce_project), None) or project
     if not project:
         # No declared cloud host to take it from — which is the case this
         # matters most in. Ask gcloud what project is configured.

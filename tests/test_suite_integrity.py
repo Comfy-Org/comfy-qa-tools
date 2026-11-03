@@ -98,6 +98,7 @@ REQUIRED = {
     "test_option_help",
     "test_pathnames",
     "test_os_families",
+    "test_project",
     "test_prune",
     "test_provision",
     "test_quota",

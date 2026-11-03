@@ -5192,7 +5192,7 @@ def test_the_by_region_json_carries_the_same_correction(monkeypatch):
     cloud = Cloud(quotas=THIS_PROJECT + [quota(SPOT_RTX, 1, locations=REGIONS_43)])
     # Without the table flag, for the reason above.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
 
     for row in payload["by_region"]:
         assert not re.fullmatch(r"\d+ regions", row["region"]), row
@@ -5256,7 +5256,7 @@ def test_the_by_region_json_carries_the_per_row_availability_verdict(monkeypatch
     # corresponding table, because `--json` emits the array either way and that
     # flag is what masked the defect for two rounds.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     by_place = {(r["gpu"], r["region"]): r["offered_here"]
                 for r in payload["by_region"]}
 
@@ -5313,7 +5313,7 @@ def test_a_bucket_row_is_not_given_an_availability_verdict(monkeypatch):
 
     # Without the table flag, for the reason above.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     bucket = next(r for r in payload["by_region"]
                   if r["gpu"] == "L4" and "any of" in r["region"])
     assert bucket["offered_here"] is None, bucket
@@ -6261,7 +6261,7 @@ def test_both_json_arrays_carry_the_same_keys(monkeypatch):
     cloud = Cloud(quotas=rtx_three_ways(), preferences=DENIED_RTX)
     # Without the table flag, for the reason above.
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
 
     collapsed = {k for row in payload["gpus"] for k in row}
     per_region = {k for row in payload["by_region"] for k in row}
@@ -6434,7 +6434,7 @@ def test_json_by_region_carries_verdicts_without_the_table_flag(monkeypatch):
                   accelerators=stocking("us-central1", "nvidia-l4"))
 
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     k80 = [r for r in payload["by_region"] if r["gpu"] == "K80"]
 
     assert k80, "the fixture produced no K80 rows"
@@ -6451,7 +6451,7 @@ def test_the_two_surfaces_agree_without_the_table_flag(monkeypatch):
                   accelerators=stocking("us-central1", "nvidia-l4"))
 
     payload = json.loads(quota_list(cloud, monkeypatch, "--json")
-                         .output.split("\n", 1)[1])
+                         .stdout)
     table = quota_list(cloud, monkeypatch, "--by-region").output
 
     for row in [r for r in payload["by_region"] if r["gpu"] == "K80"]:
