@@ -913,11 +913,21 @@ echo "=== K7 and Google agrees"; gcloud compute instances list
       how to use a GPU box without saying how to stop it is how one bills all
       night.
 - [ ] **K5b** — **the driver.** On Linux it says the startup script is installing
-      it and that this reboots the box once or twice. On **Windows** it says
-      plainly that there is no driver yet, that ComfyUI will run on the CPU until
-      there is, and prints the PowerShell commands Google documents. **A guessed
-      Windows recipe is a fail** — Google publishes only a manual method, and
-      inventing one is worse than the seam.
+      it and that this reboots the box once or twice. On **Windows** (since
+      1.4.0) the plan says `metadata sysprep-specialize-script-url installs the
+      NVIDIA driver on first boot, with Google's own script`, the box's metadata
+      carries `sysprep-specialize-script-url` set to Google's
+      `install_gpu_driver.ps1` (`gcloud compute instances describe <box>`), and
+      nothing is printed for you to run by hand. `go` then waits for
+      `nvidia-smi` before it installs ComfyUI. **Any Windows driver step other
+      than Google's own script is a fail**, and so is a PowerShell command printed
+      for you to run. A box with no GPU gets no driver on either system.
+- [ ] **K5b2** — if the Windows driver does not come up, `go` says the box
+      still has no working GPU driver and names `gcloud compute instances
+      get-serial-port-output <box> --zone=<zone> --project=<project>` to read
+      why: the script writes to the serial console, before SSH is up. *(Only
+      reachable if Google's script fails. Not something to arrange — record it
+      as not run.)*
 - [ ] **K5c** — if a zone is out of capacity it **moves to the next one** rather
       than stopping, and says it did. Only when every zone is exhausted is it a
       refusal, and that refusal names the zones tried.

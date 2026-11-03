@@ -30,12 +30,13 @@ a frontend release that does not exist, and two backends at once.
 
 Then a Windows Server 2022 box with no GPU, made by `create --version v0.42.1` on
 `e5d8e73` with the SSH package fix below, answered SSH within a minute. The first
-`go` on it (`a38d549`) installed Git and Python from their publishers' installers
-and comfy-cli installed v0.42.1, but ComfyUI could not start, for two
-more reasons older than this release, found then and fixed below: the Visual C++
-runtime torch needs was not there, and a process started from an SSH session did
-not outlive it. On `ecb3557`, `go --clean` installed the runtime and
-v0.42.1 again in 8m38s and served it, and `stamp` showed `ComfyUI 0.42.1
+two `go` runs on it, on `e5d8e73`, stopped where the install called `winget`, which
+that image does not have (fixed below). The next, on `a38d549`, installed Git and
+Python from their publishers' installers and comfy-cli installed v0.42.1, but
+ComfyUI could not start, for two more reasons older than this release, found then
+and fixed below: the Visual C++ runtime torch needs was not there, and a process
+started from an SSH session did not outlive it. On `ecb3557`, `go --clean`
+installed the runtime and v0.42.1 again in 8m38s and served it, and `stamp` showed `ComfyUI 0.42.1
 (63be2f9b82)` — tag v0.42.1's own commit on GitHub — frontend 1.55.18, Manager on,
 torch 2.15.0+cpu and Python 3.12.10. It was stopped and deleted. After everything,
 nothing named `qatest-` was left on the project in instances, reservations, disks
@@ -46,7 +47,12 @@ v0.43.0 --no-reserve` on `ecb3557` had the quota and found no L4 free in any of
 the six zones it tried (us-central1-a and -b, us-west4-c and -a, us-west1-a and
 -b), so it created nothing, and it was not tried again. So Google's Windows driver
 script at first boot, a Windows install with `--nvidia`, and `stamp` showing a GPU
-have run only against the suite's fakes. So has a frontend PR built on a box.
+have run only against the suite's fakes. So has a frontend PR built on a box. So
+have these, which no live run asked for: a GPU install through comfy-cli on Linux
+(`--nvidia` with `--cuda-version`; every live install was `--cpu`), a `--torch` pin,
+an install with `--commit` (only its refusal ran), `--no-manager`, and custom nodes
+and models surviving a build change (none had been added to the box `switch`
+changed).
 
 ### Added
 
@@ -92,7 +98,8 @@ have run only against the suite's fakes. So has a frontend PR built on a box.
   torch from `/system_stats`, the frontend from the bundle it is serving, Manager
   from whether Manager answers, the commit and PR from git on the box. A
   contradiction is said plainly — `ComfyUI 0.42.1, not v0.43.0` — with the command
-  that puts the build back, and nothing is reported ready or opened.
+  that puts the build back, which names the whole build, Manager included, so that
+  it holds a box that is still serving to it; nothing is reported ready or opened.
 - **`stamp` shows the build that is running**: `ComfyUI 0.43.0 (PR 17497,
   9350a08d80) · frontend 1.58.4 · Manager on · … · torch 2.14.1+cpu`, and the
   same in `--json` as `comfyui_commit`, `comfyui_pr`, `frontend_version` and
@@ -160,9 +167,10 @@ have run only against the suite's fakes. So has a frontend PR built on a box.
   launch has used `Start-Process` since it was added; 1.2.0, 1.3.0 and 1.3.1
   all have it.
 - **IAP's `4047: 'Failed to lookup instance'` on a box just made is a box still
-  starting.** The first `go` on both boxes the live run created was refused with
-  it about a minute after `create` returned, and `go` reported a failed tunnel;
-  the same command a minute later worked. `go` now waits it out.
+  starting.** The first `go` on the first two boxes the live run created, started
+  7 s (Linux) and 19 s (Windows) after `create` returned, was refused with it
+  within seconds, and `go` reported a failed tunnel; the same command run again a
+  minute or two later opened its tunnel. `go` now waits it out.
 
 ### The suite
 

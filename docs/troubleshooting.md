@@ -1479,8 +1479,8 @@ release, a PR or a commit. Nothing was started.`**
 Two of `--version`, `--pr` and `--commit` were given. Each one names the ComfyUI to
 install, so together they are a mistake rather than an intention — comfy-cli would
 refuse the same pair on the box (`--pr cannot be used with --version or --commit`),
-but only after the box had booted and started billing. The fix line gives the two
-commands that are intentions; keep one.
+but only after the box had booted and started billing. The fix names the options
+that are intentions; give only one of them, on the same command.
 
 **`--frontend-version and --frontend-pr each choose the frontend, so only one of them
 can be right. Nothing was started.`**
@@ -1576,9 +1576,12 @@ route answers; and the commit and PR from git in the checkout on the box. Each p
 that contradicts is named — `frontend 1.57.7, not v1.58.4` when ComfyUI could not
 fetch the frontend release and fell back to its own, `Manager off, not on` when the
 Manager package did not install. Nothing is torn down: the box is fine and ComfyUI is
-running, it is the build that is wrong. The fix runs the same command again, and
-points at `comfy-qat logs <name>` for why — a failed frontend download is in ComfyUI's
-own log. A part that cannot be read at all is said to be unconfirmed and does not
+running, it is the build that is wrong. The fix is `comfy-qat go <name>` with the whole
+build named, Manager included even when it is the default, so for the default build it
+is `comfy-qat go <name> --manager`. A `go` that names no build onto a box that is
+serving asks the box nothing, and would hand the same wrong ComfyUI over; named, the
+box is held to that build and it is put back. The fix also points at
+`comfy-qat logs <name>` for why — a failed frontend download is in ComfyUI's own log. A part that cannot be read at all is said to be unconfirmed and does not
 block: `could not read the frontend it serves off the running ComfyUI, so that part
 of the build is not confirmed`.
 
