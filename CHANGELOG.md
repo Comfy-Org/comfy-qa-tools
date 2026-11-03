@@ -129,6 +129,24 @@ against the suite's fakes.
   and judged by its exit code and by the file it leaves; the venv is made with
   that Python by its path, and a Windows launch puts Git on its PATH for
   Manager.
+- **A Windows box gets the Visual C++ runtime torch needs.** Google's
+  windows-2022 image does not carry it, and with Git and Python in place the
+  live run's ComfyUI died at `import torch`: `Microsoft Visual C++
+  Redistributable is not installed` and `[WinError 126] ... c10.dll or one of
+  its dependencies`. The install now fetches it from Microsoft's permalink,
+  refuses it unless Microsoft signed it, runs it with Microsoft's documented
+  `/install /quiet /norestart`, and checks the registry key Microsoft says
+  records it, skipping all of that where the key is already there. 1.3.0 and
+  1.3.1 never install it either.
+- **ComfyUI started on a Windows box outlives the SSH call that starts it.** The
+  detached launch used `Start-Process`, and on the live run a process started
+  that way never reached its first line once its SSH session had returned, while
+  the same body started through WMI ran to its end a minute later; so `go`
+  printed `STARTED` and then found neither a ComfyUI nor a log. The launch goes
+  through WMI (`Win32_Process.Create`) now, says `STARTED` only when WMI started
+  it, and gives that process Git's directory on its own PATH. The detached
+  launch has used `Start-Process` since it was added; 1.2.0, 1.3.0 and 1.3.1
+  all have it.
 - **IAP's `4047: 'Failed to lookup instance'` on a box just made is a box still
   starting.** The first `go` on both boxes the live run created was refused with
   it about a minute after `create` returned, and `go` reported a failed tunnel;

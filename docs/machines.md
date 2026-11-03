@@ -190,9 +190,11 @@ That is the whole thing. In order, it:
    3.12, with a torch built for whatever CUDA that box's driver reports. A
    Windows box first gets Git and Python 3.12.10 from git-for-windows' and
    python.org's own installers, each checked against its pinned SHA-256 before
-   it runs: Windows Server 2022 has no `winget`;
+   it runs — Windows Server 2022 has no `winget` — and the Visual C++ runtime
+   torch needs, from Microsoft, checked by its signature;
 4. launches it **on the box**, detached, with its output going to a log file
-   there;
+   there — on Windows through WMI, because a process started from an SSH
+   session there ends with the session;
 5. forwards a local port to it as soon as it is listening, waits until ComfyUI
    really answers, opens a browser on `http://127.0.0.1:<port>` — and gives you
    the prompt back.

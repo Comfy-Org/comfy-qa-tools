@@ -1681,6 +1681,19 @@ but C:\Program Files\Git\cmd\git.exe is not there`. Up to 1.3.1 the script
 used `winget` instead, which is not on Windows Server 2022: such a box printed
 `The term 'winget' is not recognized` and stopped at `comfy-cli did not install`.
 
+The third is the Visual C++ runtime, from Microsoft's own permalink, checked by
+its Authenticode signature rather than a digest — the permalink always serves the
+latest — and skipped where the registry already records it
+(`HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64`). Its own
+ending is `the Visual C++ runtime installer that downloaded is not signed by
+Microsoft`. Without it torch cannot load on Windows: a box installed before 1.4.0
+that gets as far as starting ComfyUI dies at once with `Microsoft Visual C++
+Redistributable is not installed` and `[WinError 126] ... c10.dll or one of its
+dependencies` in its log. On such a box, install it by hand over `rdp` from
+Microsoft's "Latest supported Visual C++ Redistributable downloads" page, or run
+`comfy-qat go <box> --clean`, which installs it and ComfyUI from nothing (custom
+nodes and models go with the old checkout).
+
 **`the build on comfy-win could not be changed (exit 1). Its log is above; the
 checkout is where comfy-cli left it.`**
 A build change on a box that already has ComfyUI — `go` or `switch` with a build
@@ -2079,7 +2092,9 @@ The launch *command* failed, as opposed to ComfyUI failing after it started. On
 Linux this is close to impossible — the detached form exits as soon as the
 process is spawned — so in practice it means the box refused to run the script at
 all. The requirements are installed and it is tried once more; a second failure is
-reported rather than looped on.
+reported rather than looped on. On Windows the launch goes through WMI
+(`Win32_Process.Create`), and `could not start ComfyUI: Win32_Process.Create
+returned N` above this line is WMI refusing to start it.
 
 **`ComfyUI on comfy-win would not start, and its requirements could not be installed either: ...`**
 The same repair `--follow` does on a non-zero exit, reached the other way: a
@@ -2097,6 +2112,12 @@ ComfyUI on it.
 **`there is no ComfyUI log at C:\ComfyUI\comfyui.log on comfy-win, so nothing has started ComfyUI there. The machine is running and billing.`**
 The box is up and no ComfyUI has ever been launched on it by this tool. That is a
 different fact from "the box is off", and it has a different fix: `comfy-qat go comfy-win`. The second sentence is the one that matters — the machine is on.
+
+Up to 1.3.1 a Windows box also said this straight after `go` had printed
+`STARTED`: the launch used `Start-Process`, and on Windows Server 2022 a process
+started that way from an SSH session ended with the session, before ComfyUI had
+opened its log. Since 1.4.0 it is started through WMI, whose process outlives the
+session.
 
 **`stopped reading. ComfyUI is still running on comfy-win, and so is the machine.`**
 Not an error — what Ctrl-C out of `comfy-qat logs` says. It ends the reading and

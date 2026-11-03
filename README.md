@@ -337,8 +337,9 @@ running `setup` again is safe — it skips whatever is already done.
 
 On a **cloud box**, `go` does install software: ComfyUI into `C:\ComfyUI`
 (Windows) or `/opt/comfyui` (Linux), with a Python 3.12 environment beside it —
-and on Windows, Git and Python 3.12 themselves, from their publishers' own
-installers, each checked by SHA-256 before it runs.
+and on Windows, Git, Python 3.12 and the Visual C++ runtime themselves, from
+their publishers' own installers, each checked before it runs (by its pinned
+SHA-256, or the runtime by Microsoft's signature).
 That only ever happens on a declared `gce` host, never locally.
 
 ## Docs
