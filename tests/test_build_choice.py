@@ -404,7 +404,11 @@ PR_HEAD = "9350a08d80aaaaaabbbbbbbbccccccccdddddddd"
      "PR 999, not PR 17497"),
     (Build(pr=17497, pr_head=PR_HEAD), {},
      "commit 426f5eea52, not PR 17497"),
-], ids=["torch-version", "torch-cuda", "commit", "another-pr", "no-pr"])
+    # code:F3: the PR's own branch, at a commit that is not the head GitHub
+    # reported — the PR has had commits since the box checked it out.
+    (Build(pr=17497, pr_head=PR_HEAD), {"pr": 17497, "commit": "0" * 40},
+     "PR 17497 at 0000000000, not its head 9350a08d80"),
+], ids=["torch-version", "torch-cuda", "commit", "another-pr", "no-pr", "old-head"])
 def test_each_part_that_contradicts_the_build_is_named(asked, seen, said):
     wrong, unread = asked.contradictions(**{**SEEN, **seen})
     assert wrong == [said]

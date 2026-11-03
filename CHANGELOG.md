@@ -86,7 +86,9 @@ changed).
   `go` or `switch` with a build option changes it in place (`comfy install
   --restore`), stopping a ComfyUI already serving first. Only what is named
   changes; a frontend release alone is a launch option, not an install.
-  `--clean` deletes ComfyUI on the box and installs from nothing.
+  Asking again for a PR that has had commits since the box checked it out
+  fetches them: the checkout is held to the head GitHub reports now, not to the
+  PR's number. `--clean` deletes ComfyUI on the box and installs from nothing.
 - **Bad input is refused before anything is created or charged.** A release
   that does not exist, a PR that does not exist or is closed (a merged one is
   pointed at the commit it landed as), an unknown commit, a frontend release
@@ -96,8 +98,10 @@ changed).
 - **Ready means the build you asked for.** Once ComfyUI answers, what it is
   running is read back and compared with what was asked: the ComfyUI version and
   torch from `/system_stats`, the frontend from the bundle it is serving, Manager
-  from whether Manager answers, the commit and PR from git on the box. A
-  contradiction is said plainly — `ComfyUI 0.42.1, not v0.43.0` — with the command
+  from whether Manager answers, the commit and PR from git on the box, and a
+  PR's commit against the head GitHub reported for it. A contradiction is said
+  plainly — `ComfyUI 0.42.1, not v0.43.0`, `PR 17497 at 0000000000, not its head
+  9350a08d80` — with the command
   that puts the build back, which names the whole build, Manager included, so that
   it holds a box that is still serving to it; nothing is reported ready or opened.
 - **`stamp` shows the build that is running**: `ComfyUI 0.43.0 (PR 17497,
@@ -106,7 +110,9 @@ changed).
   `manager`. Each is read off the machine, never off what was asked for, and one
   that cannot be read is left out.
 - **The host list's `build` field**, which `create` writes when it is given a
-  build: the build the first `go` installs on that box.
+  build: the build the first `go` installs on that box. It holds what was asked
+  for, not a PR's head on the day `create` ran: the first `go` checks the PR out
+  at its head then.
 
 ### Changed
 

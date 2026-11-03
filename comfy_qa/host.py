@@ -167,7 +167,11 @@ def _declared_build(host: Host):
 
     declared = getattr(host, "declared", None)
     try:
-        return parse(declared("build") if callable(declared) else None)
+        written = parse(declared("build") if callable(declared) else None)
+        # The choices only. A PR head written there is what GitHub said the day
+        # the line was written, and the first `go` checks the PR out at its head
+        # THEN — held to the old one, it would be refused for being current.
+        return written.choices() if written is not None else None
     except BuildError as exc:
         say.fail(f"{host.name}'s build in your host list cannot be read: {exc}",
                  fix=exc.fix, code=2, blank_line=False)
@@ -3329,7 +3333,19 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         facts = read_facts(gc, host)
         asked = want.over(facts.record) if want is not None else facts.record
         serving_it = False
-        if not clean and facts.record is not None and asked.same_choice(facts.record):
+        # A PR asked for again after new commits is the same choice as the
+        # record and not the same code: git on the box says which commit it is
+        # on, and that is held to the head GitHub reports now (code:F3).
+        stale = (asked.checkout_contradictions(facts.commit, facts.pr)
+                 if asked is not None and not clean else [])
+        if stale:
+            # Said here, once: the install step below sees the same checkout and
+            # is told, by `force`, that it has been said.
+            say.step(f"{host.name}'s checkout is {'; '.join(stale)}, so the build is "
+                     f"put on it again")
+            force = True
+        elif (not clean and facts.record is not None
+                and asked.same_choice(facts.record)):
             try:
                 ready.stamp = confirm_build(gc, host, asked, ready.stamp, say.step,
                                             facts=facts)

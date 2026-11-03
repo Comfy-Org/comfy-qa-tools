@@ -778,7 +778,10 @@ MESSAGE_FLOOR = {
 # exists, the build that came up wrong, the host list's unreadable build line,
 # and the Windows driver that now installs itself. The page reads 361. Raised to
 # 352, half the distance, on the rule above.
-ENTRY_FLOOR = 352
+# 352 until the 1.4.0 audit fixes: a checkout that is not the build asked for
+# (a PR's older head) is put on again, and says so. The page reads 365. Raised to
+# 359, half the distance, on the rule above.
+ENTRY_FLOOR = 359
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that

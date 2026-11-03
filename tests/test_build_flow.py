@@ -82,16 +82,26 @@ class Box(FakeGcloud):
     records another fails here as it would on a real machine. `branch` and
     `commit` are what git in the checkout would say; `frontend_root` is where a
     frontend PR's build landed, which only the box knows.
+
+    A PR is checked out at the head GitHub has for it when comfy-cli runs —
+    `checkout_pr` fetches the PR's branch and resets onto it — so `hub` is the
+    same table the tool's own GitHub check reads, and what the record says the
+    head is plays no part. `stuck` is a checkout that does not move however it
+    is asked — a fetch that failed — so a flow that reports it ready anyway
+    fails here.
     """
 
     def __init__(self, *, record: str = "", commit: str = TAG_SHA, branch: str = "HEAD",
-                 alive: str = "ALIVE", frontend_root: str = "", **rest) -> None:
+                 alive: str = "ALIVE", frontend_root: str = "", stuck: bool = False,
+                 hub: dict | None = None, **rest) -> None:
         super().__init__(**rest)
         self.record = record
         self.commit = commit
         self.branch = branch
         self.alive = alive
         self.frontend_root = frontend_root
+        self.stuck = stuck
+        self.hub = hub if hub is not None else GITHUB
 
     def ssh_output(self, instance, zone, project, remote):
         if "COMMIT=" in remote and "RECORD=" in remote:
@@ -118,9 +128,10 @@ class Box(FakeGcloud):
                         or "build.txt" in remote):
             self.record = written.group(1)
             pr = re.search(r"comfyui=pr:(\d+)", self.record)
-            if pr:
+            if pr and not self.stuck and (INSTALLING in remote or CHANGING in remote):
+                pull = self.hub.get(f"{REPO}/pulls/{pr.group(1)}") or {}
                 self.branch = f"pr-{pr.group(1)}-solid-mode"
-                self.commit = PR_HEAD
+                self.commit = (pull.get("head") or {}).get("sha") or PR_HEAD
         return super().ssh(instance, zone, project, remote, stream=stream)
 
 
@@ -137,7 +148,7 @@ class World:
     asked: list = field(default_factory=list)
 
     def cloud(self, **kwargs) -> Box:
-        self.gc = Box(**kwargs)
+        self.gc = Box(hub=self.hub, **kwargs)
         return self.gc
 
     def serves(self, version: str, *, frontend: str | None = None,
@@ -528,6 +539,112 @@ def test_a_box_on_another_pr_is_never_handed_over_as_the_pr_asked_for(world):
     assert "PR 999, not PR 17497" in flat(result.output), "said, not hidden"
     assert sent(world, CHANGING), "the PR asked for was put back"
     assert world.gc.branch.startswith("pr-17497-")
+
+
+# --- S2-7 and S2-8: a PR asked for again after it has new commits ----------------
+#
+# Audit finding code:F3. A retester asks for a PR again because its author
+# pushed a fix. The box checked the PR out at its old head, its record names the
+# same PR, and GitHub says the head has moved. `same_choice` ignored heads and
+# `contradictions` accepted the PR's branch at any commit, so `go --pr 17497`
+# opened the browser on the old head with nothing sent to the box — a box that
+# answers a different question from the one asked, while looking right.
+
+OLD_HEAD = "0" * 40
+
+
+def _on_the_old_head(world: World, **rest) -> None:
+    """A box that checked PR 17497 out at OLD_HEAD; GitHub now says PR_HEAD."""
+    world.cloud(statuses=["RUNNING"], installed=True, branch="pr-17497-solid-mode",
+                commit=OLD_HEAD,
+                record="comfyui=pr:17497 frontend=default manager=on torch=default "
+                       f"pr_head={OLD_HEAD}",
+                **rest)
+
+
+def _already_serving(world: World) -> None:
+    world.comfy.payload = stats("0.43.0")
+    world.comfy.pages.update(MANAGER_ON)
+    world.comfy.mode = "serving"
+
+
+@pytest.mark.parametrize("command", [("go",), ("switch", "--keep-others")],
+                         ids=["go", "switch"])
+@pytest.mark.parametrize("serving", [True, False], ids=["serving", "stopped"])
+def test_a_pr_asked_for_again_after_new_commits_is_fetched_again(world, command,
+                                                                 serving):
+    if serving:
+        _already_serving(world)
+        _on_the_old_head(world, port_holder="4242 python")
+    else:
+        _on_the_old_head(world)
+    world.serves("0.43.0")
+
+    result = run(world, command[0], BOX, *command[1:], "--pr", "17497")
+
+    assert result.exit_code == 0, result.output
+    said = flat(result.output)
+    assert f"PR 17497 at {OLD_HEAD[:10]}, not its head {PR_HEAD[:10]}" in said, \
+        "said, not hidden"
+    (change,) = sent(world, CHANGING)
+    assert "--restore" in change and "'--pr', '#17497'" in change
+    assert world.gc.commit == PR_HEAD, "the checkout never moved to the new head"
+    assert f"PR 17497, {PR_HEAD[:10]}" in said
+    assert world.opened == [world.comfy.url]
+
+
+def test_a_box_left_on_the_old_head_is_never_reported_ready(world):
+    """The change ran and the checkout did not move — a fetch that failed. The
+    box is on the PR's branch, and on a commit that is not the head asked for:
+    not ready, nothing opened."""
+    _on_the_old_head(world, stuck=True)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--pr", "17497")
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert "came up on a different build from the one you asked for" in said
+    assert f"PR 17497 at {OLD_HEAD[:10]}, not its head {PR_HEAD[:10]}" in said
+    assert world.opened == []
+    assert "this terminal is free" not in said
+
+
+def test_a_pr_already_at_its_head_is_confirmed_against_the_head_asked_for(world):
+    """The record's head is older than the checkout's — written seconds before
+    comfy-cli fetched a newer push. The checkout IS the head GitHub reports now,
+    so nothing is changed, and the box is confirmed against the build asked for
+    rather than the stale record (code:F3, step 3)."""
+    world.cloud(statuses=["RUNNING"], installed=True, branch="pr-17497-solid-mode",
+                commit=PR_HEAD,
+                record="comfyui=pr:17497 frontend=default manager=on torch=default "
+                       f"pr_head={OLD_HEAD}")
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--pr", "17497")
+
+    assert result.exit_code == 0, result.output
+    assert not sent(world, CHANGING), "a checkout already at the head was changed"
+    assert "already on the box" in result.output
+    assert world.opened == [world.comfy.url]
+
+
+def test_a_host_list_build_carries_no_pr_head_into_a_first_install(world):
+    """The host list's `build` is what was asked for, not what GitHub said the
+    day `create` ran. A head recorded there is stale by the first `go`, and the
+    PR's branch is checked out at whatever its head is then — so it is not held
+    to the head the host list names."""
+    with world.config.open("a", encoding="utf-8") as hosts:
+        hosts.write('build = "comfyui=pr:17497 frontend=default manager=on '
+                    f'torch=default pr_head={OLD_HEAD}"\n')
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX)
+
+    assert result.exit_code == 0, result.output
+    assert "'--pr', '#17497'" in sent(world, INSTALLING)[0]
+    assert world.opened == [world.comfy.url]
 
 
 def test_a_part_that_cannot_be_read_is_said_and_does_not_block(world, monkeypatch):

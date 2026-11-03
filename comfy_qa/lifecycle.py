@@ -1387,6 +1387,8 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     record already names it: the caller has seen the running server contradict
     the record.
     """
+    from dataclasses import replace
+
     from .build import DEFAULT, OnTheBox
     from .provision import (
         check_command, cuda_command, install_command, root_for, torch_index,
@@ -1414,19 +1416,29 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         found = read_facts(gc, host)
         if want is not None:
             asked = want.over(found.record)
-            if (not force and found.record is not None
+            # The checkout, read by git, against the build asked for — a PR
+            # whose head has moved since the box checked it out is the same
+            # CHOICE as the record and not the same code (audit finding code:F3).
+            stale = asked.checkout_contradictions(found.commit, found.pr)
+            if (not force and not stale and found.record is not None
                     and asked.same_choice(found.record)):
                 say(f"build: {asked.describe()} — already on the box")
             else:
+                if stale and not force:
+                    # Under `force` the caller has already said what is wrong
+                    # with the box; this would be the same finding twice.
+                    say(f"{host.name}'s checkout is {'; '.join(stale)}, so the build "
+                        f"is put on it again")
                 _change_build(gc, host, say, asked, found.record, give_up,
-                              budget=budget, tunnel_dir=tunnel_dir)
+                              budget=budget, tunnel_dir=tunnel_dir,
+                              checkout_stale=bool(stale))
                 found = read_facts(gc, host)
-                if found.record is None or not asked.same_choice(found.record):
-                    # The record is what the change script writes last, so a
-                    # record that did not move is a change that did not finish
-                    # however it exited.
-                    found = OnTheBox(commit=found.commit, branch=found.branch,
-                                     record=asked, frontend_root=found.frontend_root)
+            # Confirmed against the build asked for, never the record: the
+            # record is what the box was asked for LAST, and its PR head is
+            # whatever GitHub said then. The record is also what the change
+            # script writes last, so a record that did not move is a change that
+            # did not finish however it exited — and that is caught here too.
+            found = replace(found, record=asked)
         _verify(gc, host, say, give_up)
         return found
 
@@ -1533,19 +1545,22 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
 
 def _change_build(gc: Gcloud, host: Host, say: Callable[[str], None], asked: "Build",
                   had: "Build | None", give_up, *, budget: Budget | None,
-                  tunnel_dir: Path | None) -> None:
+                  tunnel_dir: Path | None, checkout_stale: bool = False) -> None:
     """Put `asked` on a box that already has ComfyUI. Its nodes and models stay.
 
     A frontend RELEASE is not an install — ComfyUI downloads it at startup — so a
     change that only moves the frontend release writes the record and nothing
-    else. Everything else goes through `comfy install --restore`.
+    else, unless the checkout itself is not the backend asked for
+    (`checkout_stale`): then the record alone would leave a PR on its old head.
+    Everything else goes through `comfy install --restore`.
     """
     from .build import DEFAULT
     from .provision import change_command, cuda_command, record_command, torch_index
 
     before = had or DEFAULT
     say(f"build: {asked.describe()}")
-    if had is not None and asked.differs_only_in_frontend_release(had):
+    if (had is not None and not checkout_stale
+            and asked.differs_only_in_frontend_release(had)):
         try:
             gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                    record_command(host, asked), stream=False)

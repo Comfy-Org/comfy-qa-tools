@@ -282,6 +282,14 @@ class Build:
             elif pr != self.pr and not on_head:
                 said = f"PR {pr}" if pr else f"commit {commit[:10]}" if commit else "?"
                 wrong.append(f"{said}, not PR {self.pr}")
+            elif self.pr_head and commit and not on_head:
+                # The PR's own branch, on a commit that is not the head GitHub
+                # reported when it was asked for: the PR has had commits since
+                # the box checked it out. The branch alone said "PR 17497", and
+                # a retester asking again for the author's fix was handed the
+                # code from before it (audit finding code:F3).
+                wrong.append(f"PR {self.pr} at {commit[:10]}, not its head "
+                             f"{self.pr_head[:10]}")
         if self.commit:
             if not commit:
                 unread.append("the checkout's commit")
@@ -306,13 +314,37 @@ class Build:
                 wrong.append(f"torch {torch}, not {self.torch}")
         return wrong, unread
 
+    def checkout_contradictions(self, commit: str | None, pr: int | None) -> list[str]:
+        """What git in the box's checkout alone says against this build.
+
+        The half of `contradictions` that can be read before ComfyUI is
+        started, so a box whose checkout is not the build asked for is changed
+        rather than launched, confirmed and refused. `same_choice` cannot see
+        it: two records that name PR 17497 ask for the same thing, and a
+        checkout of PR 17497 from before its author's last push is still not
+        the build somebody asking for it today wants.
+        """
+        wrong, _ = self.contradictions(comfyui_version=None, commit=commit, pr=pr,
+                                       frontend=None, manager=None, torch=None)
+        return wrong
+
     def same_choice(self, other: "Build | None") -> bool:
         """Do two builds ask for the same thing? The heads GitHub reported are
-        facts about when each was checked, not part of the choice."""
+        facts about when each was checked, not part of the choice. Whether the
+        checkout is AT the head is `checkout_contradictions`'s question."""
         if other is None:
             return False
         return (replace(self, pr_head=None, frontend_pr_head=None)
                 == replace(other, pr_head=None, frontend_pr_head=None))
+
+    def choices(self) -> "Build":
+        """This build without the heads GitHub reported for it.
+
+        What the host list keeps. Its `build` is what was asked for, written the
+        day `create` ran; a PR's head from that day is stale by the first `go`,
+        which checks the PR's branch out at whatever its head is then.
+        """
+        return replace(self, pr_head=None, frontend_pr_head=None)
 
     # --- what comfy-cli and ComfyUI are handed --------------------------
 

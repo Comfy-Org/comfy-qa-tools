@@ -2659,7 +2659,9 @@ def host_entry(blueprint: Blueprint, zone: str, project: str):
         gce_instance=blueprint.name, gce_zone=zone, gce_project=project,
         running=True,
         reservation=blueprint.reservation or "",
-        build=blueprint.build.spec() if blueprint.build is not None else "",
+        # What was asked for, without the PR heads GitHub reported today: by the
+        # first `go` they may be stale, and that `go` checks out the head then.
+        build=blueprint.build.choices().spec() if blueprint.build is not None else "",
     )
 
 

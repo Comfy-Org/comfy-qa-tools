@@ -285,7 +285,10 @@ option, on a box that already has ComfyUI, changes it in place — `comfy instal
 --restore` on the existing checkout — and nothing under `custom_nodes/` or
 `models/` is touched. A box that is already serving has its ComfyUI stopped
 first. Name only what changes: `go comfy-linux --frontend-version v1.58.4` keeps
-the ComfyUI it has. `--clean` deletes ComfyUI on the box, nodes and models with
+the ComfyUI it has. Asking again for the PR a box is on — `go comfy-linux --pr
+17497` after its author has pushed — fetches the new commits: the checkout is held
+to the head GitHub reports now, so a box on the PR's older head is changed, not
+handed over. `--clean` deletes ComfyUI on the box, nodes and models with
 it, and installs the build from nothing. With no build option at all, a box keeps
 what it has, and `go` onto one that is already serving asks it nothing — that is
 what keeps the everyday command quick.
@@ -294,7 +297,8 @@ what keeps the everyday command quick.
 is read back off the machine — never off what was asked for — and compared: the
 ComfyUI version and torch from the running server, the frontend from the bundle it
 is actually serving, Manager from whether Manager answers, the commit and PR from
-git in the checkout. A contradiction is said plainly, with the command that puts
+git in the checkout — a PR's commit held to the head GitHub reported for it. A
+contradiction is said plainly, with the command that puts
 the build back, and nothing is reported ready or opened. A part that cannot be
 read is said to be unconfirmed and does not block.
 

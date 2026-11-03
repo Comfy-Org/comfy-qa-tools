@@ -1565,6 +1565,15 @@ before the build is changed — and the stop did not go through. The change goes
 and the launch after it will find the port held: `comfy-qat logs <name>` says what
 that ComfyUI is doing, and `comfy-qat ssh <name>` gets you onto the box to stop it.
 
+**`comfy-linux's checkout is PR 17497 at 0000000000, not its head 9350a08d80, so the
+build is put on it again`**
+Not a failure. The PR was asked for again, and its author has pushed since the box
+checked it out: git on the box says the older commit, GitHub says the newer head.
+Same PR is not the same code, so the build is changed in place — `comfy install
+--restore --pr` fetches the PR's branch again — keeping custom nodes and models, and
+the box is confirmed against the head asked for. The same line names a checkout on
+another PR or another commit than the one asked for.
+
 **`--no-install refuses to install, and a build option asks for one`**
 `go --no-install` and `switch --no-install` mean "never install", and a build option
 asks for an install or a build change. Drop one of them.
@@ -1580,7 +1589,9 @@ serving, not from the package installed beside it; Manager from whether Manager'
 route answers; and the commit and PR from git in the checkout on the box. Each part
 that contradicts is named — `frontend 1.57.7, not v1.58.4` when ComfyUI could not
 fetch the frontend release and fell back to its own, `Manager off, not on` when the
-Manager package did not install. Nothing is torn down: the box is fine and ComfyUI is
+Manager package did not install, `PR 17497 at 0000000000, not its head 9350a08d80`
+when the checkout is on the PR's branch but not at the head GitHub reports, which
+is what a fetch that failed leaves. Nothing is torn down: the box is fine and ComfyUI is
 running, it is the build that is wrong. The fix is `comfy-qat go <name>` with the whole
 build named, Manager included even when it is the default, so for the default build it
 is `comfy-qat go <name> --manager`. A `go` that names no build onto a box that is
