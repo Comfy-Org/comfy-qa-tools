@@ -1945,8 +1945,10 @@ starts, and here, in what Ctrl-C prints.
 **`stopped. comfy-win is still running.`**
 The same interrupt without `--follow` — Ctrl-C while `go` is starting ComfyUI
 detached. Nothing was streaming, so there is nothing that went down with it; the
-box is running, and the line under it is `comfy-qat down comfy-win   # stop the
-box, stop paying`.
+box is running, and under it is `stop the box, stop paying:` with `comfy-qat down
+comfy-win` alone on the line below. For a reserved box it is the two that end
+its bill instead: `comfy-qat down comfy-win`, then `comfy-qat delete comfy-win
+--yes`, each under the line that says what it is for.
 
 **`could not read the ComfyUI log on comfy-win: ...`**
 The box would not run the command that reads the log. Usually the same causes as
@@ -2854,7 +2856,7 @@ certainty it cannot support, but the exact resource and the exact command:
 * **`go`, `up` and `switch`** name the machine, and it is declared, so
   `comfy-qat down <name>` reaches it. For a **reserved** box the undo goes on:
   `it is reserved, so stopping it does not stop its bill — that only stops
-  with:` and then `comfy-qat delete <name>`. `comfy-qat list --live` settles whether it
+  with:` and then `comfy-qat delete <name> --yes`. `comfy-qat list --live` settles whether it
   needs to.
 * **`switch`** is the only command that prints the second heading. On the
   GPU-ceiling path — the normal path when `GPUS_ALL_REGIONS`

@@ -56,7 +56,8 @@ only. `setup` was not run live, because it can ask Google for quota.
 - **"The same box" offered after a stock-out is the same box.** It dropped
   `--disk`, and `--name` for a box that was not reserved, so pasted back it made
   a 200 GB box under another name. The untried-regions remedy beside it had the
-  same gap.
+  same gap, and after a `--zone` stock-out a box that was not reserved was
+  offered a bare `comfy-qat create`, which pasted with no terminal exits 2.
 - **The printed `reset-windows-password` command carries `--quiet`.** The one
   printed when a reset answers with no credentials did not, so it stopped to ask
   from a script; the check for it now reads every module.
@@ -67,7 +68,8 @@ only. `setup` was not run live, because it can ask Google for quota.
 - **A line break in gcloud's error no longer hides what it says.** Only the
   stock-out check folded whitespace before matching; Google's suggested zone and
   the kind of error (an expired session, a missing project) are now read through
-  the same fold.
+  the same fold, as are what a not-found names, a quota request already made,
+  and a sign-in that is missing.
 - **The 1.3.0 entry below** said the live run found four defects; it found ten,
   and four were fixed. It had no line for the stock-out text fix. And the
   acceptance pack still said the device name on a box with no GPU had not been

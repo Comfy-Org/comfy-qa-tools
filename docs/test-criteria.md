@@ -1020,9 +1020,10 @@ echo "=== V8 the list, offline and then live"; qat list; qat list --live
 ```
 
 - [ ] **V4** — created without reading GPU quota at all: no `GPUS_ALL_REGIONS`
-      line in its output. It ends on `comfy-qat down qa-cpu   # stop the machine,
-      stop paying` and says there is no driver to wait for. In the host list it
-      is `gpu = "none"`.
+      line in its output. It says there is no driver to wait for, and ends on
+      `stop the machine, stop paying:` with `comfy-qat down qa-cpu` alone on the
+      line under it — no `#` note after the command. In the host list it is
+      `gpu = "none"`.
 - [ ] **V5** — `go` serves it **without waiting for a driver**. It used to wait
       fifteen minutes for `nvidia-smi` on a machine with no NVIDIA hardware; a
       `go` that sits at a driver wait is that defect back. `stamp` prints a line
@@ -1034,11 +1035,13 @@ echo "=== V8 the list, offline and then live"; qat list; qat list --live
 - [ ] **V6** — **the reservation is made first, then the box, in the same zone**:
       `reserving qa-rsv-rsv in <zone>` and then `creating qa-rsv on it`. It was
       not refused because `qa-cpu` is running — a box with no GPU holds none of
-      the GPU allowance. It ends on the bill sentence and two lines: `comfy-qat down
-      qa-rsv     # first — delete refuses a box that is running`, then `comfy-qat
-      delete qa-rsv   # the only thing that stops a reserved box's bill …`. It
-      **does not** print `stop paying`, and the `down` line is not described as
-      stopping the bill.
+      the GPU allowance. It ends on the bill sentence and two commands, each
+      alone on a line under the reason for it: `first stop it — delete refuses
+      a box that is running:` above `comfy-qat down qa-rsv`, then `the only thing
+      that stops a reserved box's bill — the box and its disk go too:` above
+      `comfy-qat delete qa-rsv --yes`. Neither command has a `#` note after it.
+      It **does not** print `stop paying`, and the `down` line is not described
+      as stopping the bill.
 - [ ] **V7** — read from Google, not from the tool: a reservation `qa-rsv-rsv`,
       `READY`, count 1, in use 1; and `qa-rsv` with `SPECIFIC_RESERVATION` naming
       it. If the box is there and unbound, or the reservation is in another zone,
