@@ -25,7 +25,7 @@ from comfy_qa.create import (
     LINUX_DRIVER,
     NO_QUOTA,
     NO_ZONE,
-    WINDOWS_DRIVER,
+    WINDOWS_DRIVER_URL,
     Blueprint,
     _gpu_boxes_running,
     build,
@@ -222,7 +222,7 @@ def licence_for(image):
 
 
 def test_a_windows_box_gets_the_ssh_metadata_without_which_nothing_reaches_it():
-    assert WIN_L4.metadata == "enable-windows-ssh=TRUE"
+    assert WIN_L4.metadata.split(",")[0] == "enable-windows-ssh=TRUE"
 
 
 def test_a_linux_box_gets_googles_own_driver_startup_script():
@@ -253,19 +253,17 @@ def test_the_startup_script_carries_no_comma():
     assert "," not in LINUX_DRIVER
 
 
-def test_the_windows_driver_is_handed_over_rather_than_guessed_at():
-    """Google documents one way to do this on Windows, and it needs a person.
-
-    There is a `windows-startup-script-url` metadata key and pointing it at that
-    script would probably work. This tool does not ship "probably" on the path
-    where the alternative is a box that bills while running on its CPU.
-    """
-    assert "install_gpu_driver.ps1" in WINDOWS_DRIVER
-    assert WIN_L4.metadata is not None
+def test_the_windows_driver_is_google_s_documented_first_boot_script():
+    """Until 1.4.0 this handed two PowerShell commands to a person, because
+    Google documented no unattended method. It documents one now — the
+    `sysprep-specialize-script-url` metadata key — and that is what is set; the
+    rest is held in `test_windows_driver.py` (S2-10). A startup script, which
+    runs on every boot, is still not used."""
+    assert WINDOWS_DRIVER_URL.endswith("/windows/install_gpu_driver.ps1")
+    assert f"sysprep-specialize-script-url={WINDOWS_DRIVER_URL}" in WIN_L4.metadata
     assert "startup-script" not in WIN_L4.metadata
     told = "\n".join(next_steps(WIN_L4, "us-central1-a"))
-    assert "install_gpu_driver.ps1" in told
-    assert "CPU" in told
+    assert "Invoke-WebRequest" not in told
 
 
 def test_a_linux_box_is_told_the_driver_install_reboots_it():
@@ -345,7 +343,7 @@ def test_the_plan_for_a_built_in_card_does_not_promise_an_accelerator_flag():
 
 def test_the_plan_names_the_driver_step_differently_per_os():
     assert any("startup script" in step for step in LINUX_L4.steps("z"))
-    assert any("NOT installed" in step for step in WIN_L4.steps("z"))
+    assert any("sysprep-specialize" in step for step in WIN_L4.steps("z"))
 
 
 # --- reading the allowance -------------------------------------------------
@@ -744,7 +742,8 @@ def test_the_create_asks_for_the_image_family_and_the_disk_it_planned():
     assert seen["image_family"] == "windows-2022"
     assert seen["image_project"] == "windows-cloud"
     assert seen["disk_gb"] == 500
-    assert seen["metadata"] == "enable-windows-ssh=TRUE"
+    assert seen["metadata"] == (f"enable-windows-ssh=TRUE,"
+                                f"sysprep-specialize-script-url={WINDOWS_DRIVER_URL}")
 
 
 # --- the overrides ---------------------------------------------------------

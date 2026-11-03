@@ -123,7 +123,12 @@ KINDS: dict[str, MachineKind] = {
         # something the box HAS, not part of what it IS: `identifies_by` below
         # does not name it, so a reserved box and the same box with the line
         # taken out are one machine.
-        accepts=("gce_reservation",),
+        #
+        # `build` likewise (1.4.0): the ComfyUI build a fresh install puts on
+        # the box — `Build.spec()`, written by `create` when a build option is
+        # given. Read when it is used, by `build.parse`, which refuses one it
+        # cannot read rather than falling back to the default.
+        accepts=("gce_reservation", "build"),
         identifies_by=("gce_project", "gce_zone", "gce_instance"),
         in_words="instance {gce_instance!r} in {gce_zone} ({gce_project})",
         in_brief="{gce_instance} in {gce_zone}",

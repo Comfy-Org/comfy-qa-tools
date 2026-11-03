@@ -502,6 +502,12 @@ def test_stamp_still_prints_when_the_machine_matches_what_was_declared(tmp_path,
     monkeypatch.setattr(host_module, "fetch", lambda url, host: Stamp(
         host=host, url=url, os="Windows 10", devices=["cuda:0 NVIDIA L4 (22GB)"],
         comfyui_version="0.33.0"))
+    # Since 1.4.0 a stamp that matches goes on to read the build off the box
+    # (`lifecycle.observe`): over HTTP from the same port, and over SSH. This
+    # test is about the refusal, so that half is the stamp as it came back.
+    import comfy_qa.lifecycle as lifecycle_module
+
+    monkeypatch.setattr(lifecycle_module, "observe", lambda gc, host, stamp: stamp)
 
     path = written(tmp_path, GCE.format(name="comfy-win", instance="comfy-win", port=8190)
                    .replace("Ubuntu 22.04", "Windows Server 2022"))

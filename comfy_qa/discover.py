@@ -47,6 +47,10 @@ class Discovered:
     # The reservation this box may only consume, by name. Empty for a box bound
     # to none, which is every box nobody reserved.
     reservation: str = ""
+    # The ComfyUI build `create` was asked for (`Build.spec`), which the first
+    # `comfy-qat go` installs. Empty for a box found rather than made: nothing
+    # asked for a build, and discovery does not guess one.
+    build: str = ""
 
     @property
     def has_gpu(self) -> bool:
@@ -172,6 +176,9 @@ def to_toml(box: Discovered, port: int) -> str:
     # Only when there is one. `gce_reservation = ""` would be a declaration, and
     # it would read as "reserved, under no name".
     held = f'gce_reservation = "{box.reservation}"\n' if box.reservation else ""
+    # Only when one was asked for, for the same reason: an empty `build` would
+    # read as a build, not as none.
+    built = f'build        = "{box.build}"\n' if box.build else ""
     return (
         f"\n[hosts.{box.name}]\n"
         f'kind         = "gce"\n'
@@ -181,5 +188,6 @@ def to_toml(box: Discovered, port: int) -> str:
         f'gce_zone     = "{box.gce_zone}"\n'
         f'gce_project  = "{box.gce_project}"\n'
         f"{held}"
+        f"{built}"
         f"port         = {port}\n"
     )

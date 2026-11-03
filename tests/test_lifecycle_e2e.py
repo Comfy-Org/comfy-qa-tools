@@ -175,7 +175,12 @@ def wait_until(predicate, timeout: float = 5.0) -> bool:
 def test_go_on_a_stopped_box_starts_tunnels_installs_and_serves(world):
     """The everyday path, end to end: nothing on the box, everything after it."""
     def launch():
-        """ComfyUI comes up, and the launch stays in the foreground as it does."""
+        """ComfyUI comes up, and the launch stays in the foreground as it does.
+
+        With Manager, because a fresh install is the default build and the
+        default build has it (1.4.0): `go` holds the box to that, and a ComfyUI
+        without Manager would not be reported ready."""
+        world.comfy.server.pages["/v2/manager/version"] = ("text/plain", "V4.3")
         world.comfy.mode = "serving"
         wait_until(lambda: world.opened)
 
@@ -189,7 +194,9 @@ def test_go_on_a_stopped_box_starts_tunnels_installs_and_serves(world):
     assert world.gc.did("start_instance")
     assert f"tunnel open: {world.url}" in result.output
     assert "ComfyUI is not there — installing it" in result.output
-    assert any("clone" in remote for remote in world.gc.remote), "it must install"
+    from comfy_qa.provision import INSTALLING
+
+    assert any(INSTALLING in remote for remote in world.gc.remote), "it must install"
     # Loopback: the tunnel is `ssh -L`, which resolves the far address on the
     # box, so nothing needs to be exposed on an interface to reach it.
     assert any("--listen 127.0.0.1" in remote for remote in world.gc.remote)

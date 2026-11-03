@@ -35,7 +35,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from . import inflight
 from . import say as output
@@ -43,6 +43,9 @@ from .config import Host, declares_no_gpu, has_gpu
 from .gcloud import GONE, Gcloud, GcloudError, folded
 from .osfamily import family, is_windows
 from .stamp import ProbeError, Stamp, fetch, mismatch
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from .build import Build, OnTheBox
 from .tunnel import (
     BACKEND_NOT_LISTENING,
     COMFYUI_PORT,
@@ -1198,14 +1201,19 @@ def wait_for_driver(
     actually depends on — is there a working driver — and treats a dropped
     connection as "still rebooting" rather than as a failure.
 
-    Windows is skipped: its driver is installed by hand, deliberately, because
-    Google documents no unattended method. A box with no GPU is skipped too.
+    Windows is asked too, since 1.4.0. Its driver used to be installed by hand,
+    because Google documented no unattended method; it now documents one — the
+    `sysprep-specialize-script-url` metadata key `create` sets (see
+    `create.WINDOWS_DRIVER_URL`) — and a box whose driver is still installing
+    is the same hazard on either operating system: an install that asks
+    `nvidia-smi` for its CUDA too early gets the CPU build. A box with no GPU
+    is skipped.
     """
     # `has_gpu`, not `host.gpu`. A box with no card is declared `gpu = "none"`,
     # which is a non-empty string — so `not host.gpu` was False for it, and it
     # was probed for `nvidia-smi` every five seconds for the full fifteen
     # minutes, billing, and then told its GPU driver had not come up.
-    if is_windows(host) or not has_gpu(host) or host.kind == "local":
+    if not has_gpu(host) or host.kind == "local":
         return
 
     # A card no driver this tool installs can bring up, answered in a second
@@ -1274,17 +1282,15 @@ def wait_for_driver(
                 raise LifecycleError(
                     f"{host.name} still has no working GPU driver after {timeout}s. "
                     "The machine is running and billing.",
-                    fix=_with_the_bill(
-                        host,
-                        "look at the installer's own log on the box:",
-                        f"comfy-qat ssh {host.name}",
-                        "then: sudo cat /opt/google/cuda-installer/installer.log",
-                    ),
+                    fix=_with_the_bill(host, *_driver_log(host)),
                 ) from exc
             if waiting is None:
                 waiting = output.slow(
-                    "waiting for the NVIDIA driver — a new box installs it on "
-                    "first boot and reboots once or twice",
+                    ("waiting for the NVIDIA driver — a new Windows box installs it "
+                     "from Google's script on first boot"
+                     if is_windows(host) else
+                     "waiting for the NVIDIA driver — a new box installs it on "
+                     "first boot and reboots once or twice"),
                     expect=f"up to {timeout}s", emit=say, clock=now,
                     background=False,
                 ).start()
@@ -1304,10 +1310,68 @@ def wait_for_driver(
             sleep(POLL_SECONDS)
 
 
+def _driver_log(host: Host) -> tuple[str, ...]:
+    """Where the driver installer wrote what it did, on this box.
+
+    Linux runs Google's installer as a startup script and it keeps its own log.
+    Windows runs Google's script in sysprep's specialize pass, before anyone can
+    SSH in, and a specialize script's output goes to the serial console — so
+    that is where to read it, from here, with nothing open on the box.
+    """
+    if is_windows(host):
+        return ("read what Google's driver script printed, on the serial console:",
+                f"gcloud compute instances get-serial-port-output {host.gce_instance} "
+                f"--zone={host.gce_zone} --project={host.gce_project}")
+    return ("look at the installer's own log on the box:",
+            f"comfy-qat ssh {host.name}",
+            "then: sudo cat /opt/google/cuda-installer/installer.log")
+
+
+# The build ComfyUI is running is not the one asked for. Kept apart from every
+# other failure because it is the one where the box is fine, ComfyUI is fine, and
+# the only thing wrong is what it is — so nothing is torn down.
+WRONG_BUILD = "wrong-build"
+
+
+def read_facts(gc: Gcloud, host: Host) -> "OnTheBox":
+    """What the box says it runs: its checkout and its record. Best effort.
+
+    A box that will not answer gives empty facts rather than a failure: this is
+    asked to say more about a machine, and saying less is the safe direction.
+    """
+    from .build import OnTheBox, facts
+    from .provision import facts_command
+
+    try:
+        return facts(gc.ssh_output(host.gce_instance, host.gce_zone, host.gce_project,
+                                   facts_command(host)))
+    except (GcloudError, OSError):
+        return OnTheBox()
+
+
 def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                      *, tunnel_dir: Path | None = None,
-                     budget: Budget | None = None) -> None:
-    """Make sure ComfyUI exists on the box, installing it if it does not."""
+                     budget: Budget | None = None,
+                     want: "Build | None" = None,
+                     declared: "Build | None" = None,
+                     clean: bool = False, force: bool = False) -> "OnTheBox | None":
+    """Make sure ComfyUI exists on the box — the build asked for, when one was.
+
+    `want` is the build a command line asked for: the options it was given,
+    laid over what the box was last asked to run (`Build.over`). `declared` is
+    the host list's `build` for this box, which a FRESH install uses when
+    nothing was asked. Neither is the default build with Manager on and the tip
+    of ComfyUI's default branch.
+
+    A box that already has ComfyUI keeps it unless `want` differs from its
+    record, and then the build is changed in place (`change_command`), keeping
+    its custom nodes and models; `clean` deletes the checkout and installs
+    afresh instead. Returns what the box then says it runs, so the launch can be
+    handed the build's own arguments. `force` changes the build even when the
+    record already names it: the caller has seen the running server contradict
+    the record.
+    """
+    from .build import DEFAULT, OnTheBox
     from .provision import (
         check_command, cuda_command, install_command, root_for, torch_index,
     )
@@ -1328,10 +1392,33 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
             raise give_up(f"could not run a command on {host.name}: {exc}") from exc
 
     say(f"looking for ComfyUI in {root_for(host)}")
-    if "INSTALLED" in look():
+    if "INSTALLED" in look() and not clean:
         say("ComfyUI is already installed")
+        found = read_facts(gc, host)
+        if want is not None:
+            asked = want.over(found.record)
+            if (not force and found.record is not None
+                    and asked.same_choice(found.record)):
+                say(f"build: {asked.describe()} — already on the box")
+            else:
+                _change_build(gc, host, say, asked, found.record, give_up,
+                              budget=budget, tunnel_dir=tunnel_dir)
+                found = read_facts(gc, host)
+                if found.record is None or not asked.same_choice(found.record):
+                    # The record is what the change script writes last, so a
+                    # record that did not move is a change that did not finish
+                    # however it exited.
+                    found = OnTheBox(commit=found.commit, branch=found.branch,
+                                     record=asked, frontend_root=found.frontend_root)
         _verify(gc, host, say, give_up)
-        return
+        return found
+
+    chosen = (want.over(declared) if want is not None
+              else declared if declared is not None else DEFAULT)
+    # S2-1: the build is said before anything is installed, including when it
+    # is the default — "the tip of the default branch" is a choice too, and
+    # the one a tester is likeliest not to know they made.
+    say(f"build: {chosen.describe()}")
 
     # Checked HERE, on the way in, because this is the one step the budget cannot
     # cut short once it is running: the install streams through `gc.ssh`, which
@@ -1400,7 +1487,8 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         try:
             installed = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
                                install_command(host,
-                                               torch_index(host, str(reported or ""))),
+                                               torch_index(host, str(reported or "")),
+                                               build=chosen, clean=clean),
                                stream=True)
         except GcloudError as exc:
             raise give_up(
@@ -1420,6 +1508,64 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         raise give_up(
             f"the ComfyUI install on {host.name} did not finish: it reported success "
             f"but {root_for(host)} still has no ComfyUI in it")
+    found = read_facts(gc, host)
+    if found.record is None:
+        found = OnTheBox(commit=found.commit, branch=found.branch, record=chosen,
+                         frontend_root=found.frontend_root)
+    return found
+
+
+def _change_build(gc: Gcloud, host: Host, say: Callable[[str], None], asked: "Build",
+                  had: "Build | None", give_up, *, budget: Budget | None,
+                  tunnel_dir: Path | None) -> None:
+    """Put `asked` on a box that already has ComfyUI. Its nodes and models stay.
+
+    A frontend RELEASE is not an install — ComfyUI downloads it at startup — so a
+    change that only moves the frontend release writes the record and nothing
+    else. Everything else goes through `comfy install --restore`.
+    """
+    from .build import DEFAULT
+    from .provision import change_command, cuda_command, record_command, torch_index
+
+    before = had or DEFAULT
+    say(f"build: {asked.describe()}")
+    if had is not None and asked.differs_only_in_frontend_release(had):
+        try:
+            gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                   record_command(host, asked), stream=False)
+        except (GcloudError, OSError) as exc:
+            raise give_up(f"could not record the new build on {host.name}: {exc}") from exc
+        say(f"the frontend changes from {before.frontend_words()} to "
+            f"{asked.frontend_words()}; ComfyUI fetches it when it starts")
+        return
+    if budget is not None and budget.gone:
+        raise out_of_time(host, budget, "the build has still not been changed",
+                          tunnel_dir, say)
+    reported = None
+    if not declares_no_gpu(host):
+        try:
+            reported = gc.ssh_output(host.gce_instance, host.gce_zone,
+                                     host.gce_project, cuda_command(host))
+        except GcloudError:
+            reported = None
+    changing = output.slow(
+        f"changing the build on {host.name} — its custom nodes and models stay",
+        expect="a few minutes", emit=say, every=STREAM_TICK_SECONDS).start()
+    try:
+        try:
+            code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+                          change_command(host, asked, torch_index(host, str(reported or ""))),
+                          stream=True)
+        except (GcloudError, OSError) as exc:
+            raise give_up(f"the build on {host.name} could not be changed: {exc}",
+                          egress=True) from exc
+        if code != 0:
+            raise give_up(
+                f"the build on {host.name} could not be changed (exit {code}). Its "
+                f"log is above; the checkout is where comfy-cli left it.", egress=True)
+        changing.done("changed")
+    finally:
+        changing.give_up()
 
 
 # 130 is a program stopped with Ctrl-C. That is a person finishing, not a fault.
@@ -1485,6 +1631,12 @@ def _stop_ours(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
             f"it still holds the port")
         return
     say(f"stopped the ComfyUI this run started on {host.name} ({name}, pid {pid})")
+
+
+# Public, for `host._serve`: a box already serving that is to be given another
+# build has its ComfyUI stopped first — only ever the process holding ComfyUI's
+# port, which is what this stops.
+stop_running = _stop_ours
 
 
 def _tunnel_fix(host: Host, tunnel_dir) -> str:
@@ -1654,7 +1806,9 @@ def _verify(gc: Gcloud, host: Host, say: Callable[[str], None], give_up) -> None
 
 
 def _arrive(host: Host, stamp: Stamp, say: Callable[[str], None],
-            open_browser: Callable[[str], None] | None) -> None:
+            open_browser: Callable[[str], None] | None, *,
+            gc: Gcloud | None = None, expect: "Build | None" = None,
+            facts: "OnTheBox | None" = None) -> None:
     """Hand a machine over: name it beside its url, then open it.
 
     The single place a browser is pointed at a host, so it is the single place
@@ -1669,9 +1823,75 @@ def _arrive(host: Host, stamp: Stamp, say: Callable[[str], None],
     over has to be which machine is behind it, not just where it is.
     """
     _must_be_the_named_machine(host, stamp)
+    if expect is not None:
+        # S2-7: ready means the build that was asked for. Checked here, the one
+        # place a browser is pointed at a host, so no path to a tab skips it.
+        stamp = confirm_build(gc, host, expect, stamp, say, facts=facts)
     say(f"open {host.url} — {stamp.line()}")
     if open_browser is not None:
         open_browser(host.url)
+
+
+def observe(gc: Gcloud | None, host: Host, stamp: Stamp, *,
+            facts: "OnTheBox | None" = None) -> Stamp:
+    """The stamp, with the build the running ComfyUI and its checkout report.
+
+    The frontend and Manager are asked of the running server; the commit and
+    the PR of the checkout on the box, over SSH, unless `facts` already holds
+    them. Anything that cannot be read stays None.
+    """
+    from dataclasses import replace
+
+    from .stamp import manager_state, served_frontend
+
+    frontend = served_frontend(host.url)
+    manager = manager_state(host.url)
+    if facts is None and gc is not None and host.is_remote:
+        facts = read_facts(gc, host)
+    commit = facts.commit if facts else None
+    pr = facts.pr if facts else None
+    return replace(stamp, frontend_version=frontend or stamp.frontend_version,
+                   manager=manager or stamp.manager,
+                   comfyui_commit=commit or stamp.comfyui_commit,
+                   comfyui_pr=str(pr) if pr else stamp.comfyui_pr)
+
+
+def confirm_build(gc: Gcloud | None, host: Host, expect: "Build", stamp: Stamp,
+                  say: Callable[[str], None], *,
+                  facts: "OnTheBox | None" = None) -> Stamp:
+    """Raise unless the running ComfyUI IS the build that was asked for.
+
+    Only a contradiction refuses: a part that cannot be read is said to be
+    unconfirmed and passes, the rule `stamp` keeps — a field nobody can read is
+    absent, never guessed, and never a reason to call a working box broken.
+    Nothing is torn down on a refusal, as with the wrong machine: ComfyUI is up
+    and working, it is the wrong build, and the box is said to be billing.
+    """
+    seen = observe(gc, host, stamp, facts=facts)
+    wrong, unread = expect.contradictions(
+        comfyui_version=seen.comfyui_version, commit=seen.comfyui_commit,
+        pr=int(seen.comfyui_pr) if seen.comfyui_pr else None,
+        frontend=seen.frontend_version, manager=seen.manager,
+        torch=seen.pytorch_version)
+    if wrong:
+        flags = expect.flags()
+        raise LifecycleError(
+            f"{host.name} came up on a different build from the one you asked for: "
+            f"{'; '.join(wrong)}. It has not been reported as ready and nothing was "
+            f"opened. ComfyUI is still up on it, and the machine is billing.",
+            kind=WRONG_BUILD,
+            fix=_with_the_bill(
+                host,
+                "put the build you asked for back on it:",
+                f"comfy-qat go {host.name}{' ' + flags if flags else ''}",
+                "or read why, in ComfyUI's own log on the box:",
+                f"comfy-qat logs {host.name}",
+            ),
+        )
+    for part in unread:
+        say(f"could not read {part} off the running ComfyUI, so that part of the "
+            f"build is not confirmed")
+    return seen
 
 
 def serve(
@@ -1686,6 +1906,8 @@ def serve(
     timeout: int = COMFY_TIMEOUT,
     tunnel_dir: Path | None = None,
     repair: bool = True,
+    expect: "Build | None" = None,
+    facts: "OnTheBox | None" = None,
 ) -> int:
     """Launch ComfyUI on the box with its log on this terminal.
 
@@ -1737,7 +1959,8 @@ def serve(
                 answered.set()
                 say(f"ComfyUI answering: {stamp.line()}")
                 try:
-                    _arrive(host, stamp, say, open_browser)
+                    _arrive(host, stamp, say, open_browser, gc=gc, expect=expect,
+                            facts=facts)
                 except LifecycleError as exc:
                     say(str(exc))
                     wrong.append(exc)
@@ -1766,7 +1989,7 @@ def serve(
             say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
                 "— using it rather than starting a second one")
             say(f"ComfyUI answering: {serving.line()}")
-            _arrive(host, serving, say, open_browser)
+            _arrive(host, serving, say, open_browser, gc=gc, expect=expect, facts=facts)
             return 0
 
         # ComfyUI's own message for this is "Port 8188 is already in use" plus a
@@ -1788,7 +2011,7 @@ def serve(
     try:
         try:
             code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                          launch_command(host), stream=True)
+                          launch_command(host, _launch_args(expect, facts)), stream=True)
         finally:
             # Otherwise the watcher outlives a failed launch and opens a browser
             # onto a URL that never answered.
@@ -1846,7 +2069,7 @@ def serve(
             return serve(
                 gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
                 sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,
-                repair=False,
+                repair=False, expect=expect, facts=facts,
             )
         raise give_up(f"ComfyUI on {host.name} exited with {code} instead of starting.")
 
@@ -2070,6 +2293,8 @@ def start_detached(
     timeout: int = COMFY_TIMEOUT,
     tunnel_dir: Path | None = None,
     repair: bool = True,
+    expect: "Build | None" = None,
+    facts: "OnTheBox | None" = None,
 ) -> int:
     """Launch ComfyUI on the box, leave it running there, and give the prompt back.
 
@@ -2126,7 +2351,7 @@ def start_detached(
             say(f"ComfyUI is already running on {host.name} ({name}, pid {pid}) "
                 f"— using it rather than starting a second one")
             say(f"ComfyUI answering: {serving.line()}")
-            _arrive(host, serving, say, open_browser)
+            _arrive(host, serving, say, open_browser, gc=gc, expect=expect, facts=facts)
             return 0
         raise give_up(
             f"something is already listening on {host.name}'s ComfyUI port "
@@ -2147,7 +2372,8 @@ def start_detached(
 
     try:
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                      launch_detached_command(host), stream=True)
+                      launch_detached_command(host, _launch_args(expect, facts)),
+                      stream=True)
     except (GcloudError, OSError) as exc:
         # Same fault as the one `serve` guards, and worse here: this is the
         # everyday launch, the tunnel is already open by the time it can happen,
@@ -2170,7 +2396,7 @@ def start_detached(
             return start_detached(
                 gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
                 sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,
-                repair=False,
+                repair=False, expect=expect, facts=facts,
             )
         raise give_up(
             f"ComfyUI on {host.name} could not be launched (exit {code}).")
@@ -2206,11 +2432,24 @@ def start_detached(
     if stamp is None:
         return _never_answered(gc, host, say, tunnel_dir=tunnel_dir, repair=repair,
                                open_browser=open_browser, probe_fn=probe_fn,
-                               sleep=sleep, now=now, timeout=timeout)
+                               sleep=sleep, now=now, timeout=timeout,
+                               expect=expect, facts=facts)
 
     say(f"ComfyUI answering: {stamp.line()}")
-    _arrive(host, stamp, say, open_browser)
+    _arrive(host, stamp, say, open_browser, gc=gc, expect=expect, facts=facts)
     return 0
+
+
+def _launch_args(expect: "Build | None", facts: "OnTheBox | None") -> str:
+    """The build's own part of ComfyUI's command line, or nothing at all.
+
+    Nothing for a box nobody has asked anything of — one installed before 1.4.0,
+    with no record — which therefore launches exactly as it always did.
+    """
+    build = expect or (facts.record if facts else None)
+    if build is None:
+        return ""
+    return build.launch_args(facts.frontend_root if facts else None)
 
 
 def _never_forwarded(gc: Gcloud, host: Host, say: Callable[[str], None], *,

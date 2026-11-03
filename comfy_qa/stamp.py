@@ -252,6 +252,16 @@ class Stamp:
     pytorch_version: str | None = None
     cloud_version: str | None = None
     deploy_environment: str | None = None
+    # The build, as the running ComfyUI and its checkout say it is (1.4.0).
+    # `comfyui_commit` and `comfyui_pr` are git's, in the checkout on the box;
+    # `frontend_version` is read off the frontend ComfyUI is SERVING, not off
+    # the package installed beside it, because `--front-end-version` and
+    # `--front-end-root` both serve something else; `manager` is "on" when
+    # Manager's own route answers and "off" when ComfyUI says it has none.
+    comfyui_commit: str | None = None
+    comfyui_pr: str | None = None
+    frontend_version: str | None = None
+    manager: str | None = None
 
     def line(self) -> str:
         """The paste-ready evidence line.
@@ -270,7 +280,13 @@ class Stamp:
         if self.deploy_environment:
             parts.append(self.deploy_environment)
         if self.comfyui_version:
-            parts.append(f"ComfyUI {self.comfyui_version}")
+            parts.append(f"ComfyUI {self.comfyui_version}{self._where_from()}")
+        elif self.comfyui_commit:
+            parts.append(f"ComfyUI{self._where_from()}")
+        if self.frontend_version:
+            parts.append(f"frontend {self.frontend_version}")
+        if self.manager:
+            parts.append(f"Manager {self.manager}")
         if self.cloud_version:
             parts.append(f"cloud {self.cloud_version}")
         if self.os:
@@ -287,6 +303,21 @@ class Stamp:
             parts.append(f"python {self.python_version}")
         line = SEPARATOR.join(str(part) for part in parts)
         return line if len(line) <= _LINE_LIMIT else line[: _LINE_LIMIT - 1] + "…"
+
+    def _where_from(self) -> str:
+        """` (PR 17497, 9350a08d80)` — which checkout the version number came from.
+
+        The version alone does not say: every commit after a release reports
+        that release's number until the next one, so a PR and a release can
+        stamp the same ComfyUI version. Ten characters of the commit are enough
+        to find it and short enough to read.
+        """
+        said = []
+        if self.comfyui_pr:
+            said.append(f"PR {self.comfyui_pr}")
+        if self.comfyui_commit:
+            said.append(self.comfyui_commit[:10])
+        return f" ({', '.join(said)})" if said else ""
 
     def as_dict(self) -> dict:
         """The same capture, machine-readable, under ComfyUI's own key names.
@@ -572,3 +603,110 @@ def mismatch(host, stamp: Stamp) -> str | None:
             f"{', '.join(accelerators)}. That port is not reaching {host.name}."
         )
     return None
+
+
+# --- the build a running ComfyUI is serving -------------------------------------
+#
+# `/system_stats` says the backend's version and torch's. It does not say which
+# frontend is being SERVED — `comfy_package_versions` is the package installed
+# beside ComfyUI, and `--front-end-version` or `--front-end-root` serve a
+# different one from the same port — and it does not say whether Manager is
+# running. Both are asked of the running server here, read-only, with the same
+# rules as `fetch`: no redirect followed, a bounded read, and anything this
+# cannot read is None rather than a guess.
+
+# The frontend's entry script, as its index.html names it. Built by vite, so the
+# attribute order is vite's; both orders are accepted rather than relying on it.
+_ENTRY = re.compile(
+    r'<script\b[^>]*\btype="module"[^>]*\bsrc="([^"]+)"'
+    r'|<script\b[^>]*\bsrc="([^"]+)"[^>]*\btype="module"')
+# The release the bundle was built as. The frontend passes its own version to
+# Sentry's `release` (src/main.ts, `initSentry`), so the literal is in the main
+# chunk of every build since Sentry was added: `release:`1.58.4``.
+_RELEASE = re.compile(r"""\brelease:\s*[`"'](\d+\.\d+\.\d+[0-9A-Za-z.+-]*)[`"']""")
+# The main chunk, as the entry script maps it: `"./main-BJj46UXU.js"`.
+_MAIN_CHUNK = re.compile(r'"\./(main-[A-Za-z0-9_-]+\.js)"')
+# A bundle chunk is far larger than /system_stats; still bounded.
+MAX_ASSET = 8 << 20
+
+# Manager's own version route, new package then legacy custom node. Either one
+# answering means ComfyUI loaded Manager; ComfyUI answering both with 404 means
+# it did not — `--enable-manager` on the command line is not proof, because
+# ComfyUI drops the flag when the package is missing (main.py,
+# `handle_comfyui_manager_unavailable`).
+MANAGER_PATHS = ("/v2/manager/version", "/manager/version")
+
+
+def _read(url: str, *, opener, timeout: float, cap: int) -> tuple[int, bytes] | None:
+    """(status, body) from one GET, or None for anything that is not an answer."""
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        response = opener(request, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        return exc.code, b""
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+    try:
+        with response:
+            answered = getattr(response, "geturl", lambda: url)()
+            body = response.read(cap + 1)
+    except (OSError, http.client.HTTPException):
+        return None
+    if _where(answered) != _where(url) or len(body) > cap:
+        return None
+    return getattr(response, "status", 200) or 200, body
+
+
+def served_frontend(url: str, *, opener=urllib.request.urlopen,
+                    timeout: float = TIMEOUT) -> str | None:
+    """The frontend release the ComfyUI at `url` is serving, or None.
+
+    Read the way a browser meets it: the page, the entry script it names, and
+    the main chunk that script maps, looking for the release the bundle was
+    built as. Three reads at most. Whatever cannot be found is None — a
+    frontend whose bundle no longer carries the literal is unknown, never the
+    package version standing in for it.
+    """
+    base = url.rstrip("/") + "/"
+    page = _read(base, opener=opener, timeout=timeout, cap=MAX_BODY)
+    if not page or page[0] != 200:
+        return None
+    match = _ENTRY.search(page[1].decode("utf-8", "replace"))
+    if not match:
+        return None
+    entry = urllib.parse.urljoin(base, match.group(1) or match.group(2))
+    script = _read(entry, opener=opener, timeout=timeout, cap=MAX_ASSET)
+    if not script or script[0] != 200:
+        return None
+    text = script[1].decode("utf-8", "replace")
+    found = _RELEASE.search(text)
+    if found:
+        return _clean(found.group(1))
+    for chunk in _MAIN_CHUNK.findall(text)[:2]:
+        main = _read(urllib.parse.urljoin(entry, chunk), opener=opener,
+                     timeout=timeout, cap=MAX_ASSET)
+        if main and main[0] == 200:
+            found = _RELEASE.search(main[1].decode("utf-8", "replace"))
+            if found:
+                return _clean(found.group(1))
+    return None
+
+
+def manager_state(url: str, *, opener=urllib.request.urlopen,
+                  timeout: float = TIMEOUT) -> str | None:
+    """"on" when Manager answers on the running ComfyUI, "off" when it does not.
+
+    "off" needs ComfyUI to have ANSWERED both routes with a 404; a route that
+    could not be asked at all is None, because silence is not "off".
+    """
+    base = url.rstrip("/")
+    refused = 0
+    for path in MANAGER_PATHS:
+        answer = _read(base + path, opener=opener, timeout=timeout, cap=4096)
+        if answer is None:
+            return None
+        if answer[0] == 200:
+            return "on"
+        if answer[0] == 404:
+            refused += 1
+    return "off" if refused == len(MANAGER_PATHS) else None
