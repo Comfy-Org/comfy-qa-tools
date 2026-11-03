@@ -544,10 +544,20 @@ def rows(cells: list[tuple[str, ...]]) -> list[str]:
     Trailing whitespace is stripped: the last column pads to nothing, and a
     trailing run of spaces is invisible in a terminal and very visible in a diff
     of a pasted log.
+
+    ROWS MAY BE DIFFERENT LENGTHS, and a short row simply ends early. The widths
+    were measured over as many columns as the FIRST row had, so `discover` —
+    whose reserved row carries a sixth cell, `reserved (<name>)`, and whose
+    other rows do not — crashed with an IndexError on any mix of the two, in
+    either order: a short first row left the long one's last cell unmeasured, a
+    long first row asked the short one for a cell it did not have. It printed
+    its heading and then a traceback, and adopted nothing, on the path the
+    tool's own messages send people down to adopt a reserved box.
     """
     if not cells:
         return []
-    width = [max(len(row[i]) for row in cells) for i in range(len(cells[0]))]
+    columns = max(len(row) for row in cells)
+    width = [max(len(row[i]) for row in cells if i < len(row)) for i in range(columns)]
     return [COLUMN_GAP.join(cell.ljust(width[i]) for i, cell in enumerate(row)).rstrip()
             for row in cells]
 

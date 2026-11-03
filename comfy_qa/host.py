@@ -739,7 +739,9 @@ def discover_cmd(
              "running" if box.running else "stopped", f"port {port}",
              # Only on a row that has one. `stopped` beside a reservation is the
              # pair that reads as costing nothing, so it is said in the table
-             # and again, as a sentence, once the box has been adopted.
+             # and again, as a sentence, once the box has been adopted. So the
+             # rows are not all one length, which `say.rows` allows for — it
+             # did not, and a mix of the two crashed (O22).
              *((f"reserved ({box.reservation})",) if box.reservation else ()))
             for box, port in additions
         ]):

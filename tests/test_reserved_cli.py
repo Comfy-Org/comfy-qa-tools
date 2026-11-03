@@ -734,6 +734,39 @@ def test_discover_says_nothing_about_reserving_for_a_box_that_is_not(run):
     assert "reserved" not in result.stdout
 
 
+@pytest.mark.parametrize("reserved_first", [True, False],
+                         ids=["reserved-first", "unreserved-first"])
+def test_discover_adopts_a_mix_of_reserved_and_unreserved_boxes(run, reserved_first):
+    """O22, found by the pre-merge check of 1.3.0: a reserved row had six cells
+    and every other row five, and the table padding read every row as long as
+    the first — so a mix crashed with an IndexError, in either order, after
+    printing its heading and before writing anything. It is the mix `discover`
+    is sent to adopt: `create --reserve` that could not write the host list
+    points here, and any other box missing from the list makes it a mix.
+
+    A box with no GPU beside a reserved one, as the live pass had them. Both
+    are written, and only the reserved one says it is."""
+    held = box("their-box", status="TERMINATED", bound="their-rsv")
+    plain = box("qatest-cpu", status="RUNNING", bound=None, card=False)
+    for row in (held, plain):
+        row["disks"][0]["licenses"] = [f"{URL}/global/licenses/ubuntu-2204-lts"]
+    found = [held, plain] if reserved_first else [plain, held]
+    result = run("discover", cloud=Project(instances=found))
+
+    assert result.exit_code == 0, result.output
+    assert result.exception is None, repr(result.exception)
+    assert "[hosts.their-box]" in result.hosts
+    assert "[hosts.qatest-cpu]" in result.hosts
+    assert result.hosts.count("gce_reservation") == 1
+    assert 'gce_reservation = "their-rsv"' in result.hosts
+    rows = {line.split()[0]: line for line in result.stdout.splitlines()
+            if line.startswith("  ") and ("port " in line)}
+    assert "reserved (their-rsv)" in rows["their-box"]
+    assert "reserved" not in rows["qatest-cpu"]
+    assert "no GPU" in rows["qatest-cpu"]
+    assert "added 2 hosts" in result.stdout
+
+
 # --- move ---------------------------------------------------------------------
 
 
