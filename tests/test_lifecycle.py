@@ -2187,8 +2187,37 @@ def test_the_real_stockout_names_no_other_zone_and_none_is_invented():
 # a name can carry it: Google echoes the resource path in most of what it
 # refuses, so `qatest-stockout` turned an ordinary refusal into "the zone is out
 # of stock, try another" — the advice for a problem the user does not have. The
-# shape it was there for is Google's own state code, which is not a word but a
-# key and a value: `state:STOCKOUT`. A GCE name cannot hold a colon.
+# shape it was there for is the state code `state:STOCKOUT`, which is not a word
+# but a key and a value. That form is how the test written with the first
+# stock-out fix (#17) has it; the live message that fix came from is not on
+# record, and no real refusal kept since carries the code, so it is a sign kept
+# rather than one seen. A GCE name cannot hold a colon.
+
+
+def test_no_comment_calls_the_stockout_state_code_google_s_own():
+    """C2, carried over from the step 1 audit (behaviour:F4).
+
+    `state:STOCKOUT` is kept as a capacity sign because the test written with
+    the first stock-out fix (#17) has it. The live message that fix came from is
+    not on record, and no real refusal kept since carries the code — so saying
+    the code is Google's own claims a provenance nobody has seen.
+    `lifecycle._CAPACITY_SIGNS` says that; this holds every file to it.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    # Built, so this test's own source is not a match for what it looks for.
+    claim = "Google's own " + "state code"
+    found = [
+        f"{path.relative_to(root)}:{number}"
+        for folder in ("comfy_qa", "tests", "docs")
+        for path in sorted((root / folder).rglob("*"))
+        if path.suffix in (".py", ".md")
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1)
+        if claim in line
+    ]
+    assert not found, found
 
 
 @pytest.mark.parametrize("text", [
