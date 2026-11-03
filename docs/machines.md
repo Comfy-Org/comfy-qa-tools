@@ -12,8 +12,10 @@ the card, and whether to reserve it.
 comfy-qat create --os linux --gpu t4
 comfy-qat create --os windows --gpu l4
 comfy-qat create --os linux --gpu t4 --name box-2 --disk 500
-comfy-qat create --os linux --gpu t4 --reserve      # hold its capacity; bills stopped too
-comfy-qat create --os linux --gpu none              # no GPU at all
+# hold its capacity; bills stopped too
+comfy-qat create --os linux --gpu t4 --reserve
+# no GPU at all
+comfy-qat create --os linux --gpu none
 comfy-qat create --os linux --gpu t4 --dry-run
 ```
 
@@ -177,7 +179,8 @@ where each one's log is when it does not finish.
 
 ```sh
 comfy-qat go comfy-win
-comfy-qat go windows      # the same box, described rather than named
+# the same box, described rather than named
+comfy-qat go windows
 ```
 
 That is the whole thing. In order, it:
@@ -233,9 +236,11 @@ Each part is set on its own:
 
 ```sh
 comfy-qat create --os linux --gpu none --name qatest-s2-linux --version v0.43.0 --frontend-version v1.58.4
-comfy-qat go qatest-s2-linux                          # installs that build
+# installs that build
+comfy-qat go qatest-s2-linux
 comfy-qat stamp qatest-s2-linux
-comfy-qat switch qatest-s2-linux --pr 17497 --keep-others   # same box, a PR, nodes and models kept
+# same box, a PR, nodes and models kept
+comfy-qat switch qatest-s2-linux --pr 17497 --keep-others
 comfy-qat stamp qatest-s2-linux
 ```
 
@@ -320,9 +325,12 @@ was streamed back over SSH — which meant one machine per terminal, and Ctrl-C
 stopped ComfyUI. Now it runs there and you get your prompt back:
 
 ```sh
-comfy-qat go windows       # detached: starts it, forwards, prints the URL
-comfy-qat go linux         # and now both, in one terminal, in two tabs
-comfy-qat list             # both tunnelled
+# detached: starts it, forwards, prints the URL
+comfy-qat go windows
+# and now both, in one terminal, in two tabs
+comfy-qat go linux
+# both tunnelled
+comfy-qat list
 ```
 
 `down` each one when you are finished with it, or `down --all` to stop the lot.
@@ -334,8 +342,10 @@ that used to stop you overspending — the terminal being busy — is gone with 
 ### Watching the log
 
 ```sh
-comfy-qat logs linux            # follow it, as it is written
-comfy-qat logs linux --tail 50  # the last 50 lines, then stop
+# follow it, as it is written
+comfy-qat logs linux
+# the last 50 lines, then stop
+comfy-qat logs linux --tail 50
 ```
 
 It reads a file on the box — `/opt/comfyui/comfyui.log`, or
@@ -580,7 +590,8 @@ that exits 2.
 
 ```sh
 comfy-qat down comfy-win
-comfy-qat down --all       # every cloud box you have declared, in one go
+# every cloud box you have declared, in one go
+comfy-qat down --all
 ```
 
 `--all` exists because the question at the end of a session is never "is
@@ -703,10 +714,14 @@ See [cost.md](cost.md) for the one rule.
 `go` is `up` + install + serve. When you want the steps on their own:
 
 ```sh
-comfy-qat up comfy-win      # start it, tunnel in, wait for ComfyUI to answer
-comfy-qat open comfy-win    # tunnel only, to a box that is already running
-comfy-qat logs comfy-win    # what the ComfyUI on it is saying
-comfy-qat stamp comfy-win   # what is it running, exactly?
+# start it, tunnel in, wait for ComfyUI to answer
+comfy-qat up comfy-win
+# tunnel only, to a box that is already running
+comfy-qat open comfy-win
+# what the ComfyUI on it is saying
+comfy-qat logs comfy-win
+# what is it running, exactly?
+comfy-qat stamp comfy-win
 ```
 
 `open --dry-run` prints the `gcloud compute ssh ... -L` command instead of
@@ -722,8 +737,10 @@ starts it and forwards in one step.
 ## Getting onto the box itself
 
 ```sh
-comfy-qat ssh comfy-linux    # a shell, on a Linux box
-comfy-qat rdp comfy-win      # Remote Desktop, on a Windows box
+# a shell, on a Linux box
+comfy-qat ssh comfy-linux
+# Remote Desktop, on a Windows box
+comfy-qat rdp comfy-win
 ```
 
 The long form of the first is `gcloud compute ssh <instance> --tunnel-through-iap

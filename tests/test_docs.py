@@ -2603,3 +2603,60 @@ def test_the_documented_tunnel_command_is_the_one_the_tool_builds():
         assert "start-iap-tunnel" not in text, (
             f"{path.name} still describes the tunnel the tool stopped using"
         )
+
+
+def _trailing_note(line: str) -> int | None:
+    """Where a `#` note starts on a shell line, outside quotes, or None."""
+    quote = None
+    for at, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and at and line[at - 1] in " \t":
+            return at
+    return None
+
+
+def _shell_lines(path: Path) -> list[str]:
+    """Every line inside a ```sh block, found by walking the fences line by
+    line: a regex from one fence to the next pairs them wrongly wherever a
+    block holds a fence of its own, and checks less without saying so."""
+    found, inside = [], False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("```"):
+            inside = line == "```sh" if not inside else False
+        elif inside:
+            found.append(line)
+    return found
+
+
+def test_no_shell_example_ends_in_a_note():
+    """A command in a docs example is the command and nothing else, as every
+    command the tool prints is (`test_host_costs`, O25). `comfy-qat list   # see
+    your machines` pasted into an interactive zsh without `interactivecomments`
+    — how zsh starts — hands `#`, `see`, `your` and `machines` to comfy-qat,
+    which refuses them, exit 2, nothing done. The note goes on its own line
+    above the command (audit parking item behaviour:P4, 3 Nov)."""
+    found = []
+    for path in [ROOT / "README.md", *sorted(DOCS.glob("*.md"))]:
+        for line in _shell_lines(path):
+            if not line.lstrip().startswith("#") and _trailing_note(line) is not None:
+                found.append(f"{path.name}: {line.strip()}")
+    assert not found, "\n".join(found)
+
+
+@pytest.mark.parametrize("line, note", [
+    ("comfy-qat list            # see your machines", True),
+    ("comfy-qat go windows # one space", True),
+    ("echo \"=== N9 delete it\";        qat delete $BOX   # type the name", True),
+    ("# a note on its own line", False),
+    ("comfy-qat go comfy-win --pr '#17497'", False),
+    ("echo 'a # inside quotes'", False),
+    ("grep -c '#' file", False),
+])
+def test_the_note_finder_tells_a_note_from_a_quoted_hash(line, note):
+    """The guard on the guard: it must see a note, and must not see a `#` that
+    is quoted or that a note line starts with."""
+    found = (not line.lstrip().startswith("#")) and _trailing_note(line) is not None
+    assert found is note

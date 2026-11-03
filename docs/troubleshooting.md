@@ -251,8 +251,10 @@ single pass, and one `y` then deletes the only record of machines that are still
 billing. Fix the field and run it again.
 
 ```sh
-comfy-qat list          # what your host list says
-gcloud projects list    # what you actually have
+# what your host list says
+comfy-qat list
+# what you actually have
+gcloud projects list
 ```
 
 **`could not be listed, so nothing was checked on it — any entry naming it was left alone`**

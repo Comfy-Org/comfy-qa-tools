@@ -222,7 +222,8 @@ on it straight away.
 
 ```sh
 comfy-qat go comfy-linux
-comfy-qat go linux          # the same box, described rather than named
+# the same box, described rather than named
+comfy-qat go linux
 ```
 
 That starts the machine, installs ComfyUI if it has none, launches it **on the
@@ -231,8 +232,10 @@ back. ComfyUI keeps running there, so you can bring a second machine up from the
 same terminal.
 
 ```sh
-comfy-qat logs linux        # what it is saying, whenever you want to know
-comfy-qat down linux        # close the tunnel, stop the box, stop paying
+# what it is saying, whenever you want to know
+comfy-qat logs linux
+# close the tunnel, stop the box, stop paying
+comfy-qat down linux
 ```
 
 **`down` is the one to remember.** A GPU box bills for every hour it is on,

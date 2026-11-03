@@ -101,8 +101,10 @@ What the tool *can* answer is the question underneath — "am I still paying for
 anything":
 
 ```sh
-comfy-qat list --live      # what Google says is running and what is reserved
-comfy-qat down --all       # stop every cloud box you have declared
+# what Google says is running and what is reserved
+comfy-qat list --live
+# stop every cloud box you have declared
+comfy-qat down --all
 ```
 
 `--live` is the honest check: without it, `list` reports only what this machine

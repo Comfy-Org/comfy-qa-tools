@@ -121,18 +121,25 @@ skips it entirely.
 It works without prompts too: `--project`, `--region`, `--non-interactive`.
 
 ```sh
-comfy-qat list            # see your machines
-comfy-qat status          # re-check readiness at any time
+# see your machines
+comfy-qat list
+# re-check readiness at any time
+comfy-qat status
 ```
 
 ## Everyday use
 
 ```sh
-comfy-qat go windows       # start it, tunnel in, leave ComfyUI running on the box
-comfy-qat logs windows     # what that ComfyUI is saying, whenever you want it
-comfy-qat stamp windows    # the line that says what produced your result, build included
-comfy-qat down windows     # close the tunnel, stop the box, stop paying
-comfy-qat down --all       # stop every cloud box you have declared
+# start it, tunnel in, leave ComfyUI running on the box
+comfy-qat go windows
+# what that ComfyUI is saying, whenever you want it
+comfy-qat logs windows
+# the line that says what produced your result, build included
+comfy-qat stamp windows
+# close the tunnel, stop the box, stop paying
+comfy-qat down windows
+# stop every cloud box you have declared
+comfy-qat down --all
 ```
 
 `windows` there is not a special name — it is the machine described rather than
@@ -150,7 +157,8 @@ picking one. Names always win over a description.
 Changing machine is one command, which stops the box you were on:
 
 ```sh
-comfy-qat switch linux     # start the Linux box, then stop the Windows one
+# start the Linux box, then stop the Windows one
+comfy-qat switch linux
 ```
 
 Making the box is one command too, and the card is the only real decision:
