@@ -722,13 +722,32 @@ def test_a_pr_asked_for_again_after_new_commits_is_fetched_again(world, command,
 
     assert result.exit_code == 0, result.output
     said = flat(result.output)
-    assert f"PR 17497 at {OLD_HEAD[:10]}, not its head {PR_HEAD[:10]}" in said, \
+    assert (f"{BOX}'s checkout is PR 17497 at {OLD_HEAD[:10]}, not its head "
+            f"{PR_HEAD[:10]}, so the build is put on it again") in said, \
         "said, not hidden"
+    assert said.count("so the build is put on it again") == 1, "said once"
+    assert "came up on a different build" not in said, \
+        "a box that is changed before it is handed over did not come up wrong"
     (change,) = sent(world, CHANGING)
     assert "--restore" in change and "'--pr', '#17497'" in change
     assert world.gc.commit == PR_HEAD, "the checkout never moved to the new head"
     assert f"PR 17497, {PR_HEAD[:10]}" in said
     assert world.opened == [world.comfy.url]
+
+
+def test_a_pr_asked_for_again_with_a_frontend_release_is_fetched_not_relaunched(world):
+    """A frontend release alone is a launch option and changes only the record.
+    With the PR asked for again on its old head, the same choice plus a frontend
+    release would have been that relaunch, and left the checkout where it was."""
+    _on_the_old_head(world)
+    world.serves("0.43.0", frontend="1.58.4")
+
+    result = run(world, "go", BOX, "--pr", "17497", "--frontend-version", "v1.58.4")
+
+    assert result.exit_code == 0, result.output
+    (change,) = sent(world, CHANGING)
+    assert "'--pr', '#17497'" in change
+    assert world.gc.commit == PR_HEAD
 
 
 def test_a_box_left_on_the_old_head_is_never_reported_ready(world):
@@ -805,7 +824,9 @@ def test_a_release_is_held_to_its_tag_s_commit_not_its_version_string(
     result = run(world, "go", BOX, "--version", "v0.43.0")
 
     assert result.exit_code == 0, result.output
-    assert said in flat(result.output), "said, not hidden"
+    assert f"{BOX}'s checkout is {said}, so the build is put on it again" in flat(
+        result.output), "said, not hidden"
+    assert "came up on a different build" not in flat(result.output)
     (change,) = sent(world, CHANGING)
     assert "--restore" in change and "'--version', '0.43.0'" in change
     assert world.gc.commit == TAG_SHA and world.gc.branch == "HEAD"
