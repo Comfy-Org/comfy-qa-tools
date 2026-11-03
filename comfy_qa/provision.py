@@ -822,7 +822,7 @@ def _linux_script(host: Host, build: Build, index: str | None, *, clean: bool,
            f"apt-get -o DPkg::Lock::Timeout={APT_LOCK_WAIT} -y -qq")
     series = " ".join(PYTHON_SERIES_SUPPORTED)
     args = comfy_install_args(host, build, index)
-    shown = " ".join(args)
+    shown = _sh_args(args)
     parts = [
         "set -e; ",
         f"echo '{CHANGING if change else INSTALLING}: {build.describe()}'; "
@@ -911,8 +911,14 @@ def _linux_script(host: Host, build: Build, index: str | None, *, clean: bool,
     parts += [
         "echo 'comfy-cli installs torch first (the slow part), then the "
         "requirements, then Manager'; ",
-        f'echo "+ comfy --skip-prompt --workspace $WS install $RESTORE {shown}"; ',
-        f'{_LINUX_CLI} --skip-prompt --workspace "$WS" install $RESTORE {_sh_args(args)}; ',
+        # The echo prints the command on the next line as it runs, so it can be
+        # pasted: comfy-cli by its path, and the arguments quoted as the command
+        # quotes them. It said `comfy` and wrote `--pr #17497` bare, and pasted
+        # into sh that makes the PR number a comment (audit findings code:F4,
+        # behaviour:F10). The single quotes `_sh_args` adds are literal inside
+        # the echo's double ones, so they are printed.
+        f'echo "+ {_LINUX_CLI} --skip-prompt --workspace $WS install $RESTORE {shown}"; ',
+        f'{_LINUX_CLI} --skip-prompt --workspace "$WS" install $RESTORE {shown}; ',
         f"if [ ! -e {LINUX_ROOT} ]; then sudo ln -s {LINUX_CHECKOUT} {LINUX_ROOT}; fi; ",
         f"if [ ! -f {LINUX_ROOT}/main.py ]; then echo INSTALL_INCOMPLETE; exit 1; fi; ",
     ]
@@ -1024,7 +1030,13 @@ def _windows_script(host: Host, build: Build, index: str | None, *, clean: bool,
         f"$a += {_ps_array(args)}; ",
         "Write-Output 'comfy-cli installs torch first (the slow part), then the "
         "requirements, then Manager'; ",
-        "Write-Output ('+ comfy ' + ($a -join ' ')); ",
+        # What runs next, as it could be pasted into PowerShell: comfy.exe by
+        # its path, and a `#`-led item in single quotes — bare, `#17497` starts a
+        # comment there as in sh. `'' +` first, so that `+` is joining strings
+        # from its first term on rather than starting from a `[char]`.
+        f"Write-Output ('+ {_WINDOWS_CLI} ' + (($a | ForEach-Object "
+        "{ if ($_.StartsWith('#')) { '' + [char]39 + $_ + [char]39 } "
+        "else { $_ } }) -join ' ')); ",
         f"& '{_WINDOWS_CLI}' @a; ",
         "if ($LASTEXITCODE -ne 0) "
         "{ Write-Output ('INSTALL_INCOMPLETE: comfy install exited ' + $LASTEXITCODE); "

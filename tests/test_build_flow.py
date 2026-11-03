@@ -30,6 +30,8 @@ from fakes import (
 BOX = "comfy-win"
 TAG_SHA = "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24"
 PR_HEAD = "9350a08d80aaaaaabbbbbbbbccccccccdddddddd"
+OTHER_SHA = "b0" * 20
+FRONTEND_PR_HEAD = "e" * 40
 REPO = "repos/Comfy-Org/ComfyUI"
 FRONT = "repos/Comfy-Org/ComfyUI_frontend"
 
@@ -39,6 +41,8 @@ GITHUB = {
     f"{REPO}/git/ref/tags/v0.42.1": {"object": {"sha": "1" * 40}},
     f"{REPO}/pulls/17497": {"state": "open", "merged": False, "head": {"sha": PR_HEAD}},
     f"{FRONT}/releases/tags/v1.58.4": {"tag_name": "v1.58.4"},
+    f"{FRONT}/pulls/5678": {"state": "open", "merged": False,
+                            "head": {"sha": FRONTEND_PR_HEAD}},
 }
 
 
@@ -76,23 +80,25 @@ class Box(FakeGcloud):
     The install and the change write `Build.spec()` to the box; this reads it
     back out of the script it was sent, so a flow that installs one build and
     records another fails here as it would on a real machine. `branch` and
-    `commit` are what git in the checkout would say.
+    `commit` are what git in the checkout would say; `frontend_root` is where a
+    frontend PR's build landed, which only the box knows.
     """
 
     def __init__(self, *, record: str = "", commit: str = TAG_SHA, branch: str = "HEAD",
-                 alive: str = "ALIVE", **rest) -> None:
+                 alive: str = "ALIVE", frontend_root: str = "", **rest) -> None:
         super().__init__(**rest)
         self.record = record
         self.commit = commit
         self.branch = branch
         self.alive = alive
+        self.frontend_root = frontend_root
 
     def ssh_output(self, instance, zone, project, remote):
         if "COMMIT=" in remote and "RECORD=" in remote:
             self.calls.append(("ssh_output", instance, zone, project))
             self.remote.append(remote)
             return (f"COMMIT={self.commit}\nBRANCH={self.branch}\n"
-                    f"RECORD={self.record}\nFRONTEND_ROOT=\n")
+                    f"RECORD={self.record}\nFRONTEND_ROOT={self.frontend_root}\n")
         if "pgrep -f" in remote or "Get-Process -Name python" in remote:
             self.calls.append(("ssh_output", instance, zone, project))
             self.remote.append(remote)
@@ -193,6 +199,11 @@ def run(world: World, *args: str):
         gcloud_module.Gcloud = original
 
 
+def flat(output: str) -> str:
+    """What was printed, with its line wrapping undone."""
+    return " ".join(output.split())
+
+
 def sent(world: World, marker: str) -> list[str]:
     return [remote for remote in world.gc.remote if marker in remote]
 
@@ -280,6 +291,24 @@ def test_a_frontend_change_alone_keeps_the_backend_the_box_has(world):
     assert result.exit_code == 0, result.output
     assert "comfyui=v0.43.0 frontend=v1.58.4" in world.gc.record
     assert not sent(world, CHANGING), "a frontend release is a launch option, not an install"
+
+
+def test_a_frontend_pr_is_built_on_the_box_and_served_from_where_it_landed(world):
+    """S2-2: a frontend PR is built on the box by comfy-cli's own builder, the
+    directory it landed in is read back off the box (FRONTEND_ROOT), and
+    ComfyUI is started with `--front-end-root` at that directory."""
+    landed = r"C:\comfy-qat\frontend-5678\dist"
+    world.cloud(statuses=["RUNNING"], installed=False, frontend_root=landed)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--frontend-pr", "5678")
+
+    assert result.exit_code == 0, result.output
+    (install,) = sent(world, INSTALLING)
+    assert "handle_temporary_frontend_pr" in install, "the PR is never built"
+    assert "'#5678'" in install and "FRONTEND_ROOT=" in install
+    launches = [r for r in world.gc.remote if "main.py --listen" in r]
+    assert launches and all(f"--front-end-root {landed}" in r for r in launches)
 
 
 # --- S2-3: Manager on by default --------------------------------------------------
@@ -392,6 +421,133 @@ def test_a_plain_go_onto_a_serving_box_asks_the_box_nothing(world):
     assert not world.gc.did("ssh_output") and not world.gc.did("ssh")
 
 
+def _printed_fix(output: str) -> list[str]:
+    """The `comfy-qat go` line a wrong-build refusal printed, as argv."""
+    lines = [line.strip() for line in output.splitlines()
+             if line.strip().startswith(f"comfy-qat go {BOX}")]
+    assert lines, f"no `comfy-qat go {BOX}` fix was printed:\n{output}"
+    return lines[0].split()[1:]
+
+
+def test_the_fix_for_manager_not_coming_up_names_it_and_puts_it_back(world):
+    """S2-7 (S2-3), audit finding F2. The default build asks for Manager, so
+    the fix printed when Manager does not come up has to name it: a bare
+    `comfy-qat go <box>` onto a box that is serving asks the box nothing, by
+    design, and handed the same Manager-less ComfyUI over as ready. Pasted
+    exactly as printed, the fix must put Manager back."""
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0", manager=False)
+    first = run(world, "go", BOX)
+    assert first.exit_code == 1, first.output
+    fix = _printed_fix(first.output)
+    assert "--manager" in fix, f"the fix names no build: comfy-qat {' '.join(fix)}"
+
+    # ComfyUI is still up on the box without Manager; the reinstall brings it.
+    world.serves("0.43.0", manager=True)
+    world.gc.remote.clear()
+    world.opened.clear()
+    second = run(world, *fix)
+
+    assert second.exit_code == 0, second.output
+    assert sent(world, CHANGING), "the build was not put back"
+    assert "/v2/manager/version" in world.comfy.pages, "Manager is still off"
+    assert world.opened == [world.comfy.url]
+
+
+def test_the_printed_fix_never_hands_over_a_box_still_on_the_wrong_build(world):
+    """The same fix, on a box where Manager still does not come up: refused
+    again, never reported ready, nothing opened."""
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0", manager=False)
+    first = run(world, "go", BOX)
+    assert first.exit_code == 1, first.output
+
+    world.opened.clear()
+    second = run(world, *_printed_fix(first.output))
+
+    assert second.exit_code == 1, second.output
+    assert "Manager off, not on" in second.output
+    assert world.opened == []
+
+
+def test_go_in_a_new_window_hands_on_manager_when_it_was_named(world, monkeypatch):
+    """`go --manager --new-window` used to hand the new window a plain `go`:
+    `Build.flags` never wrote `--manager`, which is on by default. Named on the
+    command line, it is named again in the command handed on."""
+    handed: list[list[str]] = []
+    monkeypatch.setattr("comfy_qa.lifecycle.in_a_new_window",
+                        lambda rest, say: handed.append(list(rest)))
+    world.cloud(statuses=["RUNNING"], installed=True)
+
+    result = run(world, "go", BOX, "--manager", "--new-window")
+
+    assert result.exit_code == 0, result.output
+    assert handed and "--manager" in handed[0], handed
+
+
+def test_a_torch_that_is_not_the_pin_is_never_reported_ready(world):
+    """S2-7: torch is one of the six parts read back; the pin is held to it."""
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0", torch="2.13.0+cu130")
+
+    result = run(world, "go", BOX, "--torch", "2.12.1+cu130")
+
+    assert result.exit_code == 1, result.output
+    assert "torch 2.13.0+cu130, not 2.12.1+cu130" in flat(result.output)
+    assert world.opened == []
+
+
+def test_a_checkout_on_another_commit_is_never_reported_ready(world):
+    """S2-7: `--commit` asked for, and git on the box says another commit."""
+    world.hub[f"{REPO}/commits/{OTHER_SHA[:10]}"] = {"sha": OTHER_SHA}
+    world.cloud(statuses=["RUNNING"], installed=False)     # git stays on TAG_SHA
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--commit", OTHER_SHA[:10])
+
+    assert result.exit_code == 1, result.output
+    assert f"commit {TAG_SHA[:10]}, not {OTHER_SHA[:10]}" in flat(result.output)
+    assert world.opened == []
+
+
+def test_a_box_on_another_pr_is_never_handed_over_as_the_pr_asked_for(world):
+    """S2-7: the record says PR 17497 and git says the checkout is PR 999's
+    branch. Asking for 17497 says so and puts 17497 back, rather than handing
+    over PR 999."""
+    world.comfy.payload = stats("0.43.0")
+    world.comfy.pages.update(MANAGER_ON)
+    world.comfy.mode = "serving"
+    world.cloud(statuses=["RUNNING"], installed=True, port_holder="4242 python",
+                branch="pr-999-another-change", commit="c" * 40,
+                record="comfyui=pr:17497 frontend=default manager=on torch=default")
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--pr", "17497")
+
+    assert result.exit_code == 0, result.output
+    assert "PR 999, not PR 17497" in flat(result.output), "said, not hidden"
+    assert sent(world, CHANGING), "the PR asked for was put back"
+    assert world.gc.branch.startswith("pr-17497-")
+
+
+def test_a_part_that_cannot_be_read_is_said_and_does_not_block(world, monkeypatch):
+    """machines.md and troubleshooting.md: a part that cannot be read is said
+    to be unconfirmed and does not block. Manager's route that answers neither
+    200 nor 404 is unread, never "off"."""
+    from comfy_qa import stamp as stamp_mod
+
+    monkeypatch.setattr(stamp_mod, "manager_state", lambda url, **kwargs: None)
+    world.cloud(statuses=["RUNNING"], installed=False)
+    world.serves("0.43.0", manager=False)
+
+    result = run(world, "go", BOX)
+
+    assert result.exit_code == 0, result.output
+    assert ("could not read whether Manager is running off the running ComfyUI, so "
+            "that part of the build is not confirmed") in flat(result.output)
+    assert world.opened == [world.comfy.url]
+
+
 # --- S2-8: changing the build on a box ------------------------------------------
 
 
@@ -457,6 +613,22 @@ def test_a_clean_install_is_only_on_request(world):
     assert CLEANING in install
 
 
+def test_a_clean_install_does_not_say_comfyui_is_not_there(world):
+    """Audit finding behaviour:F9. Live (evidence/51 line 7), `go --clean` on a
+    box with v0.42.1 on it said `ComfyUI is not there — installing it`, two lines
+    before it removed that ComfyUI. A clean install says what it is doing."""
+    world.cloud(statuses=["RUNNING"], installed=True,
+                record="comfyui=v0.43.0 frontend=default manager=on torch=default")
+    world.serves("0.42.1")
+
+    result = run(world, "go", BOX, "--version", "v0.42.1", "--clean")
+
+    assert result.exit_code == 0, result.output
+    assert "ComfyUI is not there" not in result.output
+    assert ("ComfyUI is there and --clean was given — removing it and installing it "
+            "from nothing") in flat(result.output)
+
+
 # --- S2-9: bad input is refused before anything is created or charged ----------
 
 
@@ -510,6 +682,28 @@ def test_stamp_shows_the_build_read_off_the_running_comfyui(world):
     assert "Manager on" in line
     assert "torch 2.12.1+cu130" in line
     assert "0.42.1" not in line and "1.57.7" not in line, "the record is not the box"
+
+
+@pytest.mark.parametrize("record", [
+    "comfyui=pr:17497 frontend=default manager=on torch=default",
+    f"comfyui=commit:{OTHER_SHA} frontend=default manager=on torch=default",
+], ids=["record-names-a-pr", "record-names-a-commit"])
+def test_stamp_takes_the_commit_and_the_pr_from_git_never_from_the_record(world, record):
+    """S2-6: a record that NAMES a PR or a commit is still only what was asked
+    for. git on the box says master at the tag's commit, and that is what the
+    stamp shows."""
+    world.comfy.payload = stats("0.43.0")
+    world.comfy.pages.update(MANAGER_ON)
+    world.comfy.mode = "serving"
+    world.cloud(statuses=["RUNNING"], installed=True, branch="master", commit=TAG_SHA,
+                record=record)
+
+    result = run(world, "stamp", BOX, "--json")
+
+    assert result.exit_code == 0, result.output
+    found = json.loads(result.stdout)
+    assert found["comfyui_commit"] == TAG_SHA
+    assert "comfyui_pr" not in found
 
 
 def test_stamp_json_carries_the_build(world):

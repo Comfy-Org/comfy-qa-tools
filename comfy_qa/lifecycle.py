@@ -1408,7 +1408,8 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
             raise give_up(f"could not run a command on {host.name}: {exc}") from exc
 
     say(f"looking for ComfyUI in {root_for(host)}")
-    if "INSTALLED" in look() and not clean:
+    present = "INSTALLED" in look()
+    if present and not clean:
         say("ComfyUI is already installed")
         found = read_facts(gc, host)
         if want is not None:
@@ -1451,7 +1452,13 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     # evidence it is alive, and the tick is there for the minutes when pip has
     # gone quiet fetching a two-gigabyte wheel. It also reports how long the
     # whole thing took, which is the number people actually want afterwards.
-    installing = output.slow("ComfyUI is not there — installing it",
+    #
+    # `--clean` on a box that has ComfyUI says so in its own words. It used to
+    # take this line too, and live (evidence/51) `go --clean` on a box with
+    # v0.42.1 said "ComfyUI is not there" two lines before it removed it.
+    installing = output.slow("ComfyUI is there and --clean was given — removing it "
+                             "and installing it from nothing" if present
+                             else "ComfyUI is not there — installing it",
                              expect="several minutes; torch is the slow part",
                              emit=say, every=STREAM_TICK_SECONDS).start()
     # Where the box's own output starts. Said because the next few hundred lines
@@ -1901,7 +1908,10 @@ def confirm_build(gc: Gcloud | None, host: Host, expect: "Build", stamp: Stamp,
         frontend=seen.frontend_version, manager=seen.manager,
         torch=seen.pytorch_version)
     if wrong:
-        flags = expect.flags()
+        # Manager named even when it is the default: with no build option the
+        # command below asks a serving box nothing and would hand this same
+        # wrong ComfyUI over as ready. Naming the build is what holds it to it.
+        flags = expect.flags(explicit_manager=True)
         raise LifecycleError(
             f"{host.name} came up on a different build from the one you asked for: "
             f"{'; '.join(wrong)}. It has not been reported as ready and nothing was "
@@ -1910,7 +1920,7 @@ def confirm_build(gc: Gcloud | None, host: Host, expect: "Build", stamp: Stamp,
             fix=_with_the_bill(
                 host,
                 "put the build you asked for back on it:",
-                f"comfy-qat go {host.name}{' ' + flags if flags else ''}",
+                f"comfy-qat go {host.name} {flags}",
                 "or read why, in ComfyUI's own log on the box:",
                 f"comfy-qat logs {host.name}",
             ),

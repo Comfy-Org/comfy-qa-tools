@@ -226,8 +226,18 @@ class Build:
                 == replace(other, frontend=None, pr_head=None)
                 and self.frontend != other.frontend)
 
-    def flags(self) -> str:
-        """The options that ask for this build again, for a fix line."""
+    def flags(self, *, explicit_manager: bool = False) -> str:
+        """The options that ask for this build again, for a command printed or
+        handed on.
+
+        `explicit_manager` writes `--manager` when Manager is on, which is the
+        default and so otherwise goes unsaid. It is what a fix line needs: for
+        the default build every other option is absent, and `comfy-qat go <box>`
+        with no build option onto a box that is serving asks the box nothing at
+        all — by design, it is the everyday command — so a fix that names
+        nothing hands the same wrong ComfyUI over as ready (audit finding F2,
+        3 Nov). Named, the box is held to the build and it is put back.
+        """
         words: list[str] = []
         if self.version:
             words += ["--version", self.version]
@@ -241,6 +251,8 @@ class Build:
             words += ["--frontend-pr", str(self.frontend_pr)]
         if not self.manager:
             words.append("--no-manager")
+        elif explicit_manager:
+            words.append("--manager")
         if self.torch:
             words += ["--torch", self.torch]
         return " ".join(words)
@@ -446,9 +458,16 @@ def choose(*, version: str | None = None, pr=None, commit: str | None = None,
 
 
 def _one_of(choices: list[tuple[str, object]]) -> str:
-    from . import say
+    """Which options to choose between, in one sentence.
 
-    return say.fix("keep one of them:", *(f"{flag} {value}" for flag, value in choices))
+    One line of prose, never one option to a line: a line under `to fix:`
+    that starts `--version v0.43.0` reads as a command to paste, and pasted it
+    is not one (audit parking item P2, the class 1.3.1 fixed for printed
+    commands). The same holds for every option a fix below names.
+    """
+    named = [f"{flag} {value}" for flag, value in choices]
+    listed = ", ".join(named[:-1]) + f" or {named[-1]}"
+    return f"give only one of these options, on the same command: {listed}"
 
 
 def _torch(value: str, *, no_gpu: bool) -> str:
@@ -459,18 +478,21 @@ def _torch(value: str, *, no_gpu: bool) -> str:
             f"--torch {value!r} is not a PyTorch version. Give the version, with "
             f"the CUDA build after a + if you want one, as in --torch "
             f"{RECOMMENDED_NVIDIA_TORCH}.",
-            fix=f"--torch {RECOMMENDED_NVIDIA_TORCH}")
+            fix=f"give the option a version, on the same command: --torch "
+                f"{RECOMMENDED_NVIDIA_TORCH}, for example")
     label = match.group(2)
     if label and label != "cpu" and label not in CUDA_TAGS:
         raise BuildError(
             f"--torch {value!r} names a CUDA build comfy-cli cannot install. It "
             f"installs {', '.join(sorted(CUDA_TAGS, reverse=True))}.",
-            fix=f"--torch {match.group(1)}+cu130")
+            fix=f"give the option a CUDA build it installs, on the same command: "
+                f"--torch {match.group(1)}+cu130, for example")
     if label and label != "cpu" and no_gpu:
         raise BuildError(
             f"--torch {value!r} is a CUDA build, and this box has no GPU to run it "
             f"on. A box with no GPU installs the CPU build of torch.",
-            fix=f"--torch {match.group(1)}")
+            fix=f"give the option the version alone, on the same command: --torch "
+                f"{match.group(1)}")
     if label == "cpu":
         # The CPU build is what a box with no card gets anyway; `+cpu` says the
         # same thing twice, and only the version is a choice.
@@ -646,12 +668,11 @@ def _open_pr(ask, repo: str, number: int, flag: str, what: str) -> str | None:
             f"Nothing was created or started.",
             fix=f"the open ones: https://github.com/{repo}/pulls")
     if body.get("merged") or body.get("merged_at"):
-        from . import say
-
         merged = str(body.get("merge_commit_sha") or "")
         if flag == "--pr" and _COMMIT.match(merged):
-            fix = say.fix(f"its change landed as commit {merged[:10]}; install that "
-                          f"instead:", f"--commit {merged[:10]}")
+            fix = (f"its change landed as commit {merged[:10]}; to install that, give "
+                   f"the option --commit {merged[:10]} in place of --pr {number}, on "
+                   f"the same command")
         else:
             fix = f"its change is in a later release: https://github.com/{repo}/releases"
         raise BuildError(

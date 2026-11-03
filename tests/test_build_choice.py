@@ -17,7 +17,8 @@ from comfy_qa.build import (
 )
 from comfy_qa.config import Host
 from comfy_qa.provision import (
-    CHANGING, CLEANING, INSTALLING, change_command, facts_command, install_command,
+    _LINUX_CLI, _WINDOWS_CLI, CHANGING, CLEANING, INSTALLING, LINUX_FRONTEND_ROOT,
+    WINDOWS_FRONTEND_ROOT, change_command, facts_command, install_command,
     launch_command, launch_detached_command,
 )
 
@@ -123,6 +124,29 @@ def test_a_frontend_pr_is_served_from_the_directory_its_build_landed_in():
     assert "--front-end-version" not in chosen.launch_args("/opt/x/dist")
 
 
+@pytest.mark.parametrize("host", EVERY_BOX, ids=IDS)
+def test_a_frontend_pr_is_built_on_the_box_by_comfy_clis_own_builder(host):
+    """S2-2, on both operating systems: the install builds the PR with comfy-cli's
+    builder, prints where it landed after a FRONTEND_ROOT= marker, and keeps
+    that directory on the box for the launch. A build with no frontend PR
+    removes what an earlier one left, so its directory is never served again."""
+    command = install_command(host, build=Build(frontend_pr=5678))
+    assert "handle_temporary_frontend_pr" in command, "the PR is never built"
+    assert "'#5678'" in command and "'FRONTEND_ROOT='" in command
+    root = WINDOWS_FRONTEND_ROOT if host.os.startswith("Windows") else LINUX_FRONTEND_ROOT
+    written = (f"Set-Content -Path '{root}' -Value $root" if host.os.startswith("Windows")
+               else f"printf '%s\\n' \"$root\" > {root}")
+    assert written in command
+    plain = install_command(host, build=Build(version="v0.43.0"))
+    assert "handle_temporary_frontend_pr" not in plain
+    assert root in plain and written not in plain, "the old directory is removed"
+
+
+def test_where_a_frontend_pr_landed_is_read_back_off_the_box():
+    facts = build_mod.facts("COMMIT=\nBRANCH=\nRECORD=\nFRONTEND_ROOT=/opt/x/dist\n")
+    assert facts.frontend_root == "/opt/x/dist"
+
+
 def test_no_frontend_keeps_the_one_the_backend_pins():
     assert "--front-end" not in choose(version="v0.43.0").launch_args()
     assert "frontend that ComfyUI pins" in choose().describe()
@@ -209,11 +233,92 @@ def test_the_exact_comfy_command_is_printed_before_it_runs(host):
     """S2-5: the exact commands are visible in the streamed log."""
     command = install_command(host, build=Build(pr=17497))
     if host.os.startswith("Windows"):
-        assert "Write-Output ('+ comfy ' + ($a -join ' '))" in command
+        assert f"Write-Output ('+ {_WINDOWS_CLI} ' + " in command
         assert "$a = @('--skip-prompt', '--workspace'" in command
     else:
-        assert "+ comfy --skip-prompt --workspace" in command
+        assert f"+ {_LINUX_CLI} --skip-prompt --workspace" in command
     assert hands_comfy(command, "--pr", "#17497")
+
+
+# The builds whose `comfy install` line is echoed below: a PR (whose `#` is a
+# comment to both shells unless quoted), a release with Manager off, a commit.
+ECHOED = [Build(pr=17497), Build(version="v0.43.0", manager=False),
+          Build(commit="426f5eea52", torch="2.12.1+cu130")]
+
+
+def _sh(script: str) -> str:
+    import subprocess
+
+    return subprocess.run(["/bin/sh", "-c", script], capture_output=True, text=True,
+                          check=True, timeout=20).stdout
+
+
+@pytest.mark.parametrize("change", [False, True], ids=["install", "change"])
+@pytest.mark.parametrize("chosen", ECHOED, ids=["pr", "release", "commit"])
+@pytest.mark.parametrize("host", [LINUX, LINUX_CPU], ids=["linux", "linux-cpu"])
+def test_the_echoed_comfy_command_is_the_one_that_runs_on_linux(host, chosen, change):
+    """Audit findings code:F4 / behaviour:F10. The `+ comfy ...` line is there
+    so the exact command is in the streamed log (machines.md). It said `comfy`
+    where /opt/comfy-qat/venv/bin/comfy runs, and wrote `--pr #17497` bare, so
+    pasted into sh the PR number was a comment. Both lines are handed to a real
+    sh here: the line echoed, pasted back, must be the argv that ran."""
+    import re
+
+    script = (change_command(host, chosen) if change
+              else install_command(host, build=chosen))
+    echo = re.search(r'(echo "\+ [^"]*"); ', script).group(1)
+    run = re.search(rf'(?<!\+ )({re.escape(_LINUX_CLI)} --skip-prompt [^;]*); ',
+                    script).group(1)
+    where = "WS=/opt/comfyui; RESTORE=--restore; " if change else "WS=/x/ComfyUI; RESTORE=; "
+
+    printed = _sh(where + echo).strip()
+    assert printed.startswith("+ ")
+    pasted = _sh(f"set -- {printed[2:]}; printf '%s\\n' \"$@\"").splitlines()
+    ran = _sh(f"{where}set -- {run}; printf '%s\\n' \"$@\"").splitlines()
+    assert pasted == ran, f"the log says:\n  {printed}\nbut what ran was:\n  {ran}"
+    assert ran[0] == _LINUX_CLI
+
+
+def _powershell_words(line: str) -> list[str]:
+    """`line` as PowerShell splits a command's arguments, for the shapes this
+    tool prints: bare words and single-quoted ones. A `#` that starts a bare
+    word starts a comment. No PowerShell on the machines the suite runs on, so
+    this models the two rules that matter here, and nothing more."""
+    import re
+
+    words = []
+    for quoted, bare in re.findall(r"'((?:[^']|'')*)'|(\S+)", line):
+        if bare.startswith("#"):
+            break
+        words.append(quoted.replace("''", "'") if not bare else bare)
+    return words
+
+
+@pytest.mark.parametrize("change", [False, True], ids=["install", "change"])
+@pytest.mark.parametrize("chosen", ECHOED, ids=["pr", "release", "commit"])
+@pytest.mark.parametrize("host", [WIN, WIN_CPU], ids=["windows", "windows-cpu"])
+def test_the_echoed_comfy_command_is_the_one_that_runs_on_windows(host, chosen, change):
+    """The Windows half of the same finding. The echo is built at run time from
+    the array `comfy.exe` is called with, so here that array is read off the
+    script, the echo's own rule (quote a `#`-led item) is applied to it, and the
+    line it makes is split as PowerShell would split it pasted."""
+    import re
+
+    script = (change_command(host, chosen) if change
+              else install_command(host, build=chosen))
+    assert (f"Write-Output ('+ {_WINDOWS_CLI} ' + (($a | ForEach-Object "
+            "{ if ($_.StartsWith('#')) { '' + [char]39 + $_ + [char]39 } "
+            "else { $_ } }) -join ' ')); ") in script
+    assert f"& '{_WINDOWS_CLI}' @a; " in script, "the echo names what runs"
+
+    items: list[str] = []
+    for added in re.findall(r"\$a (?:=|\+=) (@\([^)]*\)|'[^']*')", script):
+        items += re.findall(r"'([^']*)'", added)
+    printed = f"{_WINDOWS_CLI} " + " ".join(
+        f"'{item}'" if item.startswith("#") else item for item in items)
+    assert _powershell_words(printed) == [_WINDOWS_CLI, *items]
+    if chosen.pr:
+        assert "'#17497'" in printed
 
 
 @pytest.mark.parametrize("host", EVERY_BOX, ids=IDS)
@@ -276,6 +381,70 @@ def test_the_facts_command_names_no_launch(host):
     command = facts_command(host)
     assert "main.py" not in command
     assert "COMMIT=" in command and "RECORD=" in command
+
+
+# --- S2-7: ready means the build asked for ---------------------------------------
+
+# What a running ComfyUI and its checkout would say, every part read: the
+# release v0.43.0 at its tag's commit, frontend 1.58.4, Manager on, torch
+# 2.12.1+cu130. Each case below changes one part.
+SEEN = dict(comfyui_version="0.43.0", commit="426f5eea52a7ece1dd599fff4cb6cd1f352ddd24",
+            pr=None, frontend="1.58.4", manager="on", torch="2.12.1+cu130")
+PR_HEAD = "9350a08d80aaaaaabbbbbbbbccccccccdddddddd"
+
+
+@pytest.mark.parametrize("asked, seen, said", [
+    (Build(torch="2.12.1+cu130"), {"torch": "2.13.0+cu130"},
+     "torch 2.13.0+cu130, not 2.12.1+cu130"),
+    (Build(torch="2.12.1+cu130"), {"torch": "2.12.1+cu128"},
+     "torch 2.12.1+cu128, not 2.12.1+cu130"),
+    (Build(commit="b0b0b0b0b0b0"), {},
+     "commit 426f5eea52, not b0b0b0b0b0"),
+    (Build(pr=17497, pr_head=PR_HEAD), {"pr": 999, "commit": "c" * 40},
+     "PR 999, not PR 17497"),
+    (Build(pr=17497, pr_head=PR_HEAD), {},
+     "commit 426f5eea52, not PR 17497"),
+], ids=["torch-version", "torch-cuda", "commit", "another-pr", "no-pr"])
+def test_each_part_that_contradicts_the_build_is_named(asked, seen, said):
+    wrong, unread = asked.contradictions(**{**SEEN, **seen})
+    assert wrong == [said]
+    assert unread == []
+
+
+@pytest.mark.parametrize("asked", [
+    Build(torch="2.12.1+cu130"), Build(commit="426f5eea52"),
+    Build(pr=17497, pr_head=PR_HEAD),
+], ids=["torch", "commit", "pr"])
+def test_a_part_that_agrees_is_not_a_contradiction(asked):
+    seen = {**SEEN, "pr": 17497, "commit": PR_HEAD} if asked.pr else SEEN
+    assert asked.contradictions(**seen) == ([], [])
+
+
+def test_a_part_that_cannot_be_read_is_unconfirmed_never_a_contradiction():
+    """The rule `stamp` keeps, and machines.md states: a part nobody can read
+    is said to be unconfirmed and does not block. Manager unread is not off."""
+    asked = Build(version="v0.43.0", commit="426f5ee", frontend="v1.58.4",
+                  torch="2.12.1+cu130")
+    wrong, unread = asked.contradictions(comfyui_version=None, commit=None, pr=None,
+                                         frontend=None, manager=None, torch=None)
+    assert wrong == []
+    assert unread == ["the ComfyUI version", "the checkout's commit",
+                      "the frontend it serves", "whether Manager is running",
+                      "the torch version"]
+
+
+@pytest.mark.parametrize("chosen, words", [
+    (DEFAULT, "--manager"),
+    (Build(manager=False), "--no-manager"),
+    (Build(version="v0.43.0", torch="2.12.1+cu130"),
+     "--version v0.43.0 --manager --torch 2.12.1+cu130"),
+])
+def test_the_options_that_ask_for_a_build_again_name_manager(chosen, words):
+    """Audit finding F2: the fix for a wrong build is `comfy-qat go <box>` with
+    these options, and with none of them a box that is serving is asked
+    nothing. Manager is on by default, so it has to be said to be held to."""
+    assert chosen.flags(explicit_manager=True) == words
+    assert "--manager" not in chosen.flags().split(), "only when asked to"
 
 
 # --- S2-8: changing the build keeps custom nodes and models ---------------------
@@ -417,6 +586,37 @@ def test_github_that_cannot_be_reached_is_not_github_saying_no():
         build_mod.check(Build(version="v0.43.0"), down)
     assert "could not be asked" in str(caught.value)
     assert "no release" not in str(caught.value)
+
+
+def _refused(asked: dict | None = None, *, merged: bool = False) -> BuildError:
+    with pytest.raises(BuildError) as caught:
+        if merged:
+            build_mod.check(Build(pr=12), Hub({f"{REPO}/pulls/12": {
+                "state": "closed", "merged": True,
+                "merge_commit_sha": "abcdef1234567890"}}))
+        else:
+            choose(**asked)
+    return caught.value
+
+
+@pytest.mark.parametrize("refusal", [
+    lambda: _refused({"version": "v0.43.0", "pr": "17497"}),
+    lambda: _refused({"frontend_version": "v1.58.4", "frontend_pr": "5678"}),
+    lambda: _refused({"torch": "two"}),
+    lambda: _refused({"torch": "2.12.1+cu999"}),
+    lambda: _refused({"torch": "2.12.1+cu130", "no_gpu": True}),
+    lambda: _refused(merged=True),
+], ids=["two-backends", "two-frontends", "torch-not-a-version", "torch-unknown-cuda",
+        "torch-cuda-no-gpu", "merged-pr"])
+def test_a_refusal_never_prints_an_option_on_a_line_as_if_it_were_a_command(refusal):
+    """Audit parking item P2, the bug class 1.3.1 fixed for printed commands:
+    a line under `to fix:` that starts `--version v0.43.0` reads as something to
+    paste, and pasted it is not a command. The option is named in the
+    sentence that says to give it, on the same command."""
+    fix = refusal().fix
+    lines = [line.strip() for line in fix.splitlines()]
+    assert not [line for line in lines if line.startswith("-")], fix
+    assert " --" in fix, "the option is still named"
 
 
 # --- Windows prerequisites: what is really on Windows Server 2022 -------------

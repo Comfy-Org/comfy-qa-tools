@@ -647,12 +647,25 @@ def no_test_asks_github(monkeypatch):
     (S2-9). The network tripwire above stops a socket and not a process, and
     the check prefers `gh api`, which is a process — so it is refused here by
     name. A test that wants an answer hands `check` its own, or replaces
-    `build.github` itself."""
+    `build.github` itself.
+
+    Every refusal is also kept and failed at teardown, as the network tripwire
+    does, and for its reason: `CliRunner` catches what a command raises and
+    turns it into exit 1, so a CLI test that forgot to fake GitHub and checks
+    only for a non-zero exit passed with the refusal swallowed (audit parking
+    item P1, 3 Nov). The test that aims at this on purpose clears the list."""
     from comfy_qa import build
 
+    refused: list[str] = []
+
     def refuse(path):
-        raise AssertionError(
-            f"this test asked the real GitHub for {path!r}. Give build.check an "
-            f"answer of its own (tests/test_build_choice.py, Hub).")
+        message = (f"this test asked the real GitHub for {path!r}. Give build.check "
+                   f"an answer of its own (tests/test_build_choice.py, Hub).")
+        refused.append(message)
+        raise AssertionError(message)
 
     monkeypatch.setattr(build, "github", refuse)
+    yield refused
+    if refused:
+        pytest.fail("the GitHub tripwire fired during this test, whatever the test "
+                    "itself made of it:\n" + "\n".join(refused), pytrace=False)

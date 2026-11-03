@@ -174,8 +174,15 @@ def _declared_build(host: Host):
 
 
 def _build_flags(want, clean: bool) -> list[str]:
-    """The build options again, for a command this one hands on."""
-    words = want.flags().split() if want is not None else []
+    """The build options again, for a command this one hands on.
+
+    `--manager` goes on when it was typed. It is the default, so `flags()`
+    leaves it out, and `go --manager --new-window` handed the new window a
+    plain `go` — which, onto a box already serving, asks nothing and holds it
+    to nothing. Left untyped it stays untyped: the box keeps its own record.
+    """
+    words = (want.flags(explicit_manager="manager" in want.named).split()
+             if want is not None else [])
     return words + (["--clean"] if clean else [])
 
 
