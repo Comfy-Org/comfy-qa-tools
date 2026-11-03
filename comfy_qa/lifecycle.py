@@ -40,7 +40,7 @@ from typing import Callable
 from . import inflight
 from . import say as output
 from .config import Host, declares_no_gpu, has_gpu
-from .gcloud import GONE, Gcloud, GcloudError
+from .gcloud import GONE, Gcloud, GcloudError, folded
 from .osfamily import family, is_windows
 from .stamp import ProbeError, Stamp, fetch, mismatch
 from .tunnel import (
@@ -295,7 +295,12 @@ def _wait(check: Callable[[], bool], *, timeout: int, sleep=None, now=None,
 
 
 _CAPACITY_SIGNS = (
-    "stockout",
+    # Google's state code, `state:STOCKOUT, sub-state:STOCKOUT`, and never the
+    # bare word. Google echoes the resource path in most of what it refuses, so
+    # a box called `qatest-stockout` turned an already-exists or a not-found
+    # into "the zone is out of stock, try another" — advice for a problem the
+    # user does not have (O25). A GCE name cannot hold a colon.
+    "state:stockout",
     "does not have enough resources",
     "resource_pool_exhausted",
     "is currently unavailable in the",
@@ -325,7 +330,7 @@ def is_capacity_failure(message: str | None) -> bool:
     # text a real stock-out printed on 2026-10-06, two of these phrases found
     # nothing and recognition rested on the `code:` line alone — one field
     # Google could rename.
-    lowered = " ".join((message or "").lower().split())
+    lowered = folded(message)
     return any(sign in lowered for sign in _CAPACITY_SIGNS)
 
 
@@ -336,7 +341,10 @@ def suggested_zones(message: str | None) -> list[str]:
     thing this tool can do with the error — as long as it repeats zones and only
     zones: `--to or` is not a command anyone can run.
     """
-    match = _SUGGESTED_ZONES.search(message or "")
+    # Folded, as the stock-out check is and with the same function: the
+    # sentence is in the YAML gcloud wraps, and "trying your\n      request in
+    # the" matched nothing until it was (O25).
+    match = _SUGGESTED_ZONES.search(folded(message))
     if not match:
         return []
     found = []

@@ -264,15 +264,33 @@ def _missing_resource(text: str | None) -> str:
     return found.group(1) if found else ""
 
 
+def folded(text: str | None) -> str:
+    """`text` lowercased, with every run of whitespace one space.
+
+    gcloud prints its errors as YAML and wraps them wherever the line runs out,
+    so a sentence this tool looks for arrives as `is\\n      currently
+    unavailable` or `does not\\n  have enough resources`. Every reader that
+    matches a phrase in what gcloud printed goes through this, and through
+    nothing else, so they cannot disagree about where a sentence breaks: the
+    stock-out check was folded after the live pass (D5), while `classify` and
+    `lifecycle.suggested_zones` went on matching the raw text, so the wrap that
+    was fixed for one of them could still hide a suggested zone or make a
+    missing project read as an unknown failure (O25).
+    """
+    return " ".join((text or "").lower().split())
+
+
 def classify(text: str) -> str:
     """Name the kind of failure in everything gcloud printed.
 
     Reads the full output rather than the one-line summary, for the same reason
-    the stockout check does: gcloud's summary line is sometimes `---`.
+    the stockout check does: gcloud's summary line is sometimes `---`. Folded
+    first, on both sides: one sign carries the two spaces Google puts after a
+    full stop (`exceeded.  limit:`), and a folded text has only ever one.
     """
-    lowered = (text or "").lower()
+    lowered = folded(text)
     for kind, signs in _SIGNS:
-        if any(sign in lowered for sign in signs):
+        if any(folded(sign) in lowered for sign in signs):
             return kind
     return UNKNOWN
 

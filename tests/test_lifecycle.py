@@ -2165,3 +2165,111 @@ def test_the_real_stockout_names_no_other_zone_and_none_is_invented():
     from comfy_qa.lifecycle import suggested_zones
 
     assert suggested_zones(REAL_STOCKOUT) == []
+
+
+# --- O25: a box's name is not a stock-out, and one fold for every reader --------
+#
+# Found by the pre-merge check of 1.3.0. `stockout` was one of the four signs, and
+# a name can carry it: Google echoes the resource path in most of what it
+# refuses, so `qatest-stockout` turned an ordinary refusal into "the zone is out
+# of stock, try another" — the advice for a problem the user does not have. The
+# shape it was there for is Google's own state code, which is not a word but a
+# key and a value: `state:STOCKOUT`. A GCE name cannot hold a colon.
+
+
+@pytest.mark.parametrize("text", [
+    # Google's already-exists and not-found sentences, with a box whose name
+    # carries the word. Shaped as the real ones are: the not-found as live.md
+    # (g) captured it on 2026-10-07, the already-exists as gcloud prints it.
+    "ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n"
+    " - The resource 'projects/p/zones/us-central1-a/instances/qatest-stockout' "
+    "already exists\n",
+    "ERROR: (gcloud.compute.reservations.describe) HTTPError 404: The resource "
+    "'projects/stately-timing-504610-p1/zones/us-central1-a/reservations/"
+    "stockout-rsv' was not found. This command is authenticated as a@b.c which is "
+    "the active account specified by the [core/account] property",
+    "ERROR: (gcloud.compute.instances.start) Required 'compute.instances.start' "
+    "permission for 'projects/p/zones/z/instances/stockout'",
+], ids=["already-exists", "not-found", "denied"])
+def test_a_refusal_about_a_box_named_stockout_is_not_a_stockout(text):
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert not is_capacity_failure(text)
+
+
+def test_the_real_texts_are_still_stockouts_without_the_bare_word():
+    """The pair, and what the narrower sign has to keep: the line-wrapped text
+    live.md captured, the start stock-out with its suggestion, and Google's state
+    code on its own."""
+    from comfy_qa.lifecycle import is_capacity_failure
+
+    assert is_capacity_failure(REAL_STOCKOUT)
+    assert is_capacity_failure(_only("localizedMessage", "For more information"))
+    assert is_capacity_failure(STOCKOUT_OUTPUT)
+    assert is_capacity_failure(
+        "'NULL:0/NULL:0/NULL:0 (state:STOCKOUT, sub-state:STOCKOUT, resource type:compute)'")
+
+
+def _readers():
+    from comfy_qa.gcloud import classify
+    from comfy_qa.lifecycle import is_capacity_failure, suggested_zones
+
+    return {"classify": classify, "is_capacity_failure": is_capacity_failure,
+            "suggested_zones": suggested_zones}
+
+
+def _real_texts():
+    """Everything gcloud really printed that this suite holds, by name."""
+    import test_gcloud_auth as auth
+
+    return {
+        "reservations create stock-out (live.md P1)": REAL_STOCKOUT,
+        "instances start stock-out, with a suggestion": STOCKOUT_OUTPUT,
+        "disks create quota refusal": auth.REAL_QUOTA_REFUSAL,
+        "expired session": auth.REAUTH_OUTPUT,
+        "no account": auth.NO_ACCOUNT_OUTPUT,
+        "no project": auth.NO_PROJECT_OUTPUT,
+        "denied": auth.DENIED_OUTPUT,
+    }
+
+
+@pytest.mark.parametrize("reader", ["classify", "is_capacity_failure", "suggested_zones"])
+@pytest.mark.parametrize("name", list(_real_texts()))
+def test_a_line_break_anywhere_in_googles_text_changes_no_reading(reader, name):
+    """gcloud prints its errors as YAML and wraps them wherever the line runs
+    out — `is\\n      currently unavailable`, `does not\\n  have enough`. The
+    stock-out check folded whitespace for that in 1.3.0 (D5). `suggested_zones`
+    and `classify` read the same text and did not, so the same wrap that 1.3.0
+    fixed for one of them could still hide Google's suggested zone, or make an
+    expired session read as an unknown failure (O25).
+
+    Each real text, broken at every space in turn the way gcloud breaks it,
+    must read exactly as it does unbroken."""
+    read = _readers()[reader]
+    text = _real_texts()[name]
+    expected = read(text)
+    spaces = [i for i, ch in enumerate(text) if ch == " "]
+    assert spaces, "the fixture has no spaces to break at"
+    wrong = []
+    for at in spaces:
+        broken = text[:at] + "\n      " + text[at + 1:]
+        if read(broken) != expected:
+            wrong.append(f"...{text[max(0, at - 25):at]}⏎{text[at + 1:at + 25]}...")
+    assert not wrong, (f"{reader} reads {name} differently once it is wrapped at "
+                       f"{len(wrong)} of {len(spaces)} spaces, e.g. {wrong[:3]}")
+
+
+def test_the_readings_the_wraps_are_compared_against_are_the_real_ones():
+    """Non-vacuity for the test above: a reader that answered the same nothing
+    for every text would pass it. These are what each text really says."""
+    from comfy_qa.gcloud import CREDENTIALS, DENIED, NO_ACCOUNT, NO_PROJECT, QUOTA, REAUTH
+
+    read = _readers()
+    texts = _real_texts()
+    assert read["suggested_zones"](texts["instances start stock-out, with a suggestion"]) == [
+        "us-central1-b"]
+    assert read["is_capacity_failure"](texts["reservations create stock-out (live.md P1)"])
+    assert [read["classify"](texts[name]) for name in (
+        "disks create quota refusal", "expired session", "no account", "no project",
+        "denied")] == [QUOTA, REAUTH, NO_ACCOUNT, NO_PROJECT, DENIED]
+    assert CREDENTIALS not in [read["classify"](text) for text in texts.values()]
