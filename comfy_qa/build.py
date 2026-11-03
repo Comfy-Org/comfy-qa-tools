@@ -1,6 +1,6 @@
 """Which ComfyUI a box runs: a build you chose, rather than whatever master was.
 
-Until 1.4.0 every install cloned ComfyUI's default branch and took whatever was
+Until the build choice every install cloned ComfyUI's default branch and took whatever was
 on it that minute. A QA tool is asked a narrower question than that — "does this
 release do X", "does this PR fix Y" — and a box that cannot be told which build
 to run answers a different question from the one asked, while looking exactly

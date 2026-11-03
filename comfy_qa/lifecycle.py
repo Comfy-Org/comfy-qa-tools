@@ -1201,7 +1201,7 @@ def wait_for_driver(
     actually depends on — is there a working driver — and treats a dropped
     connection as "still rebooting" rather than as a failure.
 
-    Windows is asked too, since 1.4.0. Its driver used to be installed by hand,
+    Windows is asked too, since the build choice. Its driver used to be installed by hand,
     because Google documented no unattended method; it now documents one — the
     `sysprep-specialize-script-url` metadata key `create` sets (see
     `create.WINDOWS_DRIVER_URL`) — and a box whose driver is still installing
@@ -2461,7 +2461,7 @@ def start_detached(
 def _launch_args(expect: "Build | None", facts: "OnTheBox | None") -> str:
     """The build's own part of ComfyUI's command line, or nothing at all.
 
-    Nothing for a box nobody has asked anything of — one installed before 1.4.0,
+    Nothing for a box nobody has asked anything of — one installed before the build choice,
     with no record — which therefore launches exactly as it always did.
     """
     build = expect or (facts.record if facts else None)

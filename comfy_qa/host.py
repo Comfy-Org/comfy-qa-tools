@@ -99,7 +99,7 @@ ConfigOption = Annotated[Optional[Path], typer.Option(
     "--config", hidden=True, callback=remember_config,
     help="Host list. Declared at the root — see `comfy-qat --help`.")]
 
-# --- choosing the build (1.4.0) ----------------------------------------------
+# --- choosing the build ----------------------------------------------------
 #
 # One set of options for `create`, `go` and `switch`, declared once so the three
 # cannot drift in spelling or in help. The backend is one of a release, a PR or a

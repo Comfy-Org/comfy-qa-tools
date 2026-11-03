@@ -124,7 +124,7 @@ KINDS: dict[str, MachineKind] = {
         # does not name it, so a reserved box and the same box with the line
         # taken out are one machine.
         #
-        # `build` likewise (1.4.0): the ComfyUI build a fresh install puts on
+        # `build` likewise, since the build choice: the ComfyUI build a fresh install puts on
         # the box — `Build.spec()`, written by `create` when a build option is
         # given. Read when it is used, by `build.parse`, which refuses one it
         # cannot read rather than falling back to the default.

@@ -609,7 +609,7 @@ def repair_command(host: Host, *, force_torch: bool = False,
 
 # --- installing with comfy-cli ------------------------------------------------
 #
-# 1.4.0 hands the install to comfy-cli, on the box. It used to be a hand-rolled
+# The build choice hands the install to comfy-cli, on the box. It used to be a hand-rolled
 # `git clone` of whatever master was that minute, then pip by hand; it is now
 # `comfy install` with the build's own options (see `build.py`), so the tool
 # that picks the release, the PR or the commit is the one Comfy ships for the
@@ -629,7 +629,7 @@ def repair_command(host: Host, *, force_torch: bool = False,
 # into a directory it creates — so it cannot create `/opt/comfyui`, and a
 # `/opt/comfyui` made for it beforehand is a directory that exists and is not a
 # checkout, which it refuses. Everything else in this file keeps saying
-# `/opt/comfyui`, and a box from before 1.4.0, whose `/opt/comfyui` is a real
+# `/opt/comfyui`, and a box from before the build choice, whose `/opt/comfyui` is a real
 # checkout, is used where it is.
 LINUX_TOOL = "/opt/comfy-qat"
 WINDOWS_TOOL = r"C:\comfy-qat"

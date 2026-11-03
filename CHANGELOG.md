@@ -3,6 +3,134 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.4.0 — choose the build, and the Windows driver installs itself
+
+Until now every install took whatever was at the tip of ComfyUI's default branch
+that minute, and a Windows GPU box needed a person at a PowerShell prompt before
+it could use its card. Both are choices or nothing now. `create`, `go` and
+`switch` take **the build**: a ComfyUI release, PR or commit, a frontend release
+or PR, Manager (on by default), and a torch pin. **comfy-cli does the installing,
+on the box.** `stamp` says **the build that is actually running**, read off the
+machine. And `create` gives a Windows GPU box Google's own driver script at first
+boot, so nothing is left to run by hand.
+
+**What ran on real Google boxes for this release, on 2026-11-03, on commit
+`0e63be5`** — the build code; the commits after it change the docs, how IAP's
+4047 is read, one sentence, and the Windows SSH metadata. On a Linux box with no
+GPU: `create --version v0.43.0 --frontend-version v1.58.4` wrote the build into
+the host list; `go` installed it with comfy-cli in four minutes; and `stamp`
+showed ComfyUI 0.43.0 at the tag's own commit `426f5eea52`, frontend 1.58.4 —
+served, while the package v0.43.0 installed beside it is 1.57.4 — Manager on, and
+torch 2.14.1+cpu. Then `switch --pr 17497` changed the build in place in a
+minute, and `stamp` showed `PR 17497, 9350a08d80`, the PR's head on GitHub. The
+box was stopped and deleted with `down` and `delete`.
+
+**What did not run.** The Windows boxes. The first one never accepted SSH:
+`create` had set `enable-windows-ssh=TRUE` without the SSH package Google says a
+Windows VM needs — a defect older than this release, found here and fixed below —
+and it was deleted. The machine running the checks then slept for eight hours,
+and gcloud's sign-in had to be renewed before anything else could be asked of
+Google. So a Windows box getting a named release, the one GPU run (a Windows L4
+whose driver Google's script installs), and the read-back that nothing named
+`qatest-` is left on the project were not run. The comfy-cli install on Windows,
+the Windows driver automation and a frontend PR built on a box have run only
+against the suite's fakes.
+
+### Added
+
+- **`--version`, `--pr` or `--commit`** on `create`, `go` and `switch` choose the
+  ComfyUI to install: a release tag, an open pull request, or a commit. At most
+  one; two at once is refused before anything reaches Google. None keeps what the
+  tool always did — the tip of ComfyUI's default branch — and every command says
+  which build it chose, the default included.
+- **`--frontend-version` or `--frontend-pr`** choose the frontend, independently
+  of the backend. A release is ComfyUI's own `--front-end-version`, fetched at
+  startup; a PR is built on the box by comfy-cli's own builder (the one `comfy
+  launch --frontend-pr` uses; Node.js and pnpm are installed for it) and served
+  with `--front-end-root`. None keeps the frontend the ComfyUI build pins.
+- **ComfyUI-Manager is on by default** (Ali, 3 Nov: "manager should always be on
+  btw, by default"). A plain install, a plain `go` included, has it, and ComfyUI
+  is started with `--enable-manager`. `--no-manager` leaves it out; `--help`
+  says so.
+- **`--torch`** pins PyTorch, with the CUDA build after a `+`: `--torch
+  2.12.1+cu130` is Miles's recommendation for NVIDIA machines, quoted in
+  [machines.md](docs/machines.md#pinning-pytorch); it is his, not a default.
+  The pin reaches every `pip install` comfy-cli runs, as a pip constraint. With
+  none, torch is chosen as before, for the box's driver.
+- **comfy-cli installs ComfyUI on the box**, replacing the hand-rolled `git
+  clone` and pip. A pinned comfy-cli (1.24.0) goes in a venv of its own beside
+  ComfyUI, and `comfy install` runs with the build's options, each command
+  printed before it runs. comfy-cli runs with `DO_NOT_TRACK=1`, so it does not
+  pay its five-second telemetry flush on every command, and ComfyUI is still
+  started by this tool's own launch, never by `comfy launch --background`, which
+  refuses a second server even on a free port.
+- **A new build on a box that has ComfyUI keeps its custom nodes and models**:
+  `go` or `switch` with a build option changes it in place (`comfy install
+  --restore`), stopping a ComfyUI already serving first. Only what is named
+  changes; a frontend release alone is a launch option, not an install.
+  `--clean` deletes ComfyUI on the box and installs from nothing.
+- **Bad input is refused before anything is created or charged.** A release
+  that does not exist, a PR that does not exist or is closed (a merged one is
+  pointed at the commit it landed as), an unknown commit, a frontend release
+  that is not a GitHub release: each is asked of GitHub, read-only — `gh api`
+  when it is installed, the public API otherwise — and refused in plain words
+  with the fix, exit 2.
+- **Ready means the build you asked for.** Once ComfyUI answers, what it is
+  running is read back and compared with what was asked: the ComfyUI version and
+  torch from `/system_stats`, the frontend from the bundle it is serving, Manager
+  from whether Manager answers, the commit and PR from git on the box. A
+  contradiction is said plainly — `ComfyUI 0.42.1, not v0.43.0` — with the command
+  that puts the build back, and nothing is reported ready or opened.
+- **`stamp` shows the build that is running**: `ComfyUI 0.43.0 (PR 17497,
+  9350a08d80) · frontend 1.58.4 · Manager on · … · torch 2.14.1+cpu`, and the
+  same in `--json` as `comfyui_commit`, `comfyui_pr`, `frontend_version` and
+  `manager`. Each is read off the machine, never off what was asked for, and one
+  that cannot be read is left out.
+- **The host list's `build` field**, which `create` writes when it is given a
+  build: the build the first `go` installs on that box.
+
+### Changed
+
+- **A Windows GPU box installs its NVIDIA driver itself.** `create` sets the
+  `sysprep-specialize-script-url` metadata key to Google's own
+  `install_gpu_driver.ps1`, the method Google's "Install GPU drivers" page now
+  documents for exactly this, and `go` waits for the driver on Windows as it
+  does on Linux. The two PowerShell commands `create` printed are gone. A
+  driver that does not come up points at the serial console, where the script's
+  output is. The Linux path is unchanged.
+
+### Fixed
+
+- **`down --all` reads gcloud's project whenever the host list names none**
+  (carried over from the 1.3.1 audit, behaviour:F2). With a box declared, no
+  `project` line and gcloud pointed at another project, `create` makes boxes on
+  gcloud's project, and `down --all` read only the declared box's — so it could
+  close on `Nothing is now.` while a stray box billed there. A gcloud that cannot
+  name its project withholds the all-clear. cost.md and troubleshooting.md say so.
+- **No comment calls `state:STOCKOUT` Google's own state code** (carried over,
+  behaviour:F4). No real refusal on record carries it; the test comment now says
+  so, as `lifecycle._CAPACITY_SIGNS` does, and a test holds every file to it.
+- **A Windows box is made with the SSH server Google says it needs.** `create`
+  set `enable-windows-ssh=TRUE` alone, which installs no SSH server; Google's own
+  command for a Windows VM reached over SSH also sets
+  `sysprep-specialize-script-cmd` to `googet -noconfirm=true install
+  google-compute-engine-ssh`. A box made the old way on the live run never
+  listened on port 22 and `go` waited out its 300 seconds. Every Windows box gets
+  both now; the SSH package runs before the driver script on first boot.
+- **IAP's `4047: 'Failed to lookup instance'` on a box just made is a box still
+  starting.** The first `go` on both boxes the live run created was refused with
+  it about a minute after `create` returned, and `go` reported a failed tunnel;
+  the same command a minute later worked. `go` now waits it out.
+
+### The suite
+
+Four new test files — the build itself, the build through `go`/`switch`/`stamp`,
+the build through `create`, and the Windows driver — each run red before the
+code it holds. The fake ComfyUI can serve a frontend and Manager's route, and the
+suite refuses any test that would ask the real GitHub. Tests that pinned the old
+`git clone` install, the hand-run Windows driver and the old metadata now pin the
+new ones.
+
 ## 1.3.1 — its own Google project, and the leftovers from 1.3.0
 
 Two things. comfy-qat now keeps **its own Google project**, so moving it to a new

@@ -252,7 +252,7 @@ class Stamp:
     pytorch_version: str | None = None
     cloud_version: str | None = None
     deploy_environment: str | None = None
-    # The build, as the running ComfyUI and its checkout say it is (1.4.0).
+    # The build, as the running ComfyUI and its checkout say it is.
     # `comfyui_commit` and `comfyui_pr` are git's, in the checkout on the box;
     # `frontend_version` is read off the frontend ComfyUI is SERVING, not off
     # the package installed beside it, because `--front-end-version` and

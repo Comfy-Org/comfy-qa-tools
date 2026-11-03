@@ -227,15 +227,23 @@ Each part is set on its own:
 | PyTorch | `--torch 2.12.1+cu130` | comfy-cli picks torch for the box's driver, as before |
 
 ```sh
-comfy-qat create --os linux --gpu l4 --version v0.43.0 --frontend-version v1.58.4
-comfy-qat go comfy-linux                     # installs that build
-comfy-qat switch comfy-linux --pr 17497      # the same box, a PR, nodes and models kept
-comfy-qat stamp comfy-linux
+comfy-qat create --os linux --gpu none --name qatest-s2-linux --version v0.43.0 --frontend-version v1.58.4
+comfy-qat go qatest-s2-linux                          # installs that build
+comfy-qat stamp qatest-s2-linux
+comfy-qat switch qatest-s2-linux --pr 17497 --keep-others   # same box, a PR, nodes and models kept
+comfy-qat stamp qatest-s2-linux
 ```
 
+What those two stamps printed, on a real box with no GPU on 2026-11-03 — the
+release's own commit, then the PR's head:
+
 ```
-comfy-linux · ComfyUI 0.43.0 (PR 17497, 9350a08d80) · frontend 1.58.4 · Manager on · linux · cuda:0 NVIDIA L4 (22GB) · torch 2.14.1+cu130 · python 3.10.12
+qatest-s2-linux · local-git · ComfyUI 0.43.0 (426f5eea52) · frontend 1.58.4 · Manager on · linux · cpu (29GB) · torch 2.14.1+cpu · python 3.10.12
+qatest-s2-linux · local-git · ComfyUI 0.43.0 (PR 17497, 9350a08d80) · frontend 1.58.4 · Manager on · linux · cpu (29GB) · torch 2.14.1+cpu · python 3.10.12
 ```
+
+ComfyUI v0.43.0 pins frontend 1.57.4 and installs that package; the stamp says
+1.58.4 because that is what the box is serving.
 
 **Every command says which build it chose, the default included**, before
 anything is installed: `build: ComfyUI v0.43.0 · frontend v1.58.4 · Manager on ·
@@ -744,10 +752,11 @@ comfy-qat stamp comfy-win
 ```
 
 ```
-comfy-win · ComfyUI 0.43.0 (426f5eea52) · frontend 1.58.4 · Manager on · win32 · cuda:0 NVIDIA L4 (23GB) · torch 2.12.1+cu130 · python 3.12.13
+qatest-s2-linux · local-git · ComfyUI 0.43.0 (426f5eea52) · frontend 1.58.4 · Manager on · linux · cpu (29GB) · torch 2.14.1+cpu · python 3.10.12
 ```
 
-Since 1.4.0 the line carries the build the machine is actually running: ComfyUI's
+That is a real one, from a box with no GPU on 2026-11-03; a box with a card names
+it where this says `cpu`. Since 1.4.0 the line carries the build the machine is actually running: ComfyUI's
 version with the checkout's commit — and the PR, when it came from one — the
 frontend it is serving, Manager on or off, and torch. Each is read off the
 running machine, never off what was asked for, and one that cannot be read is

@@ -41,7 +41,7 @@ quota refusal after the instance exists costs money and a cleanup.
 *The driver is not in the base image.* A GPU box without it looks healthy, and
 ComfyUI runs on its CPU — which this tool now detects, but only after the box has
 been paid for. On Linux that is fixed at boot with Google's own startup script;
-on Windows, since 1.4.0, with Google's own driver script at first boot — the
+on Windows, since the build choice, with Google's own driver script at first boot — the
 method Google now documents for it. See `WINDOWS_DRIVER_URL` below.
 """
 
@@ -707,7 +707,7 @@ curl -fSsL -O https://storage.googleapis.com/compute-gpu-installation-us/install
 python3 cuda_installer.pyz install_driver
 """
 
-# WINDOWS INSTALLS ITS OWN DRIVER, since 1.4.0. Until then this was a seam on
+# WINDOWS INSTALLS ITS OWN DRIVER, since the build choice. Until then this was a seam on
 # purpose: Google documented one way to put the driver on Windows Server, a
 # person at an Administrator PowerShell prompt running two commands, and this
 # tool printed them rather than guess at an unattended route nobody had tested.
@@ -726,7 +726,8 @@ python3 cuda_installer.pyz install_driver
 # SYSTEM, before SSH is up — not on every boot as a startup script would. The
 # script itself is Google's to keep ASCII and non-interactive; it is never
 # written into a command here. The one GPU run on 2026-11-03 is the check that
-# it works on a real box (CHANGELOG 1.4.0 says what it found).
+# it works on a real box (the CHANGELOG entry for the build choice says what
+# it found).
 WINDOWS_DRIVER_URL = ("https://github.com/GoogleCloudPlatform/compute-gpu-installation"
                       "/raw/main/windows/install_gpu_driver.ps1")
 WINDOWS_DRIVER_KEY = "sysprep-specialize-script-url"
@@ -764,7 +765,7 @@ class Blueprint:
     # The flag, the prompt's answer and a leftover reservation being resumed all
     # become this one field before anything reads it.
     reserve: bool = False
-    # The ComfyUI build `comfy-qat go` installs on it first (1.4.0), written to
+    # The ComfyUI build `comfy-qat go` installs on it first (the build choice), written to
     # the host list as the box's `build`. None when none was asked for, and then
     # the default: the tip of ComfyUI's default branch, with Manager.
     build: object = field(default=None)
