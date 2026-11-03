@@ -161,6 +161,10 @@ def qat(tmp_path, monkeypatch):
     # installed" instead of asking the real project — which is what the first
     # draft of this file did, through `auth`'s name, read-only, until stopped.
     monkeypatch.setattr(gcloud_module.shutil, "which", lambda name: None)
+    # And no ComfyUI. `list --live` asks a local entry over loopback, and every
+    # host list here has `[hosts.local] port = 8188` — the developer's own
+    # ComfyUI, asked for real once per run until this. Nothing here is about it.
+    monkeypatch.setattr("comfy_qa.host._answering", lambda host: False)
 
     def invoke(*argv, cloud: Recorder, declared: str):
         if not path.exists():

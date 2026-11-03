@@ -121,6 +121,16 @@ _BINDS_THE_DEFAULT_PATH = ("config", "host", "setup", "tunnel", "zones", "remove
 # 127.0.0.1 and really connect to it, which is the point of them.
 _LOOPBACK = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
 
+# EXCEPT ON THESE PORTS, which are where a developer's real ComfyUI lives: 8188
+# is the `local` entry `setup` writes, 8189 the common second local install
+# `discover.FIRST_PORT` steps around, and 8190 the first cloud box's tunnel. The
+# fakes all listen on a port the OS picks, so no test needs one of these — and
+# one that reaches one is asking whatever the developer happens to have running.
+# Three did, through `list --live` on a `[hosts.local] port = 8188` entry: six
+# real GET /system_stats per full run to a live ComfyUI, passing either way, and
+# so passing for a reason nobody had written down.
+_LIVE_PORTS = frozenset({8188, 8189, 8190})
+
 
 @pytest.fixture(scope="session")
 def _config_redirect_root(tmp_path_factory):
@@ -222,21 +232,45 @@ def no_test_reaches_the_network(monkeypatch):
     without connecting; and any subprocess, which has its own network namespace
     as far as this is concerned. `gcloud` is the one that matters there, and it
     is fenced by the fakes rather than by this.
+
+    LOOPBACK ON `_LIVE_PORTS` IS REFUSED TOO, and every refusal is also kept and
+    failed at teardown. Raising alone was not enough there: the three tests that
+    reached 8188 ran `list --live` through `CliRunner`, which catches whatever a
+    command raises and turns it into exit code 1 — and one of them accepts exit
+    1. A refusal the code under test can swallow is a refusal nobody sees. The
+    tests that aim at this on purpose clear the list once they have seen it fire.
     """
     real = socket.create_connection
+    refused: list[str] = []
+
+    def refuse(message):
+        refused.append(message)
+        raise AssertionError(message)
 
     def guarded(address, *args, **kwargs):
         host = address[0] if isinstance(address, tuple) and address else address
+        port = address[1] if isinstance(address, tuple) and len(address) > 1 else None
         if str(host) not in _LOOPBACK:
-            raise AssertionError(
+            refuse(
                 f"this test opened a socket to {address!r}. A unit suite that "
                 f"reaches the network measures the runner, not the tool — and "
                 f"this one wrote its answer into the developer's home. Pass the "
                 f"seam: `probe=` for latency, `config=` for where the cache goes."
             )
+        if str(port) in {str(live) for live in _LIVE_PORTS}:
+            refuse(
+                f"this test opened a socket to {address!r}, a port where the "
+                f"developer's own ComfyUI or tunnel lives, so what it read depends "
+                f"on what is running on this machine. Stub the probe "
+                f"(`host._answering`, `lifecycle.probe`) or serve a fake on port 0."
+            )
         return real(address, *args, **kwargs)
 
     monkeypatch.setattr(socket, "create_connection", guarded)
+    yield refused
+    if refused:
+        pytest.fail("the network tripwire fired during this test, whatever the "
+                    "test itself made of it:\n" + "\n".join(refused), pytrace=False)
 
 
 @pytest.fixture(autouse=True)

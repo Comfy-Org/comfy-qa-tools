@@ -859,16 +859,21 @@ def _live_state_cell(runner):
     import tempfile
 
     from comfy_qa import gcloud as gcloud_module
+    from comfy_qa import host as host_module
 
     path = Path(tempfile.mkdtemp()) / "hosts.toml"
     path.write_text(HOSTS, encoding="utf-8")
     real = gcloud_module.Gcloud(runner=runner)
-    saved = gcloud_module.Gcloud
+    saved = gcloud_module.Gcloud, host_module._answering
     try:
         gcloud_module.Gcloud = lambda *a, **k: real
+        # `HOSTS` has `[hosts.local] port = 8188`, and `--live` asks a local
+        # entry over loopback: the developer's own ComfyUI, for real, until this.
+        # Only the cloud row is read here.
+        host_module._answering = lambda host: False
         out = CliRunner().invoke(app, ["list", "--live", "--config", str(path)]).stdout
     finally:
-        gcloud_module.Gcloud = saved
+        gcloud_module.Gcloud, host_module._answering = saved
     row = next(line for line in out.splitlines() if line.startswith("comfy-win"))
     return row.split("http")[-1].split(None, 1)[-1].strip()
 
