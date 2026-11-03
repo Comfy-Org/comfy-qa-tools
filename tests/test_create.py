@@ -1934,6 +1934,25 @@ def test_the_two_leftover_remedies_are_reserved_creates(tmp_path):
         "comfy-qat create --os linux --gpu t4 --reserve --name <another-name>"]
 
 
+def test_the_leftover_remedy_keeps_the_build_and_the_disk():
+    """behaviour:F1, the class: "call this box something else" is the same box
+    under another name, so it carries what else was asked for — the build, and a
+    disk that is not the default — as every other rewritten create does."""
+    from dataclasses import replace
+
+    from comfy_qa.build import Build
+
+    built = replace(T4_BLUEPRINT, disk_gb=400,
+                    build=Build(version="v0.43.0", manager=False, torch="2.12.1"))
+    wrong = held_for("comfy-linux", ours=False)
+    with pytest.raises(LifecycleError) as misfit:
+        order_zones(Cloud(), PROJECT, built, gate(2, [], [wrong], reserve=True),
+                    leftover=wrong)
+    assert _creates(misfit.value.fix) == [
+        "comfy-qat create --os linux --gpu t4 --reserve --name <another-name> "
+        "--disk 400 --version v0.43.0 --no-manager --torch 2.12.1"]
+
+
 # The sites, by the function each is written in. A string in the source that
 # builds a `comfy-qat create` and is in none of these fails the test below, so
 # a new remedy has to be added here — beside a test above that drives it for a

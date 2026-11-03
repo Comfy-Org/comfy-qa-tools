@@ -101,6 +101,16 @@ changed).
   that is not a GitHub release: each is asked of GitHub, read-only — `gh api`
   when it is installed, the public API otherwise — and refused in plain words
   with the fix, exit 2.
+- **A create handed back by a refusal keeps the build.** The same create
+  offered after a stock-out, after `--zone` or `--region`, and by every refusal
+  `create` makes before anything exists — a disk too small or too large, no such
+  operating system, a card it cannot drive, a box with no GPU and `--reserve`, a
+  missing `--os` or `--gpu` with nobody to ask — carries the build options as
+  they were given, `--no-manager` included. The create `move` hands back to make
+  a reserved box again somewhere else carries its host list's `build`. Each of
+  them dropped it, so pasted back the box came up on the tip of ComfyUI's
+  default branch with Manager on; live, the GPU run's own retry lost `--version
+  v0.43.0`.
 - **Ready means the build you asked for.** Once ComfyUI answers, what it is
   running is read back and compared with what was asked: the ComfyUI version and
   torch from `/system_stats`, the frontend from the bundle it is serving, Manager

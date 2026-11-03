@@ -1891,6 +1891,23 @@ def test_the_refusal_hands_over_stop_delete_and_create_again_reserved(
         "would have kept")
 
 
+def test_the_create_again_keeps_the_build_the_host_list_names(tmp_path, monkeypatch):
+    """behaviour:F1, the class. The box is made again from nothing, so the
+    host list's `build` — what its first `go` installs — goes with it: dropped,
+    the box made again would come up on the tip of ComfyUI's default branch."""
+    hosts = RESERVED_CLI_HOSTS.replace(
+        "port         = 8190",
+        'build        = "comfyui=v0.43.0 frontend=v1.58.4 manager=off torch=default"\n'
+        "port         = 8190")
+    result = _cli_move(tmp_path, monkeypatch, Cloud(disks=[SOURCE], instances=[INSTANCE]),
+                       "comfy-win", hosts=hosts)
+
+    create = next(line.strip() for line in result.output.splitlines()
+                  if line.strip().startswith("comfy-qat create"))
+    assert create == ("comfy-qat create --os windows --gpu l4 --reserve --name comfy-win "
+                      "--version v0.43.0 --frontend-version v1.58.4 --no-manager")
+
+
 def test_with_no_zone_asked_for_the_create_it_offers_names_none(tmp_path, monkeypatch):
     """`--zone <zone>` with a placeholder is a command that cannot be run. Left
     off, `create` chooses — which is what somebody who gave no `--to` asked."""

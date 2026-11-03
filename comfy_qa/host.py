@@ -194,6 +194,43 @@ def _build_flags(want, clean: bool) -> list[str]:
     return words + (["--clean"] if clean else [])
 
 
+def _typed_build(*, version=None, pr=None, commit=None, frontend_version=None,
+                 frontend_pr=None, manager=None, torch=None) -> str:
+    """The build options exactly as they were typed, quoted for a shell.
+
+    For a `comfy-qat create` a refusal hands back BEFORE the build has been
+    checked — the same rule as `--os` and `--gpu` there: what was typed, and
+    nothing else, so an option left off is still asked for as it would have
+    been. In `Build.flags`'s order, and Manager only when it was typed.
+    """
+    words = [f"{flag} {shlex.quote(str(value))}" for flag, value in (
+        ("--version", version), ("--pr", pr), ("--commit", commit),
+        ("--frontend-version", frontend_version), ("--frontend-pr", frontend_pr))
+        if value not in (None, "")]
+    if manager is not None:
+        words.append("--manager" if manager else "--no-manager")
+    if torch not in (None, ""):
+        words.append(f"--torch {shlex.quote(str(torch))}")
+    return " ".join(words)
+
+
+def _declared_flags(host: Host) -> str:
+    """The host list's `build` for this box as options, or nothing.
+
+    For a create that makes the box again: its first `go` installs that build.
+    A line that does not read gives nothing here — the refusal it is printed
+    in is about something else, and `go` refuses the line on its own.
+    """
+    from .build import BuildError, parse
+
+    declared = getattr(host, "declared", None)
+    try:
+        written = parse(declared("build") if callable(declared) else None)
+    except BuildError:
+        return ""
+    return written.choices().flags() if written is not None else ""
+
+
 STARTER = f"""\
 # comfy-qat list.
 #
@@ -1361,6 +1398,16 @@ def create_cmd(
     from .discover import next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
 
+    # THE BUILD AS TYPED, for every `comfy-qat create` a refusal below hands
+    # back. Each of them was rebuilt from where the box goes, `--os`, `--gpu`,
+    # the name, `--reserve` and `--disk`, and dropped the build — so the box made
+    # from the fix came up on the tip of ComfyUI's default branch with Manager
+    # on (audit finding behaviour:F1). As typed, because most of these refusals
+    # come before the build has been checked against GitHub.
+    typed = _typed_build(version=version, pr=pr, commit=commit,
+                         frontend_version=frontend_version, frontend_pr=frontend_pr,
+                         manager=manager, torch=torch)
+
     # Before anything is read from Google, because this is a string check and
     # `create` otherwise spends a minute on quota before saying anything.
     #
@@ -1407,7 +1454,7 @@ def create_cmd(
         # `--name qatest-plain --disk 400` came back under whatever name the
         # next run picks, with the default 200 GB — and pasted under `--yes`,
         # that is the box that gets made.
-        besides = create_mod.besides_where(name, disk)
+        besides = create_mod.besides_where(name, disk, typed)
         chosen += f"{besides} " if besides else ""
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
@@ -1433,7 +1480,7 @@ def create_cmd(
     # drops `--reserve` makes — in a script, where nobody is asked — an
     # unreserved box out of a request for a reserved one. Empty otherwise, so
     # the lines for an ordinary build are what they always were.
-    asked = create_mod._asked_for(reserve is True, name)
+    asked = create_mod._asked_for(reserve is True, name, typed)
     os_choice = ask.settle(
         "--os", os_choice,
         label="OS", question="Which operating system?",
@@ -1522,7 +1569,7 @@ def create_cmd(
     # long to carry `-rsv` are both refused before Google is asked anything.
     try:
         card = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
-                    taken=taken_names(hosts, []), reserve=reserve).card
+                    taken=taken_names(hosts, []), reserve=reserve, build=typed).card
     except _reportable() as exc:
         _refused(exc)
 
@@ -1588,7 +1635,8 @@ def create_cmd(
             from .auth import spliced
 
             held = "".join(f" {part}" for part in (
-                "--reserve" if reserve else "", create_mod.besides_where(name, disk))
+                "--reserve" if reserve else "",
+                create_mod.besides_where(name, disk, typed))
                 if part)
             say.fail(wrong[0],
                      fix=say.fix(*spliced(wrong[1], f"comfy-qat create --os {os_choice} "
@@ -1601,7 +1649,8 @@ def create_cmd(
 
     try:
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
-                         taken=taken_names(hosts, instances), reserve=reserve)
+                         taken=taken_names(hosts, instances), reserve=reserve,
+                         build=typed)
         if want is not None:
             from dataclasses import replace as _with
 
@@ -4187,9 +4236,13 @@ def _refuse_to_move_a_reserved_box(host: Host, to: str | None) -> None:
     from .create import card_named
 
     card = card_named(host.gpu or "")
+    # And the build its host list names, which the box made again installs
+    # first — dropped, it came up on the tip of ComfyUI's default branch.
+    built = _declared_flags(host)
     again = (f"comfy-qat create --os {'windows' if is_windows(host) else 'linux'}"
              + (f" --gpu {card.key}" if card is not None else "")
              + f" --reserve --name {host.name}"
+             + (f" {built}" if built else "")
              + (f" --zone {shlex.quote(to)}" if to else ""))
     say.fail(
         f"{host.name} is reserved, and a reservation is held in one zone — "

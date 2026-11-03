@@ -925,8 +925,8 @@ def card_for(gpu: str) -> Card:
     )
 
 
-def _asked_for(reserve: bool, name: str | None) -> str:
-    """` --reserve` and ` --name <name>`, for a remedy `plan` hands back.
+def _asked_for(reserve: bool, name: str | None, build: str = "") -> str:
+    """` --reserve`, ` --name <name>` and the build, for a remedy `plan` hands back.
 
     A REMEDY THAT REWRITES THE COMMAND REWRITES THE BOX. Each refusal in `plan`
     prints a corrected `comfy-qat create`, and each of them printed it without
@@ -935,28 +935,33 @@ def _asked_for(reserve: bool, name: str | None) -> str:
     The name goes with it for a reserved box, because a reservation is found
     again by its box's name.
 
-    Nothing at all for a build that is not reserved, so those lines stay what
-    they have always been. The name only when one was given: with none, one is
-    picked, and it is picked again.
+    And `build`, the build options as they were typed, for every box: each of
+    these dropped them, so the box made from the fix came up on the tip of
+    ComfyUI's default branch with Manager on (audit finding behaviour:F1).
+
+    Nothing at all for a box that is not reserved and names no build, so those
+    lines stay what they have always been. The name only when one was given:
+    with none, one is picked, and it is picked again.
     """
-    if not reserve:
-        return ""
-    return " --reserve" + (f" --name {_clean(name)}" if name else "")
+    held = (" --reserve" + (f" --name {_clean(name)}" if name else "")) if reserve else ""
+    return held + (f" {build}" if build else "")
 
 
-def besides_where(name: str | None, disk: int) -> str:
-    """`--name <name> --disk <gb>`: what a create rewritten before `plan` has
-    run carries besides `--os`, `--gpu`, `--reserve` and where.
+def besides_where(name: str | None, disk: int, build: str = "") -> str:
+    """`--name <name> --disk <gb>` and the build: what a create rewritten before
+    `plan` has run carries besides `--os`, `--gpu`, `--reserve` and where.
 
     `_same_box`'s rule, for the refusals that come before there is a blueprint
     to build it from — `--zone` with `--region`, and a region that is not one.
     Both kept the name for a reserved build only and the disk for none, so a box
     asked for as `--name qatest-plain --disk 400` came back as another name with
     the default 200 GB (O23b). The name whenever one was given; the disk
-    whenever it is not the default, the only case leaving it off changes.
+    whenever it is not the default, the only case leaving it off changes; and
+    the build options as they were typed, which both dropped (behaviour:F1).
     """
     parts = [f"--name {_clean(name)}" if name else "",
-             f"--disk {disk}" if disk != DEFAULT_DISK_GB else ""]
+             f"--disk {disk}" if disk != DEFAULT_DISK_GB else "",
+             build]
     return " ".join(part for part in parts if part)
 
 
@@ -1038,10 +1043,14 @@ def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
 def plan(
     *, os_choice: str, gpu: str, name: str | None = None,
     disk_gb: int = DEFAULT_DISK_GB, taken: set[str] | None = None,
-    reserve: bool = False,
+    reserve: bool = False, build: str = "",
 ) -> Blueprint:
-    """Everything decided before anything is contacted. Offline, and total."""
-    asked = _asked_for(reserve, name)
+    """Everything decided before anything is contacted. Offline, and total.
+
+    `build` is the build options as typed, for the creates its refusals hand
+    back; the build itself is checked, and set on the blueprint, by the caller.
+    """
+    asked = _asked_for(reserve, name, build)
     image = image_for(os_choice, asked)
     card = card_for(gpu)
     # BEFORE the disk checks, and long before the quota read: a card this tool
@@ -2098,11 +2107,23 @@ def _same_box(blueprint: Blueprint) -> str:
     asked for by name came back as whatever name the next run would pick
     (O23). The name now goes with every box, and the disk whenever it is not
     the default, which is the only case leaving it off changes anything.
+
+    And the build. It was dropped here too, so after a stock-out the same
+    create, pasted back, came up on the tip of ComfyUI's default branch with
+    Manager on — live, S2-13's retry lost `--version v0.43.0` (audit finding
+    behaviour:F1). Manager is named when it is off, the one case leaving it
+    out changes anything.
     """
     named = _as_reserved(blueprint) or f" --name {blueprint.name}"
     disk = f" --disk {blueprint.disk_gb}" if blueprint.disk_gb != DEFAULT_DISK_GB else ""
     return (f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key}"
-            f"{named}{disk}")
+            f"{named}{disk}{_build_of(blueprint)}")
+
+
+def _build_of(blueprint: Blueprint) -> str:
+    """` --version v0.43.0 …`: the build a create asked for, or nothing."""
+    flags = blueprint.build.flags() if blueprint.build is not None else ""
+    return f" {flags}" if flags else ""
 
 
 def _wanted(card: Card) -> str:
@@ -2156,8 +2177,13 @@ def _refuse_the_leftover(blueprint: Blueprint, leftover, project: str) -> None:
         f"using it. Nothing was created.",
         fix=output.fix(
             "call this box something else:",
+            # The same box under another name, so it carries what else was asked
+            # for, as `_same_box` does: the disk and the build.
             f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key} "
-            f"--reserve --name <another-name>",
+            f"--reserve --name <another-name>"
+            + (f" --disk {blueprint.disk_gb}" if blueprint.disk_gb != DEFAULT_DISK_GB
+               else "")
+            + _build_of(blueprint),
             "or release that reservation, if it is yours to release:",
             rsv.delete_command(leftover.name, leftover.zone, project),
         ),

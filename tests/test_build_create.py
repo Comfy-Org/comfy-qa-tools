@@ -104,3 +104,43 @@ def test_create_no_manager_is_written_down(cli):
     result = cli("--os", "linux", "--gpu", "none", "--no-manager", "--yes")
     assert result.exit_code == 0, result.output
     assert "manager=off" in result.hosts
+
+
+# --- every create a refusal hands back keeps the build (behaviour:F1) -----------
+#
+# A remedy that rewrites the command rewrites the box. The refusals `plan` and
+# `create` print before anything exists each hand back a corrected `comfy-qat
+# create`, and each was rebuilt from `--os`, `--gpu`, the name, `--reserve` and
+# `--disk`: the build was dropped, so the box made from the fix came up on the
+# tip of ComfyUI's default branch with Manager on. `--torch` without a CUDA
+# build here, so the build is one every card in these cases can take.
+
+BUILT = ("--version", "v0.43.0", "--frontend-version", "v1.58.4", "--no-manager",
+         "--torch", "2.12.1")
+
+
+@pytest.mark.parametrize("args", [
+    ("--os", "linux", "--gpu", "l4", "--disk", "20"),
+    ("--os", "linux", "--gpu", "l4", "--disk", "99999"),
+    ("--os", "freebsd", "--gpu", "l4"),
+    ("--os", "linux", "--gpu", "v100"),
+    ("--os", "linux", "--gpu", "none", "--reserve", "--name", "qatest-cpu"),
+    ("--gpu", "l4"),
+    ("--os", "linux"),
+    ("--os", "linux", "--gpu", "l4", "--zone", "us-central1-a", "--region", "us-east1"),
+], ids=["disk-too-small", "disk-too-large", "no-such-os", "undrivable-card",
+        "no-gpu-reserved", "no-os", "no-gpu", "zone-and-region"])
+def test_every_create_a_refusal_offers_keeps_the_build(cli, args):
+    from commandlines import flags, offered_argv
+
+    result = cli(*args, *BUILT, "--yes")
+    assert result.exit_code == 2, result.output
+
+    offered = [words for words in offered_argv(result.output, "comfy-qat", "create")
+               if not any(word.startswith("<") for word in words)]
+    assert offered, f"no create was offered:\n{result.output}"
+    wanted = flags(list(BUILT))
+    for words in offered:
+        given = flags(words[2:])
+        assert {flag: given.get(flag) for flag in wanted} == wanted, (
+            f"`{' '.join(words)}` drops the build `{' '.join(BUILT)}`")

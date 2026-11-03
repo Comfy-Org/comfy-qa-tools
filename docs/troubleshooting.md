@@ -1286,8 +1286,9 @@ region `--region` named.
 Printed only when there is somewhere else to go: another region with the card's
 quota where Google offers the card. The fix line gives the same create without
 `--region`, which lets the tool pick from everywhere the grant reaches — the same
-box, so the name, `--reserve` and a `--disk` other than the default all go with
-it. Or wait: a stockout usually clears in minutes to hours, and
+box, so the name, `--reserve`, a `--disk` other than the default and the build —
+`--version`, `--pr` or `--commit`, a frontend, `--no-manager` and `--torch` — all go
+with it. Or wait: a stockout usually clears in minutes to hours, and
 stock for a *reservation* is narrower and moves faster than stock for a plain
 box.
 
