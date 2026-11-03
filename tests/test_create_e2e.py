@@ -1250,6 +1250,24 @@ def test_no_host_list_at_all_is_still_fine(cli):
     assert "[hosts.comfy-linux]" in result.hosts
 
 
+def test_a_host_list_that_was_never_there_did_not_stop_loading(cli):
+    """No host list when `create` starts and none when it picks the port is a
+    first run, not a file that broke while the box was being made. The second
+    read refused it — `no host list at …` — and the warning for a broken file
+    went out anyway: on the ordinary first-run path, telling a newcomer the host
+    list "stopped loading while this ran", to check a port against entries that
+    do not exist, and to fix a file that was never there.
+
+    This is how CI found the wrap in that warning's last line: the three tests
+    that printed it were all on this path, which should not have printed it."""
+    result = cli("--os", "linux", "--gpu", "l4", "--yes",
+                 declared=None, gc=card_cloud("l4"))
+
+    assert result.exit_code == 0
+    assert "stopped loading" not in result.output, result.output
+    assert "[hosts.comfy-linux]" in result.hosts
+
+
 @pytest.mark.parametrize("region, expect", [
     ("", "unset"),
     ("us-central1-a", "zone"),

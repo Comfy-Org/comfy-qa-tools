@@ -1575,20 +1575,30 @@ def create_cmd(
     try:
         port = next_ports(load(path), 1)[0]
     except ConfigError as exc:
-        # Said out loud, and NOT refused. The file loaded at the top of this
-        # command — that check is now a refusal — so reaching here means it broke
-        # while the create was running, and by now the box is real and billing.
-        # Refusing at this point would leave a GPU running with no entry naming
-        # it, which is the worse of the two, so the entry still goes in on the
-        # best port this run knows about. What it must not do is stay quiet: the
-        # port may collide with one in the part of the file that no longer
-        # parses, and the sign-off below offers `go` and `down`, which both call
-        # `load` and will exit 2 until the file is fixed.
         port = next_ports(hosts, 1)[0]
-        say.warn(f"your host list stopped loading while this ran ({exc}), so "
-                 f"port {port} was chosen from the file as it was before — check "
-                 f"it against the entries that no longer parse, and fix the file "
-                 f"before comfy-qat go or comfy-qat down")
+        # NO FILE IS NOT A BROKEN FILE, here as at the top, and it has to be
+        # asked the same way. A first run has no host list when it starts and
+        # none now — the append below writes it — and `load` refuses that with
+        # `no host list at …`, the same exception as a file that will not parse.
+        # Taken for the second, the ordinary first `create` told a newcomer
+        # their host list "stopped loading while this ran", to check the port
+        # against entries that do not exist, and to fix a file that was never
+        # there.
+        if path.exists():
+            # Said out loud, and NOT refused. The file loaded at the top of this
+            # command — that check is now a refusal — so reaching here means it
+            # broke while the create was running, and by now the box is real and
+            # billing. Refusing at this point would leave a GPU running with no
+            # entry naming it, which is the worse of the two, so the entry still
+            # goes in on the best port this run knows about. What it must not do
+            # is stay quiet: the port may collide with one in the part of the
+            # file that no longer parses, and the sign-off below offers `go` and
+            # `down`, which both call `load` and will exit 2 until the file is
+            # fixed.
+            say.warn(f"your host list stopped loading while this ran ({exc}), so "
+                     f"port {port} was chosen from the file as it was before — check "
+                     f"it against the entries that no longer parse, and fix the file "
+                     f"before comfy-qat go or comfy-qat down")
 
     # Still a bare append, and deliberately, having been through `hostfile.add`
     # and taken back out.
