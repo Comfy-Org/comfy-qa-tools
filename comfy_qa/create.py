@@ -2545,14 +2545,18 @@ def build(
     # Nothing ranked anything, so this frame cannot say how wide the search was
     # and must not guess. `--zone` is the case: one zone, by request, and a
     # sentence about how many regions were considered would be an invention.
+    #
+    # `_same_box` for EVERY box, as the `--region` remedy above is. The plain
+    # one was a bare `comfy-qat create`: no `--os`, `--gpu`, `--name` or
+    # `--disk`, so pasted with no terminal it exited 2 on the first question it
+    # could not ask, and at a terminal it asked again for what had been given
+    # and made a box under another name. Only the reserved one went through
+    # `_same_box`, which is how "the same box" stayed a claim about one branch.
     raise LifecycleError(
         f"every zone tried is out of {_wanted(blueprint.card)} capacity: "
         f"{', '.join(tried) or 'none were offered'}. Nothing was created and nothing "
         f"is billing.",
-        fix=("wait and run the same command again — a stockout is usually minutes to "
-             "hours — or drop --zone and let this pick: comfy-qat create"
-             if not blueprint.reserve else
-             f"wait and run the same command again — a stockout is usually minutes "
+        fix=(f"wait and run the same command again — a stockout is usually minutes "
              f"to hours — or drop --zone and let this pick: {_same_box(blueprint)}"),
         kind=EXHAUSTED,
     )

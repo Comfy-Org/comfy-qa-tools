@@ -1344,6 +1344,54 @@ def test_the_same_box_without_region_is_the_box_that_was_asked_for(run, asked):
     assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
 
 
+@pytest.mark.parametrize("asked", [
+    ["--reserve", "--name", "qatest-rsv", "--disk", "400"],
+    ["--name", "qatest-plain"],
+    ["--name", "qatest-plain", "--disk", "400"],
+], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk"])
+def test_the_same_box_without_zone_is_the_box_that_was_asked_for(run, asked):
+    """O23b's sibling, after `--zone`. "drop --zone and let this pick" was
+    followed by `_same_box` for a reserved box and by a bare `comfy-qat create`
+    for every other — no `--os`, no `--gpu`, no `--name`, no `--disk` — which,
+    pasted with no terminal, stops at the first question it cannot ask and
+    exits 2. At a terminal it asks for an operating system and a card that
+    were already given, and makes a box under another name.
+
+    Compared with the arguments it was given: everything but `--zone` and
+    `--yes`, and nothing else. And pasted back, its plan is that box."""
+    reserve = "--reserve" in asked
+    cloud = t4_project(*TWO_REGIONS, at="reserve" if reserve else "create")
+    argv = ["create", "--os", "linux", "--gpu", "t4", *asked,
+            "--zone", "us-central1-a", "--yes"]
+    result = run(*argv, cloud=cloud)
+    assert result.exit_code == 1, result.output
+    assert "drop --zone and let this pick" in flat(result.output)
+
+    offered_back = [words for words in creates(result.output) if "--zone" not in words]
+    assert len(offered_back) == 1, creates(result.output)
+    words = offered_back[0][1:]
+
+    def flags(argv):
+        pairs, rest = {}, list(argv)
+        while rest:
+            word = rest.pop(0)
+            if word.startswith("--"):
+                pairs[word] = rest.pop(0) if rest and not rest[0].startswith("--") else True
+        return pairs
+
+    expected = flags(argv[1:])
+    expected.pop("--zone")
+    expected.pop("--yes")
+    assert flags(words[1:]) == expected
+
+    again = run(*words, "--dry-run", cloud=t4_project(*TWO_REGIONS), tty=False)
+    assert again.exit_code == 0, again.output
+    name = asked[asked.index("--name") + 1]
+    disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
+    plan = flat(again.output)
+    assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+
+
 def test_a_box_with_no_gpu_says_the_region_it_was_named(run):
     """O23c. `order_zones` tells `build` that `--region` narrowed the search on
     two paths, and only the card's was held by a test: with the no-GPU half
@@ -1387,14 +1435,18 @@ def test_a_box_with_no_gpu_in_its_only_region_says_there_is_nowhere_else(run):
 
 def test_every_delete_the_package_prints_carries_yes():
     """Read off every string in the package. The command runs to the end of
-    its line, or to the `;`, ` — ` or `#` that starts what follows it."""
+    its line, or to the `;`, ` — ` or `#` that starts what follows it.
+
+    Whatever follows `delete`, not only an f-string's hole: this matched
+    `\\{\\}`, so `comfy-qat delete comfy-linux` with the name typed out passed
+    without `--yes`. The package holds no such line; the first one is caught."""
     import re
 
     from printed import strings
 
     found = []
     for where, text in strings():
-        for match in re.finditer(r"comfy-qat delete \{\}", text):
+        for match in re.finditer(r"comfy-qat delete \S+", text):
             command = re.split(r"\n|; | — |\s#|`", text[match.start():])[0]
             found.append(where)
             assert "--yes" in command.split(), f"{where} prints: {command}"

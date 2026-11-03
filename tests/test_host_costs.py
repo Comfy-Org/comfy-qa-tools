@@ -2151,8 +2151,12 @@ def test_a_project_that_cannot_be_named_is_None_not_empty():
 
 
 # The gcloud commands that stop for a "(Y/n)?" unless they are told `--quiet`.
+# Followed by ANY word, not only an f-string's hole: this matched `\{`, so the
+# same command with a box's name typed out — `reset-windows-password comfy-win`
+# — passed without `--quiet`. No such literal is in the package; this is so
+# that the first one is caught rather than trusted.
 _PROMPTS = re.compile(r"gcloud compute (?:instances delete|reservations delete|disks "
-                      r"delete|snapshots delete|reset-windows-password) \{")
+                      r"delete|snapshots delete|reset-windows-password) \S+")
 
 
 def test_no_gcloud_command_the_package_prints_for_pasting_stops_to_ask():

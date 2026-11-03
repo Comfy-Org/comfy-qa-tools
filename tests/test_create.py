@@ -1870,8 +1870,13 @@ def test_every_stockout_ending_hands_back_a_reserved_create(ordering, attempts, 
 @pytest.mark.parametrize("ordering,attempts,expected", [
     (Ordering(zones=("us-central1-a", "us-east1-b"), regions=("us-central1", "us-east1")), 1,
      ["comfy-qat create --region <region>", "comfy-qat create --zone <zone>"]),
+    # NOT unchanged, and the one that is not: this held the named-zone ending
+    # to a bare `comfy-qat create`, which pasted with no terminal exits 2 on
+    # the `--os` it no longer carries. It is the same box now, as the reserved
+    # one has been (`test_the_same_box_without_zone_is_the_box_that_was_asked_
+    # for` in test_reserved_cli.py pastes it back).
     (Ordering(zones=("us-central1-a",), regions=("us-central1",), fall_through=False), 6,
-     ["comfy-qat create"]),
+     ["comfy-qat create --os linux --gpu t4 --name comfy-linux"]),
 ], ids=["capped", "named-zone"])
 def test_the_stockout_endings_for_a_plain_build_are_unchanged(ordering, attempts, expected):
     refuse = {"us-central1-a": STOCKOUT, "us-east1-b": STOCKOUT}
@@ -1915,9 +1920,10 @@ CREATE_REMEDIES = {
     "image_for": 1,               # no such operating system
     "plan": 4,                    # no-GPU-and-reserve (two), disk too small, too large
     "_refuse_the_leftover": 1,    # a reservation of this name that does not fit
-    "build": 3,                   # plain: capped (two) and named zone
-    # Reserved: capped (two) and named zone; and every box: the region named,
-    # and the untried regions, which wrote their own until O23.
+    "build": 2,                   # plain: capped (two)
+    # Reserved: capped (two); and every box: the zone named, which wrote a bare
+    # `comfy-qat create` for a plain box until after O23, the region named, and
+    # the untried regions, which wrote their own until O23.
     "_same_box": 1,
     "_refuse_full": 1,            # the region's allowance is held
     "_where_the_leftover_is": 1,  # the leftover is somewhere else
