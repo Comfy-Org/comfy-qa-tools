@@ -9,15 +9,19 @@ Two things. comfy-qat now keeps **its own Google project**, so moving it to a ne
 project is one line and moves nothing else on the machine. And what the check
 before 1.3.0 merged left open is fixed: a crash in `discover`; a `--region`
 stock-out that was wrong on a one-region project, offered back a box that was
-not the one asked for, and was half untested; five ways a printed command did
-not run as printed or a gcloud error was misread; and two places the 1.3.0 docs
+not the one asked for, and was half untested; printed commands that did not run
+as printed, and gcloud errors that were misread; and two places the 1.3.0 docs
 were behind the facts.
 
-**What ran on real Google boxes for this release, on 2026-11-03:** `discover`
-adopting a reserved box with no GPU beside an unreserved one — 1.3.0 crashed on
-it there, this adopts both — and the `down` and `delete --yes` it printed,
-pasted with no terminal. Everything else here ran against the suite's fakes
-only. `setup` was not run live, because it can ask Google for quota.
+**What ran on real Google boxes for this release, on 2026-11-03, on commit
+`acf517c`** — the last commit to change anything but this entry: `discover`
+adopting a reserved box with no GPU beside an unreserved one, neither in a host
+list that has no local machine in it. 1.3.0 crashed on the same two boxes; this
+adopts both, on ports 8191 and 8192, and marks only the reserved one. Then
+`down` and `delete --yes` — for the reserved box exactly as `discover` printed
+them — run with no terminal, stopped and deleted both boxes and released the
+reservation. Everything else here ran against the suite's fakes only. `setup`
+was not run live, because it can ask Google for quota.
 
 ### Changed
 
@@ -26,18 +30,28 @@ only. `setup` was not run live, because it can ask Google for quota.
   box, what `discover` lists, and what `quota` and `status` read. `setup
   --project <id>` writes it, and no longer runs `gcloud config set project` —
   that moved every other gcloud user on the machine with comfy-qat. Every gcloud
-  call that acts on a project now names it with `--project`, so the line reaches
-  Google whatever gcloud is set to. Without the line, gcloud's current project
-  is used, as before, and each command that does says so. A misspelt line, or a
-  project's display name where its ID goes, is refused rather than ignored.
+  call that acts on a project now names it with `--project`, and so does every
+  gcloud command printed for you to paste, so the line reaches Google whatever
+  gcloud is set to. Without the line, gcloud's current project is used, as
+  before, and each command that does says so. A misspelt line, or a project's
+  display name where its ID goes, is refused rather than ignored.
 - **Switching project keeps the old boxes reachable.** Each entry keeps its own
   `gce_project`, so a box made before the switch is still started, stopped and
   deleted where it is, until you delete it; there is no move between projects.
   `list` says which project each box is on, and where a new one will go.
-- **A printed command is a command and nothing else.** Offered commands carried
-  their reason as a trailing `# note`, which an interactive zsh — as it starts,
-  without `interactivecomments` — passed to the command as arguments, and the
-  command refused them. The reason is now a line of its own above the command.
+- **A printed command is the command and nothing else.** Offered commands carried
+  their reason after them — a `# note`, a dash, words aligned into a column,
+  `, then wait for Google` — which an interactive zsh, as it starts, passes to the
+  command as arguments, and the command refuses them. The reason is now a line of
+  its own above the command, ending in the colon that introduces it. `setup`'s
+  closing lines offer `comfy-qat stamp <name>` only for a local machine your host
+  list declares; it offered `stamp local` to host lists with no `local` in them.
+- **The tool no longer breaks a command across lines when it wraps what it
+  prints.** Some were broken once their values were in: the deletes in `move`'s
+  report of what an earlier move left, and in its note about a slower boot disk,
+  lost `--quiet` — and some `--project` too — to the next line, so the first
+  line, copied, stopped to ask, or deleted on gcloud's own project; and a long
+  project ID pushed `<id>` off `comfy-qat setup --project <id>`.
 - **Every printed `comfy-qat delete` carries `--yes`**, so it runs from a
   script or an agent; without it, it stopped to ask for the box's name and
   exited 2 with nothing deleted — and for a reserved box it is the command that
@@ -53,11 +67,22 @@ only. `setup` was not run live, because it can ask Google for quota.
   "not everywhere this project can use the card" and offered "drop --region",
   which tried the same zones again. It now says that region is the only one and
   there is nowhere left to try.
-- **"The same box" offered after a stock-out is the same box.** It dropped
-  `--disk`, and `--name` for a box that was not reserved, so pasted back it made
-  a 200 GB box under another name. The untried-regions remedy beside it had the
-  same gap, and after a `--zone` stock-out a box that was not reserved was
-  offered a bare `comfy-qat create`, which pasted with no terminal exits 2.
+- **"The same box, somewhere else" is the same box, wherever it is offered.**
+  The command offered after a `--region` stock-out dropped `--disk`, and `--name`
+  for a box that was not reserved, so pasted back it made a 200 GB box under
+  another name. So did every other place that hands back the same create
+  somewhere else: after a `--zone` stock-out (a bare `comfy-qat create`, which
+  pasted with no terminal exits 2), after the attempts were capped (two bare
+  templates), when the region's allowance is already held, when a reservation of
+  that name is left in another zone, and when `--zone` and `--region` are both
+  given or the region is spelt wrong. Each keeps the name and the disk now.
+- **A gcloud command printed for you to paste names the project.** After a
+  switch, the line `down --all` prints to stop a running box nobody declared,
+  and the one a create refused on the project-wide ceiling prints, went to
+  gcloud's own project — "not found" there, and the box named as running went
+  on billing. Every printed gcloud command that acts on a project carries
+  `--project` now; with none in hand it reads `--project=<your-project-id>`,
+  which a shell refuses as it stands, rather than running somewhere else.
 - **The printed `reset-windows-password` command carries `--quiet`.** The one
   printed when a reset answers with no credentials did not, so it stopped to ask
   from a script; the check for it now reads every module.
@@ -65,11 +90,12 @@ only. `setup` was not run live, because it can ask Google for quota.
   signs, and Google repeats a box's name in most of what it refuses, so an
   already-exists error read as "out of capacity, try another zone". Google's own
   `state:STOCKOUT` code is still recognised, as is the real wrapped text.
-- **A line break in gcloud's error no longer hides what it says.** Only the
+- **A line break in gcloud's text no longer hides what it says.** Only the
   stock-out check folded whitespace before matching; Google's suggested zone and
   the kind of error (an expired session, a missing project) are now read through
-  the same fold, as are what a not-found names, a quota request already made,
-  and a sign-in that is missing.
+  the same fold, as are what a not-found names, a quota request already made, a
+  sign-in that is missing, and a dead tunnel's log — where a box still booting
+  was read as one with nothing listening, and `go` said to start ComfyUI first.
 - **The 1.3.0 entry below** said the live run found four defects; it found ten,
   and four were fixed. It had no line for the stock-out text fix. And the
   acceptance pack still said the device name on a box with no GPU had not been
@@ -78,9 +104,14 @@ only. `setup` was not run live, because it can ask Google for quota.
 ### The suite
 
 One new test file, for the project setting, and the rest beside what each fix
-touches, each written to fail on 1.3.0 first. A walk of every string in every
-module now backs two guards that used to read two files by name: no printed
-delete or reset stops to ask, and no printed command carries a `#` note.
+touches, each written to fail before its fix. Two readings now back the guards:
+a walk of every string in every module, and a check of every line every test
+prints, with the values in and `comfy-qat` lines parsed by the CLI itself.
+Between them: no printed delete or reset stops to ask, no printed command
+carries anything but the command or is broken across lines by the tool, and
+every printed gcloud command that acts on a project names it. And no argv
+reaches gcloud, or a fake standing in for it, without its project, however it
+was built.
 
 ## 1.3.0 — reserved boxes, a limit on them, and a box with no GPU
 
