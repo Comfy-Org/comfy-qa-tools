@@ -3169,8 +3169,9 @@ gcloud compute reservations list --project=<project>
 `list --live` reads reservations only for projects a **declared cloud box** is
 on. With none declared it asks Google nothing — `--live` on a host list holding
 only `local` stays a loopback check that needs no login. `comfy-qat down --all`
-is the command that reads the project gcloud is pointed at in that case, and it
-names any reservation there with the command that releases it.
+is the command that reads a project in that case — the project your host list
+names, or the one gcloud is pointed at when it names none — and it names any
+reservation there with the command that releases it.
 
 ### Stopping a reserved box
 
@@ -3215,13 +3216,14 @@ A reservation that no host list entry names is reported too — `1 reservation o
 <project> is billing and not in your host list` — and is not released, but what
 releases it is printed under it: Google's `gcloud compute reservations delete …`
 when nothing is on it, or `comfy-qat discover` when a box is, so the box can be
-adopted and then deleted. Every project a declared box is on is read, and with
-no cloud box declared at all, the project gcloud is pointed at — which is where
-a `create --reserve` that stopped half-way leaves its reservation. If a
-project's reservations could not be read, the summary says `the project's
-reservations could not be checked … so this is not an all-clear` and prints the
-`gcloud compute reservations list` line for it. A run where a box refused to
-stop exits 1 and still says all of this.
+adopted and then deleted. Every project a declared box is on is read, and beside
+them the project your host list names — or, with no cloud box declared and no
+`project` line, the project gcloud is pointed at. That is where `create` makes a
+box, so it is where a `create --reserve` that stopped half-way leaves its
+reservation. If a project's reservations could not be read, the summary says
+`the project's reservations could not be checked … so this is not an all-clear`
+and prints the `gcloud compute reservations list` line for it. A run where a box
+refused to stop exits 1 and still says all of this.
 
 ## Getting onto a box
 

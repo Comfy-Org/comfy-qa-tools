@@ -69,10 +69,12 @@ A reservation with **no box on it** bills exactly the same and is in no list of
 machines. Two commands name one, with the command that releases it:
 `comfy-qat list --live`, for every project a cloud box you have declared is on
 (and only when it could read that project's instances — it says so when it
-could not); and `comfy-qat down --all`, which also reads the project gcloud is
-pointed at when you have no cloud box declared at all. That second case is the
-one a `create --reserve` that stopped half-way leaves, so `down --all` is the
-command to end a session on.
+could not); and `comfy-qat down --all`, which reads those and also the project
+your host list names, even with no cloud box declared at all — or, with no cloud
+box and no `project` line, the project gcloud is pointed at. That is the project
+`create` makes a box on, so it is where a `create --reserve` that stopped
+half-way leaves its reservation, and `down --all` is the command to end a
+session on.
 
 That a reservation bills for every hour it exists, used or not, is Google's
 published pricing for reservations. This tool has no way to measure it. The run
