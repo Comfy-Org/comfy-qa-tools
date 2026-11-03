@@ -110,8 +110,51 @@ def linux_python_search() -> str:
 # Custom nodes still lack wheels for 3.13+, so the interpreter is pinned.
 PYTHON_SERIES = "3.12"
 
+# Git and Python on a Windows box, from their publishers' own installers.
+#
+# They came from `winget` until the build choice, which on a real box could
+# not work: Google's windows-2022 image has no winget. Over SSH the install
+# printed `The term 'winget' is not recognized` twice, then `py` was not there
+# either, and it stopped at "comfy-cli did not install" (live run 2026-11-03,
+# live-s2/evidence/41). Microsoft says why: "WinGet ... is available on Windows
+# 11, modern versions of Windows 10, and Windows Server 2025 as a part of the
+# App Installer" (https://learn.microsoft.com/en-us/windows/package-manager/winget/,
+# read 2026-11-03). Server 2022 is not on that list.
+#
+# So each comes from where its publisher puts it, pinned to one file and checked
+# by SHA-256 before it runs — a download cut short, or a page of HTML where the
+# installer should be, is refused rather than run:
+#
+#   Python 3.12.10, the last 3.12 python.org built a Windows installer for
+#   (3.12.11 and later are source-only security releases; their
+#   python-3.12.x-amd64.exe are 404). python.org publishes MD5 for it, not
+#   SHA-256: the file was fetched on 2026-11-03, its MD5 matched the one
+#   python.org's release API gives (5eddb0b6f12c852725de071ae681dde4), and the
+#   SHA-256 below is that file's. Run silently as python.org documents in
+#   "Installing Without UI"
+#   (https://docs.python.org/3.12/using/windows.html#installing-without-ui):
+#   `/quiet InstallAllUsers=1 PrependPath=1 Include_test=0`, with TargetDir
+#   named so the path below is not a guess about "%ProgramFiles%\Python X.Y".
+#
+#   Git 2.56.0.windows.4, git-for-windows' latest release on 2026-11-03. Its
+#   SHA-256 is the one in that release's own notes, and GitHub's asset digest
+#   agrees. Run silently with the flags git-for-windows documents in "Silent or
+#   Unattended Installation"
+#   (https://gitforwindows.org/silent-or-unattended-installation), less the
+#   optional component list; its default directory is C:\Program Files\Git and
+#   its default PATH option puts `Git\cmd` on the machine's PATH.
+WINDOWS_PYTHON_DIR = r"C:\Program Files\Python312"
+WINDOWS_PYTHON = rf"{WINDOWS_PYTHON_DIR}\python.exe"
+PYTHON_INSTALLER = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
+PYTHON_INSTALLER_SHA256 = "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb"
+WINDOWS_GIT_CMD = r"C:\Program Files\Git\cmd"
+WINDOWS_GIT = rf"{WINDOWS_GIT_CMD}\git.exe"
+GIT_INSTALLER = ("https://github.com/git-for-windows/git/releases/download/"
+                 "v2.56.0.windows.4/Git-2.56.0.4-64-bit.exe")
+GIT_INSTALLER_SHA256 = "4961a4a8cc778d8b6e00a5819e5fe4d078b754555aff7aedc2d77a5d74c2de80"
+
 # Linux cannot pin it the way Windows can. Windows installs the interpreter it
-# wants (winget carries every series); a Linux image ships exactly one python3
+# wants (python.org's installer, above); a Linux image ships exactly one python3
 # and the archive holds no other — Ubuntu 22.04 has 3.10, 24.04 has 3.12. So the
 # box is asked what it has, newest first, and anything 3.13+ is passed over
 # rather than used. Assuming `python3.12` was there is what made the first real
@@ -901,22 +944,21 @@ def _windows_script(host: Host, build: Build, index: str | None, *, clean: bool,
         f"Write-Output '{CHANGING if change else INSTALLING}: "
         f"{build.describe().replace(' · ', ', ')}'; ",
         "Write-Output 'installing prerequisites'; ",
-        # winget is present on Server 2022 images; git and python come from there.
-        "winget install --id Git.Git -e --silent "
-        "--accept-source-agreements --accept-package-agreements; ",
-        f"winget install --id Python.Python.{PYTHON_SERIES} -e --silent "
-        "--accept-source-agreements --accept-package-agreements; ",
-        # winget changes the machine's PATH, not this session's, and comfy-cli
-        # needs git on PATH for every checkout it makes. Git's own directory is
-        # named too, for a session whose registry read comes back stale.
+        f"New-Item -ItemType Directory -Force -Path '{WINDOWS_TOOL}' | Out-Null; ",
+        _windows_prerequisites(),
+        # The installers change the machine's PATH, not this session's, and
+        # comfy-cli needs git on PATH for every checkout it makes. Git's own
+        # directory is named too, for a session whose registry read comes back
+        # stale.
         "$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + "
         "[Environment]::GetEnvironmentVariable('Path', 'User') + "
-        "';C:\\Program Files\\Git\\cmd'; ",
-        f"New-Item -ItemType Directory -Force -Path '{WINDOWS_TOOL}' | Out-Null; ",
+        f"';{WINDOWS_GIT_CMD}'; ",
         f"Write-Output 'installing comfy-cli {COMFY_CLI_VERSION} into "
         f"{WINDOWS_TOOL}\\venv'; ",
+        # The interpreter by its path, not `py -3.12`: the launcher is one more
+        # thing a bare image does not have, and the path is the one just checked.
         f"if (-not (Test-Path '{_WINDOWS_CLI_PY}')) "
-        f"{{ py -{PYTHON_SERIES} -m venv '{WINDOWS_TOOL}\\venv' }}; ",
+        f"{{ & '{WINDOWS_PYTHON}' -m venv '{WINDOWS_TOOL}\\venv' }}; ",
         f"& '{_WINDOWS_CLI_PY}' -m pip install --quiet --upgrade pip; ",
         f"& '{_WINDOWS_CLI_PY}' -m pip install --quiet comfy-cli=={COMFY_CLI_VERSION}; ",
         f"if (-not (Test-Path '{_WINDOWS_CLI}')) "
@@ -974,6 +1016,64 @@ def _windows_script(host: Host, build: Build, index: str | None, *, clean: bool,
     return "".join(parts)
 
 
+def _windows_prerequisites() -> str:
+    """Git, then Python, each only when it is not already where it goes.
+
+    Each is downloaded beside the tool, refused unless its SHA-256 is the
+    pinned one, run with `Start-Process -Wait -PassThru` — both are GUI
+    programs, which `&` starts and does not wait for — and judged twice: by
+    its exit code, then by the file it should have left. The installer is
+    removed once it has worked. `$ProgressPreference` is silenced first:
+    Windows PowerShell 5.1 draws a progress bar per chunk, which makes a 60 MB
+    download take minutes. TLS 1.2 is added to what .NET offers, never put in
+    place of it, for an image whose defaults predate it.
+
+    Python's installer is a Windows Installer bundle, so 3010 — "succeeded, a
+    restart completes it" — is success too; Git's is Inno Setup, where only 0
+    is. The quote around TargetDir is `[char]34` for the reason
+    `launch_detached_command` gives: the script is already inside double
+    quotes on its way to the box.
+    """
+    def one(name: str, url: str, digest: str, arguments: str, installed: str,
+            succeeded: tuple[int, ...]) -> str:
+        saved = f"{WINDOWS_TOOL}\\{url.rsplit('/', 1)[-1]}"
+        failed = " -and ".join(f"($c -ne {code})" for code in succeeded)
+        return (
+            f"if (-not (Test-Path '{installed}')) {{ "
+            f"Write-Output 'installing {name} from {url}'; "
+            f"Invoke-WebRequest -Uri '{url}' -OutFile '{saved}' -UseBasicParsing; "
+            f"if (-not (Test-Path '{saved}')) {{ Write-Output "
+            f"'INSTALL_INCOMPLETE: the {name} installer did not download'; exit 1 }}; "
+            f"if ((Get-FileHash -Algorithm SHA256 -Path '{saved}').Hash -ne '{digest}') "
+            f"{{ Write-Output 'INSTALL_INCOMPLETE: the {name} installer that downloaded "
+            "is not the file its publisher gives (its SHA-256 differs)'; exit 1 }; "
+            f"$p = Start-Process -FilePath '{saved}' -ArgumentList {arguments} "
+            "-Wait -PassThru; $c = $p.ExitCode; "
+            f"if ({failed}) {{ Write-Output ('INSTALL_INCOMPLETE: the {name} installer "
+            "exited ' + $c); exit 1 }; "
+            f"if (-not (Test-Path '{installed}')) {{ Write-Output 'INSTALL_INCOMPLETE: "
+            f"the {name} installer finished but {installed} is not there'; exit 1 }}; "
+            f"Remove-Item -Path '{saved}' -Force -ErrorAction SilentlyContinue; "
+            f"Write-Output '{name} installed' }}; "
+        )
+
+    return (
+        "$ProgressPreference = 'SilentlyContinue'; "
+        "[Net.ServicePointManager]::SecurityProtocol = "
+        "[Net.ServicePointManager]::SecurityProtocol -bor "
+        "[Net.SecurityProtocolType]::Tls12; "
+        "$q = [char]34; "
+        + one("Git", GIT_INSTALLER, GIT_INSTALLER_SHA256,
+              "'/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS "
+              "/RESTARTAPPLICATIONS'",
+              WINDOWS_GIT, (0,))
+        + one("Python", PYTHON_INSTALLER, PYTHON_INSTALLER_SHA256,
+              "('/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 TargetDir=' + "
+              f"$q + '{WINDOWS_PYTHON_DIR}' + $q)",
+              WINDOWS_PYTHON, (0, 3010))
+    )
+
+
 def _windows_frontend(build: Build) -> str:
     if not build.frontend_pr:
         return (f"Remove-Item -Path '{WINDOWS_FRONTEND_ROOT}' -Force "
@@ -1028,7 +1128,7 @@ def facts_command(host: Host) -> str:
         return (
             "powershell -NoProfile -NonInteractive -Command \""
             "$git = (Get-Command git -ErrorAction SilentlyContinue).Source; "
-            "if (-not $git) { $git = 'C:\\Program Files\\Git\\cmd\\git.exe' }; "
+            f"if (-not $git) {{ $git = '{WINDOWS_GIT}' }}; "
             "$c = ''; $b = ''; "
             f"if ((Test-Path '{WINDOWS_ROOT}\\.git') -and (Test-Path $git)) {{ "
             f"$c = (& $git -c safe.directory=* -C '{WINDOWS_ROOT}' rev-parse HEAD "
@@ -1050,6 +1150,15 @@ def facts_command(host: Host) -> str:
         f'echo "FRONTEND_ROOT=$(head -n 1 {LINUX_FRONTEND_ROOT} 2>/dev/null)"; '
         "exit 0"
     )
+
+
+# Git's directory, first on a Windows launch's PATH. Manager imports GitPython,
+# which needs `git` on PATH when ComfyUI starts, and Git's installer writes its
+# directory into the machine's PATH in the registry — which a session opened by
+# a service that started before the install is not certain to have re-read. The
+# install script reads the registry itself for the same reason. Naming the
+# directory costs nothing on a box where it is already on PATH.
+_WINDOWS_GIT_ON_PATH = f"$env:Path = '{WINDOWS_GIT_CMD};' + $env:Path; "
 
 
 def launch_command(host: Host, args: str = "") -> str:
@@ -1080,6 +1189,7 @@ def launch_command(host: Host, args: str = "") -> str:
         return (
             "powershell -NoProfile -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
+            + _WINDOWS_GIT_ON_PATH
             + windows_python_search(
                 "(Get-Command python -ErrorAction SilentlyContinue).Source")
             + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
@@ -1150,6 +1260,7 @@ def launch_detached_command(host: Host, args: str = "") -> str:
         return (
             "powershell -NoProfile -NonInteractive -Command \""
             f"Set-Location '{WINDOWS_ROOT}'; "
+            + _WINDOWS_GIT_ON_PATH
             + windows_python_search(
                 "(Get-Command python -ErrorAction SilentlyContinue).Source")
             + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "

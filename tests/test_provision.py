@@ -188,6 +188,19 @@ def test_windows_commands_never_prompt(build):
 
 
 @pytest.mark.parametrize("build", EVERY_BUILDER)
+def test_every_windows_command_fits_on_one_cmd_line(build):
+    """A command for a Windows box is run by its OpenSSH server's default
+    shell, which is cmd.exe ("The initial default in Windows is the Windows
+    command prompt (cmd.exe)", Microsoft's OpenSSH server configuration page),
+    and cmd holds 8191 characters a line ("The maximum length of the string
+    that you can use at the command prompt is 8191 characters", KB 830473).
+    The install is the longest, and grew by two pinned installers when Git and
+    Python stopped coming from winget: 6,548 characters with every build option
+    at once, read 2026-11-03."""
+    assert len(build(WIN)) < 8191
+
+
+@pytest.mark.parametrize("build", EVERY_BUILDER)
 def test_no_windows_command_uses_split_path(build):
     """`Split-Path` with an empty value prompts for a mandatory parameter, and a
     prompt hangs a non-interactive SSH command forever — the one failure that
@@ -399,9 +412,12 @@ def test_an_install_checks_its_own_work_before_claiming_success(host):
         # Checked three times since comfy-cli does the installing: that
         # comfy-cli itself installed, that `comfy install` exited 0 — read off
         # $LASTEXITCODE, the only thing PowerShell at `Continue` will not
-        # paper over — and that main.py is there at the end.
-        assert command.count("INSTALL_INCOMPLETE") == 3
-        assert command.count("exit 1") == 3
+        # paper over — and that main.py is there at the end. And four times for
+        # each of Git and Python since they stopped coming from winget (1.4.0):
+        # that the installer downloaded, that its SHA-256 is the pinned one,
+        # that it exited 0, and that the file it installs is there.
+        assert command.count("INSTALL_INCOMPLETE") == 3 + 2 * 4
+        assert command.count("exit 1") == 3 + 2 * 4
         assert "$LASTEXITCODE -ne 0" in command
     else:
         assert "exit 1" in command

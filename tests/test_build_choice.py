@@ -417,3 +417,93 @@ def test_github_that_cannot_be_reached_is_not_github_saying_no():
         build_mod.check(Build(version="v0.43.0"), down)
     assert "could not be asked" in str(caught.value)
     assert "no release" not in str(caught.value)
+
+
+# --- Windows prerequisites: what is really on Windows Server 2022 -------------
+
+
+@pytest.mark.parametrize("host", [WIN, WIN_CPU], ids=["windows", "windows-cpu"])
+def test_the_windows_install_does_not_rely_on_winget(host):
+    """Found live on 2026-11-03 (live-s2, evidence/41): `winget` is not on a
+    windows-2022 box reached over SSH — `The term 'winget' is not recognized` —
+    so the install got neither Git nor Python and stopped at "comfy-cli did not
+    install". Nothing on record shows the winget route ever working on a real
+    box. Git and Python come from their own publishers' installers instead,
+    each run silently and judged by the file it should leave behind."""
+    from comfy_qa.provision import GIT_INSTALLER, PYTHON_INSTALLER, WINDOWS_PYTHON
+
+    for command in (install_command(host), change_command(host, Build(version="v0.42.1"))):
+        assert "winget" not in command
+        assert "py -" not in command, "the py launcher is not there either"
+        assert PYTHON_INSTALLER in command and GIT_INSTALLER in command
+        assert "InstallAllUsers=1" in command and "/VERYSILENT" in command
+        assert f"'{WINDOWS_PYTHON}' -m venv" in command, "the interpreter by path"
+
+
+def test_the_windows_installers_are_the_publishers_own():
+    from comfy_qa.provision import GIT_INSTALLER, PYTHON_INSTALLER, WINDOWS_PYTHON
+
+    assert PYTHON_INSTALLER == (
+        "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe")
+    assert GIT_INSTALLER == (
+        "https://github.com/git-for-windows/git/releases/download/"
+        "v2.56.0.windows.4/Git-2.56.0.4-64-bit.exe")
+    assert WINDOWS_PYTHON == r"C:\Program Files\Python312\python.exe"
+
+
+@pytest.mark.parametrize("host", [WIN, WIN_CPU], ids=["windows", "windows-cpu"])
+def test_each_windows_installer_is_checked_before_it_runs_and_judged_after(host):
+    """A download that stopped half way, or a page of HTML where the installer
+    should be, is refused by its SHA-256 before anything runs; an installer
+    that fails is refused by its exit code, then by the file it should have
+    left. Each one is skipped on a box that already has what it installs, so
+    a `switch` does not download them again."""
+    from comfy_qa.provision import (
+        GIT_INSTALLER_SHA256, PYTHON_INSTALLER_SHA256, WINDOWS_GIT, WINDOWS_PYTHON,
+    )
+
+    command = install_command(host)
+    for digest, installed, word in (
+        (GIT_INSTALLER_SHA256, WINDOWS_GIT, "/VERYSILENT"),
+        (PYTHON_INSTALLER_SHA256, WINDOWS_PYTHON, "InstallAllUsers=1"),
+    ):
+        skip = command.index(f"if (-not (Test-Path '{installed}'))")
+        checked = command.index(digest)
+        runs = command.index(word)
+        judged = command.index("ExitCode", runs)
+        found = command.index(f"Test-Path '{installed}'", judged)
+        assert skip < checked < runs < judged < found
+    assert command.count("Get-FileHash -Algorithm SHA256") == 2
+    assert command.count("-Wait -PassThru") == 2, "a GUI installer is not waited for by &"
+    assert command.index("INSTALL_INCOMPLETE: the Git installer") > 0
+    assert command.index("INSTALL_INCOMPLETE: the Python installer") > 0
+
+
+def test_the_pinned_digests_are_the_ones_the_publishers_give():
+    """Read 2026-11-03: Git's from the v2.56.0.windows.4 release notes (and
+    GitHub's own asset digest); Python's computed here from python.org's file,
+    whose MD5 matched the one python.org's release API publishes
+    (5eddb0b6f12c852725de071ae681dde4) — python.org gives no SHA-256 for it."""
+    from comfy_qa.provision import GIT_INSTALLER_SHA256, PYTHON_INSTALLER_SHA256
+
+    assert GIT_INSTALLER_SHA256 == (
+        "4961a4a8cc778d8b6e00a5819e5fe4d078b754555aff7aedc2d77a5d74c2de80")
+    assert PYTHON_INSTALLER_SHA256 == (
+        "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb")
+
+
+@pytest.mark.parametrize("host", [WIN, WIN_CPU], ids=["windows", "windows-cpu"])
+def test_no_windows_install_names_a_percent_variable(host):
+    """The command reaches PowerShell through cmd.exe — the OpenSSH server's
+    default shell on Windows — which expands `%NAME%` even inside double
+    quotes; `%ProgramFiles%` is the likeliest way in. A guard, green before
+    the installers were written, not a repro."""
+    for command in (install_command(host), change_command(host, Build(version="v0.42.1"))):
+        assert "%" not in command
+
+
+@pytest.mark.parametrize("launch", [launch_command, launch_detached_command])
+def test_a_windows_launch_can_find_git(launch):
+    """Manager imports GitPython, which needs git on PATH when ComfyUI starts;
+    a launch session that cannot see it starts ComfyUI with Manager off."""
+    assert "C:\\Program Files\\Git\\cmd" in launch(WIN, DEFAULT.launch_args())
