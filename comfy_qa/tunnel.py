@@ -634,10 +634,17 @@ def _iap_refused(said: str) -> bool:
 #
 # All three are cured by waiting and by nothing else, which is the property that
 # earns them a kind of their own.
+#
+# The fourth is IAP's too: 4047 "Failed to lookup instance", for a box that
+# `create` made a minute earlier and Google already answers RUNNING about. Seen
+# on the first `go` of both new boxes in the step 2 live run (2026-11-03, Linux
+# and Windows); the same command a minute later worked unchanged. Read only after
+# the box was found RUNNING, so it is never the answer for a box that is gone.
 _STILL_BOOTING = (
     "failed to connect to port 22",
     "kex_exchange_identification",
     "system is booting up",
+    "failed to lookup instance",
 )
 
 
