@@ -163,8 +163,10 @@ instead of a wall of shell errors. Phase E used to need a second terminal, becau
 `go` held the first one; it does not any more.
 
 ```sh
-VENV=~/ComfyUI/venv                  # the virtualenv to install into
-REPO=~/qa-tools-test                 # a fresh clone, so nothing existing is in the way
+# the virtualenv to install into
+VENV=~/ComfyUI/venv
+# a fresh clone, so nothing existing is in the way
+REPO=~/qa-tools-test
 QAT=$VENV/bin/comfy-qat
 PY=$VENV/bin/python
 qat() { [ -x "$QAT" ] || { echo "STOP - not installed. Run phase 0."; return 127; }; "$QAT" "$@"; }
@@ -602,7 +604,8 @@ gcloud compute instances describe ghostone --zone=us-central1-a --project=$PJ 2>
 to a machine `qat list` shows as running.
 
 ```sh
-BOX=comfy-linux    # a RUNNING box, from qat list
+# a RUNNING box, from qat list
+BOX=comfy-linux
 BZ=$(gcloud compute instances list --project=$PJ --filter="name=$BOX" --format="value(zone)"); echo "=== P7 $BOX is really in $BZ"
 { echo '[hosts.local]'; echo 'kind = "local"'; echo 'port = 8188'; echo; pentry $BOX 8190 "$PJ" us-central1-f; } > $PT/zone.toml
 cp $PT/zone.toml $PT/zone.before
@@ -913,11 +916,21 @@ echo "=== K7 and Google agrees"; gcloud compute instances list
       how to use a GPU box without saying how to stop it is how one bills all
       night.
 - [ ] **K5b** — **the driver.** On Linux it says the startup script is installing
-      it and that this reboots the box once or twice. On **Windows** it says
-      plainly that there is no driver yet, that ComfyUI will run on the CPU until
-      there is, and prints the PowerShell commands Google documents. **A guessed
-      Windows recipe is a fail** — Google publishes only a manual method, and
-      inventing one is worse than the seam.
+      it and that this reboots the box once or twice. On **Windows** (since
+      1.4.0) the plan says `metadata sysprep-specialize-script-url installs the
+      NVIDIA driver on first boot, with Google's own script`, the box's metadata
+      carries `sysprep-specialize-script-url` set to Google's
+      `install_gpu_driver.ps1` (`gcloud compute instances describe <box>`), and
+      nothing is printed for you to run by hand. `go` then waits for
+      `nvidia-smi` before it installs ComfyUI. **Any Windows driver step other
+      than Google's own script is a fail**, and so is a PowerShell command printed
+      for you to run. A box with no GPU gets no driver on either system.
+- [ ] **K5b2** — if the Windows driver does not come up, `go` says the box
+      still has no working GPU driver and names `gcloud compute instances
+      get-serial-port-output <box> --zone=<zone> --project=<project>` to read
+      why: the script writes to the serial console, before SSH is up. *(Only
+      reachable if Google's script fails. Not something to arrange — record it
+      as not run.)*
 - [ ] **K5c** — if a zone is out of capacity it **moves to the next one** rather
       than stopping, and says it did. Only when every zone is exhausted is it a
       refusal, and that refusal names the zones tried.
@@ -1230,7 +1243,8 @@ capture and it takes ten seconds; without it E3's install cannot be told from
 E7's early return, because both end with the same URL and the same stop line.
 
 ```sh
-BOX=qa-linux                 # the box K5 made. Not one that has already served.
+# the box K5 made. Not one that has already served.
+BOX=qa-linux
 echo "=== E0 BEFORE: this box has never had ComfyUI launched on it"
 qat logs $BOX --tail 20; echo "exit $?"
 echo "=== E0b and --no-install says so without installing anything"
@@ -1369,7 +1383,8 @@ of the two you are looking at. `logs` exists because `go` stopped streaming: the
 question "what is it doing right now" needed somewhere to go.
 
 ```sh
-echo "=== L1 follow it"; qat logs $BOX     # Ctrl-C after a few lines
+# Ctrl-C after a few lines
+echo "=== L1 follow it"; qat logs $BOX
 echo "=== L2 the last 50 lines, then stop"; qat logs $BOX --tail 50; echo "exit $?"
 echo "=== L3 it is still serving"; qat stamp $BOX
 echo "=== L5a your own machine"; qat logs local; echo "exit $?"
@@ -1482,13 +1497,15 @@ echo "=== F0 BEFORE: what Google says, and what tunnel files exist"
 gcloud compute instances list --project $P
 ls -l ~/.config/comfy-qa-tools/tunnels/
 echo "=== F0b stop it, so up has something to start"; qat down $BOX; echo "exit $?"
-gcloud compute instances list --project $P     # $BOX must read TERMINATED here
+# $BOX must read TERMINATED here
+gcloud compute instances list --project $P
 ls -l ~/.config/comfy-qa-tools/tunnels/
 echo "=== F1 up a box that is NOT already up"; time qat up $BOX; echo "exit $?"
 echo "=== F1a AFTER"; gcloud compute instances list --project $P; ls -l ~/.config/comfy-qa-tools/tunnels/
 echo "=== F1b up again, now that it is up"; time qat up $BOX; echo "exit $?"
 echo "=== F2 go with --no-install on a box that has ComfyUI"; qat go $BOX --no-browser --no-install
-echo "=== F3 move, plan only"; qat move $BOX --to us-central1-b --dry-run   # a zone the box is NOT in
+# a zone the box is NOT in
+echo "=== F3 move, plan only"; qat move $BOX --to us-central1-b --dry-run
 echo "=== F3b and without --to"; qat move $BOX --dry-run; echo "exit $?"
 echo "=== F3c neither of those created anything"; diff ~/qa-before/snapshots.txt <(gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())") && echo "IDENTICAL"
 echo "=== F4 unknown host"; qat stamp not-a-machine; echo "exit $?"
@@ -1615,7 +1632,8 @@ host list with a `local` entry and one of each OS — they are among the cheapes
 ticks in the pack and nobody has ever taken them.
 
 ```sh
-WINBOX=comfy-win; LINUXBOX=comfy-linux   # whatever `qat list` calls yours
+# whatever `qat list` calls yours
+WINBOX=comfy-win; LINUXBOX=comfy-linux
 echo "=== S0 disconnect on your own machine"; qat disconnect local; echo "exit $?"
 SC=$(mktemp -d); printf '[hosts.local]\nkind = "local"\nport = 8188\ngce_instance = "somebox"\n' > $SC/local.toml
 echo "=== S0b a local entry that names a cloud instance"; qat disconnect local --config $SC/local.toml; echo "exit $?"
@@ -1626,8 +1644,10 @@ echo "=== S1d rdp at a Linux box"; qat rdp $LINUXBOX; echo "exit $?"
 ```
 
 ```sh
-qat ssh $BOX      # === S2 — run on its own. `exit` brings you back.
-qat rdp $WINBOX   # === S3 — run on its own. Ctrl-C closes the forward.
+# === S2 — run on its own. `exit` brings you back.
+qat ssh $BOX
+# === S3 — run on its own. Ctrl-C closes the forward.
+qat rdp $WINBOX
 ```
 
 ```sh
@@ -1793,7 +1813,8 @@ phase at the thing it was written for.
 
 ```sh
 P=$(gcloud config get-value project 2>/dev/null); echo "=== R0 project $P"
-TARGET_ZONE=us-central1-b            # a zone $BOX is NOT in, and that has your card
+# a zone $BOX is NOT in, and that has your card
+TARGET_ZONE=us-central1-b
 echo "moving $BOX -> $TARGET_ZONE"
 mkdir -p ~/move-before
 echo "=== R0 stamp it WHILE IT STILL SERVES — R6b compares against this"
@@ -1803,14 +1824,17 @@ qat move $BOX --to $TARGET_ZONE; echo "exit $?"
 diff ~/qa-before/snapshots.txt <(gcloud compute snapshots list --project $P --format="table(name,diskSizeGb,storageBytes,creationTimestamp,sourceDisk.basename())") && echo "NO SNAPSHOT — the refusal was free"
 echo "=== R0a now stop it — a TERMINATED source holds no GPU allowance"
 qat down $BOX; echo "exit $?"
-gcloud compute instances list --project $P    # confirm it reads TERMINATED
+# confirm it reads TERMINATED
+gcloud compute instances list --project $P
 cp ~/.config/comfy-qa-tools/hosts.toml ~/move-before/hosts.toml
 gcloud compute instances list --project $P > ~/move-before/instances.txt
 gcloud compute disks     list --project $P > ~/move-before/disks.txt
 gcloud compute snapshots list --project $P > ~/move-before/snapshots.txt
 qat list > ~/move-before/list.txt
-file ~/.config/comfy-qa-tools/hosts.toml            # LF or CRLF — you need to know which
-grep -n "" ~/move-before/hosts.toml | head -40      # the file with line numbers
+# LF or CRLF — you need to know which
+file ~/.config/comfy-qa-tools/hosts.toml
+# the file with line numbers
+grep -n "" ~/move-before/hosts.toml | head -40
 cat ~/move-before/instances.txt ~/move-before/disks.txt ~/move-before/snapshots.txt
 ```
 
@@ -2083,9 +2107,11 @@ echo "=== R9b what the tool thinks"; qat list --live
 box billing and a host list you cannot yet trust. In that order:
 
 ```sh
-echo "=== R8 what the tool said it left"   # scroll back to the failure and read it
+# scroll back to the failure and read it
+echo "=== R8 what the tool said it left"
 echo "=== R8b is the original still mine"; qat stamp $BOX; echo "exit $?"
-qat list --live                     # what exists, and what is running
+# what exists, and what is running
+qat list --live
 gcloud compute instances list --project $P
 gcloud compute disks     list --project $P
 gcloud compute snapshots list --project $P
@@ -2285,7 +2311,8 @@ echo "=== N2 no name at all";              qat delete;         echo "exit $?"
 echo "=== N3 the right name, wrong case";  qat delete "$(echo $BOX | tr '[:lower:]' '[:upper:]')"; echo "exit $?"
 echo "=== N4 a name nothing has";          qat delete nosuchbox; echo "exit $?"
 echo "=== N5 your own machine";            qat delete local;   echo "exit $?"
-echo "=== N7 type the wrong name at the prompt"; qat delete $BOX   # then type anything else
+# then type anything else
+echo "=== N7 type the wrong name at the prompt"; qat delete $BOX
 ```
 
 - [ ] **N1** — **`delete windows` is refused.** This is the most important check in
@@ -2352,7 +2379,8 @@ a hand-maintained host list actually looks, and it is the arrangement that has
 destroyed comments before.
 
 ```sh
-echo "=== N9 delete it";        qat delete $BOX   # type the name
+# type the name
+echo "=== N9 delete it";        qat delete $BOX
 echo "=== N10 gone from Google"; gcloud compute instances list
 echo "=== N11 and its disk";     gcloud compute disks list
 echo "=== N12 what changed in the file"; diff ~/hosts.before ~/.config/comfy-qa-tools/hosts.toml

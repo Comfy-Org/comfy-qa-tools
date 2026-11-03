@@ -251,8 +251,10 @@ single pass, and one `y` then deletes the only record of machines that are still
 billing. Fix the field and run it again.
 
 ```sh
-comfy-qat list          # what your host list says
-gcloud projects list    # what you actually have
+# what your host list says
+comfy-qat list
+# what you actually have
+gcloud projects list
 ```
 
 **`could not be listed, so nothing was checked on it — any entry naming it was left alone`**
@@ -1284,8 +1286,9 @@ region `--region` named.
 Printed only when there is somewhere else to go: another region with the card's
 quota where Google offers the card. The fix line gives the same create without
 `--region`, which lets the tool pick from everywhere the grant reaches — the same
-box, so the name, `--reserve` and a `--disk` other than the default all go with
-it. Or wait: a stockout usually clears in minutes to hours, and
+box, so the name, `--reserve`, a `--disk` other than the default and the build —
+`--version`, `--pr` or `--commit`, a frontend, `--no-manager` and `--torch` — all go
+with it. Or wait: a stockout usually clears in minutes to hours, and
 stock for a *reservation* is narrower and moves faster than stock for a plain
 box.
 
@@ -1443,21 +1446,173 @@ anything is billed rather than letting you find out. `cuda_installer.pyz` offers
 driving an older card would mean replacing Google's installer with a hand-rolled
 one — the same guess this tool declines to make on Windows, below.
 
-**Windows boxes do not**, and this tool does not pretend otherwise. Google
-documents exactly one way to install the driver on Windows Server, and it is a
-person at an Administrator PowerShell prompt. `comfy-qat create` prints those two
-commands when it finishes:
+**Windows boxes install it themselves too, since 1.4.0.** Until then Google
+documented exactly one way to install the driver on Windows Server — a person at an
+Administrator PowerShell prompt — and `comfy-qat create` printed those two commands
+for you to run. Google's page now documents the unattended route as well, under
+"Windows (automated)":
 
-```powershell
-Invoke-WebRequest https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 -OutFile C:\install_gpu_driver.ps1
-C:\install_gpu_driver.ps1
-```
+> To automatically install GPU drivers on Windows machine first boot, set the
+> sysprep-specialize-script-url metadata key for the new instance to
+> https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 .
 
-Compute Engine does have a `windows-startup-script-url` metadata key, and pointing
-it at that script would probably work. "Probably" is how a box gets created,
-billed, and found running on its CPU an hour later, so it is left as a deliberate
-seam rather than a guess: run the two commands once, by hand, and
-`comfy-qat stamp <name>` will show a `cuda:0` device instead of a CPU one.
+([Install GPU drivers](https://cloud.google.com/compute/docs/gpus/install-drivers-gpu),
+last updated 2026-10-26, read 2026-11-03.) That key, that URL and nothing of this
+tool's own is what `create` now sets on a Windows box with a card. The script is
+Google's: it checks the card is there and the driver is not before it does anything,
+and a specialize script runs once, on first boot, before the box accepts SSH — not
+on every boot as a startup script would. `comfy-qat go` waits for `nvidia-smi` on a
+Windows box with a card exactly as it does on Linux, and nothing is printed for you to
+run by hand. A box with no GPU gets no driver on either operating system.
+
+**`<name> still has no working GPU driver after 900s. The machine is running and
+billing.`** on a Windows box means Google's script did not finish. Its output goes to
+the serial console, not to a file you can SSH in to read — the specialize pass runs
+before SSH is up — so the fix names `gcloud compute instances get-serial-port-output
+<name> --zone=<zone> --project=<project>`, which reads it from here with nothing open
+on the box. On Linux the same sentence points at the installer's own log, as before.
+
+## Choosing the build
+
+`create`, `go` and `switch` take a build (1.4.0): `--version`, `--pr` or `--commit`
+for ComfyUI, `--frontend-version` or `--frontend-pr` for the frontend,
+`--manager/--no-manager` (Manager is on by default) and `--torch`. Everything below is
+refused **before Google is asked anything**, so none of it costs a box: it exits 2 and
+nothing exists that did not before.
+
+**`--version and --pr each choose the backend, so only one of them can be right: a
+release, a PR or a commit. Nothing was started.`**
+Two of `--version`, `--pr` and `--commit` were given. Each one names the ComfyUI to
+install, so together they are a mistake rather than an intention — comfy-cli would
+refuse the same pair on the box (`--pr cannot be used with --version or --commit`),
+but only after the box had booted and started billing. The fix names the options
+that are intentions; give only one of them, on the same command.
+
+**`--frontend-version and --frontend-pr each choose the frontend, so only one of them
+can be right. Nothing was started.`**
+The same for the frontend: a release, or a PR built on the box, not both.
+
+**`--version 'v0.43' is not a release tag. Releases are numbered, as in v0.43.0.`**
+A release is a three-part version, `v` optional: `v0.43.0` or `0.43.0`. The same
+sentence comes with `--frontend-version` for a frontend release, where it also names
+the one other word that option takes — `pinned`, for the frontend the ComfyUI build
+pins. The fix links the releases page.
+
+**`--pr 'abc' is not a pull request number. Give the number from the PR's address, as
+in --pr 17497.`**
+`--pr` and `--frontend-pr` take the number on the end of the PR's address. `#17497`
+is read as `17497`.
+
+**`--commit 'xyz' is not a commit. A commit is its hash, seven characters or more, as
+in --commit 426f5ee.`**
+A commit is given by its hash, in hex, at least git's seven-character short form.
+
+**`--torch 'latest' is not a PyTorch version. Give the version, with the CUDA build
+after a + if you want one, as in --torch 2.12.1+cu130.`**
+`--torch` pins a version, as PyTorch writes it. `2.12.1+cu130` is
+[Miles's recommendation for NVIDIA machines](machines.md#pinning-pytorch).
+
+**`--torch '2.12.1+cu999' names a CUDA build comfy-cli cannot install. It installs
+cu130, cu129, cu128, cu126, cu124, cu121, cu118.`**
+The CUDA build after the `+` has to be one comfy-cli's `--cuda-version` accepts.
+
+**`--torch '2.12.1+cu130' is a CUDA build, and this box has no GPU to run it on. A box
+with no GPU installs the CPU build of torch.`**
+A box with `gpu = "none"` installs the CPU build whatever is asked; pin the version
+alone, `--torch 2.12.1`.
+
+**`ComfyUI has no release v0.99.0, so there is nothing to install. Nothing was created
+or started.`**
+GitHub was asked, read-only, whether the tag exists, and it does not. The same for
+**`ComfyUI has no commit deadbeefcafe, so there is nothing to install. Nothing was
+created or started.`** and **`the frontend has no release v9.9.9, so ComfyUI would
+have nothing to download. Nothing was created or started.`** — a frontend release has
+to be a GitHub release, because that is what ComfyUI downloads at startup.
+
+**`ComfyUI has no pull request 99999999, so there is nothing to install. Nothing was
+created or started.`**
+No PR has that number. `the frontend has no pull request …` is the same for
+`--frontend-pr`.
+
+**`ComfyUI pull request 12 is closed, so its branch may be gone and is not under
+review. Nothing was created or started.`**
+A closed PR is not something to test: its branch may already be deleted, and nobody
+is reviewing it.
+
+**`ComfyUI pull request 12 is already merged, so its branch is not something to test
+on its own. Nothing was created or started.`**
+Its change is on the default branch now. For a ComfyUI PR the fix names the commit it
+landed as, `--commit <hash>`; for a frontend PR, the releases page.
+
+**`GitHub could not be asked whether that build exists (Name or service not known), so
+nothing was created or started.`**
+This machine could not reach GitHub at all — which is not GitHub saying no. The box
+would need it too, since comfy-cli clones from there, so nothing was started. The
+check uses `gh api` when the GitHub CLI is installed and signed in, and GitHub's
+public API otherwise.
+
+**`comfy-linux's build in your host list cannot be read: the build 'comfyui=v0.43
+frontend=default' has a word this tool does not read: 'colour=blue'. A build is
+comfyui=, frontend=, manager= and torch=.`**
+The `build` line in the host list entry does not read back. It is refused rather than
+taken for the default build — a host list that says one release and quietly gets the
+tip of master is the failure the whole feature exists to prevent. The words are
+listed under `build` in [hosts.md](hosts.md#fields). The same refusal for a manager
+word that is neither on nor off reads **`the build 'comfyui=default manager=maybe'
+says manager='maybe'; it is on or off.`**
+
+**`could not stop the ComfyUI on comfy-linux (pid 2737) — it still holds the port`**
+A box already serving was asked for another build, so the ComfyUI on it is stopped
+before the build is changed — and the stop did not go through. The change goes on,
+and the launch after it will find the port held: `comfy-qat logs <name>` says what
+that ComfyUI is doing, and `comfy-qat ssh <name>` gets you onto the box to stop it.
+
+**`comfy-linux's checkout is PR 17497 at 0000000000, not its head 9350a08d80, so the
+build is put on it again`**
+Not a failure. The PR was asked for again, and its author has pushed since the box
+checked it out: git on the box says the older commit, GitHub says the newer head.
+Same PR is not the same code, so the build is changed in place — `comfy install
+--restore --pr` fetches the PR's branch again — keeping custom nodes and models, and
+the box is confirmed against the head asked for. The same line names a checkout on
+another PR or another commit than the one asked for.
+
+**`--no-install refuses to install, and a build option asks for one`**
+`go --no-install` and `switch --no-install` mean "never install", and a build option
+asks for an install or a build change. Drop one of them.
+
+**`comfy-linux came up on a different build from the one you asked for: ComfyUI
+0.42.1, not v0.43.0. It has not been reported as ready and nothing was opened.
+ComfyUI is still up on it, and the machine is billing.`**
+ComfyUI answered, and what it says it is contradicts the build that was asked for.
+Ready means the build you asked for, so no URL is printed, no browser is opened, and
+the command exits 1. What is read, and from where: the ComfyUI version and torch from
+the running server's `/system_stats`; the frontend from the bundle it is actually
+serving, not from the package installed beside it; Manager from whether Manager's own
+route answers; and the commit and PR from git in the checkout on the box. Each part
+that contradicts is named — `frontend 1.57.7, not v1.58.4` when ComfyUI could not
+fetch the frontend release and fell back to its own, `Manager off, not on` when the
+Manager package did not install, `PR 17497 at 0000000000, not its head 9350a08d80`
+when the checkout is on the PR's branch but not at the head GitHub reported when the
+command started: either someone pushed to the PR between that read and the fetch on
+the box, or the checkout was moved on the box by hand. (A fetch that fails does not
+leave this: comfy-cli exits 1, and the change is reported as not finished.) After a
+push, the box is on the PR's newer commit, and naming the PR again
+(`comfy-qat go <name> --pr <n> --manager`) reads the head again and confirms it. In
+1.4.0 the box's record still keeps the older head, so a later `go` that names no
+build can refuse the box again in the same way; name the PR again then. A release is its tag's commit, not its version
+string: `commit abcdef0123, not v0.43.0's commit 426f5eea52` is a checkout on
+master's tip that still reports 0.43.0, and `PR 17497, not v0.43.0` a PR branch
+that does. Nothing is torn down: the box is fine and ComfyUI is
+running, it is the build that is wrong. The fix is `comfy-qat go <name>` with the whole
+build named, Manager included even when it is the default, so for the default build it
+is `comfy-qat go <name> --manager`. A `go` that names no build onto a box that is
+serving asks the box nothing, and would hand the same wrong ComfyUI over; named, the
+box is held to that build and it is put back. The fix also points at
+`comfy-qat logs <name>` for why — a failed frontend download is in ComfyUI's own log. A part that cannot be read at all is said to be unconfirmed and does not
+block: `could not read the frontend it serves off the running ComfyUI, so that part
+of the build is not confirmed`. A frontend PR is always said to be unconfirmed —
+`could not read which frontend PR it serves off the running ComfyUI` — because
+nothing the running ComfyUI answers names the PR its frontend was built from.
 
 ## Starting and stopping
 
@@ -1517,12 +1672,76 @@ lacks the IAP tunnel role. The error prints the manual way in.
 **`comfy-win is running but not accepting commands after 300s`**
 The VM is powered on but its SSH server is not answering. RUNNING means booted, not
 ready, and Windows takes minutes to get the rest of the way. Past five minutes it is
-usually the `enable-windows-ssh` metadata or an IAP permission rather than slowness —
-the error prints the command to try by hand.
+usually the SSH metadata or an IAP permission rather than slowness — the error
+prints the command to try by hand.
+
+On Windows the metadata is two keys, not one. `enable-windows-ssh=TRUE` alone
+installs no SSH server: Google's own command for a Windows VM reachable over SSH
+also sets `sysprep-specialize-script-cmd` to `googet -noconfirm=true install
+google-compute-engine-ssh` ("Connect to Windows VMs using SSH"). `create` sets both
+since 1.4.0. Before that it set the first only, and on the step 2 live run
+(2026-11-03) a box made that way never listened on port 22 — its serial console
+said `Could not determine if openssh version is compatible: could not find
+version`. A box made before 1.4.0 that will not answer is quickest deleted and
+made again; Google documents installing the package on a running VM too, by RDP
+or a startup script and a reboot, on the same page.
 
 **`the ComfyUI install on comfy-win did not finish`**
 The install script exited non-zero. Its output is on your terminal above the error —
 read that first. Get onto the box with the printed command to finish by hand.
+
+Since 1.4.0 the install is comfy-cli's: the script puts comfy-cli in a venv of its
+own (`/opt/comfy-qat/venv` on Linux, `C:\comfy-qat\venv` on Windows), prints the
+exact `comfy install` it runs — the line starting `+ comfy` — and then runs it, so
+the failure is usually comfy-cli's own message just above. A line starting
+`INSTALL_INCOMPLETE:` says which step the script itself found unfinished: comfy-cli
+did not install, `comfy install` exited non-zero, there was no `main.py` at the end,
+or — on Linux — `/opt/comfyui` already held something that is not ComfyUI and was
+not moved aside. The same command run again resumes: a clone that stopped half-way
+is removed and made again, and a checkout that is there is installed into with
+`--restore`, keeping its custom nodes and models.
+
+On Windows four more name Git or Python, which the script installs first when the
+box does not have them — from git-for-windows' and python.org's own installers,
+pinned to one file each, since Windows Server 2022 has no `winget`:
+`the Git installer did not download` (the download failed — the box could not
+reach GitHub, or python.org for Python); `... is not the file its publisher gives
+(its SHA-256 differs)` (it downloaded something else, or only part of it, and did
+not run it); `the Git installer exited N` (it ran and failed — run the same
+command again, or install it by hand over `rdp`); and `the Git installer finished
+but C:\Program Files\Git\cmd\git.exe is not there`. Up to 1.3.1 the script
+used `winget` instead, which is not on Windows Server 2022: such a box printed
+`The term 'winget' is not recognized` and stopped at `comfy-cli did not install`.
+
+The third is the Visual C++ runtime, from Microsoft's own permalink, checked by
+its Authenticode signature rather than a digest — the permalink always serves the
+latest — and skipped where the registry already records it
+(`HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64`). Its own
+ending is `the Visual C++ runtime installer that downloaded is not signed by
+Microsoft`. Without it torch cannot load on Windows: a box installed before 1.4.0
+that gets as far as starting ComfyUI dies at once with `Microsoft Visual C++
+Redistributable is not installed` and `[WinError 126] ... c10.dll or one of its
+dependencies` in its log. On such a box, install it by hand over `rdp` from
+Microsoft's "Latest supported Visual C++ Redistributable downloads" page, or run
+`comfy-qat go <box> --clean`, which installs it and ComfyUI from nothing (custom
+nodes and models go with the old checkout).
+
+**`the build on comfy-win could not be changed (exit 1). Its log is above; the
+checkout is where comfy-cli left it.`**
+A build change on a box that already has ComfyUI — `go` or `switch` with a build
+option — ran `comfy install --restore` and it did not finish. Read comfy-cli's own
+output above; a release, PR or commit that could not be checked out, or a
+requirement that would not install, is said there. The checkout may be part-way
+between the two builds, so run the same command again, or add `--clean` to start
+from nothing (custom nodes and models go with it). **`the build on comfy-win could
+not be changed: ...`** is the same with gcloud's own reason in place of an exit
+code — usually the connection to the box dropped part-way.
+
+**`could not record the new build on comfy-win: ...`**
+Moving to another frontend release needs nothing installed — ComfyUI fetches the
+release itself when it starts — so the change is a one-line record on the box, and
+writing it failed. Nothing was changed. Run the same command again; gcloud's reason
+is after the colon.
 
 **`ComfyUI is not answering on http://127.0.0.1:8190: it is installed on comfy-win
 but nothing has started it. The machine is up and billing.`**
@@ -1905,7 +2124,9 @@ The launch *command* failed, as opposed to ComfyUI failing after it started. On
 Linux this is close to impossible — the detached form exits as soon as the
 process is spawned — so in practice it means the box refused to run the script at
 all. The requirements are installed and it is tried once more; a second failure is
-reported rather than looped on.
+reported rather than looped on. On Windows the launch goes through WMI
+(`Win32_Process.Create`), and `could not start ComfyUI: Win32_Process.Create
+returned N` above this line is WMI refusing to start it.
 
 **`ComfyUI on comfy-win would not start, and its requirements could not be installed either: ...`**
 The same repair `--follow` does on a non-zero exit, reached the other way: a
@@ -1923,6 +2144,12 @@ ComfyUI on it.
 **`there is no ComfyUI log at C:\ComfyUI\comfyui.log on comfy-win, so nothing has started ComfyUI there. The machine is running and billing.`**
 The box is up and no ComfyUI has ever been launched on it by this tool. That is a
 different fact from "the box is off", and it has a different fix: `comfy-qat go comfy-win`. The second sentence is the one that matters — the machine is on.
+
+Up to 1.3.1 a Windows box also said this straight after `go` had printed
+`STARTED`: the launch used `Start-Process`, and on the Windows Server 2022 box the
+1.4.0 live run made with `create`, a process started that way from an SSH session
+ended with the session, before ComfyUI had opened its log. Since 1.4.0 it is started through WMI, whose process outlives the
+session.
 
 **`stopped reading. ComfyUI is still running on comfy-win, and so is the machine.`**
 Not an error — what Ctrl-C out of `comfy-qat logs` says. It ends the reading and
@@ -2273,7 +2500,7 @@ instead — an operating system, a card, or both as `os/card`. It used to be one
 240-character sentence carrying all three, which is the first message a new tester
 meets and took a second reading to untangle.
 
-**`host 'comfy-win': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.`**
+**`host 'comfy-win': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: build, gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.`**
 A misspelt field in `hosts.toml`. This used to be reported as five *missing*
 fields that were all present, because the required-field check ran first and the
 typo was invisible to it — so the message described a file quite unlike the one in
@@ -3220,10 +3447,10 @@ A reservation that no host list entry names is reported too — `1 reservation o
 releases it is printed under it: Google's `gcloud compute reservations delete …`
 when nothing is on it, or `comfy-qat discover` when a box is, so the box can be
 adopted and then deleted. Every project a declared box is on is read, and beside
-them the project your host list names — or, with no cloud box declared and no
-`project` line, the project gcloud is pointed at. That is where `create` makes a
-box, so it is where a `create --reserve` that stopped half-way leaves its
-reservation. If a project's reservations could not be read, the summary says
+them the project your host list names — or, whenever there is no `project` line,
+the project gcloud is pointed at, whether or not a cloud box is declared. That is
+where `create` makes a box, so it is where a `create --reserve` that stopped
+half-way leaves its reservation. If a project's reservations could not be read, the summary says
 `the project's reservations could not be checked … so this is not an all-clear`
 and prints the `gcloud compute reservations list` line for it. A run where a box
 refused to stop exits 1 and still says all of this.

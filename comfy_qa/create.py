@@ -40,15 +40,15 @@ quota refusal after the instance exists costs money and a cleanup.
 
 *The driver is not in the base image.* A GPU box without it looks healthy, and
 ComfyUI runs on its CPU — which this tool now detects, but only after the box has
-been paid for. On Linux that is fixed at boot with Google's own startup script.
-On Windows it is not, and this says so plainly rather than inventing a recipe:
-see `WINDOWS_DRIVER` below.
+been paid for. On Linux that is fixed at boot with Google's own startup script;
+on Windows, since the build choice, with Google's own driver script at first boot — the
+method Google now documents for it. See `WINDOWS_DRIVER_URL` below.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import config as host_list
 from . import inflight
@@ -707,32 +707,50 @@ curl -fSsL -O https://storage.googleapis.com/compute-gpu-installation-us/install
 python3 cuda_installer.pyz install_driver
 """
 
-# WINDOWS IS A SEAM, ON PURPOSE. Google documents exactly one way to install the
-# driver on Windows Server, and it is a person at a PowerShell prompt:
+# WINDOWS INSTALLS ITS OWN DRIVER, since the build choice. Until then this was a seam on
+# purpose: Google documented one way to put the driver on Windows Server, a
+# person at an Administrator PowerShell prompt running two commands, and this
+# tool printed them rather than guess at an unattended route nobody had tested.
+# Google's page now documents the unattended route itself. Read 2026-11-03,
+# "Install GPU drivers" (last updated 2026-10-26),
+# https://cloud.google.com/compute/docs/gpus/install-drivers-gpu, the
+# "Windows (automated)" tab:
 #
-#   https://cloud.google.com/compute/docs/gpus/install-drivers-gpu (Windows tab)
-#   "Open a PowerShell terminal as an administrator, then complete the following
-#    steps: Download the script.
-#      Invoke-WebRequest https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 -OutFile C:\\install_gpu_driver.ps1
-#    Run the script.
-#      C:\\install_gpu_driver.ps1"
+#   "To automatically install GPU drivers on Windows machine first boot, set
+#    the sysprep-specialize-script-url metadata key for the new instance to
+#    https://github.com/GoogleCloudPlatform/compute-gpu-installation/raw/main/windows/install_gpu_driver.ps1 ."
 #
-# There is no documented metadata key that does this at first boot. Compute
-# Engine does have `windows-startup-script-url`, and running that script through
-# it would probably work — it runs as SYSTEM, which is an administrator — but
-# "probably" is how a box gets created, billed, and found on the CPU an hour
-# later. Google does not document that combination, the script reboots partway
-# through, and a startup script runs again on every boot. So this tool does not
-# guess: it creates the box and hands over the two commands Google publishes,
-# and they get run once, by a person, over the tunnel this tool already opens.
+# So that key, that URL, and nothing of this tool's own: the script is Google's,
+# it checks the card is there and the driver is not before it does anything, and
+# a specialize script runs once — in sysprep's specialize pass on first boot, as
+# SYSTEM, before SSH is up — not on every boot as a startup script would. The
+# script itself is Google's to keep ASCII and non-interactive; it is never
+# written into a command here. The one GPU run on 2026-11-03 is the check that
+# it works on a real box (the CHANGELOG entry for the build choice says what
+# it found).
+WINDOWS_DRIVER_URL = ("https://github.com/GoogleCloudPlatform/compute-gpu-installation"
+                      "/raw/main/windows/install_gpu_driver.ps1")
+WINDOWS_DRIVER_KEY = "sysprep-specialize-script-url"
+
+# THE SSH SERVER ITSELF, which `enable-windows-ssh=TRUE` does not install. Every
+# command this tool runs on a box is `gcloud compute ssh`, and Google's own
+# command for a Windows VM that can be reached that way carries both keys. Read
+# 2026-11-03, "Connect to Windows VMs using SSH" (last updated 2026-10-26),
+# https://cloud.google.com/compute/docs/connect/windows-ssh:
 #
-# Confidence: high on the commands (they are quoted from Google's page); low on
-# any automatic route, which is why there is not one. Verify on a real box.
-WINDOWS_DRIVER = (
-    "Invoke-WebRequest https://github.com/GoogleCloudPlatform/compute-gpu-installation"
-    "/raw/main/windows/install_gpu_driver.ps1 -OutFile C:\\install_gpu_driver.ps1\n"
-    "C:\\install_gpu_driver.ps1"
-)
+#   gcloud compute instances create VM_NAME --image-family=IMAGE_FAMILY \
+#     --image-project=windows-cloud --metadata sysprep-specialize-script-cmd=
+#     "googet -noconfirm=true install google-compute-engine-ssh",enable-windows-ssh=TRUE
+#
+# Found missing on the step 2 live run: a windows-2022 box made with the one key
+# never listened on 22 — its guest agent logged "Could not determine if openssh
+# version is compatible: could not find version" — and `go` waited out its 300s.
+# A specialize `-cmd` runs second on first boot and `-url` fourth ("Use startup
+# scripts on Windows VMs", "Order of execution"), so this and the driver script
+# above run one after the other, never at once. No comma in it: gcloud splits
+# `--metadata` on commas.
+WINDOWS_SSH_INSTALL = "googet -noconfirm=true install google-compute-engine-ssh"
+WINDOWS_SSH = f"enable-windows-ssh=TRUE,sysprep-specialize-script-cmd={WINDOWS_SSH_INSTALL}"
 
 
 @dataclass(frozen=True)
@@ -747,6 +765,10 @@ class Blueprint:
     # The flag, the prompt's answer and a leftover reservation being resumed all
     # become this one field before anything reads it.
     reserve: bool = False
+    # The ComfyUI build `comfy-qat go` installs on it first (the build choice), written to
+    # the host list as the box's `build`. None when none was asked for, and then
+    # the default: the tip of ComfyUI's default branch, with Manager.
+    build: object = field(default=None)
 
     @property
     def machine_type(self) -> str:
@@ -770,10 +792,12 @@ class Blueprint:
     def metadata(self) -> str | None:
         """The `--metadata` value for this box.
 
-        Windows gets `enable-windows-ssh=TRUE`, without which nothing in this
-        tool can reach the machine: every command it runs goes over
-        `gcloud compute ssh`, and on Windows that key is what puts an SSH server
-        there at all.
+        Windows gets `enable-windows-ssh=TRUE` and Google's specialize command
+        that installs the SSH server (`WINDOWS_SSH`), without which nothing in
+        this tool can reach the machine: every command it runs goes over
+        `gcloud compute ssh`. A Windows box with a card also gets Google's driver script
+        as its sysprep specialize script (`WINDOWS_DRIVER_URL`). The URL holds
+        no comma, so the two keys stay two.
 
         Linux gets Google's driver installer as a startup script. gcloud splits
         `--metadata` on commas, so a value containing one would be read as two
@@ -785,10 +809,21 @@ class Blueprint:
         install onto.
         """
         if self.image.windows:
-            return "enable-windows-ssh=TRUE"
+            if self.card.is_gpu:
+                return f"{WINDOWS_SSH},{WINDOWS_DRIVER_KEY}={WINDOWS_DRIVER_URL}"
+            return WINDOWS_SSH
         if not self.card.is_gpu:
             return None
         return f"startup-script={LINUX_DRIVER}"
+
+    def build_line(self) -> str:
+        """Which ComfyUI `comfy-qat go` will put on it, said in the plan (S2-1)."""
+        from .build import DEFAULT
+
+        if self.build is not None:
+            return f"ComfyUI build, installed by `comfy-qat go`: {self.build.describe()}"
+        return (f"ComfyUI build, installed by `comfy-qat go`: {DEFAULT.describe()} — "
+                f"no --version, --pr or --commit was given")
 
     def steps(self, zone: str) -> list[str]:
         """The plan, in the words `--dry-run` prints and the real run follows."""
@@ -802,7 +837,9 @@ class Blueprint:
                 f"{self.disk_gb} GB pd-balanced boot disk from {self.image.family}",
             ]
             if self.image.windows:
-                lines.append("metadata enable-windows-ssh=TRUE, so this tool can reach it")
+                lines.append("metadata enable-windows-ssh=TRUE and Google's SSH package, "
+                             "so this tool can reach it")
+            lines.append(self.build_line())
             lines.append(f"add {self.name} to the host list on the next free port")
             return lines
         card = f"{self.card.name} ({self.card.accelerator})"
@@ -814,10 +851,13 @@ class Blueprint:
             f"{self.disk_gb} GB pd-balanced boot disk from {self.image.family}",
         ]
         if self.image.windows:
-            lines.append("metadata enable-windows-ssh=TRUE, so this tool can reach it")
-            lines.append("the NVIDIA driver is NOT installed — one command, printed after")
+            lines.append("metadata enable-windows-ssh=TRUE and Google's SSH package, "
+                         "so this tool can reach it")
+            lines.append(f"metadata {WINDOWS_DRIVER_KEY} installs the NVIDIA driver on "
+                         f"first boot, with Google's own script")
         else:
             lines.append("startup script installs the NVIDIA driver on first boot")
+        lines.append(self.build_line())
         lines.append(f"add {self.name} to the host list on the next free port")
         if self.reserve:
             # First, because it is made first — and last, the sentence about
@@ -885,8 +925,8 @@ def card_for(gpu: str) -> Card:
     )
 
 
-def _asked_for(reserve: bool, name: str | None) -> str:
-    """` --reserve` and ` --name <name>`, for a remedy `plan` hands back.
+def _asked_for(reserve: bool, name: str | None, build: str = "") -> str:
+    """` --reserve`, ` --name <name>` and the build, for a remedy `plan` hands back.
 
     A REMEDY THAT REWRITES THE COMMAND REWRITES THE BOX. Each refusal in `plan`
     prints a corrected `comfy-qat create`, and each of them printed it without
@@ -895,28 +935,33 @@ def _asked_for(reserve: bool, name: str | None) -> str:
     The name goes with it for a reserved box, because a reservation is found
     again by its box's name.
 
-    Nothing at all for a build that is not reserved, so those lines stay what
-    they have always been. The name only when one was given: with none, one is
-    picked, and it is picked again.
+    And `build`, the build options as they were typed, for every box: each of
+    these dropped them, so the box made from the fix came up on the tip of
+    ComfyUI's default branch with Manager on (audit finding behaviour:F1).
+
+    Nothing at all for a box that is not reserved and names no build, so those
+    lines stay what they have always been. The name only when one was given:
+    with none, one is picked, and it is picked again.
     """
-    if not reserve:
-        return ""
-    return " --reserve" + (f" --name {_clean(name)}" if name else "")
+    held = (" --reserve" + (f" --name {_clean(name)}" if name else "")) if reserve else ""
+    return held + (f" {build}" if build else "")
 
 
-def besides_where(name: str | None, disk: int) -> str:
-    """`--name <name> --disk <gb>`: what a create rewritten before `plan` has
-    run carries besides `--os`, `--gpu`, `--reserve` and where.
+def besides_where(name: str | None, disk: int, build: str = "") -> str:
+    """`--name <name> --disk <gb>` and the build: what a create rewritten before
+    `plan` has run carries besides `--os`, `--gpu`, `--reserve` and where.
 
     `_same_box`'s rule, for the refusals that come before there is a blueprint
     to build it from — `--zone` with `--region`, and a region that is not one.
     Both kept the name for a reserved build only and the disk for none, so a box
     asked for as `--name qatest-plain --disk 400` came back as another name with
     the default 200 GB (O23b). The name whenever one was given; the disk
-    whenever it is not the default, the only case leaving it off changes.
+    whenever it is not the default, the only case leaving it off changes; and
+    the build options as they were typed, which both dropped (behaviour:F1).
     """
     parts = [f"--name {_clean(name)}" if name else "",
-             f"--disk {disk}" if disk != DEFAULT_DISK_GB else ""]
+             f"--disk {disk}" if disk != DEFAULT_DISK_GB else "",
+             build]
     return " ".join(part for part in parts if part)
 
 
@@ -998,10 +1043,14 @@ def choose_name(preferred: str | None, image: Image, taken: set[str]) -> str:
 def plan(
     *, os_choice: str, gpu: str, name: str | None = None,
     disk_gb: int = DEFAULT_DISK_GB, taken: set[str] | None = None,
-    reserve: bool = False,
+    reserve: bool = False, build: str = "",
 ) -> Blueprint:
-    """Everything decided before anything is contacted. Offline, and total."""
-    asked = _asked_for(reserve, name)
+    """Everything decided before anything is contacted. Offline, and total.
+
+    `build` is the build options as typed, for the creates its refusals hand
+    back; the build itself is checked, and set on the blueprint, by the caller.
+    """
+    asked = _asked_for(reserve, name, build)
     image = image_for(os_choice, asked)
     card = card_for(gpu)
     # BEFORE the disk checks, and long before the quota read: a card this tool
@@ -2058,11 +2107,23 @@ def _same_box(blueprint: Blueprint) -> str:
     asked for by name came back as whatever name the next run would pick
     (O23). The name now goes with every box, and the disk whenever it is not
     the default, which is the only case leaving it off changes anything.
+
+    And the build. It was dropped here too, so after a stock-out the same
+    create, pasted back, came up on the tip of ComfyUI's default branch with
+    Manager on — live, S2-13's retry lost `--version v0.43.0` (audit finding
+    behaviour:F1). Manager is named when it is off, the one case leaving it
+    out changes anything.
     """
     named = _as_reserved(blueprint) or f" --name {blueprint.name}"
     disk = f" --disk {blueprint.disk_gb}" if blueprint.disk_gb != DEFAULT_DISK_GB else ""
     return (f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key}"
-            f"{named}{disk}")
+            f"{named}{disk}{_build_of(blueprint)}")
+
+
+def _build_of(blueprint: Blueprint) -> str:
+    """` --version v0.43.0 …`: the build a create asked for, or nothing."""
+    flags = blueprint.build.flags() if blueprint.build is not None else ""
+    return f" {flags}" if flags else ""
 
 
 def _wanted(card: Card) -> str:
@@ -2116,8 +2177,13 @@ def _refuse_the_leftover(blueprint: Blueprint, leftover, project: str) -> None:
         f"using it. Nothing was created.",
         fix=output.fix(
             "call this box something else:",
+            # The same box under another name, so it carries what else was asked
+            # for, as `_same_box` does: the disk and the build.
             f"comfy-qat create --os {blueprint.image.key} --gpu {blueprint.card.key} "
-            f"--reserve --name <another-name>",
+            f"--reserve --name <another-name>"
+            + (f" --disk {blueprint.disk_gb}" if blueprint.disk_gb != DEFAULT_DISK_GB
+               else "")
+            + _build_of(blueprint),
             "or release that reservation, if it is yours to release:",
             rsv.delete_command(leftover.name, leftover.zone, project),
         ),
@@ -2619,6 +2685,9 @@ def host_entry(blueprint: Blueprint, zone: str, project: str):
         gce_instance=blueprint.name, gce_zone=zone, gce_project=project,
         running=True,
         reservation=blueprint.reservation or "",
+        # What was asked for, without the PR heads GitHub reported today: by the
+        # first `go` they may be stale, and that `go` checks out the head then.
+        build=blueprint.build.choices().spec() if blueprint.build is not None else "",
     )
 
 
@@ -2667,11 +2736,9 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
             f"ComfyUI will run on its CPU, which is slow.")
     elif blueprint.image.windows:
         lines.append(
-            f"{blueprint.name} has no NVIDIA driver yet, and ComfyUI will run on its "
-            f"CPU until it has one. Google documents one way to install it on Windows "
-            f"and it is a person at a PowerShell prompt — open one on the box as "
-            f"Administrator and run:")
-        lines.extend(f"    {line}" for line in WINDOWS_DRIVER.splitlines())
+            f"{blueprint.name} installs the NVIDIA driver itself, from Google's own "
+            f"script on first boot, before it accepts SSH. `comfy-qat go` waits for "
+            f"the driver before it installs ComfyUI.")
     else:
         lines.append(
             f"{blueprint.name} is installing the NVIDIA driver from its startup "

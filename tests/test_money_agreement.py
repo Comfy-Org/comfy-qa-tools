@@ -274,6 +274,11 @@ class Cloud:
         # reservation is its own paragraph under the summary.
         return list(self.reservations)
 
+    def current_project(self):
+        # Asked by `down --all` when the host list names no project (C1): the
+        # project the declared boxes are on, so it changes nothing read here.
+        return "proj"
+
     def describe_instance(self, instance, zone, project):
         # What `down <name>` asks before it says anything about money: the
         # box's own record, bound to no reservation, so the four sentences

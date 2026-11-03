@@ -12,8 +12,10 @@ the card, and whether to reserve it.
 comfy-qat create --os linux --gpu t4
 comfy-qat create --os windows --gpu l4
 comfy-qat create --os linux --gpu t4 --name box-2 --disk 500
-comfy-qat create --os linux --gpu t4 --reserve      # hold its capacity; bills stopped too
-comfy-qat create --os linux --gpu none              # no GPU at all
+# hold its capacity; bills stopped too
+comfy-qat create --os linux --gpu t4 --reserve
+# no GPU at all
+comfy-qat create --os linux --gpu none
 comfy-qat create --os linux --gpu t4 --dry-run
 ```
 
@@ -67,6 +69,9 @@ what this makes:
   - machine type g2-standard-8 — built into the machine type
   - 200 GB pd-balanced boot disk from ubuntu-2204-lts
   - startup script installs the NVIDIA driver on first boot
+  - ComfyUI build, installed by `comfy-qat go`: ComfyUI at the tip of its default branch · the
+    frontend that ComfyUI pins · Manager on · torch as comfy-cli picks it for the box — no
+    --version, --pr or --commit was given
   - add comfy-linux to the host list on the next free port
 
 zone order — 4 to try, quota first, then what is offered, then measured latency (nearest: europe-west4)
@@ -161,17 +166,21 @@ reservation along with the box; and `list` has a RESERVED column.
 
 The finished box is added to your host list on a free port, so `go` works on
 it immediately. **The NVIDIA driver is not in either base image**, and a box
-without it runs ComfyUI on the CPU while looking perfectly healthy: Linux boxes
-install it from a startup script on first boot, Windows boxes are handed the two
-commands Google documents and you run them once. See
-[troubleshooting](troubleshooting.md#the-nvidia-driver) for why that half is
-deliberately manual.
+without it runs ComfyUI on the CPU while looking perfectly healthy. Both kinds of
+box install it themselves on first boot, each with Google's own method: Linux
+from a startup script, Windows — since 1.4.0 — from the
+`sysprep-specialize-script-url` metadata key Google now documents for exactly
+this, pointed at Google's own script. Nothing is printed for you to run, and `go`
+waits for the driver on both. See
+[troubleshooting](troubleshooting.md#the-nvidia-driver) for the details and for
+where each one's log is when it does not finish.
 
 ## One command: `go`
 
 ```sh
 comfy-qat go comfy-win
-comfy-qat go windows      # the same box, described rather than named
+# the same box, described rather than named
+comfy-qat go windows
 ```
 
 That is the whole thing. In order, it:
@@ -179,10 +188,16 @@ That is the whole thing. In order, it:
 1. starts the instance if it is stopped, and waits for it to reach RUNNING;
 2. asks whether ComfyUI is already answering — if it is, you get the URL and the
    stamp immediately and nothing is installed or restarted;
-3. installs ComfyUI if the box has none, on a pinned Python 3.12, with a torch
-   built for whatever CUDA that box's driver reports;
+3. installs ComfyUI if the box has none — with comfy-cli, on the box, the build
+   you chose (see [choosing the build](#choosing-the-build)) — on a pinned Python
+   3.12, with a torch built for whatever CUDA that box's driver reports. A
+   Windows box first gets Git and Python 3.12.10 from git-for-windows' and
+   python.org's own installers, each checked against its pinned SHA-256 before
+   it runs — Windows Server 2022 has no `winget` — and the Visual C++ runtime
+   torch needs, from Microsoft, checked by its signature;
 4. launches it **on the box**, detached, with its output going to a log file
-   there;
+   there — on Windows through WMI, because on a box `create` made, a process
+   started from an SSH session ended with the session;
 5. forwards a local port to it as soon as it is listening, waits until ComfyUI
    really answers, opens a browser on `http://127.0.0.1:<port>` — and gives you
    the prompt back.
@@ -207,6 +222,121 @@ tunnel.
 `--no-browser` skips the browser; `--no-install` fails rather than installing on a
 box that has none.
 
+## Choosing the build
+
+Which ComfyUI goes on the box is a choice, made on `create`, `go` or `switch`.
+Each part is set on its own:
+
+| part | options | left off |
+|---|---|---|
+| ComfyUI | `--version v0.43.0` (a release), `--pr 17497` (an open pull request) or `--commit 426f5ee` — one of the three | the tip of ComfyUI's default branch, as before 1.4.0 |
+| the frontend | `--frontend-version v1.58.4` (a release), `--frontend-pr 5678`, or `--frontend-version pinned` (the frontend the ComfyUI build pins, which leaves the backend alone) | with `--version`, `--pr` or `--commit`: the frontend that backend pins. With none of those: the frontend the box has |
+| ComfyUI-Manager | `--no-manager` leaves it out; `--manager` puts it back | **on** — a plain install, a plain `go` included, has Manager |
+| PyTorch | `--torch 2.12.1+cu130` | comfy-cli picks torch for the box's driver, as before |
+
+```sh
+comfy-qat create --os linux --gpu none --name qatest-s2-linux --version v0.43.0 --frontend-version v1.58.4
+# installs that build
+comfy-qat go qatest-s2-linux
+comfy-qat stamp qatest-s2-linux
+# same box, a PR, nodes and models kept
+comfy-qat switch qatest-s2-linux --pr 17497 --keep-others
+comfy-qat stamp qatest-s2-linux
+```
+
+What those two stamps printed, on a real box with no GPU on 2026-11-03 — the
+release's own commit, then the PR's head:
+
+```
+qatest-s2-linux · local-git · ComfyUI 0.43.0 (426f5eea52) · frontend 1.58.4 · Manager on · linux · cpu (29GB) · torch 2.14.1+cpu · python 3.10.12
+qatest-s2-linux · local-git · ComfyUI 0.43.0 (PR 17497, 9350a08d80) · frontend 1.58.4 · Manager on · linux · cpu (29GB) · torch 2.14.1+cpu · python 3.10.12
+```
+
+ComfyUI v0.43.0 pins frontend 1.57.4 and installs that package; the stamp says
+1.58.4 because that is what the box is serving. The second stamp was printed
+before the frontend rule below was settled, and says 1.58.4 because the switch
+kept the release the box had. Run on 1.4.0 as released, `switch --pr 17497` with
+no frontend option serves the frontend PR 17497 pins; to keep 1.58.4 through the
+switch, name it there too: `--frontend-version v1.58.4`.
+
+**Every command says which build it chose, the default included**, before
+anything is installed: `build: ComfyUI v0.43.0 · frontend v1.58.4 · Manager on ·
+torch as comfy-cli picks it for the box`. `create` says it in its plan and writes
+it into the box's host list entry as `build` — see [hosts.md](hosts.md#fields) —
+and the first `go` installs it.
+
+**comfy-cli does the installing, on the box.** The tool puts a pinned comfy-cli
+(1.24.0) in a venv of its own beside ComfyUI and runs `comfy install` with the
+build's own options — `--version`, `--pr`, `--commit`, `--skip-manager`,
+`--cuda-version` — printing each command before it runs it, so the exact command
+is in the streamed log. comfy-cli is run with `DO_NOT_TRACK=1`, without which
+every command it runs pays a five-second telemetry flush on the way out, and
+ComfyUI is started by this tool's own launch, never by `comfy launch
+--background`, which refuses a second server even on a free port. A frontend
+release is not an install at all: ComfyUI fetches it itself at startup
+(`--front-end-version`). A frontend PR is built on the box by comfy-cli's own
+builder — the one `comfy launch --frontend-pr` uses, which needs Node.js and pnpm,
+and the tool installs both first — and served with `--front-end-root`.
+
+**Bad input costs nothing.** Two of `--version`, `--pr` and `--commit` at once is
+refused; so is a release that does not exist, a PR that does not exist or is
+closed (a merged one is pointed at the commit it landed as), and an unknown
+commit. Each is asked of GitHub, read-only, before Google is asked anything, so
+the refusal comes back in a second rather than after a box has booted and billed.
+
+**Changing the build keeps your nodes and models.** `go` or `switch` with a build
+option, on a box that already has ComfyUI, changes it in place — `comfy install
+--restore` on the existing checkout — and nothing under `custom_nodes/` or `models/`
+is touched. A box that is already serving has its ComfyUI stopped first. Name only
+what changes: `go comfy-linux --frontend-version v1.58.4` keeps the ComfyUI it has.
+The frontend is the one part that follows the backend: a command that chooses a
+backend — `--version`, `--pr` or `--commit` — and names no frontend gets the
+frontend that backend pins, and `--frontend-version pinned` puts the pinned frontend
+back without changing the backend. A command that chooses no backend —
+`--no-manager`, `--torch` — keeps the frontend the box has. Asking again for the PR
+a box is on — `go comfy-linux --pr 17497` after its author has pushed — fetches the
+new commits: the checkout is held to the head GitHub reports now, so a box on the
+PR's older head is changed, not handed over. A frontend PR is not held to its head:
+comfy-cli keeps the build of each frontend PR for seven days under its number and
+branch, and serves that build again after new pushes, which is one more reason it is
+always said to be unconfirmed (below). `--clean` deletes ComfyUI on the box, nodes
+and models with it, and installs the build from nothing. With no build option at
+all, a box keeps what it has, and `go` onto one that is already serving asks it
+nothing — that is what keeps the everyday command quick.
+
+**Ready means the build you asked for.** Once ComfyUI answers, what it is running
+is read back off the machine — never off what was asked for — and compared: the
+ComfyUI version and torch from the running server, the frontend from the bundle it
+is actually serving, Manager from whether Manager answers, the commit and PR from
+git in the checkout. A release is held to its tag's own commit, not just the
+version string — master's tip the day after a tag, or a PR branched from it,
+reports the same version — and a PR to the head GitHub reported for it. A
+contradiction is said plainly, with the command that puts
+the build back, and nothing is reported ready or opened. A part that cannot be
+read is said to be unconfirmed and does not block. A frontend PR is always
+unconfirmed: the bundle says the version it was built as, and nothing a running
+ComfyUI answers names the PR it came from.
+
+### Pinning PyTorch
+
+Miles's "Desktop hardware QA Process" page says: "Run all NVIDIA machines on
+PyTorch 2.12.1 for CUDA 13.0, the version most users run." That is his
+recommendation, and this tool does not apply it for you — nothing is pinned unless
+you ask. To follow it:
+
+```sh
+comfy-qat go comfy-win --torch 2.12.1+cu130
+```
+
+The pin reaches every `pip install` comfy-cli runs, as a pip constraint
+(`PIP_CONSTRAINT`), so the torch it fetches and the `torch` line in ComfyUI's
+own requirements both get it; the `+cu130` becomes comfy-cli's `--cuda-version
+13.0`. The wheels exist: the PyTorch index listed `torch-2.12.1+cu130` for Python
+3.10 to 3.14 on Linux x86_64 and Windows amd64 on 2026-11-03. Whether a given
+driver runs CUDA 13.0 is the box's to say — `stamp` shows the torch that was
+actually installed. On a box with no GPU only the version can be pinned:
+`--torch 2.12.1`.
+
 ## Two machines at once
 
 ComfyUI runs on the box. The terminal used to be occupied only because its log
@@ -214,9 +344,12 @@ was streamed back over SSH — which meant one machine per terminal, and Ctrl-C
 stopped ComfyUI. Now it runs there and you get your prompt back:
 
 ```sh
-comfy-qat go windows       # detached: starts it, forwards, prints the URL
-comfy-qat go linux         # and now both, in one terminal, in two tabs
-comfy-qat list             # both tunnelled
+# detached: starts it, forwards, prints the URL
+comfy-qat go windows
+# and now both, in one terminal, in two tabs
+comfy-qat go linux
+# both tunnelled
+comfy-qat list
 ```
 
 `down` each one when you are finished with it, or `down --all` to stop the lot.
@@ -228,8 +361,10 @@ that used to stop you overspending — the terminal being busy — is gone with 
 ### Watching the log
 
 ```sh
-comfy-qat logs linux            # follow it, as it is written
-comfy-qat logs linux --tail 50  # the last 50 lines, then stop
+# follow it, as it is written
+comfy-qat logs linux
+# the last 50 lines, then stop
+comfy-qat logs linux --tail 50
 ```
 
 It reads a file on the box — `/opt/comfyui/comfyui.log`, or
@@ -474,7 +609,8 @@ that exits 2.
 
 ```sh
 comfy-qat down comfy-win
-comfy-qat down --all       # every cloud box you have declared, in one go
+# every cloud box you have declared, in one go
+comfy-qat down --all
 ```
 
 `--all` exists because the question at the end of a session is never "is
@@ -597,10 +733,14 @@ See [cost.md](cost.md) for the one rule.
 `go` is `up` + install + serve. When you want the steps on their own:
 
 ```sh
-comfy-qat up comfy-win      # start it, tunnel in, wait for ComfyUI to answer
-comfy-qat open comfy-win    # tunnel only, to a box that is already running
-comfy-qat logs comfy-win    # what the ComfyUI on it is saying
-comfy-qat stamp comfy-win   # what is it running, exactly?
+# start it, tunnel in, wait for ComfyUI to answer
+comfy-qat up comfy-win
+# tunnel only, to a box that is already running
+comfy-qat open comfy-win
+# what the ComfyUI on it is saying
+comfy-qat logs comfy-win
+# what is it running, exactly?
+comfy-qat stamp comfy-win
 ```
 
 `open --dry-run` prints the `gcloud compute ssh ... -L` command instead of
@@ -616,8 +756,10 @@ starts it and forwards in one step.
 ## Getting onto the box itself
 
 ```sh
-comfy-qat ssh comfy-linux    # a shell, on a Linux box
-comfy-qat rdp comfy-win      # Remote Desktop, on a Windows box
+# a shell, on a Linux box
+comfy-qat ssh comfy-linux
+# Remote Desktop, on a Windows box
+comfy-qat rdp comfy-win
 ```
 
 The long form of the first is `gcloud compute ssh <instance> --tunnel-through-iap
@@ -651,8 +793,15 @@ comfy-qat stamp comfy-win
 ```
 
 ```
-comfy-win · ComfyUI 0.33.0 · windows · cuda:0 NVIDIA L4 (23GB) · torch 2.13.0 · python 3.12.13
+qatest-s2-linux · local-git · ComfyUI 0.43.0 (426f5eea52) · frontend 1.58.4 · Manager on · linux · cpu (29GB) · torch 2.14.1+cpu · python 3.10.12
 ```
+
+That is a real one, from a box with no GPU on 2026-11-03; a box with a card names
+it where this says `cpu`. Since 1.4.0 the line carries the build the machine is actually running: ComfyUI's
+version with the checkout's commit — and the PR, when it came from one — the
+frontend it is serving, Manager on or off, and torch. Each is read off the
+running machine, never off what was asked for, and one that cannot be read is
+left out rather than guessed.
 
 Do this at the point you get a result, not afterwards from memory. It is the record
 almost nothing else keeps, and it is what makes two people's "works for me" and

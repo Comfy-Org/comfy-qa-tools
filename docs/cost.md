@@ -70,11 +70,11 @@ machines. Two commands name one, with the command that releases it:
 `comfy-qat list --live`, for every project a cloud box you have declared is on
 (and only when it could read that project's instances — it says so when it
 could not); and `comfy-qat down --all`, which reads those and also the project
-your host list names, even with no cloud box declared at all — or, with no cloud
-box and no `project` line, the project gcloud is pointed at. That is the project
-`create` makes a box on, so it is where a `create --reserve` that stopped
-half-way leaves its reservation, and `down --all` is the command to end a
-session on.
+your host list names, even with no cloud box declared at all — or, whenever
+there is no `project` line, the project gcloud is pointed at, whether or not a
+cloud box is declared. That is the project `create` makes a box on, so it is
+where a `create --reserve` that stopped half-way leaves its reservation, and
+`down --all` is the command to end a session on.
 
 That a reservation bills for every hour it exists, used or not, is Google's
 published pricing for reservations. This tool has no way to measure it. The run
@@ -101,8 +101,10 @@ What the tool *can* answer is the question underneath — "am I still paying for
 anything":
 
 ```sh
-comfy-qat list --live      # what Google says is running and what is reserved
-comfy-qat down --all       # stop every cloud box you have declared
+# what Google says is running and what is reserved
+comfy-qat list --live
+# stop every cloud box you have declared
+comfy-qat down --all
 ```
 
 `--live` is the honest check: without it, `list` reports only what this machine

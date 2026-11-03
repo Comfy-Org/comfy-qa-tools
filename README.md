@@ -23,10 +23,19 @@ never collide on `PATH`.
 
 ## Status
 
-**1.3.1. Every command is implemented and tested, and everything up to 1.2.0 has
-run against real GCE hardware on both Linux and Windows**. 1.3.1 tidies up after
-1.3.0 and keeps comfy-qat's Google project in its own host list — see
-[the changelog](CHANGELOG.md).
+**1.4.0. Every command is implemented and tested, and everything up to 1.2.0 has
+run against real GCE hardware on Linux and Windows**, except two Windows paths the
+1.4.0 live run found broken in 1.2.0 to 1.3.1: installing ComfyUI on a box from
+nothing (it called `winget`, which Windows Server 2022 does not have) and the
+detached launch (a process started with `Start-Process` did not outlive the SSH
+call that started it). Both are fixed in 1.4.0; see
+[the changelog](CHANGELOG.md). 1.4.0 lets you choose the build — a ComfyUI release,
+PR or commit, a frontend, Manager (on by default) and a torch pin — installs it with
+comfy-cli on the box, shows the build that is running in `stamp`, and has a Windows
+GPU box install its own NVIDIA driver. The build choice ran on a real Linux box and
+a real Windows box, both with no GPU, on 2026-11-03; a Windows GPU box installing
+its own driver has not run on a real box yet — see [the changelog](CHANGELOG.md)
+for what did and did not.
 
 What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
 cost columns in `list` — **was run on real Google Compute Engine boxes on
@@ -112,18 +121,25 @@ skips it entirely.
 It works without prompts too: `--project`, `--region`, `--non-interactive`.
 
 ```sh
-comfy-qat list            # see your machines
-comfy-qat status          # re-check readiness at any time
+# see your machines
+comfy-qat list
+# re-check readiness at any time
+comfy-qat status
 ```
 
 ## Everyday use
 
 ```sh
-comfy-qat go windows       # start it, tunnel in, leave ComfyUI running on the box
-comfy-qat logs windows     # what that ComfyUI is saying, whenever you want it
-comfy-qat stamp windows    # the line that says what produced your result
-comfy-qat down windows     # close the tunnel, stop the box, stop paying
-comfy-qat down --all       # stop every cloud box you have declared
+# start it, tunnel in, leave ComfyUI running on the box
+comfy-qat go windows
+# what that ComfyUI is saying, whenever you want it
+comfy-qat logs windows
+# the line that says what produced your result, build included
+comfy-qat stamp windows
+# close the tunnel, stop the box, stop paying
+comfy-qat down windows
+# stop every cloud box you have declared
+comfy-qat down --all
 ```
 
 `windows` there is not a special name — it is the machine described rather than
@@ -141,7 +157,8 @@ picking one. Names always win over a description.
 Changing machine is one command, which stops the box you were on:
 
 ```sh
-comfy-qat switch linux     # start the Linux box, then stop the Windows one
+# start the Linux box, then stop the Windows one
+comfy-qat switch linux
 ```
 
 Making the box is one command too, and the card is the only real decision:
@@ -161,13 +178,27 @@ order it would try, and creates nothing. The finished box is added to your host
 list on a free port, so `go` works on it straight away.
 
 **The NVIDIA driver is not in either base image**, and a box without one runs
-ComfyUI on its CPU while looking perfectly healthy. Linux boxes install it from a
-startup script on first boot. Windows boxes do not: Google documents exactly one
-way to do it there and it is a person at a PowerShell prompt, so `create` prints
-those commands rather than guessing at a recipe it cannot test.
+ComfyUI on its CPU while looking perfectly healthy. Both kinds of box install it
+themselves on first boot, each with Google's own documented method: Linux from a
+startup script, Windows from Google's driver script set as the box's
+`sysprep-specialize-script-url`. Nothing is left for you to run, and `go` waits
+for the driver on both.
+
+**The build is a choice.** `create`, `go` and `switch` take a ComfyUI release, PR
+or commit (`--version v0.43.0`, `--pr 17497`, `--commit 426f5ee`), a frontend
+release or PR (`--frontend-version v1.58.4`, `--frontend-pr 5678`), and a torch
+pin (`--torch 2.12.1+cu130`); ComfyUI-Manager is on unless you say
+`--no-manager`. comfy-cli does the installing, on the box. A build that does not
+exist is refused before anything is created, a new build on an existing box
+keeps its custom nodes and models, and `go` reports a box ready only once the
+ComfyUI running on it, and git in its checkout, say it is the build you asked
+for. With none of them,
+it is the tip of ComfyUI's default branch, as before.
+[Choosing the build](docs/machines.md#choosing-the-build) has the whole of it.
 
 `go` is the one command worth memorising. It starts the instance, installs
-ComfyUI if the box has none — with a torch built for that box's CUDA — launches
+ComfyUI if the box has none — the build you chose, with comfy-cli, and a torch
+built for that box's CUDA — launches
 it **on the box**, and forwards a local port to it as soon as it is listening.
 The forward is an `ssh -L` over Identity-Aware Proxy: it reaches the box's own
 loopback, so nothing is exposed on any interface and no firewall rule is
@@ -279,7 +310,7 @@ Unknown fields are rejected rather than ignored, and the message names the typo 
 what it was probably meant to be:
 
 ```
-host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.
+host 'comfy-linux': unknown field(s) 'gce_zoen' (did you mean 'gce_zone'?). Known fields: build, gce_instance, gce_project, gce_reservation, gce_zone, gpu, kind, os, port.
 ```
 
 Switching OS means switching host: one box per OS, and nothing is ever reimaged.
@@ -320,7 +351,10 @@ service on this machine. It will not overwrite a host list you already have, and
 running `setup` again is safe — it skips whatever is already done.
 
 On a **cloud box**, `go` does install software: ComfyUI into `C:\ComfyUI`
-(Windows) or `/opt/comfyui` (Linux), with a Python 3.12 environment beside it.
+(Windows) or `/opt/comfyui` (Linux), with a Python 3.12 environment beside it —
+and on Windows, Git, Python 3.12 and the Visual C++ runtime themselves, from
+their publishers' own installers, each checked before it runs (by its pinned
+SHA-256, or the runtime by Microsoft's signature).
 That only ever happens on a declared `gce` host, never locally.
 
 ## Docs

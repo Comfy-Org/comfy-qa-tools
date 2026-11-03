@@ -13,10 +13,12 @@ import re
 import pytest
 
 from comfy_qa import provision
+from comfy_qa.build import Build
 from comfy_qa.config import Host
 from comfy_qa.provision import (
     APT_LOCK_WAIT,
     LINUX_PYTHONS,
+    LINUX_TOOL,
     LINUX_ROOT,
     PYTHON_SERIES,
     PYTHON_SERIES_SUPPORTED,
@@ -57,7 +59,11 @@ ALL = [WIN, LINUX]
 _EXTRA_ARGUMENTS = {"pid": "1234", "python": "py", "tail": 20, "follow": False,
                     # `listening_command` takes the port it is asking about,
                     # because the one caller asks about 3389 and not ComfyUI's.
-                    "port": 3389}
+                    "port": 3389,
+                    # `change_command` takes the build it changes to. The one
+                    # with every branch in it — a PR, a frontend PR, a pin — so
+                    # the three rules below read the most script there is.
+                    "build": Build(pr=17497, frontend_pr=5678, torch="2.12.1+cu130")}
 
 
 def _builders() -> list:
@@ -77,7 +83,8 @@ def _builders() -> list:
             continue
         if name in ("is_windows", "root_for", "log_for"):
             continue          # predicates and paths, not commands
-        if name in ("torch_index", "_cpu_flag"):
+        if name in ("torch_index", "_cpu_flag", "comfy_install_args",
+                    "_linux_script", "_windows_script"):
             # A URL and a flag: pieces of a command, not one. Left in, they
             # are not checked — the two PowerShell rules below SKIP whatever
             # carries no PowerShell — and a skip count that moved without
@@ -103,7 +110,7 @@ def test_the_builder_list_is_derived_and_finds_them_all():
         "alive_command", "check_command", "cuda_command", "firewall_command",
         "install_command", "launch_command", "launch_detached_command",
         "logs_command", "port_holder_command", "repair_command", "stop_command",
-        "torch_install", "verify_command",
+        "torch_install", "verify_command", "change_command", "facts_command",
     }, "a builder stopped being seen by the three rules below"
 
 
@@ -159,8 +166,8 @@ def test_windows_commands_never_prompt(build):
 
     Counted, not searched for. `"-NonInteractive" in command` was a substring
     check, and `launch_detached_command` is the only builder that emits two
-    PowerShells — the outer one that runs over SSH and the inner `Start-Process`
-    it launches. A substring check cannot tell two from one, so dropping the flag
+    PowerShells — the outer one that runs over SSH and the inner one it starts
+    (through WMI since 1.4.0; `Start-Process` before). A substring check cannot tell two from one, so dropping the flag
     from the outer invocation, the one that actually runs over SSH, left the
     suite green. Both carry it today; this is the guard being able to see it if
     one stops.
@@ -178,6 +185,33 @@ def test_windows_commands_never_prompt(build):
     assert command.count("-NonInteractive") >= command.count("powershell"), (
         "a PowerShell invocation here does not carry -NonInteractive; if it is "
         "the one that runs over SSH, a prompt hangs it forever")
+
+
+@pytest.mark.parametrize("build", EVERY_BUILDER)
+def test_every_windows_command_fits_on_one_cmd_line(build):
+    """A command for a Windows box is run by its OpenSSH server's default
+    shell, which is cmd.exe ("The initial default in Windows is the Windows
+    command prompt (cmd.exe)", Microsoft's OpenSSH server configuration page),
+    and cmd holds 8191 characters a line ("The maximum length of the string
+    that you can use at the command prompt is 8191 characters", KB 830473).
+    The install is the longest, and grew by three installers when Git, Python
+    and the Visual C++ runtime stopped being assumed: 7,244 characters with
+    every build option at once, read 2026-11-03 — see the test below, which
+    holds that case, since the builders here are called with the smallest
+    arguments that make them legal."""
+    assert len(build(WIN)) < 8191
+
+
+def test_the_longest_windows_install_fits_on_one_cmd_line():
+    """Every option that lengthens the script at once: a PR, a frontend PR, a
+    torch pin, a CUDA index and a clean install; and the build change with the
+    same. Written out at every use, the three installers took this to 7,973."""
+    from comfy_qa.provision import change_command
+
+    widest = Build(pr=17497, frontend_pr=5678, torch="2.12.1+cu130")
+    index = "https://download.pytorch.org/whl/cu130"
+    assert len(install_command(WIN, index, build=widest, clean=True)) < 8191 - 500
+    assert len(change_command(WIN, widest, index)) < 8191 - 500
 
 
 @pytest.mark.parametrize("build", EVERY_BUILDER)
@@ -226,21 +260,23 @@ def test_linux_asks_the_box_which_python_it_has():
     assert 'command -v "python$v"' in command, "asked, not assumed"
     assert " ".join(PYTHON_SERIES_SUPPORTED) in command, "and tried newest first"
     assert f"python{PYTHON_SERIES} -m venv" not in command, "that is the assumption"
-    assert '"$PY" -m venv --clear venv' in command
+    # The venv comfy-cli itself runs from is built with what was found; comfy-cli
+    # builds ComfyUI's own `.venv` from that same interpreter.
+    assert f'"$PY" -m venv --clear {LINUX_TOOL}/venv' in command
 
 
 def test_linux_checks_the_venv_works_before_installing_into_it():
     """Existing is not the test — a venv built before python3.10-venv was there
     has no pip in it, and every later line fails on `No module named pip`."""
     command = install_command(LINUX)
-    guard = command.index("INSTALL_INCOMPLETE: the venv has no pip")
-    assert guard < command.index("pip install --upgrade pip")
+    guard = command.index("INSTALL_INCOMPLETE: the venv for comfy-cli has no pip")
+    assert guard < command.index("pip install --quiet --upgrade pip")
 
 
 def test_a_venv_that_cannot_run_pip_is_rebuilt_rather_than_installed_into():
     """`python -m venv` over a broken venv leaves it broken; --clear empties it."""
     command = install_command(LINUX)
-    assert "-m venv --clear venv" in command
+    assert f"-m venv --clear {LINUX_TOOL}/venv" in command
     assert "reusing the venv" in command, "a working one is not thrown away"
 
 
@@ -387,10 +423,18 @@ def test_an_install_checks_its_own_work_before_claiming_success(host):
     command = install_command(host)
     assert "INSTALL_INCOMPLETE" in command
     if is_windows(host):
-        # Checked twice: once before anything is installed into the directory
-        # that was supposed to be cloned, once at the end.
-        assert command.count("INSTALL_INCOMPLETE") == 2
-        assert command.count("exit 1") == 2
+        # Checked three times since comfy-cli does the installing: that
+        # comfy-cli itself installed, that `comfy install` exited 0 — read off
+        # $LASTEXITCODE, the only thing PowerShell at `Continue` will not
+        # paper over — and that main.py is there at the end. And four times for
+        # each of Git, Python and the Visual C++ runtime, which the script
+        # installs itself since 1.4.0: that the installer downloaded, that it
+        # is the file its publisher gives (by SHA-256, or for the runtime by
+        # Microsoft's signature), that it exited as a success, and that what it
+        # installs is there.
+        assert command.count("INSTALL_INCOMPLETE") == 3 + 3 * 4
+        assert command.count("exit 1") == 3 + 3 * 4
+        assert "$LASTEXITCODE -ne 0" in command
     else:
         assert "exit 1" in command
 
@@ -445,14 +489,23 @@ def test_linux_needs_no_index_because_its_pypi_wheel_carries_cuda():
 
 
 def test_the_installer_and_the_repair_agree_about_torch():
-    """They drifted once. The repair was written later and did not know."""
-    from comfy_qa.provision import install_command, repair_command
+    """They drifted once. The repair was written later and did not know.
+
+    Since 1.4.0 the install is comfy-cli's, which takes the CUDA build as
+    `--cuda-version`; the repair still names PyTorch's index. Handed the same
+    index, the two have to mean the same CUDA."""
+    from comfy_qa.build import CUDA_TAGS
+    from comfy_qa.provision import TORCH_INDEXES, install_command, repair_command
 
     for os_name in ("Windows Server 2022", "Ubuntu 22.04"):
         host = Host(name="h", kind="gce", os=os_name, gpu="L4", port=8190)
-        installs = "download.pytorch.org/whl/cu128" in install_command(host)
-        repairs = "download.pytorch.org/whl/cu128" in repair_command(host)
-        assert installs == repairs, f"{os_name}: one uses the CUDA index and the other does not"
+        for _, index in TORCH_INDEXES:
+            cuda = CUDA_TAGS[index.rsplit("/", 1)[-1]]
+            install = install_command(host, index)
+            assert f"--cuda-version {cuda}" in install or (
+                f"'--cuda-version', '{cuda}'" in install), (os_name, index)
+            if is_windows(host):
+                assert index in repair_command(host, index=index), (os_name, index)
 
 
 def test_replacing_a_wrong_torch_has_to_force_the_reinstall():
@@ -612,45 +665,25 @@ def test_the_layout_the_installer_builds_is_the_one_searched_first(host):
 
     The tests above hold every consumer to the same order, which is what stops
     them diverging — but they pass just as happily on a list turned upside down,
-    because a consistent wrong order is still consistent. This is the anchor:
-    `install_command` builds one venv, and a search that reached a stray `.venv`
-    or the portable bundle before it would run ComfyUI out of an environment
-    nothing here installed into.
+    because a consistent wrong order is still consistent. This is the anchor.
+
+    Since 1.4.0 the installer is comfy-cli, run from a venv of its own outside
+    the checkout, and run from a venv it builds the workspace a `.venv`
+    (comfy_cli/resolve_python.py, `ensure_workspace_python`). A box from before
+    1.4.0 has the `venv` this tool built itself. So the two layouts this tool
+    has ever installed lead the search, the old one first — a box has only one
+    of them — and the portable bundle and a system interpreter come after.
+    The installer's own venv must not be in the checkout, or comfy-cli refuses
+    the workspace as "not a valid git repository".
     """
     layouts = WINDOWS_PYTHONS if is_windows(host) else LINUX_PYTHONS
+    dotted = ".venv\\Scripts\\python.exe" if is_windows(host) else ".venv/bin/python"
+    plain = "venv\\Scripts\\python.exe" if is_windows(host) else "venv/bin/python"
+    assert plain in layouts[:2] and dotted in layouts[:3], layouts
+    assert layouts.index(plain) < layouts.index(dotted)
     built = install_command(host)
-    assert layouts[0] in built, (
-        f"the installer builds none of {layouts[0]!r}, so nothing says which "
-        "layout the search should prefer")
-    assert not any(other in built for other in layouts[1:]), (
-        "the installer builds more than one layout; which one wins is no longer "
-        "decided by this list")
-
-def test_a_repair_checks_there_is_something_to_repair_on_both_boxes():
-    """The guard `install_command` has had all along, which this did not.
-
-    `install_command`'s comment names the hazard exactly — "Without this the next
-    line fails quietly and everything after it installs into whatever directory
-    PowerShell happened to be in" — and it bites harder here. Rule 1 keeps
-    PowerShell at `Continue`, where a failed `Set-Location` is NON-TERMINATING,
-    so the script carried on and spent several minutes putting 2.5 GB of CUDA
-    torch, and then a requirements file, into whatever directory the session
-    started in.
-
-    Linux guards its own `cd` and says why; Windows did not. Parallel code, one
-    side guarded — the shape this project keeps finding — so both sides are
-    asserted here rather than only the one that was broken, and both answer a
-    missing checkout with the same sentence rather than one getting a shell error
-    and the other a message.
-    """
-    from comfy_qa.provision import NOTHING_TO_REPAIR, repair_command
-
-    for host in ALL:
-        command = repair_command(host)
-        assert NOTHING_TO_REPAIR in command, f"{host.os}: no guard"
-        assert command.index(NOTHING_TO_REPAIR) < command.index("pip install"), (
-            f"{host.os}: the guard runs after the install it exists to prevent")
-        assert "exit 1" in command, f"{host.os}: it must fail, not just say so"
+    root = WINDOWS_ROOT if is_windows(host) else LINUX_ROOT
+    assert f"{root}\\venv" not in built and f"{root}/venv/bin/python -m venv" not in built
 
 
 def test_the_repair_guard_names_the_root_before_the_install_directory_is_used():
@@ -666,7 +699,7 @@ def _powershell_invocations(command: str) -> list[str]:
     """One segment per `powershell` token in a command.
 
     `launch_detached_command` emits two — the outer one that runs over SSH and
-    the inner `Start-Process` it launches — so any rule about *an invocation*
+    the inner one it starts through WMI — so any rule about *an invocation*
     has to be asserted once per segment. Asserted on the whole string instead,
     it is a first-occurrence check: it sees the outer pair and says nothing at
     all about the inner one.
@@ -802,8 +835,10 @@ def test_a_box_with_no_gpu_installs_the_cpu_build_of_torch(host):
     cannot have."""
     for index in (None, CPU_INDEX, "https://download.pytorch.org/whl/cu128"):
         command = install_command(host, index)
-        assert f"torch torchvision torchaudio --index-url {CPU_INDEX}" in command
-        assert "/whl/cu1" not in command
+        # comfy-cli's `--cpu` installs torch from PyTorch's CPU index
+        # (comfy_cli/command/install.py, `pip_install_comfyui_dependencies`).
+        assert "--cpu" in command
+        assert "--nvidia" not in command and "--cuda-version" not in command
 
 
 @pytest.mark.parametrize("host", NO_GPU_HOSTS, ids=["windows", "linux"])

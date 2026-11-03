@@ -61,6 +61,9 @@ REQUIRED = {
     "test_auth",
     "test_auth_flow",
     "test_bounded",
+    "test_build_create",
+    "test_build_flow",
+    "test_build_choice",
     "test_config",
     "test_config_hostile",
     "test_config_inheritance",
@@ -127,6 +130,7 @@ REQUIRED = {
     "test_tripwire",
     "test_tunnel",
     "test_tunnel_identity",
+    "test_windows_driver",
     "test_version",
     "test_zones",
 }

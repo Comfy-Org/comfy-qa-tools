@@ -142,6 +142,19 @@ def test_iap_refusing_port_22_is_a_machine_still_starting():
     assert still_booting(BOOTING_LOG)
 
 
+def test_iap_not_finding_a_box_created_a_minute_ago_is_a_machine_still_starting():
+    """Seen live twice on 2026-11-03 (live-s2, evidence/03 and /14): the first
+    `go` on a box `create` had made about a minute earlier, Linux and Windows
+    alike, was refused by IAP with 4047 'Failed to lookup instance' — and `go`
+    said the tunnel had failed. The box was RUNNING by Google's own answer a
+    second before, and the same command a minute later worked unchanged.
+    Cured by waiting, so it is still booting."""
+    log = ("ERROR: [0] Error during local connection to [stdin]: Error while "
+           "connecting [4047: 'Failed to lookup instance'].\n"
+           "ERROR: (gcloud.compute.ssh) [/usr/bin/ssh] exited with return code [255].")
+    assert still_booting(log)
+
+
 def test_iap_refusing_the_comfyui_port_is_still_nothing_listening():
     """The other half of the same code, kept apart deliberately.
 

@@ -957,6 +957,8 @@ def test_a_successful_install_is_confirmed_on_the_box_not_assumed():
         # torch it fetches matches the card rather than a pinned number.
         if "nvidia-smi" in " ".join(args):
             return "CUDA Version: 13.0"
+        if "RECORD=" in " ".join(args):
+            return ""          # what the box says it runs: nothing recorded
         return next(answers)
 
     lines, say = said()
@@ -1369,16 +1371,21 @@ def test_a_box_whose_driver_is_ready_is_not_made_to_wait(tmp_path):
     assert not any("waiting" in line for line in lines), lines
 
 
-def test_windows_is_not_waited_on_because_its_driver_is_manual(tmp_path):
-    """Google documents no unattended method, so there is nothing to wait for."""
+def test_windows_is_waited_on_now_that_its_driver_installs_itself(tmp_path):
+    """Until 1.4.0 Windows was skipped: its driver went on by hand, so there was
+    nothing to wait for. Google now documents an unattended install, `create`
+    uses it (S2-10), and a Windows box with a card is asked, as Linux is."""
     from comfy_qa.lifecycle import wait_for_driver
 
-    def refuses(args, mode):
-        raise AssertionError("Windows must not be probed for a driver")
+    asked = []
+
+    def answers(args, mode):
+        asked.append(" ".join(args))
+        return "GPU 0: NVIDIA L4"
 
     lines, say = said()
-    wait_for_driver(Gcloud(runner=refuses), WIN, say, tunnel_dir=tmp_path)
-    assert lines == []
+    wait_for_driver(Gcloud(runner=answers), WIN, say, tunnel_dir=tmp_path)
+    assert [a for a in asked if "nvidia-smi -L" in a]
 
 
 def test_a_pre_turing_box_is_refused_at_once_instead_of_waited_on(tmp_path):
@@ -1693,6 +1700,10 @@ def no_real_waiting(monkeypatch):
     return elapsed
 
 
+# How the fake below knows an install ran: the line comfy-cli's install prints first.
+from comfy_qa.provision import INSTALLING as _INSTALLING  # noqa: E402
+
+
 def _box(*, installed: bool, torch: str = "READY"):
     """A box that answers the on-box scripts, and keeps everything it was sent."""
     sent: list[str] = []
@@ -1702,11 +1713,15 @@ def _box(*, installed: bool, torch: str = "READY"):
         sent.append(key)
         if mode != "output":
             return 0
+        if "nvidia-smi -L" in key:
+            # The driver is there: a Windows box with a card is asked too, since
+            # 1.4.0 (S2-10). The CUDA question below still finds no answer.
+            return "GPU 0: NVIDIA L4"
         if "nvidia-smi" in key:
             raise GcloudError("nvidia-smi: command not found", raw="exit status 127")
         if "INSTALLED" in key and "MISSING" in key:
             # Not there the first time it is asked, there once the install ran.
-            return "INSTALLED" if installed or any("git clone" in s for s in sent) \
+            return "INSTALLED" if installed or any(_INSTALLING in s for s in sent) \
                 else "MISSING"
         if "import torch" in key or "pip show torch" in key:
             # `TORCH_NO_CUDA` models a box whose torch is the CPU build, and
@@ -1729,10 +1744,15 @@ def test_installing_onto_a_box_with_no_gpu_never_asks_for_nvidia_smi(host, tmp_p
     _, say = said()
     ensure_installed(gc, host, say, tunnel_dir=tmp_path)
 
+    from comfy_qa.provision import INSTALLING
+
     assert not [command for command in sent if "nvidia-smi" in command]
-    (install,) = [command for command in sent if "git clone" in command]
-    assert "--index-url https://download.pytorch.org/whl/cpu" in install
-    assert "/whl/cu1" not in install, "a CUDA build, on a machine with no CUDA"
+    (install,) = [command for command in sent if INSTALLING in command]
+    # comfy-cli's `--cpu` is the CPU build of torch; `--nvidia` and a CUDA
+    # version are what a box with a card is handed.
+    assert "--cpu" in install
+    assert "--nvidia" not in install and "--cuda-version" not in install, (
+        "a CUDA build, on a machine with no CUDA")
 
 
 def test_installing_onto_a_gpu_box_still_asks_the_driver_which_cuda_it_runs(tmp_path, no_real_waiting):
@@ -1751,15 +1771,18 @@ def test_installing_onto_a_gpu_box_still_asks_the_driver_which_cuda_it_runs(tmp_
         if "nvidia-smi" in key:
             return "CUDA Version: 13.0"
         if "INSTALLED" in key and "MISSING" in key:
-            return "INSTALLED" if any("git clone" in s for s in sent) else "MISSING"
+            return "INSTALLED" if any(INSTALLING in s for s in sent) else "MISSING"
         return ""
+
+    from comfy_qa.provision import INSTALLING
 
     _, say = said()
     ensure_installed(Gcloud(runner=runner), LINUX, say, tunnel_dir=tmp_path)
 
     assert [command for command in sent if "nvidia-smi -L" in command]
-    (install,) = [command for command in sent if "git clone" in command]
-    assert "--index-url https://download.pytorch.org/whl/cu130" in install
+    (install,) = [command for command in sent if INSTALLING in command]
+    # The driver's answer reaches comfy-cli as its own `--cuda-version`.
+    assert "--nvidia --cuda-version 13.0" in install
 
 
 @pytest.mark.parametrize("host", [LINUX_CPU, WIN_CPU], ids=["linux", "windows"])
@@ -2187,8 +2210,37 @@ def test_the_real_stockout_names_no_other_zone_and_none_is_invented():
 # a name can carry it: Google echoes the resource path in most of what it
 # refuses, so `qatest-stockout` turned an ordinary refusal into "the zone is out
 # of stock, try another" — the advice for a problem the user does not have. The
-# shape it was there for is Google's own state code, which is not a word but a
-# key and a value: `state:STOCKOUT`. A GCE name cannot hold a colon.
+# shape it was there for is the state code `state:STOCKOUT`, which is not a word
+# but a key and a value. That form is how the test written with the first
+# stock-out fix (#17) has it; the live message that fix came from is not on
+# record, and no real refusal kept since carries the code, so it is a sign kept
+# rather than one seen. A GCE name cannot hold a colon.
+
+
+def test_no_comment_calls_the_stockout_state_code_google_s_own():
+    """C2, carried over from the step 1 audit (behaviour:F4).
+
+    `state:STOCKOUT` is kept as a capacity sign because the test written with
+    the first stock-out fix (#17) has it. The live message that fix came from is
+    not on record, and no real refusal kept since carries the code — so saying
+    the code is Google's own claims a provenance nobody has seen.
+    `lifecycle._CAPACITY_SIGNS` says that; this holds every file to it.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    # Built, so this test's own source is not a match for what it looks for.
+    claim = "Google's own " + "state code"
+    found = [
+        f"{path.relative_to(root)}:{number}"
+        for folder in ("comfy_qa", "tests", "docs")
+        for path in sorted((root / folder).rglob("*"))
+        if path.suffix in (".py", ".md")
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1)
+        if claim in line
+    ]
+    assert not found, found
 
 
 @pytest.mark.parametrize("text", [

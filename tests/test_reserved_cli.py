@@ -1251,6 +1251,31 @@ def t4_project(regions, zones, *, at="reserve", cpu_regions=None):
 ONE_REGION = (["us-central1"], ["us-central1-a", "us-central1-b"])
 TWO_REGIONS = (REGIONS, ZONES)
 
+# A build, every part of it named (behaviour:F1). A stock-out's "same box" and
+# the --zone/--region refusal rebuilt the create from where it went, the name,
+# --reserve and --disk — and dropped the build, so pasted back the box came up
+# on the tip of ComfyUI's default branch with Manager on. Live, S2-13's retry
+# lost `--version v0.43.0`. Manager is named when it is off, which is the only
+# case leaving it out changes anything.
+BUILD = ("--version", "v0.43.0", "--frontend-version", "v1.58.4", "--no-manager",
+         "--torch", "2.12.1+cu130")
+# What the pasted-back create's plan says, for the same build.
+BUILD_PLAN = ("ComfyUI v0.43.0 · frontend v1.58.4 · Manager off · torch "
+              "2.12.1+cu130")
+
+
+@pytest.fixture
+def hub(monkeypatch):
+    """GitHub for the build above: the release and the frontend release."""
+    from comfy_qa import build as build_mod
+
+    table = {"repos/Comfy-Org/ComfyUI/git/ref/tags/v0.43.0":
+             {"object": {"sha": "426f5eea52a7ece1dd599fff4cb6cd1f352ddd24"}},
+             "repos/Comfy-Org/ComfyUI_frontend/releases/tags/v1.58.4":
+             {"tag_name": "v1.58.4"}}
+    monkeypatch.setattr(build_mod, "github",
+                        lambda path: (200, table[path]) if path in table else (404, None))
+
 
 def creates(output: str) -> list[str]:
     """Every whole `comfy-qat create …` the output offers, as argv, cut where the
@@ -1310,8 +1335,11 @@ def test_a_named_region_with_others_beside_it_still_offers_to_drop_it(run):
     ["--reserve", "--name", "qatest-rsv", "--disk", "400"],
     ["--name", "qatest-plain"],
     ["--name", "qatest-plain", "--disk", "400"],
-], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk"])
-def test_the_same_box_without_region_is_the_box_that_was_asked_for(run, asked):
+    ["--reserve", "--name", "qatest-rsv", "--disk", "400", *BUILD],
+    ["--name", "qatest-plain", *BUILD],
+], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk",
+        "reserved-with-a-build", "plain-with-a-build"])
+def test_the_same_box_without_region_is_the_box_that_was_asked_for(run, hub, asked):
     """O23b. The remedy is "the same create, without --region". It was rebuilt
     from `--os`, `--gpu` and, for a reserved box, `--reserve --name` — so a
     box asked for with `--disk 400` was offered back with the default 200 GB,
@@ -1349,14 +1377,19 @@ def test_the_same_box_without_region_is_the_box_that_was_asked_for(run, asked):
     disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
     plan = flat(again.output)
     assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+    if "--version" in asked:
+        assert BUILD_PLAN in plan, "pasted back, the box is on another build"
 
 
 @pytest.mark.parametrize("asked", [
     ["--reserve", "--name", "qatest-rsv", "--disk", "400"],
     ["--name", "qatest-plain"],
     ["--name", "qatest-plain", "--disk", "400"],
-], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk"])
-def test_the_same_box_without_zone_is_the_box_that_was_asked_for(run, asked):
+    ["--reserve", "--name", "qatest-rsv", "--disk", "400", *BUILD],
+    ["--name", "qatest-plain", *BUILD],
+], ids=["reserved-with-disk", "plain-with-name", "plain-with-name-and-disk",
+        "reserved-with-a-build", "plain-with-a-build"])
+def test_the_same_box_without_zone_is_the_box_that_was_asked_for(run, hub, asked):
     """O23b's sibling, after `--zone`. "drop --zone and let this pick" was
     followed by `_same_box` for a reserved box and by a bare `comfy-qat create`
     for every other — no `--os`, no `--gpu`, no `--name`, no `--disk` — which,
@@ -1397,6 +1430,8 @@ def test_the_same_box_without_zone_is_the_box_that_was_asked_for(run, asked):
     disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
     plan = flat(again.output)
     assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+    if "--version" in asked:
+        assert BUILD_PLAN in plan, "pasted back, the box is on another build"
 
 
 # --- every "the same box, somewhere else" keeps the box (O23b, the class) -----
@@ -1443,10 +1478,13 @@ ELSEWHERE = {
     "a region in the wrong case, reserved": (
         HELD, ("--region", "US-CENTRAL1"), Project, HOSTS, {"--region"}),
 }
+# And every one of them again with the build named, which each of them dropped.
+ELSEWHERE.update({f"{why}, with a build": (asked + BUILD, *rest)
+                  for why, (asked, *rest) in list(ELSEWHERE.items())})
 
 
 @pytest.mark.parametrize("why", list(ELSEWHERE))
-def test_every_same_box_somewhere_else_is_the_box_that_was_asked_for(run, why):
+def test_every_same_box_somewhere_else_is_the_box_that_was_asked_for(run, hub, why):
     """Each refusal's "somewhere else" command is compared with the arguments
     the refused create was given: the same flags, except where — one place
     instead of the one refused — and without `--yes`. Then it is pasted back
@@ -1476,6 +1514,8 @@ def test_every_same_box_somewhere_else_is_the_box_that_was_asked_for(run, why):
         plan = flat(again.output)
         name = asked[asked.index("--name") + 1]
         assert name in plan and "400 GB pd-balanced boot disk" in plan, plan
+        if "--version" in asked:
+            assert BUILD_PLAN in plan, f"`{' '.join(words)}` is on another build"
 
 
 def test_a_box_with_no_gpu_says_the_region_it_was_named(run):

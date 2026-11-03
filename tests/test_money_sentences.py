@@ -118,6 +118,13 @@ class Cloud:
             raise self._stop
         return ""
 
+    def current_project(self):
+        """gcloud's own project, which `down --all` reads too when the host list
+        names none, because that is where `create` makes a box (C1). The
+        project every declared box here is on, so it adds no read."""
+        self.calls.append("current_project")
+        return "proj"
+
     def list_reservations(self, project):
         """The third question `down --all` asks, and the reason it is here.
 

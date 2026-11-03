@@ -2344,7 +2344,8 @@ night, in the same harness, for the same reason:
 
 ```sh
 SEL="tests/a.py tests/b.py"
-pytest -q $SEL          # zsh does not word-split: ONE argument, a path that does not exist
+# zsh does not word-split: ONE argument, a path that does not exist
+pytest -q $SEL
 ```
 
 pytest collects nothing, prints no line beginning `FAILED`, and the harness

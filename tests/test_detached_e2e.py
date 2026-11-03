@@ -175,7 +175,7 @@ def test_the_launch_is_detached_on_the_box_not_streamed_here(world):
 
     launched = [r for r in world.gc.remote if "main.py" in r and "pip" not in r]
     assert launched, "nothing was launched"
-    assert any("Start-Process" in r or "nohup" in r for r in launched), (
+    assert any("Win32_Process" in r or "nohup" in r for r in launched), (
         "the launch has to survive this command returning"
     )
     assert any("comfyui.log" in r for r in launched), "and write somewhere readable"
@@ -296,7 +296,7 @@ def test_follow_keeps_the_old_behaviour(world):
     assert "ComfyUI exited (130)" in result.output
     assert "this terminal is free" not in result.output
     launched = [r for r in world.gc.remote if "main.py" in r and "pip" not in r]
-    assert not any("nohup" in r or "Start-Process" in r for r in launched)
+    assert not any("nohup" in r or "Win32_Process" in r for r in launched)
 
 
 # ----------------------------------------------------------------- logs

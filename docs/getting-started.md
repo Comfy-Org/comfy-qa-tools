@@ -205,13 +205,15 @@ command was started.
 Run it with `--dry-run` first if you want to see the plan, the quota it read and
 the zone order it would try, without creating anything.
 
-One thing it cannot do for you. **The NVIDIA driver is not in either base image**,
-and a box without one runs ComfyUI on its CPU while looking perfectly healthy. On
-Linux, `create` installs it from a startup script on first boot — which reboots the
-box once or twice, and `go` waits that out. On Windows it does not: Google
-documents exactly one way to install it there and it is a person at a PowerShell
-prompt, so `create` prints those commands for you to run once rather than inventing
-a recipe nobody has tested.
+**The NVIDIA driver is not in either base image**, and a box without one runs
+ComfyUI on its CPU while looking perfectly healthy. Both kinds of box install it
+themselves on first boot, each with Google's own documented method, and nothing is
+left for you to run. On Linux, `create` installs it from a startup script, which
+reboots the box once or twice. On Windows (since 1.4.0), `create` sets the box's
+`sysprep-specialize-script-url` to Google's own driver script, which runs once on
+first boot, before the box accepts SSH. `go` waits for the driver on both. If it
+does not come up, `go` says so: on Linux it points at the installer's log, and on
+Windows at the box's serial console, where Google's script writes its output.
 
 The finished box is added to your host list on a free port, so the next step works
 on it straight away.
@@ -220,7 +222,8 @@ on it straight away.
 
 ```sh
 comfy-qat go comfy-linux
-comfy-qat go linux          # the same box, described rather than named
+# the same box, described rather than named
+comfy-qat go linux
 ```
 
 That starts the machine, installs ComfyUI if it has none, launches it **on the
@@ -229,8 +232,10 @@ back. ComfyUI keeps running there, so you can bring a second machine up from the
 same terminal.
 
 ```sh
-comfy-qat logs linux        # what it is saying, whenever you want to know
-comfy-qat down linux        # close the tunnel, stop the box, stop paying
+# what it is saying, whenever you want to know
+comfy-qat logs linux
+# close the tunnel, stop the box, stop paying
+comfy-qat down linux
 ```
 
 **`down` is the one to remember.** A GPU box bills for every hour it is on,

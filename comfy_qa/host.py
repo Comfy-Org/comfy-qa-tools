@@ -99,6 +99,138 @@ ConfigOption = Annotated[Optional[Path], typer.Option(
     "--config", hidden=True, callback=remember_config,
     help="Host list. Declared at the root — see `comfy-qat --help`.")]
 
+# --- choosing the build ----------------------------------------------------
+#
+# One set of options for `create`, `go` and `switch`, declared once so the three
+# cannot drift in spelling or in help. The backend is one of a release, a PR or a
+# commit; the frontend one of a release or a PR; Manager is ON unless asked
+# otherwise (Ali, 3 Nov: "manager should always be on btw, by default"); torch is
+# pinned only when asked. See `build.py` for what each becomes on the box.
+VersionOption = Annotated[Optional[str], typer.Option(
+    "--version", help="The ComfyUI release to install, e.g. v0.43.0. Give at most "
+                      "one of --version, --pr and --commit; with none, the tip of "
+                      "ComfyUI's default branch, as before.")]
+PrOption = Annotated[Optional[str], typer.Option(
+    "--pr", help="A ComfyUI pull request to install, by number. It has to be open.")]
+CommitOption = Annotated[Optional[str], typer.Option(
+    "--commit", help="A ComfyUI commit to install, by hash (seven characters or more).")]
+FrontendVersionOption = Annotated[Optional[str], typer.Option(
+    "--frontend-version", help="The frontend release to serve, e.g. v1.58.4, or "
+                               "pinned for the one the ComfyUI build pins. Left "
+                               "off, a command that chooses the backend "
+                               "(--version, --pr or --commit) serves the frontend "
+                               "that backend pins, and any other keeps the "
+                               "frontend the box has.")]
+FrontendPrOption = Annotated[Optional[str], typer.Option(
+    "--frontend-pr", help="A frontend pull request to build on the box and serve, "
+                          "by number.")]
+ManagerOption = Annotated[Optional[bool], typer.Option(
+    "--manager/--no-manager", help="ComfyUI-Manager is on by default; --no-manager "
+                                   "installs and starts ComfyUI without it.")]
+TorchOption = Annotated[Optional[str], typer.Option(
+    "--torch", help="Pin PyTorch, with the CUDA build after a + if you want one: "
+                    "2.12.1+cu130 is Miles's pin for NVIDIA machines. Left off, "
+                    "comfy-cli picks torch for the box's driver.")]
+CleanOption = Annotated[bool, typer.Option(
+    "--clean", help="Delete ComfyUI on the box — custom nodes and models with it — "
+                    "and install the build from nothing. Without it a new build "
+                    "keeps both.")]
+
+
+def _asked_build(host: Host | None, *, version=None, pr=None, commit=None,
+                 frontend_version=None, frontend_pr=None, manager=None, torch=None):
+    """The build a command line asked for, checked against GitHub — or None.
+
+    None when no build option was given at all, which is not the default
+    build: it is "nothing was asked", and a box that already has ComfyUI keeps
+    what it has. Every refusal exits 2 BEFORE Google is asked anything (S2-1,
+    S2-9): two backends, a tag that is not there, a closed PR, an unknown
+    commit.
+    """
+    from .build import BuildError, check, choose
+    from .config import declares_no_gpu
+
+    given = [version, pr, commit, frontend_version, frontend_pr, torch]
+    if all(value in (None, "") for value in given) and manager is None:
+        return None
+    try:
+        chosen = choose(version=version, pr=pr, commit=commit,
+                        frontend_version=frontend_version, frontend_pr=frontend_pr,
+                        no_manager=None if manager is None else not manager,
+                        torch=torch, no_gpu=bool(host and declares_no_gpu(host)))
+        return check(chosen)
+    except BuildError as exc:
+        say.fail(exc, code=2, blank_line=False)
+
+
+def _declared_build(host: Host):
+    """The host list's `build` for this box, or None. Refused if it will not
+    read, before anything reaches Google — a build line that is wrong is not
+    a build line that says the default."""
+    from .build import BuildError, parse
+
+    declared = getattr(host, "declared", None)
+    try:
+        written = parse(declared("build") if callable(declared) else None)
+        # The choices only. A PR head written there is what GitHub said the day
+        # the line was written, and the first `go` checks the PR out at its head
+        # THEN — held to the old one, it would be refused for being current.
+        return written.choices() if written is not None else None
+    except BuildError as exc:
+        say.fail(f"{host.name}'s build in your host list cannot be read: {exc}",
+                 fix=exc.fix, code=2, blank_line=False)
+
+
+def _build_flags(want, clean: bool) -> list[str]:
+    """The build options again, for a command this one hands on.
+
+    `--manager` goes on when it was typed. It is the default, so `flags()`
+    leaves it out, and `go --manager --new-window` handed the new window a
+    plain `go` — which, onto a box already serving, asks nothing and holds it
+    to nothing. Left untyped it stays untyped: the box keeps its own record.
+    """
+    words = (want.flags(explicit_manager="manager" in want.named).split()
+             if want is not None else [])
+    return words + (["--clean"] if clean else [])
+
+
+def _typed_build(*, version=None, pr=None, commit=None, frontend_version=None,
+                 frontend_pr=None, manager=None, torch=None) -> str:
+    """The build options exactly as they were typed, quoted for a shell.
+
+    For a `comfy-qat create` a refusal hands back BEFORE the build has been
+    checked — the same rule as `--os` and `--gpu` there: what was typed, and
+    nothing else, so an option left off is still asked for as it would have
+    been. In `Build.flags`'s order, and Manager only when it was typed.
+    """
+    words = [f"{flag} {shlex.quote(str(value))}" for flag, value in (
+        ("--version", version), ("--pr", pr), ("--commit", commit),
+        ("--frontend-version", frontend_version), ("--frontend-pr", frontend_pr))
+        if value not in (None, "")]
+    if manager is not None:
+        words.append("--manager" if manager else "--no-manager")
+    if torch not in (None, ""):
+        words.append(f"--torch {shlex.quote(str(torch))}")
+    return " ".join(words)
+
+
+def _declared_flags(host: Host) -> str:
+    """The host list's `build` for this box as options, or nothing.
+
+    For a create that makes the box again: its first `go` installs that build.
+    A line that does not read gives nothing here — the refusal it is printed
+    in is about something else, and `go` refuses the line on its own.
+    """
+    from .build import BuildError, parse
+
+    declared = getattr(host, "declared", None)
+    try:
+        written = parse(declared("build") if callable(declared) else None)
+    except BuildError:
+        return ""
+    return written.choices().flags() if written is not None else ""
+
+
 STARTER = f"""\
 # comfy-qat list.
 #
@@ -1219,6 +1351,13 @@ def create_cmd(
     yes: Annotated[bool, typer.Option("--yes", help="Do not ask before creating.")] = False,
     dry_run: Annotated[bool, typer.Option(
         "--dry-run", help="Print the plan, the quota and the zone order. Create nothing.")] = False,
+    version: VersionOption = None,
+    pr: PrOption = None,
+    commit: CommitOption = None,
+    frontend_version: FrontendVersionOption = None,
+    frontend_pr: FrontendPrOption = None,
+    manager: ManagerOption = None,
+    torch: TorchOption = None,
 ) -> None:
     """Create a box, choosing the zone for you.
 
@@ -1243,6 +1382,11 @@ def create_cmd(
     This one writes: the new box is appended to your host list — the file
     `--config` names, and ~/.config/comfy-qa-tools/hosts.toml when it is left
     off — so the file is read and then rewritten. `--dry-run` writes nothing.
+
+    The build options say which ComfyUI the first `comfy-qat go` installs on
+    it — a release, a PR or a commit, a frontend, Manager and a torch pin — and
+    are written into its host list entry. Checked against GitHub before
+    anything else, so a build that does not exist costs nothing.
     """
     from . import ask
     from . import create as create_mod
@@ -1253,6 +1397,16 @@ def create_cmd(
     )
     from .discover import next_ports, to_toml
     from .gcloud import Gcloud, GcloudError
+
+    # THE BUILD AS TYPED, for every `comfy-qat create` a refusal below hands
+    # back. Each of them was rebuilt from where the box goes, `--os`, `--gpu`,
+    # the name, `--reserve` and `--disk`, and dropped the build — so the box made
+    # from the fix came up on the tip of ComfyUI's default branch with Manager
+    # on (audit finding behaviour:F1). As typed, because most of these refusals
+    # come before the build has been checked against GitHub.
+    typed = _typed_build(version=version, pr=pr, commit=commit,
+                         frontend_version=frontend_version, frontend_pr=frontend_pr,
+                         manager=manager, torch=torch)
 
     # Before anything is read from Google, because this is a string check and
     # `create` otherwise spends a minute on quota before saying anything.
@@ -1300,7 +1454,7 @@ def create_cmd(
         # `--name qatest-plain --disk 400` came back under whatever name the
         # next run picks, with the default 200 GB — and pasted under `--yes`,
         # that is the box that gets made.
-        besides = create_mod.besides_where(name, disk)
+        besides = create_mod.besides_where(name, disk, typed)
         chosen += f"{besides} " if besides else ""
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
@@ -1326,7 +1480,7 @@ def create_cmd(
     # drops `--reserve` makes — in a script, where nobody is asked — an
     # unreserved box out of a request for a reserved one. Empty otherwise, so
     # the lines for an ordinary build are what they always were.
-    asked = create_mod._asked_for(reserve is True, name)
+    asked = create_mod._asked_for(reserve is True, name, typed)
     os_choice = ask.settle(
         "--os", os_choice,
         label="OS", question="Which operating system?",
@@ -1415,9 +1569,21 @@ def create_cmd(
     # long to carry `-rsv` are both refused before Google is asked anything.
     try:
         card = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
-                    taken=taken_names(hosts, []), reserve=reserve).card
+                    taken=taken_names(hosts, []), reserve=reserve, build=typed).card
     except _reportable() as exc:
         _refused(exc)
+
+    # The build, checked against GitHub before Google is asked anything (S2-9):
+    # a release that is not there refuses here, at no cost, rather than after a
+    # box has been made and billed. `no_gpu` from the card, so `--torch
+    # 2.12.1+cu130` on a box with no card is refused too.
+    want = _asked_build(None if card.is_gpu else Host(name="new", kind="gce", port=0,
+                                                       gpu="none"),
+                        version=version, pr=pr, commit=commit,
+                        frontend_version=frontend_version, frontend_pr=frontend_pr,
+                        manager=manager, torch=torch)
+    if want is not None:
+        want = want.over(None)
 
     gc = Gcloud()
     try:
@@ -1469,7 +1635,8 @@ def create_cmd(
             from .auth import spliced
 
             held = "".join(f" {part}" for part in (
-                "--reserve" if reserve else "", create_mod.besides_where(name, disk))
+                "--reserve" if reserve else "",
+                create_mod.besides_where(name, disk, typed))
                 if part)
             say.fail(wrong[0],
                      fix=say.fix(*spliced(wrong[1], f"comfy-qat create --os {os_choice} "
@@ -1482,7 +1649,12 @@ def create_cmd(
 
     try:
         blueprint = plan(os_choice=os_choice, gpu=gpu, name=name, disk_gb=disk,
-                         taken=taken_names(hosts, instances), reserve=reserve)
+                         taken=taken_names(hosts, instances), reserve=reserve,
+                         build=typed)
+        if want is not None:
+            from dataclasses import replace as _with
+
+            blueprint = _with(blueprint, build=want)
         check, leftover, reservations = _checked(
             gc, project, blueprint, quotas, instances, region or "", hosts)
         say.result("\nquota checked:")
@@ -1869,6 +2041,40 @@ def _bound_live(gc, host: Host):
         return None
 
 
+def _projects_in_play(gc, hosts: list[Host], project: str | None
+                      ) -> tuple[list[str], bool]:
+    """Every project `down --all` has to read, and whether one could not be named.
+
+    Each project a declared box is on; then the one the host list names; and,
+    WHEN THE HOST LIST NAMES NONE, gcloud's current project as well. That last
+    clause is the whole of C1 (the step 1 audit's behaviour:F2). `create`
+    resolves its project through `project_for`, which falls back on gcloud's
+    when the host list has no `project` line — so with a box declared on `old`,
+    no line, and gcloud pointed at `new`, a box `create` made (or half made) is
+    on `new`. This used to ask gcloud only when there was no declared box at
+    all, so that run read `old` alone and could end on "Nothing is now." while
+    something billed on `new`.
+
+    The second value is True when gcloud's project was needed and the read
+    failed: the caller cannot then say it read every project `create` could
+    have used, and must not print an all-clear. A gcloud with NO project set
+    is not that — `create` refuses there, so nothing can have been made on it.
+    """
+    from .gcloud import GcloudError
+
+    projects = [*(h.gce_project for h in hosts if h.gce_project),
+                *([project] if project else [])]
+    unread = False
+    if not project:
+        try:
+            current = gc.current_project()
+        except (GcloudError, AttributeError):
+            current, unread = None, True
+        if current:
+            projects.append(current)
+    return list(dict.fromkeys(projects)), unread
+
+
 def _reservations_on(gc, hosts: list[Host], project: str | None = None):
     """Every reservation on every project in play: `{project: list | None}`.
 
@@ -1881,9 +2087,12 @@ def _reservations_on(gc, hosts: list[Host], project: str | None = None):
 
     EVERY project a declared box names, not the first one. A host list may
     name several, and a reservation on the second billed just as much while
-    only the first was read. With no cloud box declared and no project in the
-    host list it is the project gcloud is pointed at, which is then where a
-    `create` that stopped half-way left whatever it left.
+    only the first was read. With no project in the host list it is also the
+    project gcloud is pointed at, declared boxes or not, which is then where a
+    `create` that stopped half-way left whatever it left (C1). When gcloud's
+    project was needed and could not be read, it appears under the empty key
+    with None, so the summary withholds its all-clear rather than reading a
+    project it never named as an empty one.
 
     None for a project whose read did not come back — not `[]`. Read-and-empty
     is the only answer that may be printed as an all-clear. An empty mapping
@@ -1897,15 +2106,8 @@ def _reservations_on(gc, hosts: list[Host], project: str | None = None):
     from . import reservation as rsv
     from .gcloud import GcloudError
 
-    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
-                                   *([project] if project else [])]))
-    if not projects:
-        try:
-            current = gc.current_project()
-        except (GcloudError, AttributeError):
-            current = None
-        projects = [current] if current else []
-    found: dict[str, list | None] = {}
+    projects, unread = _projects_in_play(gc, hosts, project)
+    found: dict[str, list | None] = {"": None} if unread else {}
     for project in projects:
         try:
             found[project] = rsv.parse_all(gc.list_reservations(project))
@@ -1957,6 +2159,15 @@ def _say_reserved(gc, hosts: list[Host], reservations) -> None:
 
     declared = {(host.reservation, host.gce_zone, host.gce_project) for host in held}
     for project, found in reservations.items():
+        if found is None and not project:
+            # gcloud's own project, needed because the host list names none,
+            # and not readable — so there is no project ID to print a command
+            # for. `status` is the command that says what is wrong with gcloud.
+            _prose("\ngcloud's own project could not be read, so its "
+                   "reservations were not checked, and a reservation bills with "
+                   "its box stopped — so this is not an all-clear.")
+            say.result("  comfy-qat status")
+            continue
         if found is None:
             _prose("\nthe project's reservations could not be checked, and a "
                    "reservation bills with its box stopped — so this is not an "
@@ -2542,6 +2753,14 @@ def go_cmd(
              "what you asked for and nothing more, so Ctrl-C in it stops nothing "
              "on the box — unless you passed --follow too, and then Ctrl-C "
              "there stops ComfyUI itself.")] = False,
+    version: VersionOption = None,
+    pr: PrOption = None,
+    commit: CommitOption = None,
+    frontend_version: FrontendVersionOption = None,
+    frontend_pr: FrontendPrOption = None,
+    manager: ManagerOption = None,
+    torch: TorchOption = None,
+    clean: CleanOption = False,
 ) -> None:
     """Start the machine, make sure ComfyUI is on it, and hand the prompt back.
 
@@ -2550,11 +2769,26 @@ def go_cmd(
     keeps running after this returns — so a second machine can be brought up in
     this same terminal. `comfy-qat logs` reads its log; `--follow` streams it here
     instead, and Ctrl-C then stops ComfyUI, which is what this used to do always.
+
+    With a build option, that build: a release, a PR or a commit, a frontend,
+    Manager and a torch pin. A box that has ComfyUI already is changed to it in
+    place, keeping its custom nodes and models (`--clean` to start from
+    nothing), and it is reported ready only once the running ComfyUI says it is
+    that build.
     """
     from .gcloud import Gcloud
     from .lifecycle import GO_BUDGET, Budget, in_a_new_window
 
     hosts, host = _lookup(_selector(name), config)
+    # Before anything reaches Google: the build is checked against GitHub, and
+    # the host list's own build line is read, both refusals rather than bills.
+    want = _asked_build(host, version=version, pr=pr, commit=commit,
+                        frontend_version=frontend_version, frontend_pr=frontend_pr,
+                        manager=manager, torch=torch)
+    declared = _declared_build(host)
+    if no_install and (want is not None or clean):
+        say.fail("--no-install refuses to install, and a build option asks for one",
+                 fix="drop one of them", code=2, blank_line=False)
     if new_window:
         # Before anything is started: a hand-off that fails must not leave a box
         # running behind a window that never opened.
@@ -2583,6 +2817,7 @@ def go_cmd(
         rest += ["--config", str(config)] if config else []
         rest += ["--no-browser"] if no_browser else []
         rest += ["--no-install"] if no_install else []
+        rest += _build_flags(want, clean)
         _act(in_a_new_window, rest, say.step)
         return
     gc = Gcloud()
@@ -2598,7 +2833,7 @@ def go_cmd(
     # leave it half executed, old box not stopped and new box not up.
     ready = _bring_up(gc, host, hosts, offer_move=config or True, budget=budget)
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
-           follow=follow, budget=budget)
+           follow=follow, budget=budget, want=want, declared=declared, clean=clean)
 
 
 @app.command("ssh")
@@ -3121,7 +3356,8 @@ def _bring_up(gc, host: Host, hosts: list[Host], kept: list[Host] | None = None,
 
 
 def _serve(gc, host: Host, ready, *, no_browser: bool = False,
-           no_install: bool = False, follow: bool = False, budget=None) -> None:
+           no_install: bool = False, follow: bool = False, budget=None,
+           want=None, declared=None, clean: bool = False) -> None:
     """The rest of `go` once the machine is up: install if needed, then run it.
 
     Detached unless `--follow`. Both prove the same thing before returning —
@@ -3132,11 +3368,52 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
 
     from .gcloud import GcloudError
     from .lifecycle import (
-        ensure_installed, serve, start_detached, wait_for_ssh, wrong_machine_fix,
+        confirm_build, ensure_installed, read_facts, serve, start_detached,
+        stop_running, wait_for_ssh, wrong_machine_fix,
     )
     from .stamp import mismatch
 
     browser = None if no_browser else (lambda url: webbrowser.open(url))
+    # Set when the box's record already says the build asked for and the running
+    # server contradicts it: the build is put on again rather than trusted.
+    force = False
+
+    if ready is not None and ready.stamp is not None and host.is_remote and (
+            want is not None or clean):
+        # A box already serving, and a build asked for. If it is that build it
+        # is handed over as it is; if not, the ComfyUI on it is stopped so the
+        # build can be changed under it, and the launch path below takes over.
+        facts = read_facts(gc, host)
+        asked = want.over(facts.record) if want is not None else facts.record
+        serving_it = False
+        # A PR asked for again after new commits is the same choice as the
+        # record and not the same code: git on the box says which commit it is
+        # on, and that is held to the head GitHub reports now (code:F3).
+        stale = (asked.checkout_contradictions(facts.commit, facts.pr)
+                 if asked is not None and not clean else [])
+        if stale:
+            # Said here, once: the install step below sees the same checkout and
+            # is told, by `force`, that it has been said.
+            say.step(f"{host.name}'s checkout is {'; '.join(stale)}, so the build is "
+                     f"put on it again")
+            force = True
+        elif (not clean and facts.record is not None
+                and asked.same_choice(facts.record)):
+            try:
+                ready.stamp = confirm_build(gc, host, asked, ready.stamp, say.step,
+                                            facts=facts)
+                serving_it = True
+            except _reportable() as exc:
+                # The record says this build and the server says otherwise —
+                # somebody changed the checkout under it. Asked for explicitly,
+                # so it is put back rather than refused.
+                say.step(str(exc).split(". It has not been reported")[0])
+                force = True
+        if not serving_it:
+            say.step(f"stopping the ComfyUI running on {host.name} so its build can "
+                     f"be changed")
+            stop_running(gc, host, say.step)
+            ready = None
 
     if ready is not None and ready.stamp is not None:
         # The everyday route to a browser tab, and the one that never touches
@@ -3153,6 +3430,9 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         problem = mismatch(host, ready.stamp)
         if problem is not None:
             say.fail(problem, fix=wrong_machine_fix(host), code=1, blank_line=False)
+        # Nothing was asked for, so nothing is checked: a plain `go` onto a box
+        # that is already serving asks the box nothing at all, which is what
+        # makes it the everyday command. Ask for a build to have it held to one.
         say.result(f"\n{host.url}")
         say.result(ready.stamp.line())
         if browser:
@@ -3187,7 +3467,9 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         # this has been running, and a budget that began at the install would
         # bound the wrong thing.
         wait_for_ssh(gc, host, say.step, budget=budget)
-        ensure_installed(gc, host, say.step, budget=budget)
+        facts = ensure_installed(gc, host, say.step, budget=budget, want=want,
+                                 declared=declared, clean=clean, force=force)
+        expect = facts.record if facts is not None else None
         if follow:
             # The last line of this tool's own voice before ComfyUI's output
             # takes the terminal, which makes it the last chance to say what
@@ -3197,7 +3479,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                      f"(`comfy-qat logs {host.name}` watches without that)")
         say.result("")
         code = (serve if follow else start_detached)(
-            gc, host, say.step, open_browser=browser)
+            gc, host, say.step, open_browser=browser, expect=expect, facts=facts)
     except _reportable() + (GcloudError,) as exc:
         say.fail(exc, code=1)
     except KeyboardInterrupt:
@@ -3252,6 +3534,14 @@ def switch_cmd(
         "--no-browser", help="Do not open a browser when ComfyUI answers.")] = False,
     no_install: Annotated[bool, typer.Option(
         "--no-install", help="Fail rather than installing ComfyUI if it is absent.")] = False,
+    version: VersionOption = None,
+    pr: PrOption = None,
+    commit: CommitOption = None,
+    frontend_version: FrontendVersionOption = None,
+    frontend_pr: FrontendPrOption = None,
+    manager: ManagerOption = None,
+    torch: TorchOption = None,
+    clean: CleanOption = False,
 ) -> None:
     """Change machine: start the one you want, stop the one you were on.
 
@@ -3267,11 +3557,22 @@ def switch_cmd(
     Stopping a reserved box frees neither its card nor its bill, and the plan
     says so beside it. If reservations alone hold the project's GPU allowance,
     the switch is refused before anything is started or stopped.
+
+    The build options are `go`'s: the machine switched to is given that build,
+    and is reported ready only once it is running it.
     """
     from .gcloud import Gcloud, GcloudError
     from .lifecycle import GO_BUDGET, Budget, put_away, running_elsewhere
 
     hosts, host = _lookup(_selector(name), config)
+    # The same checks as `go`, and for the same reason: before Google is asked.
+    want = _asked_build(host, version=version, pr=pr, commit=commit,
+                        frontend_version=frontend_version, frontend_pr=frontend_pr,
+                        manager=manager, torch=torch)
+    declared = _declared_build(host)
+    if no_install and (want is not None or clean):
+        say.fail("--no-install refuses to install, and a build option asks for one",
+                 fix="drop one of them", code=2, blank_line=False)
     gc = Gcloud()
     # `switch` brings a box up and serves it exactly as `go` does, so it is
     # bounded exactly as `go` is. Started here, before the boxes it is switching
@@ -3288,6 +3589,9 @@ def switch_cmd(
 
     say.result("")
     say.result(f"  - go to {host.name} ({describe(host)}) on {host.url}")
+    if want is not None:
+        say.result(f"  - and give it {want.over(declared).describe()}"
+                   + (", from nothing (--clean)" if clean else ""))
     for other, why in others:
         # Stopping a reserved box is still worth doing — it is what `switch`
         # means — but it frees neither of the things a person switches to free.
@@ -3403,7 +3707,7 @@ def switch_cmd(
         _act(put_away, gc, other, say.step)
 
     _serve(gc, host, ready, no_browser=no_browser, no_install=no_install,
-           budget=budget)
+           budget=budget, want=want, declared=declared, clean=clean)
 
 
 def _probe_failed(gc, host: Host, exc) -> None:
@@ -3932,9 +4236,13 @@ def _refuse_to_move_a_reserved_box(host: Host, to: str | None) -> None:
     from .create import card_named
 
     card = card_named(host.gpu or "")
+    # And the build its host list names, which the box made again installs
+    # first — dropped, it came up on the tip of ComfyUI's default branch.
+    built = _declared_flags(host)
     again = (f"comfy-qat create --os {'windows' if is_windows(host) else 'linux'}"
              + (f" --gpu {card.key}" if card is not None else "")
              + f" --reserve --name {host.name}"
+             + (f" {built}" if built else "")
              + (f" --zone {shlex.quote(to)}" if to else ""))
     say.fail(
         f"{host.name} is reserved, and a reservation is held in one zone — "
@@ -4321,18 +4629,12 @@ def _undeclared_and_running(gc, hosts: list[Host], project: str | None = None
     # an old box on the old project and new work on the new one, a box running
     # on the new project in no entry was never read, and the run ended on
     # "Nothing is now." while it billed. Reservations were already read on both.
-    projects = list(dict.fromkeys([*(h.gce_project for h in hosts if h.gce_project),
-                                   *([project] if project else [])]))
-    if not projects:
-        # No declared cloud host to take it from — which is the case this
-        # matters most in. Ask gcloud what project is configured.
-        try:
-            current = gc.current_project()
-        except (GcloudError, AttributeError):
-            return None
-        if not current:
-            return None
-        projects = [current]
+    projects, unread = _projects_in_play(gc, hosts, project)
+    if unread or not projects:
+        # gcloud's project was needed and could not be named — or there was no
+        # project to ask at all. Either way this run did not read where `create`
+        # could have put a box, so it has no all-clear to give.
+        return None
     # Declared means this box on this project: the same name on another project
     # is somebody else's box. An entry with no `gce_project` is matched by name
     # wherever it is found, as before, rather than called a stranger.
@@ -4401,6 +4703,11 @@ def stamp_cmd(
     This is the record nothing else keeps. A recorded test does not carry it, and
     a hand-written bug report usually does not either — which is how "cannot
     reproduce" happens between two machines that were never the same.
+
+    The build is read off the machine, never off what was asked for: the
+    ComfyUI version and torch from the running server, the frontend from the
+    bundle it is serving, Manager from whether Manager answers, and — for a
+    cloud box — the commit and the PR from git in the checkout on the box.
     """
     host = _host(_selector(name), config)
 
@@ -4408,6 +4715,7 @@ def stamp_cmd(
         stamp = fetch(host.url, host=host.name)
     except ProbeError as exc:
         say.fail(exc, _probe_fix(host) or exc.fix, code=1, blank_line=False)
+
 
     # Refused, not warned. This line exists to be copied — it is pasted into a
     # bug report as the proof of which machine produced a result — and a warning
@@ -4422,6 +4730,18 @@ def stamp_cmd(
                  fix="check the port in your host list and which tunnel is open, "
                      "then stamp it again",
                  code=1, blank_line=False)
+
+    # The build, once the machine is known to be the one named — so a refusal
+    # above costs nothing more than the probe, and nothing below is asked of a
+    # machine that has just contradicted its declaration.
+    from .lifecycle import observe
+
+    gc = None
+    if host.is_remote:
+        from .gcloud import Gcloud
+
+        gc = Gcloud()
+    stamp = observe(gc, host, stamp)
 
     if as_json:
         say.result(json.dumps(stamp.as_dict(), indent=2))

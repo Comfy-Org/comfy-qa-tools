@@ -104,6 +104,20 @@ def test_a_refusal_the_code_swallows_still_fails_the_test(no_test_reaches_the_ne
     no_test_reaches_the_network.clear()
 
 
+def test_a_github_refusal_the_code_swallows_still_fails_the_test(no_test_asks_github):
+    """The same rule for the GitHub tripwire (audit parking item P1). It raised
+    and kept nothing, so a CLI test that forgot to fake GitHub and checked only
+    for a non-zero exit passed: `CliRunner` turned the refusal into exit 1."""
+    from comfy_qa import build
+
+    try:
+        build.github("repos/Comfy-Org/ComfyUI/pulls/17497")
+    except AssertionError:
+        pass
+    assert len(no_test_asks_github) == 1
+    no_test_asks_github.clear()
+
+
 def test_loopback_is_not_a_leak():
     """The end-to-end tests run a real fake ComfyUI on 127.0.0.1 and really
     connect to it. Refusing that would make the tripwire unusable, so the rule is

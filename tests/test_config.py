@@ -271,7 +271,7 @@ def test_the_list_of_known_fields_names_the_reservation():
     quote that list. It is derived from the registry, so this is the registry."""
     with pytest.raises(ConfigError) as refusal:
         parse({"hosts": {"box": dict(GCE, gce_reservaton="x")}})
-    assert ("Known fields: gce_instance, gce_project, gce_reservation, gce_zone, "
+    assert ("Known fields: build, gce_instance, gce_project, gce_reservation, gce_zone, "
             "gpu, kind, os, port.") in str(refusal.value)
     assert "did you mean 'gce_reservation'?" in str(refusal.value)
 

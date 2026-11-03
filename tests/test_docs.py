@@ -54,9 +54,9 @@ PACKAGE = ROOT / "comfy_qa"
 # invisible until it is named here. `HostFileError` subclasses `ConfigError` and
 # was missed on exactly that basis — which left every message in the module that
 # rewrites the host list during a move undocumented and unnoticed.
-ERROR_TYPES = ("BadParameter", "ConfigError", "GcloudError", "HostFileError",
-               "LifecycleError", "MoveError", "ProbeError", "SetupStopped",
-               "TunnelError")
+ERROR_TYPES = ("BadParameter", "BuildError", "ConfigError", "GcloudError",
+               "HostFileError", "LifecycleError", "MoveError", "ProbeError",
+               "SetupStopped", "TunnelError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and
@@ -364,6 +364,10 @@ EXCUSED = frozenset({
     # of clock", built in one place so five phases do not each word their own.
     # Its literal is collected at the constructor inside it.
     "out_of_time",
+    # `build.Unreachable` never reaches a person: it is how the two ways of
+    # asking GitHub say "could not ask at all", and `build._ask` turns it into
+    # the `BuildError` that is printed — whose literal is collected there.
+    "Unreachable",
 })
 
 
@@ -616,6 +620,12 @@ MESSAGE_FLOOR = {
     # `settle` rule in `_message_argument`.
     "ask.py": 1,
     "auth.py": 37,
+    # New in 1.4.0 with the build choice: every way a build can be refused before
+    # anything exists — two backends, two frontends, a tag or a PR or a commit
+    # that is not shaped like one, a torch pin that cannot be installed, a build
+    # line that will not read back, GitHub saying no and GitHub not answering.
+    # The module reads 20; floored at 18, on the rule under WORDING_FLOOR.
+    "build.py": 18,
     "commands.py": 6,
     "config.py": 37,
     # 51 until "every zone tried is out of capacity" was split into three. One
@@ -764,7 +774,14 @@ MESSAGE_FLOOR = {
 # an unreadable file, a stray top-level key and a project that is not an ID,
 # and setup failing to save one. The page reads 343. Raised to 335, half the
 # distance, on the rule above.
-ENTRY_FLOOR = 335
+# 335 until 1.4.0's build choice: every refusal of a build before anything
+# exists, the build that came up wrong, the host list's unreadable build line,
+# and the Windows driver that now installs itself. The page reads 361. Raised to
+# 352, half the distance, on the rule above.
+# 352 until the 1.4.0 audit fixes: a checkout that is not the build asked for
+# (a PR's older head) is put on again, and says so. The page reads 365. Raised to
+# 359, half the distance, on the rule above.
+ENTRY_FLOOR = 359
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -794,7 +811,9 @@ ENTRY_FLOOR = 335
 # reason given beside ENTRY_FLOOR.
 # 380 until 1.3.1, for the entries named beside ENTRY_FLOOR: 397 quoted
 # wordings now. Raised to 388, half the distance, on the rule above.
-WORDING_FLOOR = 388
+# 388 until 1.4.0, for the entries named beside ENTRY_FLOOR: 421 quoted
+# wordings now. Raised to 412, inside the slack of 12, on the rule above.
+WORDING_FLOOR = 412
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -2587,3 +2606,60 @@ def test_the_documented_tunnel_command_is_the_one_the_tool_builds():
         assert "start-iap-tunnel" not in text, (
             f"{path.name} still describes the tunnel the tool stopped using"
         )
+
+
+def _trailing_note(line: str) -> int | None:
+    """Where a `#` note starts on a shell line, outside quotes, or None."""
+    quote = None
+    for at, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and at and line[at - 1] in " \t":
+            return at
+    return None
+
+
+def _shell_lines(path: Path) -> list[str]:
+    """Every line inside a ```sh block, found by walking the fences line by
+    line: a regex from one fence to the next pairs them wrongly wherever a
+    block holds a fence of its own, and checks less without saying so."""
+    found, inside = [], False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("```"):
+            inside = line == "```sh" if not inside else False
+        elif inside:
+            found.append(line)
+    return found
+
+
+def test_no_shell_example_ends_in_a_note():
+    """A command in a docs example is the command and nothing else, as every
+    command the tool prints is (`test_host_costs`, O25). `comfy-qat list   # see
+    your machines` pasted into an interactive zsh without `interactivecomments`
+    — how zsh starts — hands `#`, `see`, `your` and `machines` to comfy-qat,
+    which refuses them, exit 2, nothing done. The note goes on its own line
+    above the command (audit parking item behaviour:P4, 3 Nov)."""
+    found = []
+    for path in [ROOT / "README.md", *sorted(DOCS.glob("*.md"))]:
+        for line in _shell_lines(path):
+            if not line.lstrip().startswith("#") and _trailing_note(line) is not None:
+                found.append(f"{path.name}: {line.strip()}")
+    assert not found, "\n".join(found)
+
+
+@pytest.mark.parametrize("line, note", [
+    ("comfy-qat list            # see your machines", True),
+    ("comfy-qat go windows # one space", True),
+    ("echo \"=== N9 delete it\";        qat delete $BOX   # type the name", True),
+    ("# a note on its own line", False),
+    ("comfy-qat go comfy-win --pr '#17497'", False),
+    ("echo 'a # inside quotes'", False),
+    ("grep -c '#' file", False),
+])
+def test_the_note_finder_tells_a_note_from_a_quoted_hash(line, note):
+    """The guard on the guard: it must see a note, and must not see a `#` that
+    is quoted or that a note line starts with."""
+    found = (not line.lstrip().startswith("#")) and _trailing_note(line) is not None
+    assert found is note
