@@ -52,7 +52,11 @@ have these, which no live run asked for: a GPU install through comfy-cli on Linu
 (`--nvidia` with `--cuda-version`; every live install was `--cpu`), a `--torch` pin,
 an install with `--commit` (only its refusal ran), `--no-manager`, and custom nodes
 and models surviving a build change (none had been added to the box `switch`
-changed).
+changed). Four fixes made after the live run, from the release's audit, have run
+only against the suite's fakes too: a PR asked for again after new commits being
+fetched again, a release held to its tag's commit, a backend chosen with no
+frontend getting the frontend it pins (and `--frontend-version pinned`), and the
+build kept by every `create` a refusal hands back.
 
 ### Added
 
