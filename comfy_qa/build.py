@@ -12,8 +12,10 @@ A build is five independent choices, and nothing here couples them:
     (`--pr 17497`) or a commit (`--commit 426f5ee`), or none, which keeps what
     the tool always did: the tip of ComfyUI's default branch;
   * **the frontend** — a frontend release (`--frontend-version v1.58.4`) or a
-    frontend pull request (`--frontend-pr 5678`), or none, which keeps the
-    frontend the backend pins in its own requirements;
+    frontend pull request (`--frontend-pr 5678`), or the frontend the backend
+    pins in its own requirements (`--frontend-version pinned`). Left off, a
+    command that chooses a backend gets the frontend THAT backend pins, and
+    one that chooses no backend keeps the frontend the box has (`Build.over`);
   * **ComfyUI-Manager** — ON unless asked otherwise (Ali, 3 Nov: "manager should
     always be on btw, by default"), so `--no-manager` is the only spelling;
   * **PyTorch** — unpinned unless `--torch` names a version, optionally with the
@@ -76,6 +78,11 @@ RECOMMENDED_NVIDIA_TORCH = "2.12.1+cu130"
 # here rather than by comfy-cli on the box, after the box is billing.
 CUDA_TAGS = {"cu130": "13.0", "cu129": "12.9", "cu128": "12.8", "cu126": "12.6",
              "cu124": "12.4", "cu121": "12.1", "cu118": "11.8"}
+
+# `--frontend-version pinned`: the frontend the ComfyUI build pins, asked for by
+# name. The one spelling that puts it back on a box whose record names a frontend
+# release, without changing the backend.
+PINNED_FRONTEND = "pinned"
 
 # A release tag as both repositories write them, `v` optional on the way in.
 _TAG = re.compile(r"^v?(\d+\.\d+\.\d+(?:[-.][0-9A-Za-z.]+)?)$")
@@ -206,6 +213,14 @@ class Build:
         `base` is what the box was last asked to run, or the host list's build
         for a box that has none yet. A request that named nothing at all is
         `base` itself; with no `base` the defaults fill in.
+
+        The frontend is the one exception to "the rest is kept": a request that
+        chooses a BACKEND and names no frontend gets the frontend that backend
+        pins (criteria S2-2, "Giving none keeps the frontend the backend pins";
+        audit finding behaviour:F8 and the lead's rule on it). Kept instead, a
+        frontend release chosen for v0.43.0 rode along onto a PR that pins
+        another — live, `switch --pr 17497` served 1.58.4 where the PR pins
+        1.57.6 — and nothing could put the pinned one back.
         """
         result = base or DEFAULT
         if "backend" in self.named:
@@ -216,6 +231,9 @@ class Build:
             result = replace(result, frontend=self.frontend,
                              frontend_pr=self.frontend_pr,
                              frontend_pr_head=self.frontend_pr_head)
+        elif "backend" in self.named:
+            result = replace(result, frontend=None, frontend_pr=None,
+                             frontend_pr_head=None)
         if "manager" in self.named:
             result = replace(result, manager=self.manager)
         if "torch" in self.named:
@@ -258,6 +276,10 @@ class Build:
             words += ["--frontend-version", self.frontend]
         elif self.frontend_pr:
             words += ["--frontend-pr", str(self.frontend_pr)]
+        elif "frontend" in self.named:
+            # `--frontend-version pinned`, typed: handed on as typed, or the
+            # command it is handed to names no frontend and keeps the release.
+            words += ["--frontend-version", PINNED_FRONTEND]
         if not self.manager:
             words.append("--no-manager")
         elif explicit_manager:
@@ -434,9 +456,11 @@ DEFAULT = Build()
 def _tag(value: str, flag: str) -> str:
     match = _TAG.match((value or "").strip())
     if not match:
+        pinned = (f", or {PINNED_FRONTEND} for the frontend the ComfyUI build pins"
+                  if flag == "--frontend-version" else "")
         raise BuildError(
             f"{flag} {value!r} is not a release tag. Releases are numbered, as in "
-            f"v0.43.0.",
+            f"v0.43.0{pinned}.",
             fix=_releases_fix(flag))
     return f"v{match.group(1)}"
 
@@ -509,7 +533,8 @@ def choose(*, version: str | None = None, pr=None, commit: str | None = None,
                 f"characters or more, as in --commit 426f5ee.",
                 fix=f"the history: https://github.com/{BACKEND_REPO}/commits/master")
         chosen = replace(chosen, commit=text.lower())
-    if frontend_version not in (None, ""):
+    if frontend_version not in (None, "") and (
+            str(frontend_version).strip().lower() != PINNED_FRONTEND):
         chosen = replace(chosen, frontend=_tag(frontend_version, "--frontend-version"))
     if frontend_pr not in (None, ""):
         chosen = replace(chosen, frontend_pr=_number(frontend_pr, "--frontend-pr"))

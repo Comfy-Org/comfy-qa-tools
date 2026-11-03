@@ -1493,8 +1493,9 @@ The same for the frontend: a release, or a PR built on the box, not both.
 
 **`--version 'v0.43' is not a release tag. Releases are numbered, as in v0.43.0.`**
 A release is a three-part version, `v` optional: `v0.43.0` or `0.43.0`. The same
-sentence comes with `--frontend-version` for a frontend release. The fix links the
-releases page.
+sentence comes with `--frontend-version` for a frontend release, where it also names
+the one other word that option takes — `pinned`, for the frontend the ComfyUI build
+pins. The fix links the releases page.
 
 **`--pr 'abc' is not a pull request number. Give the number from the PR's address, as
 in --pr 17497.`**

@@ -335,6 +335,127 @@ def test_a_frontend_pr_is_built_on_the_box_and_served_from_where_it_landed(world
     assert launches and all(f"--front-end-root {landed}" in r for r in launches)
 
 
+# --- S2-2: a backend chosen with no frontend gets the frontend it pins ----------
+#
+# Audit finding behaviour:F8, and the lead's rule on it. criteria S2-2 says
+# "Giving none keeps the frontend the backend pins", and `Build.over` kept a
+# recorded frontend release through a backend change: live, `switch --pr
+# 17497` with no frontend option served 1.58.4, where the PR pins 1.57.6, and
+# nothing could put the pinned frontend back. The rule now: a command that
+# chooses a backend and names no frontend gets the frontend that backend pins;
+# a command that names no build option at all keeps the whole recorded build;
+# and `--frontend-version pinned` returns a box to the pinned frontend
+# without changing the backend.
+
+PINNED_RECORD = "comfyui=v0.43.0 frontend=v1.58.4 manager=on torch=default"
+
+
+def launches(world: World) -> list[str]:
+    return [r for r in world.gc.remote if "main.py --listen" in r]
+
+
+@pytest.mark.parametrize("command", [("switch", "--keep-others"), ("go",)],
+                         ids=["switch", "go"])
+def test_a_new_backend_with_no_frontend_named_serves_the_frontend_it_pins(
+        world, command):
+    """The box's record names frontend v1.58.4; it is switched to a PR, and no
+    frontend option is given. The PR's own pinned frontend is what it gets."""
+    world.cloud(statuses=["RUNNING"], installed=True, record=PINNED_RECORD)
+    world.serves("0.43.0")
+
+    result = run(world, command[0], BOX, *command[1:], "--pr", "17497")
+
+    assert result.exit_code == 0, result.output
+    assert sent(world, CHANGING), "the backend was not changed"
+    assert launches(world) and not any("--front-end-version" in r
+                                       for r in launches(world)), \
+        "the recorded frontend release was kept through a backend change"
+    assert "comfyui=pr:17497 frontend=default" in world.gc.record
+    assert "the frontend that ComfyUI pins" in result.output
+
+
+@pytest.mark.parametrize("flag", [("--version", "v0.42.1"), ("--commit", TAG_SHA[:10])],
+                         ids=["version", "commit"])
+def test_every_backend_option_resets_an_unnamed_frontend(world, flag):
+    world.hub[f"{REPO}/commits/{TAG_SHA[:10]}"] = {"sha": TAG_SHA}
+    world.cloud(statuses=["RUNNING"], installed=True, record=PINNED_RECORD)
+    world.serves("0.42.1" if flag[0] == "--version" else "0.43.0")
+
+    result = run(world, "go", BOX, *flag)
+
+    assert result.exit_code == 0, result.output
+    assert not any("--front-end-version" in r for r in launches(world))
+    assert "frontend=default" in world.gc.record
+
+
+def test_a_frontend_named_with_the_backend_is_the_one_served(world):
+    world.cloud(statuses=["RUNNING"], installed=True, record=PINNED_RECORD)
+    world.serves("0.43.0", frontend="1.58.4")
+
+    result = run(world, "go", BOX, "--pr", "17497", "--frontend-version", "v1.58.4")
+
+    assert result.exit_code == 0, result.output
+    assert launches(world) and all(
+        "--front-end-version Comfy-Org/ComfyUI_frontend@v1.58.4" in r
+        for r in launches(world))
+
+
+@pytest.mark.parametrize("args", [(), ("--no-manager",), ("--torch", "2.12.1+cu130")],
+                         ids=["bare-go", "manager-only", "torch-only"])
+def test_a_command_that_chooses_no_backend_keeps_the_recorded_frontend(world, args):
+    """A bare `go` asks for no change and keeps the whole recorded build; a
+    command that changes Manager or torch only leaves the frontend alone."""
+    world.cloud(statuses=["RUNNING"], installed=True, record=PINNED_RECORD)
+    world.serves("0.43.0", frontend="1.58.4", manager="--no-manager" not in args)
+
+    result = run(world, "go", BOX, *args)
+
+    assert result.exit_code == 0, result.output
+    assert launches(world) and all(
+        "--front-end-version Comfy-Org/ComfyUI_frontend@v1.58.4" in r
+        for r in launches(world))
+    assert "frontend=v1.58.4" in world.gc.record
+
+
+def test_frontend_version_pinned_returns_the_pinned_frontend_and_keeps_the_backend(world):
+    world.cloud(statuses=["RUNNING"], installed=True, record=PINNED_RECORD)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--frontend-version", "pinned")
+
+    assert result.exit_code == 0, result.output
+    assert not sent(world, CHANGING), "the backend was reinstalled for a frontend"
+    assert not any("--front-end-version" in r for r in launches(world))
+    assert "comfyui=v0.43.0 frontend=default" in world.gc.record
+    assert not [path for path in world.asked if "pinned" in path], "GitHub asked"
+
+
+def test_go_in_a_new_window_hands_on_frontend_version_pinned(world, monkeypatch):
+    """Typed, it is handed on: dropped, the new window's `go` would name no
+    frontend and keep the release the box has."""
+    handed: list[list[str]] = []
+    monkeypatch.setattr("comfy_qa.lifecycle.in_a_new_window",
+                        lambda rest, say: handed.append(list(rest)))
+    world.cloud(statuses=["RUNNING"], installed=True)
+
+    result = run(world, "go", BOX, "--frontend-version", "pinned", "--new-window")
+
+    assert result.exit_code == 0, result.output
+    assert handed and "--frontend-version" in handed[0], handed
+    assert handed[0][handed[0].index("--frontend-version") + 1] == "pinned"
+
+
+@pytest.mark.parametrize("command", ["go", "switch", "create"])
+def test_help_says_what_leaving_the_frontend_off_does(command):
+    result = CliRunner().invoke(app, [command, "--help"], env={"COLUMNS": "200"})
+    # The panel's own borders out first: the help wraps inside a box, and a
+    # sentence is the same sentence wherever it was broken.
+    said = " ".join(re.sub(r"[│─╭╮╰╯]", " ", result.output).split())
+    assert "pinned" in said
+    assert "--version, --pr or --commit" in said
+    assert "keeps the frontend" in said
+
+
 # --- S2-3: Manager on by default --------------------------------------------------
 
 

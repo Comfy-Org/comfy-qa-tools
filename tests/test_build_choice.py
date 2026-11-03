@@ -124,6 +124,41 @@ def test_a_frontend_pr_is_served_from_the_directory_its_build_landed_in():
     assert "--front-end-version" not in chosen.launch_args("/opt/x/dist")
 
 
+RECORDED = Build(version="v0.43.0", frontend="v1.58.4", manager=False)
+
+
+@pytest.mark.parametrize("asked, frontend", [
+    ({"pr": "17497"}, None),
+    ({"version": "v0.42.1"}, None),
+    ({"commit": "426f5ee"}, None),
+    ({"pr": "17497", "frontend_version": "v1.57.7"}, "v1.57.7"),
+    ({"no_manager": False}, "v1.58.4"),
+    ({"torch": "2.12.1"}, "v1.58.4"),
+    ({"frontend_version": "pinned"}, None),
+], ids=["pr", "version", "commit", "pr-and-frontend", "manager", "torch", "pinned"])
+def test_a_backend_chosen_with_no_frontend_gets_the_frontend_it_pins(asked, frontend):
+    """S2-2, behaviour:F8: laid over a record naming frontend v1.58.4, a
+    backend with no frontend option resets it; anything else keeps it, and
+    `pinned` resets it without touching the backend."""
+    built = choose(**asked).over(RECORDED)
+    assert built.frontend == frontend
+    if "frontend_version" in asked and not built.names_a_backend:
+        assert built.version == "v0.43.0", "the backend was changed"
+
+
+def test_pinned_is_a_frontend_choice_and_asks_github_nothing():
+    chosen = choose(frontend_version="pinned")
+    assert chosen.frontend is None and chosen.frontend_pr is None
+    assert "frontend" in chosen.named
+    hub = Hub()
+    build_mod.check(chosen, hub)
+    assert hub.asked == []
+    assert chosen.flags() == "--frontend-version pinned", "handed on as typed"
+    with pytest.raises(BuildError) as caught:
+        choose(frontend_version="pinned", frontend_pr="5678")
+    assert "only one of them can be right" in str(caught.value)
+
+
 @pytest.mark.parametrize("host", EVERY_BOX, ids=IDS)
 def test_a_frontend_pr_is_built_on_the_box_by_comfy_clis_own_builder(host):
     """S2-2, on both operating systems: the install builds the PR with comfy-cli's

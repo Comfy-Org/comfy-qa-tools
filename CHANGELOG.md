@@ -65,7 +65,13 @@ changed).
   of the backend. A release is ComfyUI's own `--front-end-version`, fetched at
   startup; a PR is built on the box by comfy-cli's own builder (the one `comfy
   launch --frontend-pr` uses; Node.js and pnpm are installed for it) and served
-  with `--front-end-root`. None keeps the frontend the ComfyUI build pins.
+  with `--front-end-root`. `--frontend-version pinned` is the frontend the
+  ComfyUI build pins, asked for by name: it puts that back on a box whose record
+  names a release, and leaves the backend alone. Left off, a command that chooses
+  the backend (`--version`, `--pr` or `--commit`) gets the frontend that backend
+  pins — `switch --pr 17497` on a box serving frontend 1.58.4 serves the PR's
+  own — and a command that chooses no backend keeps the frontend the box has; a
+  plain `go`, which chooses nothing, keeps the whole build.
 - **ComfyUI-Manager is on by default** (Ali, 3 Nov: "manager should always be on
   btw, by default"). A plain install, a plain `go` included, has it, and ComfyUI
   is started with `--enable-manager`. `--no-manager` leaves it out; `--help`

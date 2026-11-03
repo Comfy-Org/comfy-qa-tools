@@ -230,7 +230,7 @@ Each part is set on its own:
 | part | options | left off |
 |---|---|---|
 | ComfyUI | `--version v0.43.0` (a release), `--pr 17497` (an open pull request) or `--commit 426f5ee` — one of the three | the tip of ComfyUI's default branch, as before 1.4.0 |
-| the frontend | `--frontend-version v1.58.4` (a release) or `--frontend-pr 5678` | the frontend that ComfyUI build pins |
+| the frontend | `--frontend-version v1.58.4` (a release), `--frontend-pr 5678`, or `--frontend-version pinned` (the frontend the ComfyUI build pins, which leaves the backend alone) | with `--version`, `--pr` or `--commit`: the frontend that backend pins. With none of those: the frontend the box has |
 | ComfyUI-Manager | `--no-manager` leaves it out; `--manager` puts it back | **on** — a plain install, a plain `go` included, has Manager |
 | PyTorch | `--torch 2.12.1+cu130` | comfy-cli picks torch for the box's driver, as before |
 
@@ -253,7 +253,11 @@ qatest-s2-linux · local-git · ComfyUI 0.43.0 (PR 17497, 9350a08d80) · fronten
 ```
 
 ComfyUI v0.43.0 pins frontend 1.57.4 and installs that package; the stamp says
-1.58.4 because that is what the box is serving.
+1.58.4 because that is what the box is serving. The second stamp was printed
+before the frontend rule below was settled, and says 1.58.4 because the switch
+kept the release the box had. Run on 1.4.0 as released, `switch --pr 17497` with
+no frontend option serves the frontend PR 17497 pins; to keep 1.58.4 through the
+switch, name it there too: `--frontend-version v1.58.4`.
 
 **Every command says which build it chose, the default included**, before
 anything is installed: `build: ComfyUI v0.43.0 · frontend v1.58.4 · Manager on ·
@@ -285,7 +289,11 @@ option, on a box that already has ComfyUI, changes it in place — `comfy instal
 --restore` on the existing checkout — and nothing under `custom_nodes/` or
 `models/` is touched. A box that is already serving has its ComfyUI stopped
 first. Name only what changes: `go comfy-linux --frontend-version v1.58.4` keeps
-the ComfyUI it has. Asking again for the PR a box is on — `go comfy-linux --pr
+the ComfyUI it has. The frontend is the one part that follows the backend: a
+command that chooses a backend — `--version`, `--pr` or `--commit` — and names no
+frontend gets the frontend that backend pins, and `--frontend-version pinned` puts
+the pinned frontend back without changing the backend. A command that chooses no
+backend — `--no-manager`, `--torch` — keeps the frontend the box has. Asking again for the PR a box is on — `go comfy-linux --pr
 17497` after its author has pushed — fetches the new commits: the checkout is held
 to the head GitHub reports now, so a box on the PR's older head is changed, not
 handed over. `--clean` deletes ComfyUI on the box, nodes and models with

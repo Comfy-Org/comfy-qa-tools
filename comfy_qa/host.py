@@ -115,8 +115,12 @@ PrOption = Annotated[Optional[str], typer.Option(
 CommitOption = Annotated[Optional[str], typer.Option(
     "--commit", help="A ComfyUI commit to install, by hash (seven characters or more).")]
 FrontendVersionOption = Annotated[Optional[str], typer.Option(
-    "--frontend-version", help="The frontend release to serve, e.g. v1.58.4. Left "
-                               "off, the frontend the ComfyUI build pins.")]
+    "--frontend-version", help="The frontend release to serve, e.g. v1.58.4, or "
+                               "pinned for the one the ComfyUI build pins. Left "
+                               "off, a command that chooses the backend "
+                               "(--version, --pr or --commit) serves the frontend "
+                               "that backend pins, and any other keeps the "
+                               "frontend the box has.")]
 FrontendPrOption = Annotated[Optional[str], typer.Option(
     "--frontend-pr", help="A frontend pull request to build on the box and serve, "
                           "by number.")]
