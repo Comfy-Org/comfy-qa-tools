@@ -95,7 +95,8 @@ build kept by every `create` a refusal hands back.
 - **A new build on a box that has ComfyUI keeps its custom nodes and models**:
   `go` or `switch` with a build option changes it in place (`comfy install
   --restore`), stopping a ComfyUI already serving first. Only what is named
-  changes; a frontend release alone is a launch option, not an install.
+  changes, except that a new backend brings the frontend it pins (above); a
+  frontend release alone is a launch option, not an install.
   Asking again for a PR that has had commits since the box checked it out
   fetches them: the checkout is held to the head GitHub reports now, not to the
   PR's number. That is a ComfyUI PR; comfy-cli keeps a frontend PR's build for
