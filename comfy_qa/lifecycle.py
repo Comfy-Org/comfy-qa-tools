@@ -1633,10 +1633,28 @@ def _stop_ours(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
     say(f"stopped the ComfyUI this run started on {host.name} ({name}, pid {pid})")
 
 
-# Public, for `host._serve`: a box already serving that is to be given another
-# build has its ComfyUI stopped first — only ever the process holding ComfyUI's
-# port, which is what this stops.
-stop_running = _stop_ours
+def stop_running(gc: Gcloud, host: Host, say: Callable[[str], None]) -> None:
+    """Stop the ComfyUI holding the box's port, so its build can be changed.
+
+    For `host._serve`: a box already serving that was asked for another build.
+    The same stop as `_stop_ours` — only ever the process on ComfyUI's port —
+    with its own sentence, because this ComfyUI was started by an earlier run,
+    and "the ComfyUI this run started" would say otherwise.
+    """
+    from .provision import stop_command
+
+    holder = _port_holder(gc, host)
+    if holder is None:
+        return
+    pid, name = holder
+    try:
+        gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+               stop_command(host, pid), stream=False)
+    except (GcloudError, OSError):
+        say(f"could not stop the ComfyUI on {host.name} (pid {pid}) — it still "
+            f"holds the port")
+        return
+    say(f"stopped the ComfyUI that was running on {host.name} ({name}, pid {pid})")
 
 
 def _tunnel_fix(host: Host, tunnel_dir) -> str:
