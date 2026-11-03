@@ -2272,6 +2272,45 @@ def test_no_command_the_package_prints_carries_anything_but_the_command():
                                 for where, line, why in found)
 
 
+def test_the_source_reading_sees_a_note_a_function_keeps_in_a_variable(tmp_path):
+    """`setup` kept its note in `no_good` and put it after the command with
+    `{no_good}`, so the dash was in neither literal and the walk of every string
+    passed it. `printed.composed` reads a function's own names as the text they
+    hold — and only a name bound once, because one bound in two branches would
+    be read with a value the other branch never pairs it with."""
+    from commandlines import offered, shape
+    from printed import composed
+
+    (tmp_path / "planted.py").write_text(
+        "def remedy(card, region, unsold):\n"
+        "    no_good = f' — note that {region} does not offer {card}' if unsold else ''\n"
+        "    return 'skipped. ' + f'To ask later: comfy-qat quota request --gpu {card}{no_good}'\n"
+        "\n"
+        "def twice(card, flag):\n"
+        "    tail = ''\n"
+        "    if flag:\n"
+        "        tail = ' — never after this command'\n"
+        "    return f'To ask later: comfy-qat quota request --gpu {card}{tail}'\n",
+        encoding="utf-8")
+
+    wrong = {(where, shape(command)) for where, text in composed(tmp_path)
+             for line in text.splitlines() for command in offered(line)
+             if shape(command)}
+    assert wrong == {("planted.py:3", "a note after a dash")}, wrong
+
+
+def test_the_composed_reading_reaches_the_package():
+    """Non-vacuity on the real source: the walk finds a few hundred built
+    strings, and among them setup's skipped-request line with its prefix read
+    out of the name that holds it."""
+    from printed import composed
+
+    texts = [text for _, text in composed()]
+    assert len(texts) >= 300, f"only {len(texts)} — the walk is broken"
+    assert ("quota requests skipped (--no-quota-request). {} does not offer {}, "
+            "so ask somewhere else. To ask later:") in texts
+
+
 # The shapes a printed command line has carried, each of which the readings
 # above must refuse — the four the first guard could not see among them.
 CARRIES_MORE = [
@@ -2287,6 +2326,8 @@ CARRIES_MORE = [
     "to fix: --region us-central1   # the region that zone is in",
     "wait and run it again, or drop --zone: comfy-qat create --zone <zone>, or wait",
     "run it yourself: gcloud compute zones list --filter=name={}; then drop --zone",
+    "to fix: comfy-qat quota list - the cards this project is allowed",  # a hyphen
+    "To ask later: comfy-qat quota request --gpu {} — note that {} does not offer {}",
 ]
 
 # And the lines they have to leave alone.

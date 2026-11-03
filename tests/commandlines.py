@@ -132,7 +132,11 @@ def shape(command: str) -> str | None:
     bare = _unquoted(command.rstrip())
     if re.search(r"\s#", bare):
         return "a # note"
-    if re.search(r"\s[—–]\s|\s[—–]$", bare):
+    # A plain hyphen between spaces as well as the two dashes. `-` alone is not
+    # an argument any command this tool prints takes, and `comfy-qat quota list
+    # - the cards this project is allowed` is the same note as the one after a
+    # dash: pasted, every word of it reaches the command.
+    if re.search(r"\s[—–-]\s|\s[—–-]$", bare):
         return "a note after a dash"
     if re.search(r"\S[ \t]{2,}\S", bare):
         return "words set off by a run of spaces — a note aligned into a column"
@@ -377,11 +381,16 @@ def flags(words: list[str]) -> dict[str, object]:
 def in_source() -> list[tuple[str, str, str]]:
     """`(where, line, what is wrong)` for every line of every string in the
     package that offers a command carrying more than the command — the reading
-    that reaches code no test drives. Shape only: a value is `{}` here."""
-    from printed import strings
+    that reaches code no test drives. Shape only: a value is `{}` here.
+
+    And every string a function builds out of parts (`printed.composed`): a note
+    kept in a local variable and put after the command is in no one literal,
+    which is how `setup`'s `— note that <region> does not offer …` stood behind
+    `comfy-qat quota request` unread."""
+    from printed import composed, strings
 
     found = []
-    for where, text in strings():
+    for where, text in strings() + composed():
         for line in text.splitlines():
             for command in offered(line):
                 wrong = shape(command)
