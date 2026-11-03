@@ -352,7 +352,10 @@ def test_a_refusal_only_ever_suggests_a_gpu_name_the_tool_accepts(cli):
     result = cli("--os", "linux", "--gpu", "h100", "--dry-run",
                  gc=FakeGcloud(quotas=[ceiling(8)]))
     assert result.exit_code == 2
-    assert "--gpu h100," in result.output
+    # The command alone on its line: `--gpu h100` and nothing after it. It was
+    # `--gpu h100, then wait for Google`, read here up to the comma.
+    assert "comfy-qat quota request --gpu h100" in [
+        line.strip().removeprefix("to fix:").strip() for line in result.output.splitlines()]
     assert "--gpu h100-80gb" not in result.output
 
 
@@ -541,6 +544,46 @@ def test_the_number_of_attempts_is_capped_however_many_zones_google_suggests(cli
     assert result.exit_code == 1
     assert len(result.gc.created) == zones_module.MAX_ATTEMPTS
     assert "stopping after 6 zones" in result.stderr
+
+
+def test_the_capped_stockout_offers_the_same_box_to_put_somewhere_else(cli):
+    """The capped refusal hands back two templates, somewhere this did not
+    reach. For a box that was not reserved they were `comfy-qat create --region
+    <region>` and `comfy-qat create --zone <zone>` — no `--os`, `--gpu`, `--name`
+    or `--disk` — so, filled in and pasted with no terminal, each stopped at
+    "--os is required" and exited 2; and at a terminal it asked again for what
+    had been given, and made a box under another name with the default disk.
+
+    Each is compared with the arguments the create was given, and pasted back
+    with its placeholder filled in: the plan is the box that was asked for."""
+    from commandlines import flags, offered_argv
+
+    spares = [f"{region}-{letter}" for region in REGIONS for letter in "cdefgh"]
+    chain = {zone: STOCKOUT.format(zone=zone) for zone in ZONES}
+    chain[ZONES[0]] = SUGGESTS.format(zone=ZONES[0], other=spares[0])
+    for current, following in zip(spares, spares[1:]):
+        chain[current] = SUGGESTS.format(zone=current, other=following)
+    chain[spares[-1]] = STOCKOUT.format(zone=spares[-1])
+    asked = ["--os", "linux", "--gpu", "l4", "--name", "qatest-plain", "--disk", "400"]
+    result = cli(*asked, "--yes", gc=FakeGcloud(refuse=chain))
+    assert result.exit_code == 1
+    assert "stopping after 6 zones" in result.stderr
+
+    filled = {"<region>": "us-central1", "<zone>": "us-central1-b"}
+    templates = [words for words in offered_argv(result.output, "comfy-qat", "create")
+                 if set(filled) & set(words)]
+    assert len(templates) == 2, result.output
+    for words in templates:
+        offered = flags(words[2:])
+        where = {"--region", "--zone"} & set(offered)
+        assert len(where) == 1, words
+        assert {k: v for k, v in offered.items() if k not in where} == flags(asked), words
+
+        pasted = [filled.get(word, word) for word in words]
+        again = cli(*pasted[2:], "--dry-run")
+        assert again.exit_code == 0, f"`{' '.join(pasted)}`:\n{again.output}"
+        plan = " ".join(again.output.split())
+        assert "qatest-plain" in plan and "400 GB pd-balanced boot disk" in plan, plan
 
 
 # The near set is `zones.NEAREST_REGIONS` wide and this module measures five
@@ -1065,9 +1108,13 @@ def _invocations(text: str) -> list[list[str]]:
     """Every `comfy-qat ...` command in the output, split the way a shell would.
 
     A command ends where the prose around it resumes, and in this tool's fix
-    lines that is a `;`, a `,` or the end of the line — `comfy-qat quota request
-    --gpu v100 --region us-central1, then wait for Google` is one command and
-    four words of advice.
+    lines that is the end of the line — `comfy-qat quota request --gpu v100
+    --region us-central1, then wait for Google` was one command and four words
+    of advice, and pasted, the four words were arguments `quota request`
+    refused, so the advice has a line of its own now (O25e). A `;` or `,` still
+    ends one here, so a line that slipped back into that shape is still read as
+    the command a person would have meant, and `conftest`'s printed-command
+    check is what refuses the shape.
     """
     import shlex
 

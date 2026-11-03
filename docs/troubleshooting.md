@@ -263,7 +263,7 @@ destroyed because the network was down. Fix the access — usually
 `gcloud auth login`, or a project you no longer have rights on — and run it
 again. The other projects were still checked.
 
-**`on the project, and not in the zone the entry gives — the entry is wrong, the box is not gone, so nothing here was removed. Find where each one really is with gcloud compute instances list, then correct gce_zone by hand`**
+**`on the project, and not in the zone the entry gives — the entry is wrong, the box is not gone, so nothing here was removed. Find where each one really is, then correct gce_zone by hand`**
 The project has a machine of that name, in a zone your entry does not name. That
 is a wrong entry, not a missing box, and the two are worlds apart: the machine
 exists, is very likely running and billing, and this entry is the only thing in
@@ -272,10 +272,11 @@ your host list that names it — so removing it would leave a GPU running that
 
 It happens when the zone was typed by hand, when the box was recreated somewhere
 else from the console, or when a `move` did not finish. The repair is one field:
-find the zone the box is really in, then edit `gce_zone` in `hosts.toml`.
+find the zone the box is really in — the listing printed under the entries
+says — then edit `gce_zone` in `hosts.toml`. Narrowed to one box:
 
 ```sh
-gcloud compute instances list --filter="name=comfy-win"
+gcloud compute instances list --project=<the entry's gce_project> --filter="name=comfy-win"
 ```
 
 Ghosts are still pruned in the same run; these are listed separately because they
@@ -831,8 +832,8 @@ card, made in the console.
 
 **`GPUS_ALL_REGIONS is 1 and comfy-win is already running on it, so a new GPU box cannot start until that one stops. Nothing was created.`**
 Not a quota you need to raise — a box you need to stop. The fix hands over
-`gcloud compute instances stop <name> --zone=<zone>` rather than `comfy-qat
-down`, because the name is a **GCE instance** name: the box holding the only
+`gcloud compute instances stop <name> --zone=<zone> --project=<project>` rather
+than `comfy-qat down`, because the name is a **GCE instance** name: the box holding the only
 slot is usually one somebody started in the console, and `comfy-qat down`
 resolves host-list names and never `gce_instance`, so it would refuse the
 command it had just printed. Stopping it frees the allowance and the create then
@@ -3536,11 +3537,12 @@ there is nothing to look in. `comfy-qat setup --project <id>` writes the line;
 putting `project = "<id>"` at the top of the host list by hand does the same.
 This tool never sets gcloud's own project.
 
-**`project my-project — gcloud's current project, because your host list names none. To keep comfy-qat on one project whatever gcloud is set to: comfy-qat setup --project <id>`**
+**`project my-project — gcloud's current project, because your host list names none.`**
 Not a failure. Your host list has no `project` line, so this command used the
 project gcloud is pointed at, as comfy-qat always did — and says so, because that
 setting belongs to every gcloud command on the machine and may have moved for some
-other reason. To keep comfy-qat on one project: `comfy-qat setup --project <id>`.
+other reason. Under it, on a line of its own, is the command that keeps comfy-qat
+on one project whatever gcloud is set to: `comfy-qat setup --project <id>`.
 
 **`could not read your host list (...), so the project it names is not known`**
 The host list is not valid TOML, or its `project` line is not a project ID, so
@@ -3554,7 +3556,7 @@ ignored: a misspelt `project` read as no line at all would send every command to
 gcloud's project instead. Spell it `project`, or move the key into the host it
 belongs to.
 
-**`project = 'My Project' is not a Google project ID — that is lowercase letters, digits and hyphens, starting with a letter. It is the ID, not the name: gcloud projects list shows both.`**
+**``project = 'My Project' is not a Google project ID — that is lowercase letters, digits and hyphens, starting with a letter. It is the ID, not the name — `gcloud projects list` shows both.``**
 Usually the project's display name, typed where its ID goes. `gcloud projects
 list` shows both; the ID is the one in the first column.
 

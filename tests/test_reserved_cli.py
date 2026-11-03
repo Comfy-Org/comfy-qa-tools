@@ -53,6 +53,7 @@ from test_create_cli import (  # noqa: F401  (the fixture is used by name)
     reservation_row,
 )
 from test_host_costs import _mutating_gcloud_methods
+from fakes import names_its_project
 
 RSV = "comfy-linux-rsv"
 
@@ -151,6 +152,7 @@ class Project(FakeGcloud):
         return dict(self._box(name) or {})
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         joined = " ".join(str(part) for part in args)
         if joined.startswith("compute disks describe"):
             self.calls.append("disks describe")
@@ -208,8 +210,13 @@ def offered(output: str) -> list[str]:
     # the label is taken off: `to fix: comfy-qat create …` is an offer too, and
     # a reader that only saw indented lines never saw that one.
     lines = [line.strip().removeprefix("to fix:").strip() for line in output.splitlines()]
+    # Not the one every command prints before it starts, on a host list with no
+    # `project` line, as these are (`host.project_for`): it is about the host
+    # list, not an answer to what was refused, and it is a line of its own now
+    # rather than the end of a sentence.
     return [line.split("  #")[0].strip() for line in lines
-            if line.startswith("comfy-qat ")]
+            if line.startswith("comfy-qat ")
+            and line != "comfy-qat setup --project <id>"]
 
 
 def test_the_set_of_mutating_calls_is_derived_and_knows_about_reservations():
@@ -1390,6 +1397,85 @@ def test_the_same_box_without_zone_is_the_box_that_was_asked_for(run, asked):
     disk = asked[asked.index("--disk") + 1] if "--disk" in asked else "200"
     plan = flat(again.output)
     assert f"{name}" in plan and f"{disk} GB pd-balanced boot disk" in plan
+
+
+# --- every "the same box, somewhere else" keeps the box (O23b, the class) -----
+#
+# `_same_box` fixed the two stock-out remedies O23b named. Five other places
+# hand back "the same create, somewhere else", and each was still rebuilt from
+# the flags its author thought of: a box asked for with `--name second --disk
+# 400` was offered back as `comfy-qat create --os linux --gpu l4 --region
+# europe-west4` — another name, and the default 200 GB — and pasted under
+# `--yes` that is the box that gets made.
+
+
+PLAIN = ("--name", "qatest-plain", "--disk", "400")
+HELD = ("--reserve", "--name", "comfy-linux", "--disk", "400")
+
+
+def _room_elsewhere():
+    return a_project_holding_one_reserved_box(quotas=[grant(1), ceiling(4)])
+
+
+def _left_in_b():
+    return Project(reservations=[ours(zone="us-central1-b")])
+
+
+ELSEWHERE = {
+    # (what was asked besides --os/--gpu, where it was asked, the project,
+    #  the host list, the flags that say where)
+    "a region whose allowance is held, plain": (
+        PLAIN, ("--region", "us-central1"), _room_elsewhere, WITH_A_RESERVED_BOX,
+        {"--region"}),
+    "a region whose allowance is held, reserved": (
+        ("--reserve", "--name", "second", "--disk", "400"), ("--region", "us-central1"),
+        _room_elsewhere, WITH_A_RESERVED_BOX, {"--region"}),
+    "a reservation left in another zone": (
+        HELD, ("--zone", "europe-west4-a"), _left_in_b, HOSTS, {"--zone"}),
+    "--zone and --region together, plain": (
+        PLAIN, ("--zone", "us-central1-a", "--region", "europe-west4"), Project, HOSTS,
+        {"--zone", "--region"}),
+    "--zone and --region together, reserved": (
+        HELD, ("--zone", "us-central1-a", "--region", "europe-west4"), Project, HOSTS,
+        {"--zone", "--region"}),
+    "a region in the wrong case, plain": (
+        PLAIN, ("--region", "US-CENTRAL1"), Project, HOSTS, {"--region"}),
+    "a region in the wrong case, reserved": (
+        HELD, ("--region", "US-CENTRAL1"), Project, HOSTS, {"--region"}),
+}
+
+
+@pytest.mark.parametrize("why", list(ELSEWHERE))
+def test_every_same_box_somewhere_else_is_the_box_that_was_asked_for(run, why):
+    """Each refusal's "somewhere else" command is compared with the arguments
+    the refused create was given: the same flags, except where — one place
+    instead of the one refused — and without `--yes`. Then it is pasted back
+    with `--dry-run` and no terminal, and the plan is that box: its name, and
+    its disk."""
+    from commandlines import flags, offered_argv
+
+    asked, where, project, declared, places = ELSEWHERE[why]
+    argv = ["create", "--os", "linux", "--gpu", "l4", *asked, *where, "--yes"]
+    result = run(*argv, cloud=project(), declared=declared)
+    assert result.exit_code == 2, result.output
+
+    wanted = {flag: value for flag, value in flags(argv[1:]).items()
+              if flag not in places | {"--yes"}}
+    elsewhere = [words for words in offered_argv(result.output, "comfy-qat", "create")
+                 if places & set(words) and not any(w.startswith("<") for w in words)]
+    assert elsewhere, f"{why}: nothing offered somewhere else:\n{result.output}"
+    for words in elsewhere:
+        offered_flags = flags(words[2:])
+        assert len(places & set(offered_flags)) == 1, words
+        assert {flag: value for flag, value in offered_flags.items()
+                if flag not in places} == wanted, (
+            f"{why}: `{' '.join(words)}` is not the box `{' '.join(argv)}` asked for")
+
+        again = run(*words[1:], "--dry-run", cloud=project(), tty=False)
+        assert again.exit_code == 0, f"`{' '.join(words)}`:\n{again.output}"
+        plan = flat(again.output)
+        name = asked[asked.index("--name") + 1]
+        assert name in plan and "400 GB pd-balanced boot disk" in plan, plan
 
 
 def test_a_box_with_no_gpu_says_the_region_it_was_named(run):

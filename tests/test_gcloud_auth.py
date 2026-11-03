@@ -30,6 +30,7 @@ from comfy_qa.gcloud import (
     classify,
     explain_failure,
 )
+from fakes import names_its_project
 
 # Copied from a real failure on this machine, gcloud 579.0.0. The wrapper
 # sentence ("problem refreshing your current auth tokens") is generic; the word
@@ -78,6 +79,7 @@ class Fake(Gcloud):
         return "<fake>"
 
     def run(self, args, *, parse_json=True, timeout=None):
+        names_its_project(args)
         key = " ".join(args)
         self.calls.append(key)
         for prefix, value in self.answers.items():

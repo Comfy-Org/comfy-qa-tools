@@ -438,7 +438,7 @@ def without_gcloud(monkeypatch):
 
 
 @pytest.mark.parametrize("reach", [
-    lambda gc: gc.run(["compute", "instances", "list"]),
+    lambda gc: gc.run(["compute", "instances", "list", "--project=proj"]),
     lambda gc: gc.run_interactive(["auth", "login"]),
     lambda gc: gc.preflight("proj"),
     lambda gc: gc.ssh("box", "z", "p", "echo ok"),

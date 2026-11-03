@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from comfy_qa.cli import app
 from comfy_qa.gcloud import GcloudError
+from fakes import names_its_project
 
 HOSTS = """\
 [hosts.local]
@@ -81,6 +82,7 @@ class Cloud:
                 "disks": [{"boot": True, "source": f"https://x/disks/{name}-a"}]}
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         joined = " ".join(str(a) for a in args)
         if joined.startswith("compute disks describe"):
             self.calls.append(joined)
@@ -366,6 +368,7 @@ def test_an_interrupted_delete_says_the_record_may_now_be_wrong(capsys):
         """
 
         def run(self, args, **kwargs):
+            names_its_project(args)
             joined = " ".join(str(a) for a in args)
             if not joined.startswith("compute instances delete"):
                 return super().run(args, **kwargs)
@@ -435,6 +438,7 @@ def test_the_ticker_is_stopped_before_the_interrupt_report_prints(monkeypatch):
 
     class _Interrupted(Cloud):
         def run(self, args, **kwargs):
+            names_its_project(args)
             joined = " ".join(str(a) for a in args)
             if not joined.startswith("compute instances delete"):
                 return super().run(args, **kwargs)
@@ -630,6 +634,7 @@ class Project(Cloud):
                                      and row["zone"].endswith(f"/{zone}"))]
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         answer = super().run(args, **kwargs)
         joined = " ".join(str(a) for a in args)
         if joined.startswith("compute instances delete"):

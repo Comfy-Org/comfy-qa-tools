@@ -396,7 +396,13 @@ def test_the_wrong_zone_is_reported_as_a_wrong_zone_and_not_as_a_gone_box(run):
 
     assert "not in the zone the entry gives" in result.output
     assert "us-central1-a" in result.output, "the zone the entry gets wrong"
-    assert "correct gce_zone by hand" in result.output
+    # Read flat: `warn` wraps it, and where depends on the words before it.
+    assert "correct gce_zone by hand" in " ".join(result.output.split())
+    # The listing that answers it, offered alone on its line and on the
+    # entry's own project: named mid-sentence without `--project`, it listed
+    # gcloud's.
+    assert "gcloud compute instances list --project=proj" in [
+        line.strip() for line in result.output.splitlines()], result.output
     # The ghost block is still printed for the real ghosts, and `comfy-win` must
     # not be inside it.
     gone_block = result.output.split("not on the project any more")[1]

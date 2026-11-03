@@ -32,6 +32,7 @@ from comfy_qa.relocate import (
     suffix_for,
     survey,
 )
+from fakes import names_its_project
 
 WIN = Host(name="comfy-win", kind="gce", port=8190, os="Windows Server 2022", gpu="L4",
            gce_instance="comfy-win", gce_zone="us-central1-a", gce_project="proj")
@@ -274,6 +275,7 @@ class _CleanGcloud:
             raise KeyboardInterrupt
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         self._step(" ".join(args))
 
     def delete_snapshot(self, name, project):
@@ -390,6 +392,7 @@ class _Project:
     def run(self, args, **kwargs):
         # The target zone offers the machine type, so the only blocker these
         # tests can produce is the one under test.
+        names_its_project(args)
         if "machine-types" in args:
             return [{"name": "g2-standard-8"}]
         return []

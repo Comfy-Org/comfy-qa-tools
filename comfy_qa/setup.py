@@ -1135,13 +1135,13 @@ def _require_real_region(gc, project: str, quotas: list[dict] | None,
     """
     if region is None or quotas is None:
         return
-    from .auth import region_problem
+    from .auth import region_problem, spliced
 
     wrong = region_problem(gc, project, quotas, region)
     if wrong:
         raise SetupStopped(
             wrong[0],
-            fix=("\n".join(f"comfy-qat setup {line}" for line in wrong[1])
+            fix=("\n".join(spliced(wrong[1], "comfy-qat setup"))
                  or "every region this project meters:\n"
                     "comfy-qat quota list --by-region"),
         )

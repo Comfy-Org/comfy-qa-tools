@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -96,9 +97,10 @@ class Recorder:
     command reaching for a call nobody expected is something to see.
     """
 
-    def __init__(self, *, current: str | None = GCLOUDS, instances=()):
+    def __init__(self, *, current: str | None = GCLOUDS, instances=(), quotas=None):
         self.current = current
         self.instances = list(instances)
+        self.quotas = [L4_READY] if quotas is None else list(quotas)
         self.stopped: set[str] = set()
         self.calls: list[list[str]] = []
 
@@ -120,7 +122,7 @@ class Recorder:
         if key.startswith("billing projects describe"):
             return {"billingEnabled": True}
         if key.startswith("quotas info list"):
-            return [L4_READY]
+            return self.quotas
         if key.startswith("quotas preferences list"):
             return []
         if key.startswith("compute instances list"):
@@ -378,6 +380,183 @@ def test_discover_and_create_use_the_host_lists_project_for_what_is_new(qat):
     assert GCLOUDS not in result.hosts
 
 
+# --- b, printed: a gcloud line handed over for pasting names its project too ---
+#
+# Every call the tool SENDS carried `--project` and the lines it PRINTS for
+# somebody to paste did not. Pasted, a line without it acts on gcloud's own
+# project — which 1.3.1 is what makes different from comfy-qat's. `down --all`
+# listed the host list's project, named a box running there, and printed
+# `gcloud compute instances stop stray-box --zone=us-central1-a`; pasted, that
+# answers "not found" from gcloud's project, and the box named as running goes
+# on billing.
+
+RUNNING_L4 = {"name": "stray-box", "status": "RUNNING",
+              "guestAccelerators": [{"acceleratorType": "zones/z/acceleratorTypes/nvidia-l4",
+                                     "acceleratorCount": 1}],
+              "disks": [{"boot": True, "licenses": ["x/licenses/ubuntu-2204-lts"]}]}
+
+
+def pasted(line: str, cloud: Recorder) -> str:
+    """The project a printed gcloud line acts on when pasted: its `--project`,
+    or — as real gcloud does with none — the one gcloud is pointed at."""
+    words = shlex.split(line.strip())
+    assert words[0] == "gcloud", line
+    named = [word.split("=", 1)[1] for word in words if word.startswith("--project=")]
+    return named[0] if named else cloud.current
+
+
+def gcloud_lines(output: str, verb: str) -> list[str]:
+    return [line.strip().removeprefix("to fix:").strip() for line in output.splitlines()
+            if line.strip().removeprefix("to fix:").strip().startswith(verb)]
+
+
+def test_the_stop_down_all_prints_for_a_box_nobody_declared_reaches_that_project(qat):
+    """The host list's project differs from gcloud's. `down --all` reads the
+    host list's, finds a box running there that no entry names, and hands over
+    Google's command to stop it — which, pasted, has to reach the project the
+    box was found in."""
+    cloud = Recorder(current=GCLOUDS, instances=[RUNNING_L4])
+    result = qat("down", "--all", cloud=cloud, declared=host_list(CHOSEN))
+
+    assert result.exit_code == 0, result.output
+    assert "stray-box" in result.output
+    stops = gcloud_lines(result.output, "gcloud compute instances stop")
+    assert stops, result.output
+    for line in stops:
+        assert pasted(line, cloud) == CHOSEN, f"pasted, `{line}` acts on {pasted(line, cloud)}"
+
+
+def test_the_stop_a_create_refused_on_the_ceiling_prints_reaches_that_project(qat):
+    """The other printed stop: the project-wide ceiling is 1 and a box this
+    tool did not make is running on it. The command for stopping it, and the
+    listing beside it, are for the project the create was going to use."""
+    ceiling = {"quotaId": "GPUS-ALL-REGIONS-per-project",
+               "dimensionsInfos": [{"details": {"value": "1"},
+                                    "applicableLocations": ["global"]}]}
+    cloud = Recorder(current=GCLOUDS, instances=[RUNNING_L4], quotas=[L4_READY, ceiling])
+    result = qat("create", "--os", "linux", "--gpu", "l4", "--no-reserve", "--dry-run",
+                 cloud=cloud, declared=host_list(CHOSEN))
+
+    assert result.exit_code != 0, result.output
+    assert "GPUS_ALL_REGIONS is 1" in " ".join(result.output.split()), result.output
+    stops = gcloud_lines(result.output, "gcloud compute instances stop")
+    assert stops, result.output
+    for line in stops:
+        assert pasted(line, cloud) == CHOSEN, f"pasted, `{line}` acts on {pasted(line, cloud)}"
+
+
+def test_every_gcloud_command_the_package_prints_names_its_project():
+    """Every string in the package that offers a `gcloud compute`, `quotas`,
+    `services` or `billing` command carries `--project` — at the start of a
+    line, or at the end of a sentence that introduces it — and so does every
+    one it names in passing, in the middle of a sentence, outside backticks:
+    `prune` told people to find a box "with gcloud compute instances list",
+    which lists gcloud's own project. The one exemption is named in
+    `commandlines.GLOBAL`: a command with no project to name."""
+    from commandlines import named_in_passing, offered, scope, unnamed_project
+    from printed import strings
+
+    found, missing = 0, []
+    for where, text in strings():
+        for line in text.splitlines():
+            for command in offered(line):
+                if not command.startswith("gcloud "):
+                    continue
+                found += 1
+                wrong = scope(command)
+                if wrong and "--project" in wrong:
+                    missing.append(f"{where}: {command}")
+            found += len(named_in_passing(line))
+            if unnamed_project(line):
+                missing.append(f"{where}: {unnamed_project(line)} (named in passing)")
+    assert not missing, "\n".join(missing)
+    assert found >= 80, f"only {found} printed gcloud commands found — the walk is broken"
+
+
+def test_the_project_rule_refuses_a_printed_command_without_one_and_exempts_only_the_named():
+    """Non-vacuity for the test above."""
+    from commandlines import GLOBAL, scope
+
+    assert "--project" in scope("gcloud compute instances stop {} --zone={}")
+    assert "--project" in scope("gcloud compute zones list --filter=name={}")
+    assert "--project" in scope("gcloud quotas preferences list")
+    assert scope("gcloud compute instances stop {} --zone={} --project={}") is None
+    assert scope("gcloud auth login") is None
+    assert GLOBAL == ("gcloud billing accounts ",)
+    assert scope("gcloud billing accounts list") is None
+
+
+@pytest.mark.parametrize("line,named", [
+    ("Find where each one really is with gcloud compute instances list, then "
+     "correct gce_zone by hand", "gcloud compute instances list"),
+    ("run gcloud compute zones list --filter=name={} — then drop --zone",
+     "gcloud compute zones list --filter=name={}"),
+    ("  ┃ stop it with gcloud compute instances stop box --zone=z.",
+     "gcloud compute instances stop box --zone=z"),
+])
+def test_a_command_named_in_passing_without_its_project_is_refused(line, named):
+    """Non-vacuity for the half of the test above that reads mid-sentence."""
+    from commandlines import named_in_passing, problems, unnamed_project
+
+    assert named_in_passing(line) == [named]
+    assert unnamed_project(line) == named
+    assert problems([line]), line
+
+
+def test_a_command_quoted_as_prose_or_carrying_its_project_is_left_alone():
+    from commandlines import problems, unnamed_project
+
+    for line in ("Nothing in this tool can undo a decrease: `gcloud quotas "
+                 "preferences` has create, describe, list and update, and no delete.",
+                 "list them with gcloud compute instances list --project=p, then look",
+                 "gcloud is not installed or not on PATH."):
+        assert unnamed_project(line) is None, line
+        assert problems([line]) == [], line
+
+
+# --- b, everywhere: no argv reaches an answer without its project ------------
+
+
+def test_an_argv_without_its_project_is_refused_by_every_fake_in_the_suite():
+    """F6. The guard over argv literals cannot see one built another way —
+    `gc.run("compute disks list".split())` in `move` passed the whole suite,
+    because `move` is not among the commands driven above. So every fake that
+    answers `run` refuses it, and so does the real `Gcloud.run` under the
+    suite: this is that refusal, from both."""
+    from fakes import FakeGcloud
+
+    built_another_way = "compute disks list".split()
+    with pytest.raises(AssertionError, match="does not say which"):
+        FakeGcloud().run(built_another_way)
+    with pytest.raises(AssertionError, match="does not say which"):
+        Gcloud(runner=lambda args, mode: []).run(built_another_way)
+    with pytest.raises(AssertionError, match="does not say which"):
+        Gcloud(runner=lambda args, mode: 0).run_interactive(["compute", "ssh", "box"])
+    # And what is not about a project is let through.
+    assert Gcloud(runner=lambda args, mode: []).run(["auth", "list"]) == []
+
+
+def test_every_fake_that_stands_in_for_run_checks_the_project():
+    """Every `run(self, args, …)` written in this suite — a fake standing in
+    for `Gcloud.run` — calls `names_its_project` on what it was handed, so a
+    new fake cannot quietly answer an argv that names no project."""
+    tests = Path(__file__).resolve().parent
+    fakes, unchecked = 0, []
+    for path in sorted(tests.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not (isinstance(node, ast.FunctionDef) and node.name == "run"):
+                continue
+            if [arg.arg for arg in node.args.args][:2] != ["self", "args"]:
+                continue
+            fakes += 1
+            calls = {getattr(call.func, "id", None) for call in ast.walk(node)
+                     if isinstance(call, ast.Call)}
+            if "names_its_project" not in calls:
+                unchecked.append(f"{path.name}:{node.lineno}")
+    assert not unchecked, unchecked
+    assert fakes >= 15, f"only {fakes} fakes found — the walk is broken"
+
+
 # --- c: none in the host list is gcloud's, said out loud ------------------------
 
 
@@ -398,6 +577,22 @@ def test_with_no_project_in_the_host_list_gclouds_is_used_and_said(qat, argv):
     assert (f"project {GCLOUDS} — gcloud's current project, because your host "
             f"list names none") in said
     assert "comfy-qat setup --project <id>" in said
+
+
+def test_the_command_that_keeps_one_project_is_printed_whole_on_its_own_line(qat):
+    """The sentence above ended on the command, and `detail` wrapped it at 96
+    columns with the project's ID in front: with a long ID it broke between
+    `--project` and `<id>`, and the line a person copies is `comfy-qat setup
+    --project`, which is refused for the value it no longer has. Thirty
+    characters is the longest ID Google allows."""
+    longest = "a-project-id-thirty-chars-long"
+    assert len(longest) == 30
+    result = qat("discover", "--dry-run", cloud=Recorder(current=longest),
+                 declared=host_list())
+
+    assert result.exit_code == 0, result.output
+    assert "comfy-qat setup --project <id>" in [
+        line.strip() for line in result.stderr.splitlines()], result.stderr
 
 
 def test_status_says_the_project_is_the_host_lists(qat):

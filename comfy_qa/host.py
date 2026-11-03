@@ -165,9 +165,14 @@ def project_for(gc, config: Optional[Path]) -> str | None:
         return named
     current = gc.current_project()
     if current:
+        # The command on a line of its own, under the reason for it, as every
+        # other ending prints one. It was the end of this sentence, and `detail`
+        # wrapped the sentence at 96 columns with the project ID in front of it:
+        # a long ID broke the line between `--project` and `<id>`.
         say.detail(f"project {current} — gcloud's current project, because your host "
-                   f"list names none. To keep comfy-qat on one project whatever gcloud "
-                   f"is set to: {NO_PROJECT_FIX}")
+                   f"list names none.")
+        say.detail("to keep comfy-qat on one project whatever gcloud is set to:")
+        say.detail(f"  {NO_PROJECT_FIX}")
     return current
 
 
@@ -870,12 +875,20 @@ def discover_cmd(
         # `gce_zone` by hand is the whole repair: nothing about the box is wrong.
         say.warn("\non the project, and not in the zone the entry gives — the "
                  "entry is wrong, the box is not gone, so nothing here was "
-                 "removed. Find where each one really is with gcloud compute "
-                 "instances list, then correct gce_zone by hand")
+                 "removed. Find where each one really is, then correct gce_zone "
+                 "by hand")
         for host, owner in misplaced:
             say.result(f"  {host.name}  ({host.gce_instance} is not in "
                        f"{host.gce_zone} on {owner}, and {owner} has one by "
                        f"that name)")
+        # The listing that says where, offered on a line of its own and on the
+        # project each entry names. It was named in the middle of the warning —
+        # `with gcloud compute instances list, then correct …` — and pasted as
+        # written it lists gcloud's own project, which since comfy-qat keeps a
+        # project of its own need not be the one the entry is about.
+        for owner in dict.fromkeys(owner for _host, owner in misplaced):
+            say.result(say.offer(f"gcloud compute instances list --project={owner}",
+                                 f"where each one on {owner} really is"))
     if unconfirmed:
         # The listing said absent and the second read did not agree. Two ways in,
         # and the message carries which: Google described the machine after all,
@@ -1281,10 +1294,14 @@ def create_cmd(
         # And `--reserve`, when it was typed. Left off a rewritten command it
         # is not a detail: with nobody to ask, the box would be made unreserved.
         chosen += {True: "--reserve ", False: "--no-reserve "}.get(reserve, "")
-        # And the name, for a reserved build, as every other rewritten create
-        # carries it: a reservation is found again by its box's name.
-        chosen += f"{create_mod._asked_for(True, name).removeprefix(' --reserve').strip()} " \
-            if reserve and name else ""
+        # And the name and the disk, for every box, as `_same_box` carries them
+        # on every rewritten create (O23b): this kept the name for a reserved
+        # build only and the disk for none, so a box asked for as
+        # `--name qatest-plain --disk 400` came back under whatever name the
+        # next run picks, with the default 200 GB — and pasted under `--yes`,
+        # that is the box that gets made.
+        besides = create_mod.besides_where(name, disk)
+        chosen += f"{besides} " if besides else ""
         say.fail(
             f"--zone {zone} and --region {region} cannot both be right: --zone "
             "pins one zone, --region asks for a choice within one region",
@@ -1446,12 +1463,17 @@ def create_cmd(
         wrong = (region_problem(gc, project, quotas, region, membership=False)
                  if card.is_gpu else None)
         if wrong:
-            # ` --reserve --name <name>` for a reserved build, from the one
-            # function every rewritten create takes it from.
-            held = create_mod._asked_for(bool(reserve), name)
+            # ` --reserve` for a reserved build, and the name and the disk for
+            # every box, so the command handed back is the box asked for: this
+            # carried `--name` for a reserved build only and `--disk` for none.
+            from .auth import spliced
+
+            held = "".join(f" {part}" for part in (
+                "--reserve" if reserve else "", create_mod.besides_where(name, disk))
+                if part)
             say.fail(wrong[0],
-                     fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
-                                   f"{gpu}{held} {line}" for line in wrong[1]],
+                     fix=say.fix(*spliced(wrong[1], f"comfy-qat create --os {os_choice} "
+                                                    f"--gpu {gpu}{held}"),
                                  "every region this project meters:",
                                  "comfy-qat quota list --by-region"),
                      code=2)
@@ -2211,13 +2233,13 @@ def down_cmd(
                 say.result(
                     f"you have declared no cloud machines, but "
                     f"{say.count(len(strangers), 'machine')} on this project is "
-                    f"running: {', '.join(n for n, _ in strangers)}."
+                    f"running: {', '.join(n for n, _, _ in strangers)}."
                 )
                 say.result("  not stopped — this tool only operates what you "
                            "declare:")
-                for name, zone in strangers:
+                for name, zone, where in strangers:
                     say.result(f"  gcloud compute instances stop {name} "
-                               f"--zone={zone}")
+                               f"--zone={zone} --project={where}")
                 say.result(say.offer("comfy-qat discover", "or adopt them first"))
             elif strangers is None:
                 say.result("no cloud machines are declared, and the project "
@@ -2374,11 +2396,12 @@ def down_cmd(
             say.result(
                 f"\n{say.count(len(strangers), 'machine')} on this project is "
                 f"running and not in your host list: "
-                f"{', '.join(n for n, _ in strangers)}."
+                f"{', '.join(n for n, _, _ in strangers)}."
             )
             say.result("  not stopped — this tool only operates what you declare:")
-            for name, zone in strangers:
-                say.result(f"  gcloud compute instances stop {name} --zone={zone}")
+            for name, zone, where in strangers:
+                say.result(f"  gcloud compute instances stop {name} --zone={zone} "
+                           f"--project={where}")
             say.result(say.offer("comfy-qat discover",
                                  "or adopt them and use `down --all`"))
         if reserved or not _nothing_reserved(reservations):
@@ -4244,9 +4267,17 @@ def move_cmd(
             say.detail(line)
 
 
-def _undeclared_and_running(gc, hosts: list[Host],
-                            project: str | None = None) -> list[tuple[str, str]] | None:
-    """Running instances on the project that no host entry names.
+def _undeclared_and_running(gc, hosts: list[Host], project: str | None = None
+                            ) -> list[tuple[str, str, str]] | None:
+    """Running instances on the project that no host entry names, as `(name,
+    zone, project)`.
+
+    THE PROJECT GOES WITH EACH, because the caller prints Google's command to
+    stop the box and that line has to reach where the box was found. It used to
+    print `gcloud compute instances stop <name> --zone=<zone>` with no
+    `--project`, which pasted acts on gcloud's own project — not the one listed
+    here, now that comfy-qat keeps a project of its own in the host list: "not
+    found" there, and the box named as running goes on billing.
 
     `down --all` iterates the host list, so a box nobody declared is not merely
     unstopped — it is unreachable by every sentence the command prints. That was
@@ -4282,7 +4313,7 @@ def _undeclared_and_running(gc, hosts: list[Host],
     except (GcloudError, AttributeError):
         return None
     return [
-        (i.get("name", ""), rsv.zone_of(i))
+        (i.get("name", ""), rsv.zone_of(i), project)
         for i in instances or []
         if i.get("name") not in declared and i.get("status") != "TERMINATED"
     ]

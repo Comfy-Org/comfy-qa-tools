@@ -558,7 +558,8 @@ def region_shape_problem(region: str | None) -> tuple[str, list[str]] | None:
     if not region.strip():
         return ("--region was given but empty — if that came from a shell "
                 "variable, it is unset",
-                ["--region us-central1  # or leave the flag off to derive one"])
+                ["name one, or leave the flag off to derive one:",
+                 "--region us-central1"])
     # CASE IS NOT DECIDABLE FOR FREE, and it looked as though it were. Lowering
     # `US-CENTRAL99` gives `us-central99`, which is not a region either — so the
     # remedy would hand over a second wrong answer with more confidence than the
@@ -573,9 +574,24 @@ def region_shape_problem(region: str | None) -> tuple[str, list[str]] | None:
         # with `--region US-CENTRAL1`, which then costs the minute-long read this
         # free check exists to save before being refused for its case.
         return (f"{region!r} is a zone; quota is metered per region",
-                [f"--region {_region_of(region).lower()}"
-                 f"  # the region that zone is in"])
+                ["the region that zone is in:",
+                 f"--region {_region_of(region).lower()}"])
     return None
+
+
+def spliced(remedy: list[str], command: str) -> list[str]:
+    """A region remedy with `command` in front of each flag it offers.
+
+    `region_shape_problem` and `region_problem` hand back flags — `--region
+    us-central1` — and the reason for one, when there is one, on a line of its
+    own above it, ending in the colon that introduces it. THE REASON USED TO RIDE
+    ON THE FLAG as a `#` note, and the three callers that make a whole command
+    of the flag spliced it on with the note: `comfy-qat setup --region
+    us-central1   # the region that zone is in`, which pasted is refused for its
+    extra arguments, or by zsh for the `?` in `did you mean one of 1 in asia?`
+    (O25e). So the command goes on the flag lines and nothing else.
+    """
+    return [f"{command} {line}" if line.startswith("--") else line for line in remedy]
 
 
 def region_problem(gc, project: str, quotas: list[dict], region: str | None,
@@ -650,10 +666,14 @@ def region_problem(gc, project: str, quotas: list[dict], region: str | None,
                 [f"--region {exact[0]}"])
     near = sorted(p for p in universe
                   if p.split("-")[0].lower() == region.split("-")[0].lower())
+    family = region.split("-")[0]
+    meant = (f"the one region in {family} this project knows, if that is what "
+             f"you meant:" if len(near) == 1 else
+             f"the first of the {len(near)} regions in {family} this project "
+             f"knows, if one of them is what you meant:")
     return (f"no such region {region!r} — this project knows {len(universe)}, "
             f"and that is not one of them",
-            ([f"--region {near[0]}  # did you mean one of {len(near)} in "
-              f"{region.split('-')[0]}?"] if near else []))
+            [meant, f"--region {near[0]}"] if near else [])
 
 
 def _shown(limit: int) -> str:
@@ -1722,11 +1742,24 @@ def quota_request_cmd(
                 "exists for the same quota and dimensions, the real run uses "
                 "that preference's own id instead.")
         else:
+            # THE COMMAND THAT WAS TYPED, with `--dry-run`. This printed
+            # `comfy-qat quota request ... --dry-run`, and pasted, `...` is an
+            # argument `quota request` refuses (O25e).
+            typed = " ".join(part for part in (
+                "comfy-qat quota request",
+                f"--gpu {shlex.quote(gpu)}" if gpu else "",
+                f"--quota-id {shlex.quote(quota_id)}" if quota_id else "",
+                f"--value {value}" if value is not None else "",
+                "--allow-lower" if allow_lower else "",
+                "--release-quota" if release_quota else "",
+                f"--region {shlex.quote(region)}" if region is not None else "",
+                "--dry-run",
+            ) if part)
             say.fail(
                 f"could not read this project's existing quota requests: {exc}",
                 fix=say.fix(
                     "see what it would send — this prints and asks nothing:",
-                    "comfy-qat quota request ... --dry-run",
+                    typed,
                     "then try again — without that list a request could duplicate "
                     "one already on file, and a quota preference cannot be deleted"),
                 code=2,
@@ -1754,8 +1787,7 @@ def quota_request_cmd(
             say.fail(
                 wrong[0],
                 fix=say.fix(
-                    *[f"comfy-qat quota request{what} {line}"
-                      for line in wrong[1]],
+                    *spliced(wrong[1], f"comfy-qat quota request{what}"),
                     "every region this project meters:",
                     "comfy-qat quota list --by-region"),
                 code=2,
@@ -1858,9 +1890,10 @@ def quota_request_cmd(
             say.fail(
                 f"{quota_id} is not a GPU quota this project reports — "
                 f"`quota request` asks for GPU quota only",
-                fix=say.fix("comfy-qat quota list — the quota this project has",
-                            "comfy-qat quota request --gpu <card> — by card name "
-                            "instead of a raw id"),
+                fix=say.fix("the quota this project has:",
+                            "comfy-qat quota list",
+                            "or ask by card name instead of a raw id:",
+                            "comfy-qat quota request --gpu <card>"),
                 code=2,
             )
         # F5: THE REGION IS A DIMENSION, and it was being dropped. A `--region`
@@ -1881,7 +1914,8 @@ def quota_request_cmd(
                 fix=say.fix(
                     "name the card instead:",
                     "comfy-qat quota request --gpu h100",
-                    "comfy-qat quota list — which cards this id meters"),
+                    "which cards this id meters:",
+                    "comfy-qat quota list"),
                 code=2,
             )
         # `needs_region` FIRST, and the missing region is a refusal. This read
@@ -1965,8 +1999,8 @@ def quota_request_cmd(
                 f"`--gpu` takes {as_quota.key}",
                 fix=say.fix("the same card, the spelling both commands take:",
                             f"comfy-qat quota request --gpu {as_quota.key}",
-                            "comfy-qat create --gpu <card> — takes the same "
-                            "spellings"),
+                            "and create takes the same spellings:",
+                            "comfy-qat create --gpu <card>"),
                 code=2,
             )
         card = as_quota
@@ -1987,16 +2021,21 @@ def quota_request_cmd(
                 say.fail(
                     f"no card called {name!r}",
                     fix=say.fix(
-                        f"comfy-qat quota request --gpu <card>: "
-                        f"{', '.join(drivable_cards())}",
-                        "comfy-qat quota list — the cards this project meters"),
+                        f"a card this tool can order — "
+                        f"{', '.join(drivable_cards())}:",
+                        "comfy-qat quota request --gpu <card>",
+                        "the cards this project meters:",
+                        "comfy-qat quota list"),
                     code=2,
                 )
             say.fail(
                 f"{name}: not creatable by this tool, whatever quota it holds",
-                fix=say.fix(f"comfy-qat create --gpu <card>: {', '.join(drivable_cards())}",
-                            "comfy-qat quota list — what this project holds, "
-                            "including cards this tool cannot order"),
+                fix=say.fix(f"a card this tool can order — "
+                            f"{', '.join(drivable_cards())}:",
+                            "comfy-qat create --gpu <card>",
+                            "what this project holds, including cards this tool "
+                            "cannot order:",
+                            "comfy-qat quota list"),
                 code=2,
             )
         if card is not None and not card.has_gsp:
@@ -2093,10 +2132,13 @@ def quota_request_cmd(
             say.fail(
                 f"this project reports no quota for {name!r}"
                 + (f" in {region}" if region else ""),
+                # The command on its own line under what it is for, rather
+                # than after a dash in the middle of the sentence (O25e).
                 fix=(f"ask for one of: {offer}" if offer != "none" else
-                     "this project reports no GPU quota at all — "
-                     f"comfy-qat quota request --gpu {drivable_cards()[0]} "
-                     f"--region {region or '<region>'}"),
+                     say.fix("this project reports no GPU quota at all — ask for "
+                             "some:",
+                             f"comfy-qat quota request --gpu {drivable_cards()[0]} "
+                             f"--region {region or '<region>'}")),
                 code=2,
             )
         # H2: THE CATALOGUE, ON THE COMMAND THAT FILES THE IRREVOCABLE THING.
@@ -2218,25 +2260,31 @@ def quota_request_cmd(
                 remedy = say.fix(
                     "a count of GPUs, 1 or more:",
                     f"comfy-qat quota request {flag} --value 1",
-                    "comfy-qat quota — what this project holds")
+                    "what this project holds:",
+                    "comfy-qat quota")
             elif held_value(resolved, quotas) == UNLIMITED:
                 remedy = say.fix(
-                    "comfy-qat quota — what this project holds",
-                    "--allow-lower  # trade the unlimited grant for a number, "
-                    "knowing this tool cannot undo it")
+                    "what this project holds:",
+                    "comfy-qat quota",
+                    "to trade the unlimited grant for a number, knowing this tool "
+                    "cannot undo it, add:",
+                    "--allow-lower")
             elif value == 0:
                 remedy = say.fix(
-                    "comfy-qat quota — what this project holds",
-                    "--allow-lower --release-quota  # give the quota up; "
-                    "this tool cannot undo it")
+                    "what this project holds:",
+                    "comfy-qat quota",
+                    "to give the quota up, knowing this tool cannot undo it, add:",
+                    "--allow-lower --release-quota")
             else:
                 # The standing value could not be read, so there is no number
                 # that is safe to send. Refusing is the only option that cannot
                 # replace a larger request with a smaller one.
                 remedy = say.fix(
-                    "comfy-qat quota — what this project holds",
-                    "--allow-lower  # send it anyway, knowing it may replace a "
-                    "larger standing request")
+                    "what this project holds:",
+                    "comfy-qat quota",
+                    "to send it anyway, knowing it may replace a larger standing "
+                    "request, add:",
+                    "--allow-lower")
             say.fail(f"{name}: {note}", fix=remedy, code=2)
         if value is not None and send != value and not allow_lower:
             # THE FLAG THE USER TYPED, not the one the tool prefers. `--quota-id`

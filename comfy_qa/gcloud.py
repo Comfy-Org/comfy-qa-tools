@@ -231,7 +231,9 @@ _ADVICE: dict[str, tuple[str | None, str | None]] = {
     # comfy-qat's own setting, not gcloud's: see `current_project`.
     NO_PROJECT: ("no project set", "comfy-qat setup --project <your-project-id>"),
     NETWORK: ("could not reach Google Cloud", "check your network, then try again"),
-    DENIED: (None, "comfy-qat status — check which account you are using"),
+    # The reason above the command, and the command alone: pasted with the
+    # note after it, `comfy-qat status` is refused for its extra arguments (O25e).
+    DENIED: (None, "check which account you are using:\ncomfy-qat status"),
     # gcloud's own sentence names the metric, the limit and the region, which is
     # everything needed; only the fix is worth adding.
     QUOTA: (None, "raise the limit at https://console.cloud.google.com/iam-admin/quotas "

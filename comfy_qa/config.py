@@ -564,7 +564,11 @@ def _project_in(data: dict) -> str | None:
         raise ConfigError(
             f"{PROJECT_KEY} = {value!r} is not a Google project ID — that is "
             f"lowercase letters, digits and hyphens, starting with a letter. It is "
-            f"the ID, not the name: gcloud projects list shows both."
+            f"the ID, not the name — `gcloud projects list` shows both."
+            # Named in passing, not offered after a colon: this sentence is put
+            # inside others (`could not read your host list (…)`), so a command
+            # at its end would run on into theirs, and one with `shows both`
+            # after it is a command carrying a note (O25e).
         )
     return value
 

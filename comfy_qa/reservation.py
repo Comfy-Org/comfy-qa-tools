@@ -479,6 +479,14 @@ def orphans(reservations: list[Reservation], instances: list[dict]) -> list[Rese
     return [found for found in reservations if (found.name, found.zone) not in bound]
 
 
+# What a gcloud line printed for pasting says for `--project` when no project
+# is in hand. Never left out: without the flag gcloud acts on the project it is
+# pointed at, and since this tool keeps a project of its own, in the host list,
+# that need not be the one the line is about. A placeholder cannot be pasted as
+# it stands, and says so; a line that runs on the wrong project does not.
+NO_PROJECT = "<your-project-id>"
+
+
 def delete_command(name: str, zone: str, project: str) -> str:
     """Google's own command to release a reservation, for a person to paste.
 
@@ -487,12 +495,14 @@ def delete_command(name: str, zone: str, project: str) -> str:
     script, by an agent — it exits 1 and deletes nothing, so the reservation
     this line was printed to release stays and keeps billing.
 
-    With no project in hand the flag is left out rather than printed empty:
-    `--project=` is refused, and without it gcloud uses the project it is
-    pointed at, which is the one this tool follows.
+    And with `--project`, always. Without it gcloud acts on the project it is
+    pointed at, which is no longer the one this tool follows: this tool keeps
+    its own, in the host list, so a release pasted without the flag goes to
+    gcloud's project — "not found" there, and the reservation it was printed to
+    release goes on billing. With no project in hand, `NO_PROJECT`.
     """
-    where = f"--zone={zone} --project={project}" if project else f"--zone={zone}"
-    return f"gcloud compute reservations delete {name} {where} --quiet"
+    return (f"gcloud compute reservations delete {name} --zone={zone} "
+            f"--project={project or NO_PROJECT} --quiet")
 
 
 def bill(name: str) -> str:

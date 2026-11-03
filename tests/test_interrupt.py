@@ -225,7 +225,7 @@ def test_gcloud_run_gives_the_handler_no_exit_code_when_it_is_interrupted(tmp_pa
     interrupted = False
     with Interrupter(announced) as interrupter:
         try:
-            returned = gc.run(["compute", "instances", "create", "x"],
+            returned = gc.run(["compute", "instances", "create", "x", "--project=proj"],
                               parse_json=False)
         except KeyboardInterrupt:
             interrupted = True

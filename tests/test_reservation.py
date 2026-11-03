@@ -172,16 +172,24 @@ def test_the_delete_command_does_not_stop_to_ask():
         "it must still be the delete it says it is")
 
 
-def test_with_no_project_in_hand_the_flag_is_left_out_not_printed_empty():
+def test_with_no_project_in_hand_the_flag_says_where_one_goes_and_is_never_empty():
     """`--project= --quiet` is a command gcloud refuses. `create` used to trim
     a trailing ` --project=` off this line itself; with `--quiet` after it the
-    trim matched nothing, so the rule lives here now, where the line is built."""
-    assert reservation.delete_command("qatest-rsv", "us-central1-a", "") == (
-        "gcloud compute reservations delete qatest-rsv --zone=us-central1-a --quiet")
-    assert "--project" not in reservation.delete_command("qatest-rsv", "us-central1-a", None)
-    # What `create._release_command` does to it today must leave it whole.
-    assert reservation.delete_command("qatest-rsv", "us-central1-a", "").removesuffix(
-        " --project=").endswith("--zone=us-central1-a --quiet")
+    trim matched nothing, so the rule lives here now, where the line is built.
+
+    And the flag is no longer left out, which is what this did until 1.3.1:
+    without it gcloud acts on its own project, which is no longer necessarily
+    the one comfy-qat reads, so the line would run — somewhere else. With no
+    project in hand it names where one goes, and a shell refuses it as it
+    stands."""
+    for missing in ("", None):
+        assert reservation.delete_command("qatest-rsv", "us-central1-a", missing) == (
+            "gcloud compute reservations delete qatest-rsv --zone=us-central1-a "
+            "--project=<your-project-id> --quiet")
+    assert reservation.NO_PROJECT == "<your-project-id>"
+    assert reservation.delete_command("qatest-rsv", "us-central1-a", "proj") == (
+        "gcloud compute reservations delete qatest-rsv --zone=us-central1-a "
+        "--project=proj --quiet")
 
 
 # --- reading Google's records ------------------------------------------------

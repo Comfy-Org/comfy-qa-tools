@@ -479,6 +479,58 @@ def test_with_no_cloud_boxes_the_sign_off_says_how_to_get_one(hosts):
     assert "comfy-qat discover" in result.output
 
 
+# The sign-off's two commands were a table — `comfy-qat list        see them`,
+# `comfy-qat stamp local what a machine is, exactly` — and pasted, each is
+# refused for its extra arguments (O25e). And `stamp local` was printed to a
+# host list with no `local` in it, where it answers "nothing declared matches
+# 'local'".
+
+ONLY_A_CLOUD_BOX = """\
+[hosts.comfy-win]
+kind         = "gce"
+os           = "Windows Server 2022"
+gpu          = "L4"
+gce_instance = "comfy-win"
+gce_zone     = "us-central1-a"
+gce_project  = "proj-1"
+port         = 8191
+"""
+
+
+def _sign_off(result) -> list[str]:
+    stdout = result.stdout.splitlines()
+    start = next(i for i, line in enumerate(stdout) if line.startswith("ready — "))
+    return [line.strip() for line in stdout[start + 1:] if line.strip()]
+
+
+def test_the_sign_off_offers_each_command_alone_under_what_it_is_for(hosts):
+    cloud = FakeCloud(quotas=[L4_READY], instances=[])
+    result = run(cloud)
+
+    assert result.exit_code == 0, result.output
+    assert _sign_off(result)[:4] == ["see them:", "comfy-qat list",
+                                     "what a machine is, exactly:", "comfy-qat stamp local"]
+
+
+def test_the_sign_off_stamps_the_local_machine_by_its_own_name(hosts):
+    hosts.write_text('[hosts.studio]\nkind = "local"\nport = 8188\n', encoding="utf-8")
+    result = run(FakeCloud(quotas=[L4_READY], instances=[]))
+
+    assert result.exit_code == 0, result.output
+    assert "comfy-qat stamp studio" in _sign_off(result)
+    assert "comfy-qat stamp local" not in result.output
+
+
+def test_with_no_local_machine_the_sign_off_offers_no_stamp(hosts):
+    hosts.write_text(ONLY_A_CLOUD_BOX, encoding="utf-8")
+    result = run(FakeCloud(quotas=[L4_READY], instances=[COMFY_WIN]))
+
+    assert result.exit_code == 0, result.output
+    assert "ready — 1 machine, 1 in the cloud" in result.output
+    assert "comfy-qat list" in _sign_off(result)
+    assert "comfy-qat stamp" not in result.output
+
+
 def test_discovery_failing_still_finishes_and_says_so(hosts):
     cloud = FakeCloud(quotas=[L4_READY],
                       instances_error=GcloudError("gcloud timed out after 60s"))

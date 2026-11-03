@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import ast
 import re
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
@@ -34,6 +35,7 @@ from comfy_qa.config import Host
 from comfy_qa.gcloud import GcloudError
 from comfy_qa.host import app
 from wording import said
+from fakes import names_its_project
 
 HOSTS = """\
 [hosts.local]
@@ -142,6 +144,7 @@ class Cloud:
         return []
 
     def run(self, args, **kwargs):
+        names_its_project(args)
         self.calls.append("run")
         joined = " ".join(str(part) for part in args)
         if "disks list" in joined:
@@ -1553,6 +1556,7 @@ def test_a_dry_run_deletes_nothing_even_with_clean(cli):
     snapshot, which is the exact state `--clean` exists for."""
     class Littered(Cloud):
         def run(self, args, **kwargs):
+            names_its_project(args)
             joined = " ".join(str(a) for a in args)
             self.calls.append(joined)
             if "disks list" in joined:
@@ -1594,6 +1598,7 @@ def test_a_dry_run_deletes_nothing_without_clean_either(cli, monkeypatch):
     """
     class Spare(Cloud):
         def run(self, args, **kwargs):
+            names_its_project(args)
             joined = " ".join(str(a) for a in args)
             self.calls.append(joined)
             if "disks list" in joined:
@@ -2103,7 +2108,7 @@ def test_a_stranger_that_is_not_terminated_is_reported_whatever_it_is_doing(stat
     on its way up on somebody's project."""
     gc = _FakeGc([_inst("someone-else", status)])
     assert host_module._undeclared_and_running(gc, [_DECLARED]) == [
-        ("someone-else", "us-central1-b")]
+        ("someone-else", "us-central1-b", "proj")]
 
 
 def test_a_terminated_stranger_is_not_reported():
@@ -2118,7 +2123,7 @@ def test_a_machine_this_tool_declares_is_not_a_stranger():
     gc = _FakeGc([_inst("comfy-win", "RUNNING", "us-central1-a"),
                   _inst("someone-else", "RUNNING")])
     assert host_module._undeclared_and_running(gc, [_DECLARED]) == [
-        ("someone-else", "us-central1-b")]
+        ("someone-else", "us-central1-b", "proj")]
 
 
 _LOCAL_ONLY = Host(name="local", kind="local", port=8188)
@@ -2194,46 +2199,143 @@ def test_no_gcloud_command_the_package_prints_for_pasting_stops_to_ask():
             "create.py"} <= modules, sorted(modules)
 
 
-# --- a printed command that carries its note on the end --------------------------
+# --- a printed command is the command and nothing else ---------------------------
 
 
-# A line that starts as something to paste — one of this tool's commands, a
-# gcloud call, or a value standing for one — and then, after a run of spaces,
-# a `#` note. `{}` is an f-string's hole, so `f"{command}   # {why}"` is caught
-# as well as a command typed out.
-_COMMENTED_COMMAND = re.compile(
-    r"^[ \t]*(?:to fix:[ \t]*)?(?:comfy-qat |gcloud |\{\})[^\n]*?[ \t]{2,}#")
-
-
-def test_no_command_the_package_prints_carries_a_trailing_comment():
+def test_no_command_the_package_prints_carries_anything_but_the_command():
     """`comfy-qat down comfy-linux   # stop the box, stop paying` was the house
     shape for an offered command, and it does not survive being pasted whole
     into the shell most people here use. A script drops the comment; an
     interactive zsh without `interactivecomments` — which is how zsh starts —
     passes `#` and every word after it as arguments, and `comfy-qat` refuses
     them: `Got unexpected extra argument(s) (# stop the box, stop paying)`,
-    exit 2, nothing done (O25). One release line, `gcloud compute reservations
-    delete … --quiet   # nothing is on it`, handed the extra words to gcloud.
+    exit 2, nothing done (O25).
 
-    So the note is a line of its own above the command — `stop the box, stop
-    paying:` — and the command is alone on its line. Every string in every
-    module, read off the syntax tree, holds to it."""
-    from printed import strings
+    The first version of this held only that shape — two spaces and a `#`,
+    after a line starting `comfy-qat `, `gcloud ` or a hole — and the rest of
+    the class went on printing: `--region us-central1   # the region that zone
+    is in` spliced onto `comfy-qat setup`, `comfy-qat quota list — the cards
+    this project is allowed`, `comfy-qat quota request --gpu t4, then wait for
+    Google`, and `setup`'s `comfy-qat list        see them`. Each is refused
+    when pasted. So the question is asked of the command (`commandlines.shape`):
+    a `#`, a dash, a run of spaces, or a word that ends a phrase rather than a
+    word, after the program, is something other than the command.
 
-    found = [(where, line) for where, text in strings()
-             for line in text.splitlines() if _COMMENTED_COMMAND.match(line)]
-    assert not found, "\n".join(f"{where}: {line.strip()}" for where, line in found)
+    Every string in every module, read off the syntax tree. What is put
+    together at run time is held by `conftest.every_printed_command_is_only_the_command`.
+    """
+    from commandlines import in_source
+
+    found = in_source()
+    assert not found, "\n".join(f"{where}: {line}\n    -> {why}"
+                                for where, line, why in found)
 
 
-def test_the_commented_command_pattern_still_matches_the_shapes_it_was_written_for():
-    """Non-vacuity: the test above passes on a package with no matches, and on a
-    pattern that matches nothing. These are the shapes it replaced."""
-    for line in ("  comfy-qat down {}   # stop the box, stop paying",
-                 "gcloud compute reservations delete {} --quiet   # nothing is on it",
-                 "  {}   # stop the box, stop paying",
-                 "comfy-qat quota list --by-region  # every region this project meters",
-                 "to fix: comfy-qat up {}   # start it, then ssh again"):
-        assert _COMMENTED_COMMAND.match(line), line
-    for line in ("stop the box, stop paying:", "  comfy-qat down {}",
-                 "see #23 for why", "comfy-qat go {} — then wait"):
-        assert not _COMMENTED_COMMAND.match(line), line
+# The shapes a printed command line has carried, each of which the readings
+# above must refuse — the four the first guard could not see among them.
+CARRIES_MORE = [
+    "  comfy-qat down {}   # stop the box, stop paying",
+    "  comfy-qat down {} # stop the box, stop paying",                # one space
+    "  ssh -N -L 8188:127.0.0.1:8188 {}   # the tunnel",              # an ssh line
+    "  comfy-qat list        see them",                              # aligned prose
+    "to fix: comfy-qat quota list — the cards this project is allowed",  # a dash
+    "comfy-qat quota request --gpu {}, then wait for Google",
+    "comfy-qat quota request --gpu <card>: l4, t4",
+    "gcloud compute reservations delete {} --quiet   # nothing is on it",
+    "  {}   # stop the box, stop paying",
+    "to fix: --region us-central1   # the region that zone is in",
+    "wait and run it again, or drop --zone: comfy-qat create --zone <zone>, or wait",
+    "run it yourself: gcloud compute zones list --filter=name={}; then drop --zone",
+]
+
+# And the lines they have to leave alone.
+ONLY_THE_COMMAND = [
+    "stop the box, stop paying:", "  comfy-qat down {}", "see #23 for why",
+    "  comfy-qat delete {} --yes", "to fix: comfy-qat setup --project <id>",
+    "gcloud is not installed or not on PATH.", "--zone was given, so this zone or nothing",
+    "{} is local — there is nothing to tunnel.",
+    "run it yourself and see: gcloud compute instances list --project={}",
+    "ssh process by hand leaves the records behind",
+    "  gcloud compute ssh {} --zone={} --project={} --command='a  b # c'",
+]
+
+
+@pytest.mark.parametrize("line", CARRIES_MORE)
+def test_the_source_reading_refuses_each_shape_a_command_has_carried(line):
+    """Non-vacuity, one case per shape: a reading that matched nothing passes
+    the test above."""
+    from commandlines import bare_note, offered, shape
+
+    assert [shape(command) for command in offered(line) if shape(command)] or \
+        bare_note(line), line
+
+
+@pytest.mark.parametrize("line", ONLY_THE_COMMAND)
+def test_the_source_reading_leaves_a_command_alone_and_a_sentence_alone(line):
+    from commandlines import bare_note, offered, shape
+
+    assert not [shape(command) for command in offered(line) if shape(command)], line
+    assert not bare_note(line), line
+
+
+@pytest.mark.parametrize("printed,why", [
+    (["  comfy-qat stamp local what a machine is, exactly"], "phrase"),
+    (["  comfy-qat stamp local what a machine is"], "extra argument"),
+    (["to fix: comfy-qat quota lsit"], "no command"),
+    (["to fix: comfy-qat down comfy-win --yes-please"], "No such option"),
+    (["to fix: gcloud compute instances stop box --zone=us-central1-a"], "--project"),
+    (["  ┃   gcloud compute snapshots delete box-snap --project=p",
+      "  ┃ --quiet"], "--quiet"),
+    (["to fix: comfy-qat quota", "        --allow-lower # give the quota up"], "# note"),
+], ids=["phrase", "single-space prose", "no command", "unknown flag", "no project",
+        "wrapped --quiet", "flag with a note"])
+def test_the_printed_reading_refuses_what_only_the_printed_line_shows(printed, why):
+    """Non-vacuity for the check every test's output goes through: the values
+    are real, so `comfy-qat` lines are parsed by the CLI itself, and a gcloud
+    line is held to its project and its `--quiet` on the line it is on."""
+    from commandlines import problems
+
+    found = problems(printed)
+    assert found, printed
+    assert why in found[0][1], found
+
+
+def test_the_printed_reading_leaves_real_commands_and_the_version_alone():
+    from commandlines import problems
+
+    assert problems([
+        "comfy-qat 1.3.1 (dca1a27)",
+        "to fix: comfy-qat create --os linux --gpu <card> --name qatest-a --disk 400",
+        "        --region us-central1",
+        "  stop the box, stop paying:",
+        "    comfy-qat down comfy-win",
+        "    gcloud compute snapshots delete box-snap --project=p --quiet",
+        "  ┃ comfy-qat on one project whatever gcloud is set to: comfy-qat setup "
+        "--project <id>",
+        "--zone was given, so there is no fall-through: this zone or nothing",
+    ]) == []
+
+
+def test_the_printed_reading_is_on_for_every_test(request):
+    """The check is a fixture every test gets, not one a test has to ask for."""
+    assert "every_printed_command_is_only_the_command" in request.fixturenames
+
+
+def test_only_the_tests_that_hand_say_their_own_text_are_left_unread():
+    """`prints_its_own_text` turns the printed reading off for a test, so where it
+    is used is held here rather than trusted: two tests in `test_say.py` that
+    show how `write_fix` lays out `#` notes it is handed. A third use, anywhere,
+    fails until it is added — beside a reason."""
+    import ast
+
+    marked = []
+    for path in sorted(Path(__file__).parent.glob("test_*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.FunctionDef) and any(
+                    "prints_its_own_text" in ast.unparse(decorator)
+                    for decorator in node.decorator_list):
+                marked.append(f"{path.name}::{node.name}")
+    assert marked == [
+        "test_say.py::test_the_notes_beside_a_run_of_commands_are_in_one_column",
+        "test_say.py::test_a_column_is_shared_by_the_commands_it_belongs_to_and_no_others",
+    ], marked
