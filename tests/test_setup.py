@@ -11,6 +11,7 @@ import pytest
 
 from comfy_qa.gcloud import Gcloud, GcloudError
 from comfy_qa.setup import Prompts, SetupStopped, run_setup
+from fakes import said_and_printed
 
 
 def gcloud(**responses):
@@ -46,7 +47,7 @@ def prompts(confirm=True, answer="us-central1", pick=0):
         confirm=lambda q: confirm,
         ask=lambda q: answer,
         choose=lambda q, options: options[pick],
-        say=said.append,
+        say=said_and_printed(said),
     )
     p.said = said  # type: ignore[attr-defined]
     return p

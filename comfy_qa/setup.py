@@ -1085,19 +1085,26 @@ def _nothing_to_ask(held: list[str], stuck: list[str]) -> str:
 
     Three different situations shared one sentence — "Nothing was missing anyway"
     — and only the first of them was that.
+
+    `comfy-qat quota` is in backticks because it comes after the card lists, so
+    where a writer that wraps would break the line depends on how many cards
+    there are. `step` prints this whole today; bare, the first writer to wrap it
+    could start a line with the command and the rest of the sentence after it,
+    which reads as a command and runs as none. `create`'s warning about a host
+    list that stopped loading did exactly that on the Linux runners.
     """
     if stuck and held:
         return (f"{', '.join(held)} granted; {', '.join(stuck)} at zero and "
                 f"already refused, so there is nothing left to ask for. "
-                f"Run comfy-qat quota to see where each card stands.")
+                f"Run `comfy-qat quota` to see where each card stands.")
     if stuck:
         return (f"{', '.join(stuck)} at zero and already refused, so there is "
-                f"nothing that can be asked for. Run comfy-qat quota to see "
+                f"nothing that can be asked for. Run `comfy-qat quota` to see "
                 f"where each card stands.")
     if held:
         return (f"nothing was missing — {', '.join(held)} granted. Run "
-                f"comfy-qat quota to see where each card stands.")
-    return "run comfy-qat quota to see where each card stands."
+                f"`comfy-qat quota` to see where each card stands.")
+    return "run `comfy-qat quota` to see where each card stands."
 
 
 def _unsold_here(gc, project: str, plan: list[QuotaAsk], region: str) -> list[str]:
@@ -1229,9 +1236,6 @@ def ensure_quota_requests(
             QuotaAsk(card, card.upper(), REQUEST, "")
             for card in (missing or "").split(",") if card], region) if region else []
         where = f" --region {region}" if region and not unsold else ""
-        no_good = (f" — note that {region} does not offer "
-                   f"{', '.join(unsold)}, so ask somewhere else"
-                   if unsold else "")
         # "NOTHING WAS MISSING" WAS A CLAIM ABOUT THE PROJECT, and `missing` is a
         # list of cards that could be ASKED FOR — a refused card does not submit,
         # so three cards at zero came out as nothing missing. Different facts, on
@@ -1239,10 +1243,23 @@ def ensure_quota_requests(
         # premise is stated back to them.
         held, stuck = _held_and_stuck(plan_quota(quotas, _prefs(gc, project),
                                                  region=region))
-        p.say("quota requests skipped (--no-quota-request). "
-              + (f"To ask later: comfy-qat quota request --gpu {missing}{where}"
-                 f"{no_good}"
-                 if missing else _nothing_to_ask(held, stuck)))
+        skipped = "quota requests skipped (--no-quota-request). "
+        if not missing:
+            p.say(skipped + _nothing_to_ask(held, stuck))
+        elif unsold:
+            # WHY THE REGION IS LEFT OFF IS SAID FIRST, and the command is a line
+            # of its own. The reason used to ride after the command, behind a dash
+            # — `comfy-qat quota request --gpu h100 — note that africa-south1 does
+            # not offer H100, so ask somewhere else` — and pasted, an interactive
+            # zsh hands the dash and every word after it to `comfy-qat`, which
+            # refuses them: exit 2, nothing asked. The shape `say.offer` gives
+            # every other offered command: a line that ends in the colon that
+            # introduces it, then the command, two spaces deeper.
+            p.say(f"{skipped}{region} does not offer {', '.join(unsold)}, so ask "
+                  f"somewhere else. To ask later:")
+            p.say(f"  comfy-qat quota request --gpu {missing}")
+        else:
+            p.say(f"{skipped}To ask later: comfy-qat quota request --gpu {missing}{where}")
         return []
     if quotas is None:
         return []

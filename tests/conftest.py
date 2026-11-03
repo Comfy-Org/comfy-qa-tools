@@ -371,10 +371,23 @@ def every_printed_command_is_only_the_command(monkeypatch, request):
     what a command line may carry; a `comfy-qat` line is also parsed by the CLI
     itself, so a word it would refuse is caught whatever it looks like.
 
+    AND EVERY TEXT HANDED TO `say.wrapped`, BEFORE IT IS WRAPPED, read for a
+    command a sentence names bare (`commandlines.mid_sentence`). The printed
+    reading sees each line at the one length this run gave it, and that is how
+    `create`'s warning about a host list that stopped loading passed on a Mac
+    and failed on the Linux runners: the path in front of `comfy-qat go or
+    comfy-qat down` was a different length on each, and only one of them put
+    the break in front of the command. Read before the wrap, a sentence is the
+    same sentence at every length, so the answer is the same on every machine.
+    `test_say.py` holds the package's strings to the same rule; this is for the
+    sentences put together at run time.
+
     A test marked `prints_its_own_text` hands `say` text of its own and is not
     read: what it prints is the test's.
     """
     import typer
+
+    from comfy_qa import say
 
     printed: list[str] = []
     real = typer.echo
@@ -384,16 +397,28 @@ def every_printed_command_is_only_the_command(monkeypatch, request):
             printed.extend(str(message).splitlines())
         return real(message, *args, **kwargs)
 
+    handed: list[str] = []
+    wraps = say.wrapped
+
+    def wrapped(text, *args, **kwargs):
+        handed.extend(str(text).splitlines())
+        return wraps(text, *args, **kwargs)
+
     monkeypatch.setattr(typer, "echo", echo)
+    monkeypatch.setattr(say, "wrapped", wrapped)
     yield printed
     if request.node.get_closest_marker("prints_its_own_text"):
         return
-    from commandlines import problems
+    from commandlines import mid_sentence, problems
 
-    found = problems(printed)
+    found = problems(printed) + [
+        (line, f"names {command!r} bare, mid-sentence, where a wrap at another "
+               f"length starts a line with it — put it in backticks")
+        for line in handed for command in mid_sentence(line)]
     if found:
         raise AssertionError(
-            "this test printed a command that carries more than the command:\n"
+            "this test printed a command that carries more than the command, or "
+            "a sentence that can wrap into one:\n"
             + "\n".join(f"  {line.strip()}\n    -> {why}" for line, why in found))
 
 

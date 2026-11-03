@@ -132,7 +132,11 @@ def shape(command: str) -> str | None:
     bare = _unquoted(command.rstrip())
     if re.search(r"\s#", bare):
         return "a # note"
-    if re.search(r"\s[—–]\s|\s[—–]$", bare):
+    # A plain hyphen between spaces as well as the two dashes. `-` alone is not
+    # an argument any command this tool prints takes, and `comfy-qat quota list
+    # - the cards this project is allowed` is the same note as the one after a
+    # dash: pasted, every word of it reaches the command.
+    if re.search(r"\s[—–-]\s|\s[—–-]$", bare):
         return "a note after a dash"
     if re.search(r"\S[ \t]{2,}\S", bare):
         return "words set off by a run of spaces — a note aligned into a column"
@@ -210,6 +214,45 @@ def unnamed_project(line: str) -> str | None:
         if not command.startswith(GLOBAL) and "--project" not in command:
             return command
     return None
+
+
+# Where a sentence names a command after one of its own words. The position, not
+# the command: a lookahead, so `before comfy-qat go or comfy-qat down` yields two.
+_AFTER_A_WORD = re.compile(r"(?<=\S )(?=(?:comfy-qat|gcloud|ssh|scp) \S)")
+
+
+def mid_sentence(line: str) -> list[str]:
+    """The commands a line of prose names mid-sentence, bare — each from where
+    it starts to the end of the line.
+
+    THE ONE PLACE A WRAP CAN START A LINE WITH A COMMAND. `say.wrapped` breaks
+    prose at any space, and the space in front of a command a sentence names is
+    one. `create`'s warning that the host list stopped loading ended `fix the
+    file before comfy-qat go or comfy-qat down`, after the loader's own message,
+    which carries the host list's path; on the Linux runners the path was the
+    length that put the break there, and the next line read `comfy-qat go or
+    comfy-qat down` — which `comfy-qat` refuses, pasted. On a Mac the path was
+    longer and the same test passed. Whether it lands depends on everything in
+    front of it, so the only rule that holds at every length is about the
+    sentence: a command named in passing goes in backticks, where the backtick is
+    what a wrapped line starts with.
+
+    Not read: a line that is a command — `gcloud compute ssh …` names `ssh` as
+    an argument — a command in backticks, and one the colon in front of it
+    offers, up to where the prose resumes after it. `wrapped` holds that one
+    whole, and moves it to the next line in one piece when it does not fit.
+    """
+    body = _FRAME.sub("", line, count=1)
+    if is_command(body):
+        return []
+    bare = re.sub(r"`[^`]*`", lambda m: "Q" * len(m.group()), body)
+    held = []
+    for match in _INTRODUCED.finditer(bare):
+        resumes = _PROSE_RESUMES.search(bare, match.end())
+        held.append((match.end(), resumes.start() if resumes else len(bare)))
+    return [body[match.start():] for match in _AFTER_A_WORD.finditer(bare)
+            if not any(start <= match.start() < stop for start, stop in held)
+            and is_command(bare[match.start():])]
 
 
 # --- the printed reading: real values, and the CLI's own parser ---------------
@@ -338,11 +381,16 @@ def flags(words: list[str]) -> dict[str, object]:
 def in_source() -> list[tuple[str, str, str]]:
     """`(where, line, what is wrong)` for every line of every string in the
     package that offers a command carrying more than the command — the reading
-    that reaches code no test drives. Shape only: a value is `{}` here."""
-    from printed import strings
+    that reaches code no test drives. Shape only: a value is `{}` here.
+
+    And every string a function builds out of parts (`printed.composed`): a note
+    kept in a local variable and put after the command is in no one literal,
+    which is how `setup`'s `— note that <region> does not offer …` stood behind
+    `comfy-qat quota request` unread."""
+    from printed import composed, strings
 
     found = []
-    for where, text in strings():
+    for where, text in strings() + composed():
         for line in text.splitlines():
             for command in offered(line):
                 wrong = shape(command)

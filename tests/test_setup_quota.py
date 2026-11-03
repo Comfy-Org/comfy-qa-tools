@@ -35,6 +35,7 @@ from comfy_qa.setup import (
     plan_quota, request_region, run_setup,
 )
 from comfy_qa.say import FIX_LABEL
+from fakes import said_and_printed
 from wording import said
 
 # --- the shapes, all from a live project -------------------------------------
@@ -251,7 +252,7 @@ def prompts(confirm=True):
 
     _confirm.said_when_asked = []  # type: ignore[attr-defined]
     p = Prompts(confirm=_confirm, ask=lambda q: "us-central1",
-                choose=lambda q, options: options[0], say=said.append)
+                choose=lambda q, options: options[0], say=said_and_printed(said))
     p.said = said           # type: ignore[attr-defined]
     p.asked = asked         # type: ignore[attr-defined]
     p.confirmed = _confirm  # type: ignore[attr-defined]
@@ -8338,6 +8339,35 @@ def test_the_skipped_remedy_does_not_name_a_region_that_sells_nothing(tmp_path):
     assert "--region africa-south1" not in later, later
     assert "africa-south1" in later, (
         "it still has to say the region asked for offers nothing")
+
+
+def test_why_the_region_is_left_off_is_said_before_the_command_not_after_it(
+        tmp_path):
+    """The test above made the remedy stop naming the region, and say why — on
+    the same line, AFTER the command, behind a dash:
+
+        To ask later: comfy-qat quota request --gpu h100 — note that
+        africa-south1 does not offer H100, so ask somewhere else
+
+    Pasted, an interactive zsh passes the dash and every word after it to
+    `comfy-qat`, which refuses them: exit 2, nothing asked. The check every
+    test's printed output goes through never saw it, though the test above
+    drives this exact line, because setup's tests recorded what it said and
+    never printed it (see `prompts`). So the note comes first, on a line that
+    ends introducing the command, and the command is a line of its own."""
+    from commandlines import is_command, problems
+
+    cloud = Cloud(quotas=THIS_PROJECT,
+                  accelerators=stocking("us-central1", "nvidia-h100-80gb"))
+    p = run(cloud, config_path=tmp_path / "hosts.toml", region="africa-south1",
+            quota_requests=False)
+
+    assert problems(p.said) == [], problems(p.said)
+    at = next(index for index, line in enumerate(p.said)
+              if "comfy-qat quota request" in line)
+    assert is_command(p.said[at].strip()), p.said[at]
+    assert "africa-south1 does not offer H100" in p.said[at - 1], p.said[at - 1:at + 1]
+    assert p.said[at - 1].endswith(":"), "the note has to introduce the command"
 
 
 def test_the_request_step_validates_its_own_region_when_called_directly():

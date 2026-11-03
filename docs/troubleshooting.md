@@ -375,7 +375,10 @@ same thing to you: this card has already been asked for. Watch it with
 **`quota requests skipped (--no-quota-request). To ask later: comfy-qat
 quota request --gpu l4,t4`**
 You passed `--no-quota-request`, so setup reported what your project holds and
-asked Google for nothing. Ask later with the command it names.
+asked Google for nothing. Ask later with the command it names. If the `--region`
+you passed does not offer a card it would ask for, it says so first, and the
+command is on a line of its own without `--region`: `quota request` refuses a
+region that sells no such card.
 
 **`... is 0 and <machine-type> needs <n> vCPU, so this card cannot start even with GPU quota`**
 Only ever said about **N1** cards — T4, V100, P100, P4, K80 — which consume the
@@ -1322,7 +1325,7 @@ command at the end of a paragraph out of sight. Adopting it with
 `comfy-qat discover` is the other way out, and is second because it leaves
 the box running.
 
-**`your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before comfy-qat go or comfy-qat down`**
+**`` your host list stopped loading while this ran (...), so port 8190 was chosen from the file as it was before — check it against the entries that no longer parse, and fix the file before `comfy-qat go` or `comfy-qat down` ``**
 The host list loaded when this command started — it refuses outright otherwise —
 and does not load now, so something edited it while the create was running. That
 is minutes, and another terminal or an editor is all it takes.

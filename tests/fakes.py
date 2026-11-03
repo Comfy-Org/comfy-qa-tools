@@ -67,6 +67,30 @@ def names_its_project(args) -> None:
             f"— without --project it acts on gcloud's own")
 
 
+def said_and_printed(said: list[str]):
+    """What a setup test hands `Prompts.say`: every line is kept in `said`, for
+    the test to assert on, AND printed through `say.step`, the writer
+    `comfy-qat setup` really prints it with.
+
+    KEPT ONLY, IT WAS NEVER READ. `conftest.every_printed_command_is_only_the_command`
+    reads what reaches `typer.echo`, and a list's `append` reaches nothing, so
+    the tests in `test_setup.py` and `test_setup_quota.py` — 465 when this was
+    found — printed nothing that check could see. One of them drove `setup
+    --no-quota-request --region africa-south1` all along, and the remedy it
+    printed — `To ask later: comfy-qat quota request --gpu h100 — note that
+    africa-south1 does not offer H100, …`, refused when pasted — passed a check
+    that was never shown it. Printed as well, it was the one line in those 465
+    tests the check refused.
+    """
+    from comfy_qa import say
+
+    def say_it(line: str) -> None:
+        said.append(line)
+        say.step(line)
+
+    return say_it
+
+
 def _resolve(spec, *args):
     """A scripted behaviour: raise it, call it, or return it."""
     if isinstance(spec, BaseException):
