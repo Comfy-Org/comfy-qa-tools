@@ -467,14 +467,17 @@ def test_each_windows_installer_is_checked_before_it_runs_and_judged_after(host)
         (GIT_INSTALLER_SHA256, WINDOWS_GIT, "/VERYSILENT"),
         (PYTHON_INSTALLER_SHA256, WINDOWS_PYTHON, "InstallAllUsers=1"),
     ):
-        skip = command.index(f"if (-not (Test-Path '{installed}'))")
-        checked = command.index(digest)
-        runs = command.index(word)
+        named = command.index(f"$i = '{installed}'; if (-not (Test-Path $i))")
+        checked = command.index(digest, named)
+        runs = command.index(word, checked)
         judged = command.index("ExitCode", runs)
-        found = command.index(f"Test-Path '{installed}'", judged)
-        assert skip < checked < runs < judged < found
+        found = command.index("if (-not (Test-Path $i))", judged)
+        assert named < checked < runs < judged < found
+        following = command.find("$u = ", named)
+        assert following == -1 or found < following, "all inside its own block"
     assert command.count("Get-FileHash -Algorithm SHA256") == 2
-    assert command.count("-Wait -PassThru") == 2, "a GUI installer is not waited for by &"
+    assert command.count("-Wait -PassThru") == 3, (
+        "Git, Python and the Visual C++ runtime: a GUI installer is not waited for by &")
     assert command.index("INSTALL_INCOMPLETE: the Git installer") > 0
     assert command.index("INSTALL_INCOMPLETE: the Python installer") > 0
 
@@ -507,3 +510,41 @@ def test_a_windows_launch_can_find_git(launch):
     """Manager imports GitPython, which needs git on PATH when ComfyUI starts;
     a launch session that cannot see it starts ComfyUI with Manager off."""
     assert "C:\\Program Files\\Git\\cmd" in launch(WIN, DEFAULT.launch_args())
+
+
+@pytest.mark.parametrize("host", [WIN, WIN_CPU], ids=["windows", "windows-cpu"])
+def test_the_windows_install_puts_the_visual_cpp_runtime_on_before_torch_needs_it(host):
+    """Found live on 2026-11-03 (live-s2, evidence/46): the install finished,
+    and ComfyUI died at `import torch` with "Microsoft Visual C++
+    Redistributable is not installed" and `[WinError 126] ... c10.dll or one
+    of its dependencies`. Google's windows-2022 image does not carry it.
+
+    Microsoft's permalink serves whatever is latest, so there is no digest to
+    pin: the download is held to a valid Authenticode signature from
+    Microsoft instead, run with the options Microsoft documents, and judged by
+    its exit code and by the registry key Microsoft says records it. It is
+    skipped where that key is already there, as Microsoft says to."""
+    from comfy_qa.provision import VC_REDIST, VC_REDIST_KEY
+
+    command = install_command(host)
+    fetched = command.index(f"$u = '{VC_REDIST}'")
+    skip = command.index(f"$i = '{VC_REDIST_KEY}'; if (-not (Test-Path $i))", fetched)
+    signed = command.index("Get-AuthenticodeSignature", skip)
+    runs = command.index("/install /quiet /norestart", signed)
+    judged = command.index("ExitCode", runs)
+    found = command.index("if (-not (Test-Path $i))", judged)
+    assert fetched < skip < signed < runs < judged < found
+    assert "O=Microsoft Corporation" in command
+    assert found < command.index("comfy.exe' @a"), "before comfy install fetches torch"
+
+
+def test_the_visual_cpp_runtime_is_microsofts_own_permalink():
+    from comfy_qa.provision import VC_REDIST, VC_REDIST_KEY
+
+    assert VC_REDIST == "https://aka.ms/vc14/vc_redist.x64.exe"
+    assert VC_REDIST_KEY == (
+        r"HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64")
+
+
+def test_a_linux_install_has_no_visual_cpp_runtime():
+    assert "vc_redist" not in install_command(LINUX)

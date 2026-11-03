@@ -166,8 +166,8 @@ def test_windows_commands_never_prompt(build):
 
     Counted, not searched for. `"-NonInteractive" in command` was a substring
     check, and `launch_detached_command` is the only builder that emits two
-    PowerShells — the outer one that runs over SSH and the inner `Start-Process`
-    it launches. A substring check cannot tell two from one, so dropping the flag
+    PowerShells — the outer one that runs over SSH and the inner one it starts
+    (through WMI since 1.4.0; `Start-Process` before). A substring check cannot tell two from one, so dropping the flag
     from the outer invocation, the one that actually runs over SSH, left the
     suite green. Both carry it today; this is the guard being able to see it if
     one stops.
@@ -194,10 +194,24 @@ def test_every_windows_command_fits_on_one_cmd_line(build):
     command prompt (cmd.exe)", Microsoft's OpenSSH server configuration page),
     and cmd holds 8191 characters a line ("The maximum length of the string
     that you can use at the command prompt is 8191 characters", KB 830473).
-    The install is the longest, and grew by two pinned installers when Git and
-    Python stopped coming from winget: 6,548 characters with every build option
-    at once, read 2026-11-03."""
+    The install is the longest, and grew by three installers when Git, Python
+    and the Visual C++ runtime stopped being assumed: 7,244 characters with
+    every build option at once, read 2026-11-03 — see the test below, which
+    holds that case, since the builders here are called with the smallest
+    arguments that make them legal."""
     assert len(build(WIN)) < 8191
+
+
+def test_the_longest_windows_install_fits_on_one_cmd_line():
+    """Every option that lengthens the script at once: a PR, a frontend PR, a
+    torch pin, a CUDA index and a clean install; and the build change with the
+    same. Written out at every use, the three installers took this to 7,973."""
+    from comfy_qa.provision import change_command
+
+    widest = Build(pr=17497, frontend_pr=5678, torch="2.12.1+cu130")
+    index = "https://download.pytorch.org/whl/cu130"
+    assert len(install_command(WIN, index, build=widest, clean=True)) < 8191 - 500
+    assert len(change_command(WIN, widest, index)) < 8191 - 500
 
 
 @pytest.mark.parametrize("build", EVERY_BUILDER)
@@ -413,11 +427,13 @@ def test_an_install_checks_its_own_work_before_claiming_success(host):
         # comfy-cli itself installed, that `comfy install` exited 0 — read off
         # $LASTEXITCODE, the only thing PowerShell at `Continue` will not
         # paper over — and that main.py is there at the end. And four times for
-        # each of Git and Python since they stopped coming from winget (1.4.0):
-        # that the installer downloaded, that its SHA-256 is the pinned one,
-        # that it exited 0, and that the file it installs is there.
-        assert command.count("INSTALL_INCOMPLETE") == 3 + 2 * 4
-        assert command.count("exit 1") == 3 + 2 * 4
+        # each of Git, Python and the Visual C++ runtime, which the script
+        # installs itself since 1.4.0: that the installer downloaded, that it
+        # is the file its publisher gives (by SHA-256, or for the runtime by
+        # Microsoft's signature), that it exited as a success, and that what it
+        # installs is there.
+        assert command.count("INSTALL_INCOMPLETE") == 3 + 3 * 4
+        assert command.count("exit 1") == 3 + 3 * 4
         assert "$LASTEXITCODE -ne 0" in command
     else:
         assert "exit 1" in command
@@ -683,7 +699,7 @@ def _powershell_invocations(command: str) -> list[str]:
     """One segment per `powershell` token in a command.
 
     `launch_detached_command` emits two — the outer one that runs over SSH and
-    the inner `Start-Process` it launches — so any rule about *an invocation*
+    the inner one it starts through WMI — so any rule about *an invocation*
     has to be asserted once per segment. Asserted on the whole string instead,
     it is a first-occurrence check: it sees the outer pair and says nothing at
     all about the inner one.

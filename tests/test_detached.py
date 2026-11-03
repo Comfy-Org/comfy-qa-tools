@@ -78,7 +78,7 @@ def box(*, status="RUNNING", port_holder="", launch=0, alive=ALIVE, log="",
             return {"status": status}
         if joined.startswith("compute instances "):
             return ""
-        launching = "nohup" in joined or "Start-Process -FilePath 'powershell'" in joined
+        launching = "nohup" in joined or "Win32_Process -MethodName Create" in joined
         reading = "tail -n" in joined or "Get-Content -Path" in joined
         asking = "pgrep -f" in joined or "Get-Process -Name python" in joined
         holding = "NetTCPConnection" in joined or "sport = :" in joined
@@ -142,7 +142,7 @@ def box_that_holds_its_port_once_launched(**kwargs):
         holding = "NetTCPConnection" in joined or "sport = :" in joined
         if holding and mode == "output":
             return "4242 python" if launched else "PORT_FREE"
-        if "nohup" in joined or "Start-Process -FilePath 'powershell'" in joined:
+        if "nohup" in joined or "Win32_Process -MethodName Create" in joined:
             launched.append(joined)
         return inner(args, mode)
 
@@ -636,6 +636,29 @@ def test_the_windows_launch_quotes_its_interpreter_without_a_literal_quote():
     launch = launch_detached_command(WIN)
     assert "[char]34" in launch
     assert launch.count('"') == 2, "the only double quotes are the ones round -Command"
+
+
+def test_a_windows_detached_launch_outlives_the_ssh_session_that_starts_it():
+    """Found live on 2026-11-03 (live-s2, evidence/44 and 46-50). `go` on a
+    Windows box printed STARTED, then found no ComfyUI and no log at all. A
+    process started with `Start-Process` from an SSH session on that image
+    never reached its first line once the session had returned (evidence/48:
+    neither marker written), while the same body started through WMI's
+    `Win32_Process.Create` wrote both markers a minute apart after its session
+    had long gone (evidence/50). So the launch goes through WMI, whose parent
+    is the WMI service, not the session; STARTED is said only when WMI says it
+    started something; and Git's directory goes on the PATH of the process
+    that runs ComfyUI, since WMI does not hand it this session's."""
+    launch = launch_detached_command(WIN, "--enable-manager")
+    assert "Start-Process" not in launch
+    create = launch.index("Invoke-CimMethod -ClassName Win32_Process -MethodName Create")
+    assert "CurrentDirectory = 'C:\\ComfyUI'" in launch[create:]
+    assert launch.index("ReturnValue", create) < launch.index("'STARTED'")
+    inner = launch.index("$inner = ")
+    assert inner < create
+    assert launch.index("Program Files\\Git\\cmd", inner) < create
+    assert launch.index("main.py --listen 127.0.0.1", inner) < create
+    assert launch.index("comfyui.log", inner) < create
 
 
 @pytest.mark.parametrize("host", [WIN, LINUX], ids=["windows", "linux"])

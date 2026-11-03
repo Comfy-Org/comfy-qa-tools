@@ -153,6 +153,30 @@ GIT_INSTALLER = ("https://github.com/git-for-windows/git/releases/download/"
                  "v2.56.0.windows.4/Git-2.56.0.4-64-bit.exe")
 GIT_INSTALLER_SHA256 = "4961a4a8cc778d8b6e00a5819e5fe4d078b754555aff7aedc2d77a5d74c2de80"
 
+# The Visual C++ runtime, which torch on Windows loads its DLLs against and
+# Google's windows-2022 image does not carry. The first Windows install that got
+# as far as starting ComfyUI died at `import torch`: "Microsoft Visual C++
+# Redistributable is not installed, this may lead to the DLL load failure", then
+# `[WinError 126] ... Error loading "...\torch\lib\c10.dll" or one of its
+# dependencies` (live run 2026-11-03, live-s2/evidence/46).
+#
+# From Microsoft, by the permalink its "Latest supported Visual C++
+# Redistributable downloads" page gives for x64
+# (https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist,
+# read 2026-11-03). A permalink serves whatever is latest, so there is no digest
+# to pin; the download is held to a valid Authenticode signature from Microsoft
+# Corporation instead. "Redistributing Visual C++ files"
+# (https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files)
+# gives the options — `/install`, `/quiet` "for fully unattended installations",
+# `/norestart` — and says to skip the install where the registry already records
+# a version, under `...\VisualStudio\14.0\VC\Runtimes\x64`, because a package
+# older than what is there fails. Its exit codes are Windows Installer's
+# (https://learn.microsoft.com/en-us/windows/win32/msi/error-codes): 0, 3010
+# "a restart is required to complete the install. This message indicates
+# success", and 1638 "another version of this product is already installed".
+VC_REDIST = "https://aka.ms/vc14/vc_redist.x64.exe"
+VC_REDIST_KEY = r"HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+
 # Linux cannot pin it the way Windows can. Windows installs the interpreter it
 # wants (python.org's installer, above); a Linux image ships exactly one python3
 # and the archive holds no other — Ubuntu 22.04 has 3.10, 24.04 has 3.12. So the
@@ -1033,27 +1057,51 @@ def _windows_prerequisites() -> str:
     is. The quote around TargetDir is `[char]34` for the reason
     `launch_detached_command` gives: the script is already inside double
     quotes on its way to the box.
+
+    Then the Visual C++ runtime torch needs, last and before comfy-cli fetches
+    torch. Its permalink has no fixed digest, so it is checked by its
+    Authenticode signature instead (see `VC_REDIST`), and "installed" is the
+    registry key Microsoft says records it.
     """
-    def one(name: str, url: str, digest: str, arguments: str, installed: str,
+    def by_digest(digest: str) -> str:
+        def check(name: str) -> str:
+            return (
+                f"if ((Get-FileHash -Algorithm SHA256 -Path $f).Hash -ne '{digest}') "
+                f"{{ Write-Output 'INSTALL_INCOMPLETE: the {name} installer that "
+                "downloaded is not the file its publisher gives (its SHA-256 differs)'; "
+                "exit 1 }; ")
+        return check
+
+    def by_microsofts_signature(name: str) -> str:
+        return (
+            "$s = Get-AuthenticodeSignature -FilePath $f; "
+            "if (($s.Status -ne 'Valid') -or ($s.SignerCertificate.Subject -notlike "
+            f"'*O=Microsoft Corporation*')) {{ Write-Output 'INSTALL_INCOMPLETE: the "
+            f"{name} installer that downloaded is not signed by Microsoft'; exit 1 }}; ")
+
+    # `$u`, `$f` and `$i` — the URL, the file it is saved as, and what it
+    # installs — so each is written once. Written out at every use, the three
+    # installers took the longest Windows command to 7,973 characters, within
+    # 218 of cmd.exe's 8,191 (see `test_every_windows_command_fits_on_one_cmd_line`).
+    def one(name: str, url: str, check, arguments: str, installed: str,
             succeeded: tuple[int, ...]) -> str:
         saved = f"{WINDOWS_TOOL}\\{url.rsplit('/', 1)[-1]}"
         failed = " -and ".join(f"($c -ne {code})" for code in succeeded)
         return (
-            f"if (-not (Test-Path '{installed}')) {{ "
-            f"Write-Output 'installing {name} from {url}'; "
-            f"Invoke-WebRequest -Uri '{url}' -OutFile '{saved}' -UseBasicParsing; "
-            f"if (-not (Test-Path '{saved}')) {{ Write-Output "
+            f"$u = '{url}'; $f = '{saved}'; $i = '{installed}'; "
+            "if (-not (Test-Path $i)) { "
+            f"Write-Output ('installing {name} from ' + $u); "
+            "Invoke-WebRequest -Uri $u -OutFile $f -UseBasicParsing; "
+            "if (-not (Test-Path $f)) { Write-Output "
             f"'INSTALL_INCOMPLETE: the {name} installer did not download'; exit 1 }}; "
-            f"if ((Get-FileHash -Algorithm SHA256 -Path '{saved}').Hash -ne '{digest}') "
-            f"{{ Write-Output 'INSTALL_INCOMPLETE: the {name} installer that downloaded "
-            "is not the file its publisher gives (its SHA-256 differs)'; exit 1 }; "
-            f"$p = Start-Process -FilePath '{saved}' -ArgumentList {arguments} "
+            + check(name) +
+            f"$p = Start-Process -FilePath $f -ArgumentList {arguments} "
             "-Wait -PassThru; $c = $p.ExitCode; "
             f"if ({failed}) {{ Write-Output ('INSTALL_INCOMPLETE: the {name} installer "
             "exited ' + $c); exit 1 }; "
-            f"if (-not (Test-Path '{installed}')) {{ Write-Output 'INSTALL_INCOMPLETE: "
-            f"the {name} installer finished but {installed} is not there'; exit 1 }}; "
-            f"Remove-Item -Path '{saved}' -Force -ErrorAction SilentlyContinue; "
+            "if (-not (Test-Path $i)) { Write-Output ('INSTALL_INCOMPLETE: "
+            f"the {name} installer finished but ' + $i + ' is not there'); exit 1 }}; "
+            "Remove-Item -Path $f -Force -ErrorAction SilentlyContinue; "
             f"Write-Output '{name} installed' }}; "
         )
 
@@ -1063,14 +1111,17 @@ def _windows_prerequisites() -> str:
         "[Net.ServicePointManager]::SecurityProtocol -bor "
         "[Net.SecurityProtocolType]::Tls12; "
         "$q = [char]34; "
-        + one("Git", GIT_INSTALLER, GIT_INSTALLER_SHA256,
+        + one("Git", GIT_INSTALLER, by_digest(GIT_INSTALLER_SHA256),
               "'/VERYSILENT /NORESTART /NOCANCEL /SP- /CLOSEAPPLICATIONS "
               "/RESTARTAPPLICATIONS'",
               WINDOWS_GIT, (0,))
-        + one("Python", PYTHON_INSTALLER, PYTHON_INSTALLER_SHA256,
+        + one("Python", PYTHON_INSTALLER, by_digest(PYTHON_INSTALLER_SHA256),
               "('/quiet InstallAllUsers=1 PrependPath=1 Include_test=0 TargetDir=' + "
               f"$q + '{WINDOWS_PYTHON_DIR}' + $q)",
               WINDOWS_PYTHON, (0, 3010))
+        + one("Visual C++ runtime", VC_REDIST, by_microsofts_signature,
+              "'/install /quiet /norestart'",
+              VC_REDIST_KEY, (0, 1638, 3010))
     )
 
 
@@ -1241,14 +1292,24 @@ def launch_detached_command(host: Host, args: str = "") -> str:
         *this* ComfyUI, and yesterday's traceback sitting above today's startup is
         how you spend twenty minutes fixing something that is already fixed.
 
-    Windows detaches with `Start-Process`, which cannot merge stdout and stderr
-    into one file — it refuses the same path twice. So it starts a hidden
-    PowerShell that redirects all of its own streams with `*>`, which can. That
-    nesting is also why the inner command quotes the interpreter with
-    `[char]34`: the outer command is already inside double quotes by the time it
-    reaches the box, and a literal `"` here would end it. Rule 3 at the top of
-    this file applies with full force — nothing below prompts, so nothing below
-    can hang a non-interactive SSH command forever.
+    **Windows detaches through WMI**, `Win32_Process.Create` by way of
+    `Invoke-CimMethod`, so that the process's parent is the WMI service and not
+    the SSH session. It used `Start-Process`, and on a real windows-2022 box
+    (live run 2026-11-03, live-s2/evidence/46-50) a process started that way
+    did not outlive the SSH call that started it — it never reached its first
+    line — while the same body started through WMI ran to its end a minute
+    after its session had gone. `go` had printed STARTED and then found neither
+    a ComfyUI nor a log. STARTED is now said only when WMI's ReturnValue is 0.
+
+    What WMI starts is a PowerShell that redirects all of its own streams with
+    `*>`, the one way to get stdout and stderr into one file. It is handed
+    nothing of this session, its PATH included, so it puts Git's directory on
+    its own PATH first, for Manager. Its command line is quoted with
+    `[char]34` round the whole and `[char]39` round the paths: the outer
+    command is already inside double quotes by the time it reaches the box, and
+    a literal `"` here would end it. Rule 3 at the top of this file applies
+    with full force — nothing below prompts, so nothing below can hang a
+    non-interactive SSH command forever.
 
     Prints `using <interpreter>` and then STARTED. STARTED means the process was
     launched, never that it is serving: proving that is the caller's job, and
@@ -1265,13 +1326,17 @@ def launch_detached_command(host: Host, args: str = "") -> str:
                 "(Get-Command python -ErrorAction SilentlyContinue).Source")
             + f"if (-not $py) {{ Write-Output 'NO_PYTHON'; exit {NO_PYTHON_EXIT} }}; "
             + "Write-Output ('using ' + $py); "
-            + "$q = [char]34; "
-            + "$inner = '& ' + $q + $py + $q + "
-            + f"' main.py --listen {listen} --port {COMFYUI_PORT}{cpu} *> ' + $q + "
-            + f"'{WINDOWS_LOG}' + $q; "
-            + "Start-Process -FilePath 'powershell' "
-            + "-ArgumentList '-NoProfile', '-NonInteractive', '-Command', $inner "
-            + f"-WorkingDirectory '{WINDOWS_ROOT}' -WindowStyle Hidden; "
+            + "$q = [char]34; $s = [char]39; "
+            + f"$inner = '$env:Path = ' + $s + '{WINDOWS_GIT_CMD};' + $s + "
+            + "' + $env:Path; & ' + $s + $py + $s + "
+            + f"' main.py --listen {listen} --port {COMFYUI_PORT}{cpu} *> ' + $s + "
+            + f"'{WINDOWS_LOG}' + $s; "
+            + "$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+            + "-Arguments @{ CommandLine = ('powershell -NoProfile -NonInteractive "
+            + "-Command ' + $q + $inner + $q); "
+            + f"CurrentDirectory = '{WINDOWS_ROOT}' }}; "
+            + "if ($r.ReturnValue -ne 0) { Write-Output ('could not start ComfyUI: "
+            + "Win32_Process.Create returned ' + $r.ReturnValue); exit 1 }; "
             + f"Write-Output '{STARTED}'\""
         )
     return (
