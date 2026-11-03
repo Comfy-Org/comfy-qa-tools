@@ -121,7 +121,7 @@ comfy-qat status          # re-check readiness at any time
 ```sh
 comfy-qat go windows       # start it, tunnel in, leave ComfyUI running on the box
 comfy-qat logs windows     # what that ComfyUI is saying, whenever you want it
-comfy-qat stamp windows    # the line that says what produced your result
+comfy-qat stamp windows    # the line that says what produced your result, build included
 comfy-qat down windows     # close the tunnel, stop the box, stop paying
 comfy-qat down --all       # stop every cloud box you have declared
 ```
@@ -161,13 +161,26 @@ order it would try, and creates nothing. The finished box is added to your host
 list on a free port, so `go` works on it straight away.
 
 **The NVIDIA driver is not in either base image**, and a box without one runs
-ComfyUI on its CPU while looking perfectly healthy. Linux boxes install it from a
-startup script on first boot. Windows boxes do not: Google documents exactly one
-way to do it there and it is a person at a PowerShell prompt, so `create` prints
-those commands rather than guessing at a recipe it cannot test.
+ComfyUI on its CPU while looking perfectly healthy. Both kinds of box install it
+themselves on first boot, each with Google's own documented method: Linux from a
+startup script, Windows from Google's driver script set as the box's
+`sysprep-specialize-script-url`. Nothing is left for you to run, and `go` waits
+for the driver on both.
+
+**The build is a choice.** `create`, `go` and `switch` take a ComfyUI release, PR
+or commit (`--version v0.43.0`, `--pr 17497`, `--commit 426f5ee`), a frontend
+release or PR (`--frontend-version v1.58.4`, `--frontend-pr 5678`), and a torch
+pin (`--torch 2.12.1+cu130`); ComfyUI-Manager is on unless you say
+`--no-manager`. comfy-cli does the installing, on the box. A build that does not
+exist is refused before anything is created, a new build on an existing box
+keeps its custom nodes and models, and `go` reports a box ready only once the
+ComfyUI running on it says it is the build you asked for. With none of them,
+it is the tip of ComfyUI's default branch, as before.
+[Choosing the build](docs/machines.md#choosing-the-build) has the whole of it.
 
 `go` is the one command worth memorising. It starts the instance, installs
-ComfyUI if the box has none — with a torch built for that box's CUDA — launches
+ComfyUI if the box has none — the build you chose, with comfy-cli, and a torch
+built for that box's CUDA — launches
 it **on the box**, and forwards a local port to it as soon as it is listening.
 The forward is an `ssh -L` over Identity-Aware Proxy: it reaches the box's own
 loopback, so nothing is exposed on any interface and no firewall rule is

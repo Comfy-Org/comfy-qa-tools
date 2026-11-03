@@ -1554,6 +1554,12 @@ listed under `build` in [hosts.md](hosts.md#fields). The same refusal for a mana
 word that is neither on nor off reads **`the build 'comfyui=default manager=maybe'
 says manager='maybe'; it is on or off.`**
 
+**`could not stop the ComfyUI on comfy-linux (pid 2737) — it still holds the port`**
+A box already serving was asked for another build, so the ComfyUI on it is stopped
+before the build is changed — and the stop did not go through. The change goes on,
+and the launch after it will find the port held: `comfy-qat logs <name>` says what
+that ComfyUI is doing, and `comfy-qat ssh <name>` gets you onto the box to stop it.
+
 **`--no-install refuses to install, and a build option asks for one`**
 `go --no-install` and `switch --no-install` mean "never install", and a build option
 asks for an install or a build change. Drop one of them.

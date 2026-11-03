@@ -164,11 +164,14 @@ reservation along with the box; and `list` has a RESERVED column.
 
 The finished box is added to your host list on a free port, so `go` works on
 it immediately. **The NVIDIA driver is not in either base image**, and a box
-without it runs ComfyUI on the CPU while looking perfectly healthy: Linux boxes
-install it from a startup script on first boot, Windows boxes are handed the two
-commands Google documents and you run them once. See
-[troubleshooting](troubleshooting.md#the-nvidia-driver) for why that half is
-deliberately manual.
+without it runs ComfyUI on the CPU while looking perfectly healthy. Both kinds of
+box install it themselves on first boot, each with Google's own method: Linux
+from a startup script, Windows — since 1.4.0 — from the
+`sysprep-specialize-script-url` metadata key Google now documents for exactly
+this, pointed at Google's own script. Nothing is printed for you to run, and `go`
+waits for the driver on both. See
+[troubleshooting](troubleshooting.md#the-nvidia-driver) for the details and for
+where each one's log is when it does not finish.
 
 ## One command: `go`
 
@@ -182,8 +185,9 @@ That is the whole thing. In order, it:
 1. starts the instance if it is stopped, and waits for it to reach RUNNING;
 2. asks whether ComfyUI is already answering — if it is, you get the URL and the
    stamp immediately and nothing is installed or restarted;
-3. installs ComfyUI if the box has none, on a pinned Python 3.12, with a torch
-   built for whatever CUDA that box's driver reports;
+3. installs ComfyUI if the box has none — with comfy-cli, on the box, the build
+   you chose (see [choosing the build](#choosing-the-build)) — on a pinned Python
+   3.12, with a torch built for whatever CUDA that box's driver reports;
 4. launches it **on the box**, detached, with its output going to a log file
    there;
 5. forwards a local port to it as soon as it is listening, waits until ComfyUI
@@ -209,6 +213,92 @@ tunnel.
 
 `--no-browser` skips the browser; `--no-install` fails rather than installing on a
 box that has none.
+
+## Choosing the build
+
+Which ComfyUI goes on the box is a choice, made on `create`, `go` or `switch`.
+Each part is set on its own:
+
+| part | options | left off |
+|---|---|---|
+| ComfyUI | `--version v0.43.0` (a release), `--pr 17497` (an open pull request) or `--commit 426f5ee` — one of the three | the tip of ComfyUI's default branch, as before 1.4.0 |
+| the frontend | `--frontend-version v1.58.4` (a release) or `--frontend-pr 5678` | the frontend that ComfyUI build pins |
+| ComfyUI-Manager | `--no-manager` leaves it out; `--manager` puts it back | **on** — a plain install, a plain `go` included, has Manager |
+| PyTorch | `--torch 2.12.1+cu130` | comfy-cli picks torch for the box's driver, as before |
+
+```sh
+comfy-qat create --os linux --gpu l4 --version v0.43.0 --frontend-version v1.58.4
+comfy-qat go comfy-linux                     # installs that build
+comfy-qat switch comfy-linux --pr 17497      # the same box, a PR, nodes and models kept
+comfy-qat stamp comfy-linux
+```
+
+```
+comfy-linux · ComfyUI 0.43.0 (PR 17497, 9350a08d80) · frontend 1.58.4 · Manager on · linux · cuda:0 NVIDIA L4 (22GB) · torch 2.14.1+cu130 · python 3.10.12
+```
+
+**Every command says which build it chose, the default included**, before
+anything is installed: `build: ComfyUI v0.43.0 · frontend v1.58.4 · Manager on ·
+torch as comfy-cli picks it for the box`. `create` says it in its plan and writes
+it into the box's host list entry as `build` — see [hosts.md](hosts.md#fields) —
+and the first `go` installs it.
+
+**comfy-cli does the installing, on the box.** The tool puts a pinned comfy-cli
+(1.24.0) in a venv of its own beside ComfyUI and runs `comfy install` with the
+build's own options — `--version`, `--pr`, `--commit`, `--skip-manager`,
+`--cuda-version` — printing each command before it runs it, so the exact command
+is in the streamed log. comfy-cli is run with `DO_NOT_TRACK=1`, without which
+every command it runs pays a five-second telemetry flush on the way out, and
+ComfyUI is started by this tool's own launch, never by `comfy launch
+--background`, which refuses a second server even on a free port. A frontend
+release is not an install at all: ComfyUI fetches it itself at startup
+(`--front-end-version`). A frontend PR is built on the box by comfy-cli's own
+builder — the one `comfy launch --frontend-pr` uses, which needs Node.js and pnpm,
+and the tool installs both first — and served with `--front-end-root`.
+
+**Bad input costs nothing.** Two of `--version`, `--pr` and `--commit` at once is
+refused; so is a release that does not exist, a PR that does not exist or is
+closed (a merged one is pointed at the commit it landed as), and an unknown
+commit. Each is asked of GitHub, read-only, before Google is asked anything, so
+the refusal comes back in a second rather than after a box has booted and billed.
+
+**Changing the build keeps your nodes and models.** `go` or `switch` with a build
+option, on a box that already has ComfyUI, changes it in place — `comfy install
+--restore` on the existing checkout — and nothing under `custom_nodes/` or
+`models/` is touched. A box that is already serving has its ComfyUI stopped
+first. Name only what changes: `go comfy-linux --frontend-version v1.58.4` keeps
+the ComfyUI it has. `--clean` deletes ComfyUI on the box, nodes and models with
+it, and installs the build from nothing. With no build option at all, a box keeps
+what it has, and `go` onto one that is already serving asks it nothing — that is
+what keeps the everyday command quick.
+
+**Ready means the build you asked for.** Once ComfyUI answers, what it is running
+is read back off the machine — never off what was asked for — and compared: the
+ComfyUI version and torch from the running server, the frontend from the bundle it
+is actually serving, Manager from whether Manager answers, the commit and PR from
+git in the checkout. A contradiction is said plainly, with the command that puts
+the build back, and nothing is reported ready or opened. A part that cannot be
+read is said to be unconfirmed and does not block.
+
+### Pinning PyTorch
+
+Miles's "Desktop hardware QA Process" page says: "Run all NVIDIA machines on
+PyTorch 2.12.1 for CUDA 13.0, the version most users run." That is his
+recommendation, and this tool does not apply it for you — nothing is pinned unless
+you ask. To follow it:
+
+```sh
+comfy-qat go comfy-win --torch 2.12.1+cu130
+```
+
+The pin reaches every `pip install` comfy-cli runs, as a pip constraint
+(`PIP_CONSTRAINT`), so the torch it fetches and the `torch` line in ComfyUI's
+own requirements both get it; the `+cu130` becomes comfy-cli's `--cuda-version
+13.0`. The wheels exist: the PyTorch index listed `torch-2.12.1+cu130` for Python
+3.10 to 3.14 on Linux x86_64 and Windows amd64 on 2026-11-03. Whether a given
+driver runs CUDA 13.0 is the box's to say — `stamp` shows the torch that was
+actually installed. On a box with no GPU only the version can be pinned:
+`--torch 2.12.1`.
 
 ## Two machines at once
 
@@ -654,8 +744,14 @@ comfy-qat stamp comfy-win
 ```
 
 ```
-comfy-win · ComfyUI 0.33.0 · windows · cuda:0 NVIDIA L4 (23GB) · torch 2.13.0 · python 3.12.13
+comfy-win · ComfyUI 0.43.0 (426f5eea52) · frontend 1.58.4 · Manager on · win32 · cuda:0 NVIDIA L4 (23GB) · torch 2.12.1+cu130 · python 3.12.13
 ```
+
+Since 1.4.0 the line carries the build the machine is actually running: ComfyUI's
+version with the checkout's commit — and the PR, when it came from one — the
+frontend it is serving, Manager on or off, and torch. Each is read off the
+running machine, never off what was asked for, and one that cannot be read is
+left out rather than guessed.
 
 Do this at the point you get a result, not afterwards from memory. It is the record
 almost nothing else keeps, and it is what makes two people's "works for me" and
