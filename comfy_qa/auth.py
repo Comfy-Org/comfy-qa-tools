@@ -397,10 +397,11 @@ def _refuse_if_unsold(name: str, region: str | None, sells, quotas) -> None:
            f" — Google sells it in {len(here)} regions, none of them metered by "
            f"this project" if here else " in any zone"),
         fix=say.fix(
-            *([f"comfy-qat quota request --gpu {name} --region {both[0]}"
-               f"  # metered here and stocked there"] if both else []),
-            f"comfy-qat quota list --region {region}"
-            "  # what this region actually offers"),
+            *(["where it is metered and stocked:",
+               f"comfy-qat quota request --gpu {name} --region {both[0]}"]
+              if both else []),
+            "what this region actually offers:",
+            f"comfy-qat quota list --region {region}"),
         code=2,
     )
 
@@ -539,8 +540,8 @@ def _stop_on_region_shape(region: str | None) -> None:
     wrong = region_shape_problem(region)
     if wrong:
         say.fail(wrong[0],
-                 fix=say.fix(*wrong[1], "comfy-qat quota list --by-region  "
-                             "# every region this project meters"),
+                 fix=say.fix(*wrong[1], "every region this project meters:",
+                             "comfy-qat quota list --by-region"),
                  code=2)
 
 
@@ -860,8 +861,8 @@ def quota_list_cmd(
         wrong = region_problem(gc, project, quotas, region)
         if wrong:
             say.fail(wrong[0],
-                     fix=say.fix(*wrong[1], "comfy-qat quota list --by-region  "
-                                 "# every region this project meters"),
+                     fix=say.fix(*wrong[1], "every region this project meters:",
+                                 "comfy-qat quota list --by-region"),
                      code=2)
     rows = readiness(quotas, prefs, region=region)
     cards = summarise(rows)
@@ -1724,7 +1725,8 @@ def quota_request_cmd(
             say.fail(
                 f"could not read this project's existing quota requests: {exc}",
                 fix=say.fix(
-                    "comfy-qat quota request ... --dry-run  # prints, asks nothing",
+                    "see what it would send — this prints and asks nothing:",
+                    "comfy-qat quota request ... --dry-run",
                     "then try again — without that list a request could duplicate "
                     "one already on file, and a quota preference cannot be deleted"),
                 code=2,
@@ -1754,8 +1756,8 @@ def quota_request_cmd(
                 fix=say.fix(
                     *[f"comfy-qat quota request{what} {line}"
                       for line in wrong[1]],
-                    "comfy-qat quota list --by-region  # every region this "
-                    "project meters"),
+                    "every region this project meters:",
+                    "comfy-qat quota list --by-region"),
                 code=2,
             )
 
@@ -1833,10 +1835,10 @@ def quota_request_cmd(
         say.fail(
             "--gpu and --quota-id both name what to ask for, and they disagree "
             "here, so this command cannot tell which you meant",
-            fix=say.fix(f"comfy-qat quota request --quota-id {quota_id}"
-                        f"  # the quota, exactly as Google names it",
-                        f"comfy-qat quota request --gpu {gpu}"
-                        f"  # the card or cards, resolved for you"),
+            fix=say.fix("the quota, exactly as Google names it:",
+                        f"comfy-qat quota request --quota-id {quota_id}",
+                        "or the card or cards, resolved for you:",
+                        f"comfy-qat quota request --gpu {gpu}"),
             code=2,
         )
     if quota_id:
@@ -1877,7 +1879,8 @@ def quota_request_cmd(
                 f"{quota_id} meters several cards and names which one in a "
                 f"dimension, so a raw id cannot say which you mean",
                 fix=say.fix(
-                    "comfy-qat quota request --gpu h100  # name the card instead",
+                    "name the card instead:",
+                    "comfy-qat quota request --gpu h100",
                     "comfy-qat quota list — which cards this id meters"),
                 code=2,
             )
@@ -1898,8 +1901,8 @@ def quota_request_cmd(
                 fix=say.fix(
                     f"comfy-qat quota request --quota-id {quota_id} "
                     f"--region us-central1",
-                    "comfy-qat quota list --by-region  # every region this "
-                    "project meters"),
+                    "every region this project meters:",
+                    "comfy-qat quota list --by-region"),
                 code=2,
             )
         # SAY WHEN A FLAG IS DROPPED. This command refuses an empty region, a
@@ -1960,8 +1963,8 @@ def quota_request_cmd(
             say.fail(
                 f"{name} is what `quota list` calls this card; "
                 f"`--gpu` takes {as_quota.key}",
-                fix=say.fix(f"comfy-qat quota request --gpu {as_quota.key}"
-                            f"  # the same card, the spelling both commands take",
+                fix=say.fix("the same card, the spelling both commands take:",
+                            f"comfy-qat quota request --gpu {as_quota.key}",
                             "comfy-qat create --gpu <card> — takes the same "
                             "spellings"),
                 code=2,
@@ -2066,12 +2069,14 @@ def quota_request_cmd(
                 # `stocked is None` means the catalogue could not be read, and
                 # only then is "somewhere it is metered" all we can say.
                 if usable:
-                    where = (f"comfy-qat quota request --gpu {name} --region "
-                             f"{usable[0]}  # metered here and stocked there")
+                    where = (f"where it is metered and stocked:\n"
+                             f"comfy-qat quota request --gpu {name} --region "
+                             f"{usable[0]}")
                 elif stocked is None:
-                    where = (f"comfy-qat quota request --gpu {name} --region "
-                             f"{places[0]}  # somewhere it is metered; whether it "
-                             f"is stocked was not checked")
+                    where = (f"somewhere it is metered — whether it is stocked "
+                             f"was not checked:\n"
+                             f"comfy-qat quota request --gpu {name} --region "
+                             f"{places[0]}")
                 else:
                     where = (f"no region this project meters {name} in also "
                              f"stocks it")
@@ -2079,9 +2084,10 @@ def quota_request_cmd(
                     f"this project has no {name} quota in {region}",
                     fix=say.fix(
                         where,
-                        "comfy-qat quota list --by-region  # "
-                        + ("the other " + str(len(places) - 1) + " too"
-                           if len(places) > 1 else "every region it is metered in")),
+                        ("the other " + str(len(places) - 1) + " regions it is "
+                         "metered in:" if len(places) > 1
+                         else "every region it is metered in:"),
+                        "comfy-qat quota list --by-region"),
                     code=2,
                 )
             say.fail(
@@ -2210,8 +2216,8 @@ def quota_request_cmd(
                 flag = (f"--quota-id {name}" if quota_id == name
                         else f"--gpu {name}")
                 remedy = say.fix(
-                    f"comfy-qat quota request {flag} --value 1"
-                    f"  # a count of GPUs, 1 or more",
+                    "a count of GPUs, 1 or more:",
+                    f"comfy-qat quota request {flag} --value 1",
                     "comfy-qat quota — what this project holds")
             elif held_value(resolved, quotas) == UNLIMITED:
                 remedy = say.fix(
@@ -2240,9 +2246,9 @@ def quota_request_cmd(
             typed = f"--quota-id {name}" if quota_id == name else f"--gpu {name}"
             say.fail(
                 f"{name}: refusing to lower the standing request to {value}",
-                fix=say.fix(f"comfy-qat quota request {typed} --value {send}"
-                            f"  # keep it where it is",
-                            "--allow-lower  # if you really mean to reduce it"),
+                fix=say.fix("keep it where it is:",
+                            f"comfy-qat quota request {typed} --value {send}",
+                            "or add --allow-lower, if you really mean to reduce it"),
                 code=2,
             )
         if send == 0:

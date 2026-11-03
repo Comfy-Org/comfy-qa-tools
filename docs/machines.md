@@ -104,8 +104,10 @@ is running:
 ```
 comfy-linux is reserved. Google holds its capacity and bills for it every hour —
 running or stopped — until the box is deleted.
-  comfy-qat down comfy-linux     # first — delete refuses a box that is running
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  first stop it — delete refuses a box that is running:
+    comfy-qat down comfy-linux
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 The `down` line is a step and says so. It is never described as what stops the
@@ -440,8 +442,10 @@ This is not a fault on your side, and retrying in the same zone will not help.
 comfy-linux is untouched — you still have the machine you were on
 
 where you can test instead, easiest first:
-    comfy-qat switch comfy-linux   # Ubuntu 22.04, A100
-    comfy-qat switch local         # local install
+    Ubuntu 22.04, A100:
+      comfy-qat switch comfy-linux
+    local install:
+      comfy-qat switch local
 
 if it has to be comfy-win:
     Google says us-central1-b has capacity right now:
@@ -491,7 +495,8 @@ running, and `down` says so rather than `was billing. Stopped.`:
 
 ```
 comfy-linux was running. Stopped — but it is reserved, so it is still billing.
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 `down <name>` asks the box itself, not only your host list. A box bound to a

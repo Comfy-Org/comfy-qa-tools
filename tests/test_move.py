@@ -1843,7 +1843,7 @@ def test_the_refusal_hands_over_stop_delete_and_create_again_reserved(
                if line.strip().startswith("comfy-qat ")]
     assert offered == [
         "comfy-qat down comfy-win",
-        "comfy-qat delete comfy-win",
+        "comfy-qat delete comfy-win --yes",
         "comfy-qat create --os windows --gpu l4 --reserve --name comfy-win "
         "--zone us-central1-b",
     ]

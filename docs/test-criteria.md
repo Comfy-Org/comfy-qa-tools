@@ -1081,8 +1081,8 @@ echo "=== V14 down --all gives no all-clear"; qat down --all
 - [ ] **V10** — not refused. The reserved box is the whole GPU allowance and
       this needs none of it.
 - [ ] **V11** — stops the machine and says `qa-rsv was running. Stopped — but it
-      is reserved, so it is still billing.`, then the `comfy-qat delete qa-rsv`
-      line. It does **not** say `was billing. Stopped.`
+      is reserved, so it is still billing.`, then the `comfy-qat delete qa-rsv
+      --yes` line. It does **not** say `was billing. Stopped.`
 - [ ] **V11b** — the instance is `TERMINATED` and the reservation is still
       there, still `READY`. Record what `inUseCount` reads for a stopped box.
 - [ ] **V12** — `go` starts it in the **same zone** and serves; `stamp` names

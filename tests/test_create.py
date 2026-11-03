@@ -1134,7 +1134,7 @@ def test_a_reservation_holding_the_whole_ceiling_refuses_in_the_words_the_design
     assert problem.fix.splitlines()[0] == "stop it, then delete it to release the card:"
     assert [line.strip() for line in problem.fix.splitlines()[1:]] == [
         "comfy-qat down comfy-linux",
-        "comfy-qat delete comfy-linux",
+        "comfy-qat delete comfy-linux --yes",
     ]
 
 
@@ -1575,7 +1575,7 @@ def test_the_entry_that_is_that_machine_is_named_by_its_own_label():
     assert [line.strip() for line in problem.fix.splitlines()] == [
         "stop it, then delete it to release the card:",
         "comfy-qat down my-t4-box",
-        "comfy-qat delete my-t4-box",
+        "comfy-qat delete my-t4-box --yes",
     ]
     assert "comfy-linux" not in problem.fix
 
@@ -1764,7 +1764,7 @@ def test_a_named_zone_in_a_full_region_names_a_declared_box_by_its_entry(tmp_pat
                 hosts=[entry("box-one", instance_name="one", zone="us-central1-b")])
 
     lines = [line.strip() for line in caught.value.fix.splitlines()]
-    assert "comfy-qat down box-one" in lines and "comfy-qat delete box-one" in lines
+    assert "comfy-qat down box-one" in lines and "comfy-qat delete box-one --yes" in lines
     assert not [line for line in lines if line.startswith("gcloud compute instances delete")]
 
 
@@ -1989,7 +1989,7 @@ def test_the_box_that_is_really_on_it_is_named_by_its_own_host_list_entry():
     assert [line.strip() for line in fix.splitlines()] == [
         "stop it, then delete it to release the card:",
         "comfy-qat down my-label",
-        "comfy-qat delete my-label",
+        "comfy-qat delete my-label --yes",
     ]
 
 
@@ -2221,7 +2221,8 @@ def test_the_ending_for_a_reserved_box_stops_it_before_it_deletes_it():
     from comfy_qa import create
 
     lines = create.next_steps(T4_BLUEPRINT, "us-central1-a")
-    down = "  comfy-qat down comfy-linux     # first — delete refuses a box that is running"
+    down = ("  first stop it — delete refuses a box that is running:\n"
+            "    comfy-qat down comfy-linux")
     delete = rsv.stop_line("comfy-linux")
 
     assert lines[-2:] == [down, delete]

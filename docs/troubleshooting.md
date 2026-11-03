@@ -890,7 +890,7 @@ What the fix prints depends on what the reservation is:
 
   ```sh
   comfy-qat down comfy-linux
-  comfy-qat delete comfy-linux
+  comfy-qat delete comfy-linux --yes
   ```
 
   Two lines because `delete` refuses a box that is running. The name is the one
@@ -1555,7 +1555,7 @@ The machine and the tunnel are both fine — ComfyUI itself is not serving. **Th
 is billing while this is true**, which is why the fix line ends with
 `or stop paying for it: comfy-qat down comfy-win`. For a **reserved** box that
 tail reads `or stop the box: comfy-qat down comfy-win — it is reserved, so the
-bill only stops with: comfy-qat delete comfy-win`, here and on every other
+bill only stops with: comfy-qat delete comfy-win --yes`, here and on every other
 failure that ends this way: stopping a reserved box does not stop its bill. The
 error prints how to get onto it, which differs
 by OS: Windows needs a password reset and Remote Desktop over the tunnel, anything
@@ -1846,11 +1846,12 @@ state genuinely could not be read. The only thing still wrong is the record, and
 not be — a reservation outlives its box and bills at the card's rate with
 nothing on it — and the sentence is a different one:
 
-**`could not stop comfy-linux (<error>), and the project does not have it — the box no longer exists, but its reservation comfy-linux-rsv is still billing unless it was released too. Release it and clear the entry: comfy-qat delete comfy-linux`**
+**`could not stop comfy-linux (<error>), and the project does not have it — the box no longer exists, but its reservation comfy-linux-rsv is still billing unless it was released too. Release it and clear the entry: comfy-qat delete comfy-linux --yes`**
 
-`comfy-qat delete <name>` is the command for this, not `discover --prune`. It
-asks Google by name whether the reservation is still there, releases it if it
-is, and takes the entry out either way. `discover --prune` does **not** remove a
+`comfy-qat delete <name> --yes` is the command for this, not `discover --prune`.
+It asks Google by name whether the reservation is still there, releases it if it
+is, and takes the entry out either way — and with `--yes` it runs as printed,
+with nobody there to type the name back. `discover --prune` does **not** remove a
 reserved box's entry for exactly this reason: the entry is the last thing on
 your machine that names the reservation. It lists it under `not on the project
 any more, and reserved — the box is gone, but its reservation may still be
@@ -1927,9 +1928,10 @@ stops it, and the box carries on billing either way.
 **`stopped, and ComfyUI stopped with it — that is what Ctrl-C does here. comfy-win
 is still running, and a stopped ComfyUI on a running box still bills.`**
 
-Ctrl-C out of `go --follow`. Under it are three lines: `comfy-qat go comfy-win`
-to start ComfyUI again, `comfy-qat logs comfy-win` to watch it without stopping
-it, and `comfy-qat down comfy-win   # stop the box, stop paying`.
+Ctrl-C out of `go --follow`. Under it are three commands, each under the line
+that says what it is for: `comfy-qat go comfy-win` to start ComfyUI again,
+`comfy-qat logs comfy-win` to watch it without stopping it, and `comfy-qat down
+comfy-win` to stop the box, and stop paying.
 
 The message used to say only that the machine was still running, which is true
 and is not the part that surprises anyone. `--follow` and `comfy-qat logs` are
@@ -2181,7 +2183,7 @@ three commands in the order they run:
 
 ```sh
 comfy-qat down comfy-linux
-comfy-qat delete comfy-linux
+comfy-qat delete comfy-linux --yes
 comfy-qat create --os linux --gpu l4 --reserve --name comfy-linux --zone <zone>
 ```
 
@@ -2312,8 +2314,8 @@ The boxes that can run right now, same OS first, and a box in the same zone list
 last and labelled — it may hit the same shortage. Pick one and carry on.
 
 **`no other machine is declared, so there is nowhere to switch to:`**
-You have one box and it cannot start. The line under it —
-`comfy-qat discover   # declare a box you already have` — will pick up
+You have one box and it cannot start. The command under it — `comfy-qat
+discover`, to declare a box you already have — will pick up
 anything already in your project; otherwise your options are to wait for capacity
 or to move the box.
 
@@ -3174,7 +3176,8 @@ stop its bill:
 
 ```
 comfy-linux was running. Stopped — but it is reserved, so it is still billing.
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 The same holds for a reserved box that was already stopped (`was not running —
@@ -3183,17 +3186,19 @@ read (`It is reserved, so it is billing either way`).
 
 `up`, `go` and `logs` leave a reserved box **running**, and `delete` refuses a
 running box (`is running, not stopped. Stop it first`, exit 2). So they end on
-two lines, in the order to run them, where for any other box they end on
-`comfy-qat down <name>   # stop the box, stop paying`:
+two steps, in the order to run them, where for any other box they end on
+`stop the box, stop paying:` and `comfy-qat down <name>` under it:
 
 ```
-  comfy-qat down comfy-linux     # first — delete refuses a box that is running
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  first stop it — delete refuses a box that is running:
+    comfy-qat down comfy-linux
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 `down` is there as a step and is labelled as one; it is never said to stop the
-bill. `disconnect` already prints its own `comfy-qat down <name>   # when the
-work is finished` and adds the `delete` line under it. `create --reserve` ends
+bill. `disconnect` already prints its own `comfy-qat down <name>`, under `when
+the work is finished:`, and adds the `delete` lines under it. `create --reserve` ends
 the same way as `go`.
 
 `down --all` never prints `Nothing is now.` while any declared box is reserved,

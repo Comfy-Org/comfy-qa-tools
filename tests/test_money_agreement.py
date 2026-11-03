@@ -339,14 +339,16 @@ def test_each_down_verdict_about_a_reserved_box_says_it_is_still_billing(
     # has to be stopped before `delete` takes it — but never as what stops
     # the bill.
     assert "stop paying" not in result.stdout
-    for line in result.stdout.splitlines():
+    lines = result.stdout.splitlines()
+    for at, line in enumerate(lines):
         if stop_paying(WIN) in line:
-            why = line.partition("#")[2]
+            # The reason is the line above the command, since O25.
+            why = lines[at - 1]
             assert "bill" not in why and "paying" not in why, (
                 "`comfy-qat down` was offered as the way to stop a reserved "
-                f"box's bill: {line}")
-    assert any("comfy-qat delete comfy-win" in line and "bill" in line
-               for line in result.stdout.splitlines())
+                f"box's bill: {why} / {line}")
+    assert any("comfy-qat delete comfy-win" in line and "bill" in lines[at - 1]
+               for at, line in enumerate(lines))
     if verdict != "billing":
         # Stopped by this run: `delete` is the next step, with no `down` first.
         assert stop_paying(WIN) not in result.stdout
@@ -648,7 +650,7 @@ def test_the_reader_tells_the_six_inversions_from_what_is_written():
 def test_the_offer_reader_tells_advice_from_a_full_stop():
     """"Stopped." is a report, not an offer, and "nothing to stop" is its
     opposite while containing every word of one."""
-    assert _offers_a_way_to_stop(f"  {stop_paying(WIN)}   # stop the box, stop paying")
+    assert _offers_a_way_to_stop(f"  stop the box, stop paying:\n    {stop_paying(WIN)}")
     # Prose rather than a command, which the reader has to recognise as an offer
     # just the same. The tool's own example of this was `down --all
     # --keep-running`'s "Run without --keep-running to stop them.", which went

@@ -636,15 +636,20 @@ ITS_RESERVATION = {
 # The two endings, typed. Not `reservation.stop_line(...)` and not
 # `lifecycle.stop_paying(...)`: a test that asserts a value against the thing
 # that produced it cannot fail.
-DELETE_LINE = ("  comfy-qat delete comfy-win   # the only thing that stops a "
-               "reserved box's bill — the box and its disk go too")
-DOWN_LINE = "  comfy-qat down comfy-win   # stop the box, stop paying"
+#
+# Each is two lines: the reason, and under it the command, alone on its line so
+# it runs as pasted — a `#` note on the end of it was passed to the command as
+# arguments by an interactive zsh (O25). And the delete carries `--yes`, so it
+# runs with nobody there to type the box's name.
+DELETE_LINE = ("  the only thing that stops a reserved box's bill — the box and its "
+               "disk go too:\n    comfy-qat delete comfy-win --yes")
+DOWN_LINE = "  stop the box, stop paying:\n    comfy-qat down comfy-win"
 # The step before `delete`, for a reserved box that is RUNNING: `delete`
 # refuses one that is — "is running, not stopped. Stop it first", exit 2 — so
 # the delete line printed alone was a command that failed as pasted. Found on
 # a real box, after `create --reserve` and after `go`.
-FIRST_DOWN = ("  comfy-qat down comfy-win     # first — delete refuses a box "
-              "that is running")
+FIRST_DOWN = ("  first stop it — delete refuses a box that is running:\n"
+              "    comfy-qat down comfy-win")
 
 
 def down_is_never_said_to_stop_the_bill(out: str) -> None:
@@ -654,10 +659,13 @@ def down_is_never_said_to_stop_the_bill(out: str) -> None:
     being described as what stops the money: told "stop the box, stop paying",
     somebody stops it, closes the laptop and pays for the card all night."""
     assert "stop paying" not in out, out
-    for line in out.splitlines():
-        if "comfy-qat down" in line:
-            why = line.partition("#")[2]
-            assert "bill" not in why and "paying" not in why and "cost" not in why, line
+    lines = out.splitlines()
+    for at, line in enumerate(lines):
+        if line.strip().startswith("comfy-qat down"):
+            # The reason is the line above the command now, not a `#` note on it.
+            why = lines[at - 1] if at else ""
+            assert "bill" not in why and "paying" not in why and "cost" not in why, (
+                f"{why}\n{line}")
 
 
 class Held(Cloud):
@@ -683,7 +691,7 @@ def test_down_on_a_reserved_box_says_it_is_still_billing_and_how_that_stops(cli)
     assert result.exit_code == 0, result.output
     assert ("comfy-win was running. Stopped — but it is reserved, so it is still "
             "billing.") in result.stdout
-    assert DELETE_LINE in result.stdout.splitlines()
+    assert DELETE_LINE in result.stdout
     assert result.cloud.calls.count("stop_instance") == 1, "and it did stop the machine"
     # The three things it must not say, each of which the unreserved box hears.
     assert "stop paying" not in result.stdout
@@ -699,7 +707,7 @@ def test_down_on_a_reserved_box_that_was_already_stopped_does_not_say_nothing_wa
 
     assert ("comfy-win was not running — but it is reserved, so it is still "
             "billing.") in result.stdout
-    assert DELETE_LINE in result.stdout.splitlines()
+    assert DELETE_LINE in result.stdout
     assert "nothing was billing" not in result.stdout
 
 
@@ -713,7 +721,7 @@ def test_down_on_a_reserved_box_nobody_could_read_says_it_bills_either_way(cli):
     assert ("comfy-win could not be checked before stopping. It is reserved, so "
             "it is billing either way.") in out
     assert "  comfy-qat list --live" in out.splitlines()
-    assert DELETE_LINE in out.splitlines()
+    assert DELETE_LINE in out
 
 
 def test_the_same_three_runs_on_an_ordinary_box_still_say_what_they_always_did(cli):
@@ -749,7 +757,7 @@ def test_down_on_a_box_bound_to_a_reservation_its_entry_does_not_declare(cli):
     assert ("its host list entry does not say so: comfy-win is bound to the "
             "reservation comfy-win-rsv, which bills every hour whether the box "
             "runs or not.") in _one_line(out)
-    assert out.splitlines()[-1] == DELETE_LINE
+    assert out.endswith(DELETE_LINE + "\n")
     assert "was billing. Stopped." not in out
     assert "stop paying" not in out and "comfy-qat down" not in out
     assert result.cloud.calls.count("stop_instance") == 1
@@ -765,7 +773,7 @@ def test_down_on_an_undeclared_reserved_box_that_was_already_stopped(cli):
     assert ("comfy-win was not running — but it is reserved, so it is still "
             "billing.") in out
     assert "bound to the reservation comfy-win-rsv" in _one_line(out)
-    assert out.splitlines()[-1] == DELETE_LINE
+    assert out.endswith(DELETE_LINE + "\n")
     assert "nothing was billing" not in out
     assert "stop_instance" not in result.cloud.calls
 
@@ -841,7 +849,7 @@ def test_down_all_never_gives_the_all_clear_while_a_declared_box_is_reserved(cli
     assert "nothing was billing" not in out
     assert "was running: comfy-win, comfy-linux. Stopped." in out
     assert "still billing, stopped or not — it is reserved: comfy-win." in out
-    assert DELETE_LINE in out.splitlines()
+    assert DELETE_LINE in out
     assert "comfy-qat delete comfy-linux" not in out, "the other box is not reserved"
 
 
@@ -872,8 +880,9 @@ def test_down_all_names_a_reservation_on_the_project_that_no_host_declares(cli):
             "stray-rsv (us-central1-a).") in _one_line(out)
     # What releases it, printed HERE and whole on its line — not a pointer to
     # another command. Nothing is on it, so it is Google's own delete.
-    assert ("  gcloud compute reservations delete stray-rsv --zone=us-central1-a "
-            "--project=proj --quiet   # nothing is on it") in out.splitlines()
+    assert ("  nothing is on stray-rsv — release it:\n"
+            "    gcloud compute reservations delete stray-rsv --zone=us-central1-a "
+            "--project=proj --quiet\n") in out
     # Named, not released: it is not this command's to release.
     assert "delete_reservation" not in result.cloud.calls
 
@@ -986,18 +995,17 @@ def test_no_ending_tells_a_reserved_box_that_down_stops_its_bill(cli, monkeypatc
     that does not call it."""
     result = ENDINGS[ending](cli, monkeypatch, RESERVED)
     out = result.stdout
-    lines = out.splitlines()
 
     # Every one of these leaves the box RUNNING, so the remedy is two steps in
     # the order they have to be run: stop it, then delete it. The delete line
     # is the one that says what ends the bill; the down line says only why it
     # comes first.
-    assert DELETE_LINE in lines, f"{ending}:\n{result.output}"
-    assert FIRST_DOWN in lines, f"{ending}:\n{out}"
-    assert lines.index(FIRST_DOWN) + 1 == lines.index(DELETE_LINE), f"{ending}:\n{out}"
-    assert "bill" in DELETE_LINE.partition("#")[2]
+    assert DELETE_LINE in out, f"{ending}:\n{result.output}"
+    assert FIRST_DOWN in out, f"{ending}:\n{out}"
+    assert f"{FIRST_DOWN}\n{DELETE_LINE}\n" in out, f"{ending}:\n{out}"
+    assert "bill" in DELETE_LINE.splitlines()[0]
     down_is_never_said_to_stop_the_bill(out)
-    assert DOWN_LINE not in lines
+    assert DOWN_LINE not in out
 
 
 @pytest.mark.parametrize("ending", sorted(ENDINGS))
@@ -1009,7 +1017,7 @@ def test_every_ending_still_tells_an_ordinary_box_how_to_stop_paying(cli, monkey
     result = ENDINGS[ending](cli, monkeypatch, HOSTS)
     out = result.stdout
 
-    assert DOWN_LINE in out.splitlines(), f"{ending}:\n{result.output}"
+    assert DOWN_LINE in out, f"{ending}:\n{result.output}"
     assert "comfy-qat delete" not in out and "reserved" not in out, f"{ending}:\n{out}"
 
 
@@ -1052,11 +1060,11 @@ def test_disconnect_from_a_reserved_box_says_down_will_not_stop_the_bill(cli):
     be read as the end of the bill."""
     result = cli("disconnect", "comfy-win", cloud=Held(), declared=RESERVED)
 
-    lines = result.stdout.splitlines()
-    assert "  comfy-qat down comfy-win   # when the work is finished" in lines
-    assert DELETE_LINE in lines
-    assert lines.index(DELETE_LINE) > lines.index(
-        "  comfy-qat down comfy-win   # when the work is finished")
+    out = result.stdout
+    finished = "  when the work is finished:\n    comfy-qat down comfy-win"
+    assert finished in out
+    assert DELETE_LINE in out
+    assert out.index(DELETE_LINE) > out.index(finished)
     assert result.cloud.calls.count("stop_instance") == 0
 
 
@@ -1107,16 +1115,12 @@ def test_a_reserved_create_ends_on_the_bill_and_the_only_way_to_stop_it(create):
     assert "create_reservation" in result.cloud.calls
     ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
     assert BILL in _one_line(ending)
-    lines = ending.splitlines()
-    delete = ("  comfy-qat delete comfy-linux   # the only thing that stops a "
-              "reserved box's bill — the box and its disk go too")
-    first = ("  comfy-qat down comfy-linux     # first — delete refuses a box "
-             "that is running")
+    delete = DELETE_LINE.replace("comfy-win", "comfy-linux")
+    first = FIRST_DOWN.replace("comfy-win", "comfy-linux")
     # The box is running from the moment it is made, and `delete` refuses a
     # running box, so both steps are printed, in order. Only the delete line
     # is said to stop the bill.
-    assert delete in lines and first in lines
-    assert lines.index(first) + 1 == lines.index(delete)
+    assert f"{first}\n{delete}\n" in ending
     down_is_never_said_to_stop_the_bill(ending)
 
 
@@ -1135,8 +1139,8 @@ def test_an_ordinary_create_still_ends_on_stop_paying_and_says_nothing_of_reserv
     result = create("--yes")
 
     ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
-    assert "  comfy-qat down comfy-linux   # stop the machine, stop paying" \
-        in ending.splitlines()
+    assert "  stop the machine, stop paying:\n    comfy-qat down comfy-linux" \
+        in ending
     assert "reserved" not in result.stdout and "comfy-qat delete" not in result.stdout
     assert "create_reservation" not in result.cloud.calls
 
@@ -1231,8 +1235,9 @@ def test_down_all_with_no_cloud_box_declared_names_a_reservation_and_how_to_rele
     out = result.stdout
     assert ("1 reservation on proj is billing and not in your host list: "
             "stray-rsv (us-central1-a).") in _one_line(out)
-    assert ("  gcloud compute reservations delete stray-rsv --zone=us-central1-a "
-            "--project=proj --quiet   # nothing is on it") in out.splitlines()
+    assert ("  nothing is on stray-rsv — release it:\n"
+            "    gcloud compute reservations delete stray-rsv --zone=us-central1-a "
+            "--project=proj --quiet\n") in out
     assert "list_reservations" in result.cloud.calls
 
 
@@ -1270,8 +1275,8 @@ def test_a_reservation_with_a_box_on_it_is_not_handed_a_delete_command(cli):
 
     assert "stray-rsv (us-central1-a)" in out
     assert "reservations delete" not in out
-    assert ("  comfy-qat discover   # a box is on stray-rsv: adopt it, then "
-            "`comfy-qat delete` it") in out.splitlines()
+    assert ("  a box is on stray-rsv — adopt it, then `comfy-qat delete` it:\n"
+            "    comfy-qat discover\n") in out
 
 
 def test_no_delete_command_is_printed_when_the_boxes_could_not_be_read(cli):
@@ -1283,8 +1288,8 @@ def test_no_delete_command_is_printed_when_the_boxes_could_not_be_read(cli):
 
     assert "stray-rsv (us-central1-a)" in out
     assert "reservations delete" not in out
-    assert ("  gcloud compute reservations list --project=proj   # which of them "
-            "has a box on it could not be read") in out.splitlines()
+    assert ("  which of them has a box on it could not be read, so look:\n"
+            "    gcloud compute reservations list --project=proj\n") in out
 
 
 def test_an_unread_project_is_pointed_at_a_command_that_reads_it(cli):
@@ -1318,7 +1323,7 @@ def test_a_failed_stop_does_not_swallow_the_report_about_reservations(cli):
     assert result.exit_code == 1, result.output
     out = result.stdout
     assert "still billing, stopped or not — it is reserved: comfy-win." in out
-    assert DELETE_LINE in out.splitlines()
+    assert DELETE_LINE in out
     assert "stray-rsv (us-central1-a)" in out
     assert "Nothing is now" not in result.output
 

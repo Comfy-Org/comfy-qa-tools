@@ -143,8 +143,8 @@ def test_the_stop_line_names_delete_and_not_down():
     line = reservation.stop_line("comfy-linux")
 
     assert line == (
-        "  comfy-qat delete comfy-linux   # the only thing that stops a "
-        "reserved box's bill — the box and its disk go too"
+        "  the only thing that stops a reserved box's bill — the box and its disk "
+        "go too:\n    comfy-qat delete comfy-linux --yes"
     )
     assert "comfy-qat down" not in line, (
         "`down` does not stop a reserved box's bill, and the tokens that clear "

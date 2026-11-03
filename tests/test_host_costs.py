@@ -806,12 +806,13 @@ def test_disconnect_leaves_the_machine_running_and_says_so(cli):
     # in the package, which loses a CASE when one goes. A count that drops from
     # 118 to 117 with nothing red is the bug, not the alarm.
     #
-    # So pin the rendering, not the words in it. `  <command>   # <why>` is this
-    # tool's own shape for an offered command and is host.py's; `<why>:
-    # <command>` was lifecycle's per-host prose. Nothing else can satisfy this.
-    assert "comfy-qat down comfy-win   # when the work is finished" in result.output, (
-        "disconnect's own stop-paying line, in its own shape"
-    )
+    # So pin the rendering, not the words in it. The reason on its own line and
+    # the command alone under it is this tool's shape for an offered command —
+    # `say.offer`, since a `#` note on the end of the command stopped it running
+    # as pasted (O25); `<why>: <command>` on one line was lifecycle's per-host
+    # prose. Nothing else can satisfy this.
+    assert ("  when the work is finished:\n    comfy-qat down comfy-win\n"
+            in result.output), "disconnect's own stop-paying line, in its own shape"
     # And the count, which is the half a live run showed was missing. Both lines
     # were unconditional, so this block ended with one instruction in two
     # phrasings — the duplication was deliberate, written down as the price of
@@ -850,7 +851,7 @@ def test_disconnect_says_how_to_stop_paying_when_the_state_is_unreadable(cli):
     assert "when the work is finished: " not in result.output, (
         "put_away says nothing about the bill here — that is what this covers"
     )
-    assert "comfy-qat down comfy-win   # when the work is finished" in result.output
+    assert "  when the work is finished:\n    comfy-qat down comfy-win\n" in result.output
     assert "stop_instance" not in result.cloud.calls, "disconnect must not stop it"
 
 
@@ -1409,11 +1410,11 @@ def test_the_one_stop_line_says_each_bill_in_its_own_words():
                 gce_project="proj",
                 extra=(("gce_reservation", "comfy-win-rsv"),))
 
-    assert _stop_line(plain) == "  comfy-qat down comfy-win   # stop the box, stop paying"
-    delete = ("  comfy-qat delete comfy-win   # the only thing that stops a "
-              "reserved box's bill — the box and its disk go too")
-    first = ("  comfy-qat down comfy-win     # first — delete refuses a box that "
-             "is running")
+    assert _stop_line(plain) == "  stop the box, stop paying:\n    comfy-qat down comfy-win"
+    delete = ("  the only thing that stops a reserved box's bill — the box and its "
+              "disk go too:\n    comfy-qat delete comfy-win --yes")
+    first = ("  first stop it — delete refuses a box that is running:\n"
+             "    comfy-qat down comfy-win")
     assert _stop_line(held) == f"{first}\n{delete}"
     assert _stop_line(held, running=False) == delete
     assert "paying" not in _stop_line(held) and "bill" not in first
@@ -2187,3 +2188,48 @@ def test_no_gcloud_command_the_package_prints_for_pasting_stops_to_ask():
     assert len(found) >= 10, f"only {len(found)} found — the walk no longer reaches them"
     assert {"gcloud.py", "host.py", "remove.py", "relocate.py", "reservation.py",
             "create.py"} <= modules, sorted(modules)
+
+
+# --- a printed command that carries its note on the end --------------------------
+
+
+# A line that starts as something to paste — one of this tool's commands, a
+# gcloud call, or a value standing for one — and then, after a run of spaces,
+# a `#` note. `{}` is an f-string's hole, so `f"{command}   # {why}"` is caught
+# as well as a command typed out.
+_COMMENTED_COMMAND = re.compile(
+    r"^[ \t]*(?:to fix:[ \t]*)?(?:comfy-qat |gcloud |\{\})[^\n]*?[ \t]{2,}#")
+
+
+def test_no_command_the_package_prints_carries_a_trailing_comment():
+    """`comfy-qat down comfy-linux   # stop the box, stop paying` was the house
+    shape for an offered command, and it does not survive being pasted whole
+    into the shell most people here use. A script drops the comment; an
+    interactive zsh without `interactivecomments` — which is how zsh starts —
+    passes `#` and every word after it as arguments, and `comfy-qat` refuses
+    them: `Got unexpected extra argument(s) (# stop the box, stop paying)`,
+    exit 2, nothing done (O25). One release line, `gcloud compute reservations
+    delete … --quiet   # nothing is on it`, handed the extra words to gcloud.
+
+    So the note is a line of its own above the command — `stop the box, stop
+    paying:` — and the command is alone on its line. Every string in every
+    module, read off the syntax tree, holds to it."""
+    from printed import strings
+
+    found = [(where, line) for where, text in strings()
+             for line in text.splitlines() if _COMMENTED_COMMAND.match(line)]
+    assert not found, "\n".join(f"{where}: {line.strip()}" for where, line in found)
+
+
+def test_the_commented_command_pattern_still_matches_the_shapes_it_was_written_for():
+    """Non-vacuity: the test above passes on a package with no matches, and on a
+    pattern that matches nothing. These are the shapes it replaced."""
+    for line in ("  comfy-qat down {}   # stop the box, stop paying",
+                 "gcloud compute reservations delete {} --quiet   # nothing is on it",
+                 "  {}   # stop the box, stop paying",
+                 "comfy-qat quota list --by-region  # every region this project meters",
+                 "to fix: comfy-qat up {}   # start it, then ssh again"):
+        assert _COMMENTED_COMMAND.match(line), line
+    for line in ("stop the box, stop paying:", "  comfy-qat down {}",
+                 "see #23 for why", "comfy-qat go {} — then wait"):
+        assert not _COMMENTED_COMMAND.match(line), line

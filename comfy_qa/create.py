@@ -1297,14 +1297,15 @@ class QuotaCheck:
             return (f"Google already refused {self.card} in {refused}, and no "
                     f"other region both meters it and sells it — so there is "
                     f"nowhere else to ask.\n"
-                    f"comfy-qat quota list --by-region  # what this project does "
-                    f"hold")
+                    f"what this project does hold:\n"
+                    f"comfy-qat quota list --by-region")
         picks = ", ".join(self.elsewhere[:3])
         return (f"Google already refused {self.card} in {refused}, so asking "
-                f"there again will not help. Ask somewhere else:\n"
+                f"there again will not help. Ask somewhere else — {picks}:\n"
                 f"comfy-qat quota request --gpu {self.typed} --region "
-                f"{self.elsewhere[0]}  # or {picks}\n"
-                f"comfy-qat quota list --by-region  # every region it is metered in")
+                f"{self.elsewhere[0]}\n"
+                f"every region it is metered in:\n"
+                f"comfy-qat quota list --by-region")
 
     @property
     def _where(self) -> str:
@@ -1499,7 +1500,8 @@ def _stop_the_box(name: str, zone: str) -> str:
     printing a command with a hole in it.
     """
     if not zone:
-        return (f"gcloud compute instances list   # find {name}'s zone, then "
+        return (f"find {name}'s zone:\ngcloud compute instances list\n"
+                f"then stop it there:\n"
                 f"gcloud compute instances stop {name} --zone=<zone>")
     return f"gcloud compute instances stop {name} --zone={zone}"
 
@@ -1575,7 +1577,7 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
             label = labels[(name, zone)]
             return output.fix("stop it, then delete it to release the card:",
                               f"comfy-qat down {label}",
-                              f"comfy-qat delete {label}")
+                              f"comfy-qat delete {label} --yes")
         if on.get((name, zone)):
             there = " and ".join(on[(name, zone)])
             return output.fix(
@@ -1603,7 +1605,7 @@ def _how_to_release(holders, boxed, project: str, named=()) -> str:
     for name, zone, _held, _box in holders:
         if (name, zone) in labels:
             label = labels[(name, zone)]
-            lines += [f"comfy-qat down {label}", f"comfy-qat delete {label}"]
+            lines += [f"comfy-qat down {label}", f"comfy-qat delete {label} --yes"]
         elif on.get((name, zone)):
             lines += box_commands(name, zone)
         else:
@@ -2196,8 +2198,8 @@ def _reservation_unaccounted(gc: Gcloud, blueprint: Blueprint, zone: str,
             f"Google refused to reserve {name} in {zone}: {exc}. Nothing was "
             f"created and nothing is billing.",
             fix=output.fix(exc.fix,
-                           f"gcloud compute reservations list --project={project}"
-                           f"   # to see for yourself that nothing was left"),
+                           "to see for yourself that nothing was left:",
+                           f"gcloud compute reservations list --project={project}"),
             kind=CREATE_FAILED,
         ) from exc
     found = ("the reservation is on the project anyway" if absent is False else
@@ -2609,7 +2611,8 @@ def reserved_stop_lines(name: str) -> list[str]:
 
 def _down_first(name: str) -> str:
     """The step before `delete`, said as a step."""
-    return f"  comfy-qat down {name}     # first — delete refuses a box that is running"
+    return output.offer(f"comfy-qat down {name}",
+                        "first stop it — delete refuses a box that is running")
 
 
 def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
@@ -2637,7 +2640,8 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
             f"{blueprint.name} is installing the NVIDIA driver from its startup "
             f"script, which reboots it once or twice. `comfy-qat go` waits that "
             f"out.")
-    lines.append(f"  comfy-qat go {blueprint.name}     # install ComfyUI and serve it")
+    lines.append(output.offer(f"comfy-qat go {blueprint.name}",
+                              "install ComfyUI and serve it"))
     if blueprint.reserve:
         # NOT `comfy-qat down ... # stop paying`. For a reserved box that line
         # is false: `down` stops the machine and the reservation goes on billing
@@ -2650,7 +2654,8 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
         lines.append(_down_first(blueprint.name))
         lines.append(rsv.stop_line(blueprint.name))
         return lines
-    lines.append(f"  comfy-qat down {blueprint.name}   # stop the machine, stop paying")
+    lines.append(output.offer(f"comfy-qat down {blueprint.name}",
+                              "stop the machine, stop paying"))
     return lines
 
 
@@ -3010,8 +3015,8 @@ def _refuse_full(blueprint: Blueprint, check: QuotaCheck, full, asked: list[str]
             declared_boxes(holders, instances, hosts, project)))
     for instance in rsv.outside(instances, reservations):
         if any(rsv.held_in(name, card.accelerator, [instance], None) for name in asked):
-            lines.append(f"{_stop_the_box(instance.get('name') or '', rsv.zone_of(instance))}"
-                         f"   # a running box holding one")
+            lines.append("a running box is holding one — stop it:")
+            lines.append(_stop_the_box(instance.get('name') or '', rsv.zone_of(instance)))
     raise LifecycleError(
         f"this project's {card.name} allowance is already held in "
         f"{'every region it could go' if len(asked) > 1 else 'the region asked for'}: "

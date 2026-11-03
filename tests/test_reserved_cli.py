@@ -61,10 +61,11 @@ RSV = "comfy-linux-rsv"
 # it cannot fail.
 BILL = ("comfy-linux is reserved. Google holds its capacity and bills for it "
         "every hour — running or stopped — until the box is deleted.")
-DELETE_LINE = ("  comfy-qat delete comfy-linux   # the only thing that stops a "
-               "reserved box's bill — the box and its disk go too")
-FIRST_DOWN = ("  comfy-qat down comfy-linux     # first — delete refuses a box "
-              "that is running")
+# Two lines each: the reason, then the command alone, so it runs as pasted (O25).
+DELETE_LINE = ("  the only thing that stops a reserved box's bill — the box and its "
+               "disk go too:\n    comfy-qat delete comfy-linux --yes")
+FIRST_DOWN = ("  first stop it — delete refuses a box that is running:\n"
+              "    comfy-qat down comfy-linux")
 
 # A host list that already holds one reserved box, the way `create --reserve`
 # writes it.
@@ -279,14 +280,13 @@ def test_a_reserved_create_ends_on_the_bill_and_not_on_stop_paying(run):
     # Both steps, in order: the box is running, and `delete` refuses a running
     # box. The rule is not that `down` is absent — it is that `down` is never
     # said to stop the bill, and `delete` is.
-    assert DELETE_LINE in lines and FIRST_DOWN in lines
-    assert lines.index(FIRST_DOWN) + 1 == lines.index(DELETE_LINE)
+    assert f"{FIRST_DOWN}\n{DELETE_LINE}\n" in ending
     assert "stop paying" not in ending
-    for line in lines:
-        if "comfy-qat down" in line:
-            why = line.partition("#")[2]
+    for at, line in enumerate(lines):
+        if line.strip().startswith("comfy-qat down"):
+            why = lines[at - 1]
             assert "bill" not in why and "paying" not in why, line
-    assert "bill" in DELETE_LINE.partition("#")[2]
+    assert "bill" in DELETE_LINE.splitlines()[0]
 
 
 def test_the_confirmation_for_a_reserved_box_says_what_a_yes_costs(run):
@@ -376,7 +376,7 @@ def test_a_second_gpu_box_is_refused_while_a_reservation_holds_the_ceiling(run, 
     # Not the running-box remedy, which cannot work here.
     assert "stop the one you are not using" not in result.output
     assert offered(result.output) == ["comfy-qat down comfy-linux",
-                                      "comfy-qat delete comfy-linux"]
+                                      "comfy-qat delete comfy-linux --yes"]
 
 
 def test_the_two_commands_the_limit_refusal_prints_run_and_free_the_card(run):
@@ -659,8 +659,8 @@ def test_a_box_with_no_gpu_is_written_as_none_and_told_of_no_driver(run):
     ending = result.stdout[result.stdout.index("comfy-linux is up in"):]
     assert "has no GPU, so there is no driver to wait for" in flat(ending)
     assert "NVIDIA" not in ending
-    assert "  comfy-qat down comfy-linux   # stop the machine, stop paying" \
-        in ending.splitlines()
+    assert "  stop the machine, stop paying:\n    comfy-qat down comfy-linux" \
+        in ending
 
 
 def test_a_reservation_holding_the_whole_gpu_ceiling_does_not_refuse_a_box_with_no_gpu(run):
@@ -700,8 +700,7 @@ def test_discover_adopts_a_reserved_box_with_its_reservation_and_says_what_it_co
     assert ("their-box is reserved. Google holds its capacity and bills for it "
             "every hour — running or stopped — until the box is deleted."
             ) in flat(result.stdout)
-    assert ("  comfy-qat delete their-box   # the only thing that stops a reserved "
-            "box's bill — the box and its disk go too") in result.stdout.splitlines()
+    assert DELETE_LINE.replace("comfy-linux", "their-box") + "\n" in result.stdout
     # Stopped, so `delete` is the next step and no `down` is put before it.
     assert "comfy-qat down" not in result.stdout
 
@@ -714,13 +713,9 @@ def test_discover_adopting_a_reserved_box_that_is_running_says_to_stop_it_first(
     result = run("discover", cloud=Project(instances=[found]))
 
     assert result.exit_code == 0, result.output
-    lines = result.stdout.splitlines()
-    first = ("  comfy-qat down their-box     # first — delete refuses a box that "
-             "is running")
-    delete = ("  comfy-qat delete their-box   # the only thing that stops a "
-              "reserved box's bill — the box and its disk go too")
-    assert first in lines and delete in lines
-    assert lines.index(first) + 1 == lines.index(delete)
+    first = FIRST_DOWN.replace("comfy-linux", "their-box")
+    delete = DELETE_LINE.replace("comfy-linux", "their-box")
+    assert f"{first}\n{delete}\n" in result.stdout
     assert "stop paying" not in result.stdout
 
 
@@ -786,7 +781,7 @@ def test_every_line_the_refused_move_of_a_reserved_box_prints_runs(run):
     lines = offered(refused.output)
     assert lines == [
         "comfy-qat down comfy-linux",
-        "comfy-qat delete comfy-linux",
+        "comfy-qat delete comfy-linux --yes",
         "comfy-qat create --os linux --gpu l4 --reserve --name comfy-linux "
         "--zone europe-west4-b",
     ]
@@ -880,7 +875,7 @@ def test_a_box_declared_under_another_label_is_named_by_that_label_and_it_runs(r
                   "--reserve", "--yes", cloud=cloud, declared=declared)
 
     assert offered(refused.output) == ["comfy-qat down gpu-box",
-                                       "comfy-qat delete gpu-box"]
+                                       "comfy-qat delete gpu-box --yes"]
     for line in offered(refused.output):
         again = run(*shlex.split(line)[1:], cloud=cloud, tty=True, answer="gpu-box\n")
         assert again.exit_code == 0, f"`{line}` did not run:\n{again.output}"
@@ -1039,8 +1034,8 @@ def test_prune_does_not_drop_a_reserved_box_whose_reservation_may_still_bill(run
     assert ("not on the project any more, and reserved — the box is gone, but its "
             "reservation may still be billing, so the entry was kept:") in said
     assert f"reservation {RSV})" in said
-    assert ("  comfy-qat delete comfy-linux   # releases the reservation if it is "
-            "still there, and takes the entry out") in result.stdout.splitlines()
+    assert ("  this releases the reservation if it is still there, and takes the "
+            "entry out:\n    comfy-qat delete comfy-linux --yes\n") in result.stdout
     assert len(cloud._reservations) == 1, "prune is not what releases it"
 
 
@@ -1196,7 +1191,7 @@ def test_a_region_whose_card_is_held_names_the_declared_box_that_holds_it(run):
     assert result.exit_code == 2, result.output
     assert "allowance is already held in the region asked for" in flat(result.output)
     assert mutating(cloud) == []
-    assert ["comfy-qat down comfy-linux", "comfy-qat delete comfy-linux"] == [
+    assert ["comfy-qat down comfy-linux", "comfy-qat delete comfy-linux --yes"] == [
         line for line in offered(result.output)
         if line.startswith(("comfy-qat down", "comfy-qat delete"))]
 
@@ -1378,3 +1373,101 @@ def test_a_box_with_no_gpu_in_its_only_region_says_there_is_nowhere_else(run):
     assert "drop --region" not in said and "not everywhere" not in said
     assert ("the only region this project can use the machine in, so there is "
             "nowhere left to try right now") in said
+
+
+# --- a printed `comfy-qat delete` runs as printed, with nobody to ask (O25) ------
+#
+# `delete` asks for the box's name at a terminal and, with none, refuses: "this
+# needs a terminal to confirm in — add --yes if you are sure". Every `comfy-qat
+# delete <name>` the tool printed for somebody to paste was therefore a command
+# that exits 2 from a script or an agent, and for a reserved box that is the
+# command that stops the bill. The same lesson D3 taught about gcloud's
+# deletes and `--quiet`. Each one here is run with no terminal and no input.
+
+
+def test_every_delete_the_package_prints_carries_yes():
+    """Read off every string in the package. The command runs to the end of
+    its line, or to the `;`, ` — ` or `#` that starts what follows it."""
+    import re
+
+    from printed import strings
+
+    found = []
+    for where, text in strings():
+        for match in re.finditer(r"comfy-qat delete \{\}", text):
+            command = re.split(r"\n|; | — |\s#|`", text[match.start():])[0]
+            found.append(where)
+            assert "--yes" in command.split(), f"{where} prints: {command}"
+    assert len(found) >= 15, f"only {len(found)} — the walk no longer reaches them"
+
+
+def test_the_delete_a_reserved_create_ends_on_runs_with_no_terminal(run):
+    """The ending of `create --reserve`: `down`, then `delete`. Pasted in the
+    order printed, where nobody can type the box's name, both run, and the
+    reservation and the box are gone."""
+    cloud = Project()
+    made = run("create", "--os", "linux", "--gpu", "l4", "--reserve", "--yes",
+               cloud=cloud)
+    assert made.exit_code == 0, made.output
+    lines = [line for line in offered(made.output)
+             if line.startswith(("comfy-qat down", "comfy-qat delete"))]
+    assert [line.split()[1] for line in lines] == ["down", "delete"], lines
+
+    for line in lines:
+        again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+        assert again.exit_code == 0, f"`{line}` did not run:\n{again.output}"
+
+    assert cloud._reservations == [], "the reservation is still billing"
+    assert cloud._instances == []
+    assert "[hosts.comfy-linux]" not in again.hosts
+
+
+def test_the_delete_a_refused_move_hands_over_runs_with_no_terminal(run):
+    cloud = a_project_holding_one_reserved_box()
+    refused = run("move", "comfy-linux", "--to", "europe-west4-b", cloud=cloud,
+                  declared=WITH_A_RESERVED_BOX)
+    (line,) = [line for line in offered(refused.output)
+               if line.startswith("comfy-qat delete")]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == []
+
+
+def test_the_delete_prune_offers_for_a_reserved_ghost_runs_with_no_terminal(run):
+    cloud = Project(reservations=[ours()])
+    pruned = run("discover", "--prune", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+    (line,) = [line for line in offered(pruned.output)
+               if line.startswith("comfy-qat delete")]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == []
+    assert "[hosts.comfy-linux]" not in again.hosts
+
+
+def test_the_delete_a_failed_release_hands_over_runs_with_no_terminal(run):
+    """`delete` that could not release the reservation says to release it
+    yourself and run `delete` again. Run again, with nobody to ask, it
+    finishes."""
+    cloud = a_project_holding_one_reserved_box()
+    real = cloud.delete_reservation
+
+    def refused(*args, **kwargs):
+        cloud.delete_reservation = real
+        raise GcloudError("permission denied")
+
+    cloud.delete_reservation = refused
+    failed = run("delete", "comfy-linux", "--yes", cloud=cloud,
+                 declared=WITH_A_RESERVED_BOX)
+    assert failed.exit_code == 1, failed.output
+    (line,) = [line for line in offered(failed.output)
+               if line.startswith("comfy-qat delete")]
+
+    again = run(*shlex.split(line)[1:], cloud=cloud, tty=False)
+
+    assert again.exit_code == 0, again.output
+    assert cloud._reservations == [] and cloud._instances == []

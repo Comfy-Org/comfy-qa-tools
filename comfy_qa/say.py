@@ -517,6 +517,29 @@ def fix(*lines: str) -> str:
     return ("\n" + FIX_INDENT).join(parts)
 
 
+# --- an offered command ----------------------------------------------------
+
+
+def offer(command: str, why: str, indent: str = "  ") -> str:
+    """A command to paste and what it is for: the reason on a line of its own,
+    ending in the colon that introduces a command, then the command, alone.
+
+    THE REASON USED TO RIDE ON THE END OF THE COMMAND, as a `#` note —
+    `comfy-qat down comfy-linux   # stop the box, stop paying` — which is the
+    shape every ending in this tool had. A script drops the note. An interactive
+    zsh without `interactivecomments`, which is how zsh starts, does not: it
+    passes `#` and every word after it to the command, and `comfy-qat` refuses
+    them (`Got unexpected extra argument(s)`), exit 2, nothing done (O25). So a
+    line that is a command is a command and nothing else, and runs as pasted.
+
+    One string of two lines, because the callers print one string or build a
+    list of them; the command sits two spaces under its reason. In a `fix`, pass
+    `f"{why}:"` and the command as two lines instead — `fix` sets the indent.
+    `tests/test_host_costs.py` holds every string in the package to the rule.
+    """
+    return f"{indent}{why}:\n{indent}  {command}"
+
+
 # --- tables ----------------------------------------------------------------
 
 # Two spaces between columns. Wide enough that the eye reads a gap rather than a

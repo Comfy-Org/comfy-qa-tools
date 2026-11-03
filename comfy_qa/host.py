@@ -839,8 +839,9 @@ def discover_cmd(
             say.result(f"  {host.name}  ({host.gce_instance} in {host.gce_zone}, "
                        f"{owner}; reservation {host.reservation})")
         for host, _owner in held_ghosts:
-            say.result(f"  comfy-qat delete {host.name}   # releases the "
-                       f"reservation if it is still there, and takes the entry out")
+            say.result(say.offer(f"comfy-qat delete {host.name} --yes",
+                                 "this releases the reservation if it is still "
+                                 "there, and takes the entry out"))
 
     if ghosts:
         # Named one per line with the project that was asked, because "3 entries
@@ -1451,8 +1452,8 @@ def create_cmd(
             say.fail(wrong[0],
                      fix=say.fix(*[f"comfy-qat create --os {os_choice} --gpu "
                                    f"{gpu}{held} {line}" for line in wrong[1]],
-                                 "comfy-qat quota list --by-region  # every "
-                                 "region this project meters"),
+                                 "every region this project meters:",
+                                 "comfy-qat quota list --by-region"),
                      code=2)
     except GcloudError as exc:
         _refused(exc)
@@ -1801,7 +1802,7 @@ def _stop_line(host: Host, *, reserved: bool | None = None,
 
             return "\n".join(reserved_stop_lines(host.name))
         return rsv.stop_line(host.name)
-    return f"  {stop_paying(host)}   # stop the box, stop paying"
+    return say.offer(stop_paying(host), "stop the box, stop paying")
 
 
 def _bound_live(gc, host: Host):
@@ -1940,17 +1941,19 @@ def _say_reserved(gc, hosts: list[Host], reservations) -> None:
         try:
             instances = gc.list_instances(project)
         except (GcloudError, AttributeError):
-            say.result(f"  gcloud compute reservations list --project={project}"
-                       f"   # which of them has a box on it could not be read")
+            say.result(say.offer(f"gcloud compute reservations list --project={project}",
+                                 "which of them has a box on it could not be read, "
+                                 "so look"))
             continue
         empty = {(entry.name, entry.zone) for entry in rsv.orphans(others, instances)}
         for entry in others:
             if (entry.name, entry.zone) in empty:
-                say.result(f"  {rsv.delete_command(entry.name, entry.zone, project)}"
-                           f"   # nothing is on it")
+                say.result(say.offer(rsv.delete_command(entry.name, entry.zone, project),
+                                     f"nothing is on {entry.name} — release it"))
             else:
-                say.result(f"  comfy-qat discover   # a box is on {entry.name}: "
-                           f"adopt it, then `comfy-qat delete` it")
+                say.result(say.offer("comfy-qat discover",
+                                     f"a box is on {entry.name} — adopt it, then "
+                                     f"`comfy-qat delete` it"))
 
 
 # The four words `put_away` answers with, from nine `return` statements. Named
@@ -2138,7 +2141,7 @@ def disconnect_cmd(
     # So the offer lives here, unconditionally, in this tool's shape for an
     # offered command, and `put_away`'s block is the story on stderr. One
     # instruction, once, and neither stream is empty on any path.
-    say.result(f"  comfy-qat down {host.name}   # when the work is finished")
+    say.result(say.offer(f"comfy-qat down {host.name}", "when the work is finished"))
     if host.reservation:
         # `down` is still how the machine is stopped when the work is done, so
         # the line above stays. What it must not be left to imply is that the
@@ -2215,7 +2218,7 @@ def down_cmd(
                 for name, zone in strangers:
                     say.result(f"  gcloud compute instances stop {name} "
                                f"--zone={zone}")
-                say.result("  comfy-qat discover   # or adopt them first")
+                say.result(say.offer("comfy-qat discover", "or adopt them first"))
             elif strangers is None:
                 say.result("no cloud machines are declared, and the project "
                            "could not be checked — so this is not an all-clear.")
@@ -2376,7 +2379,8 @@ def down_cmd(
             say.result("  not stopped — this tool only operates what you declare:")
             for name, zone in strangers:
                 say.result(f"  gcloud compute instances stop {name} --zone={zone}")
-            say.result("  comfy-qat discover   # or adopt them and use `down --all`")
+            say.result(say.offer("comfy-qat discover",
+                                 "or adopt them and use `down --all`"))
         if reserved or not _nothing_reserved(reservations):
             _say_reserved(gc, hosts, reservations)
         return
@@ -2609,7 +2613,7 @@ def ssh_cmd(
         say.fail(
             f"{host.name} is not running, so there is nothing to open a shell "
             f"on. SSH needs the machine up, not just declared.",
-            fix=f"comfy-qat up {host.name}   # start it, then ssh again",
+            fix=say.fix("start it, then ssh again:", f"comfy-qat up {host.name}"),
             code=2,
         )
 
@@ -2692,7 +2696,7 @@ def rdp_cmd(
             f"{host.name} is not running, so its password was not reset and there "
             f"is nothing to forward RDP to. The password in use on it is "
             f"unchanged.",
-            fix=f"comfy-qat up {host.name}   # start it, then rdp again",
+            fix=say.fix("start it, then rdp again:", f"comfy-qat up {host.name}"),
             code=2,
         )
 
@@ -2973,18 +2977,19 @@ def _unavailable(host: Host, hosts: list[Host], exc, kept: list[Host]) -> None:
 
     options = alternatives(hosts, host)[:3]
     if options:
-        commands = [f"comfy-qat switch {other.name}" for other in options]
-        width = max(len(command) for command in commands)
         say.error("where you can test instead, easiest first:", "")
-        for other, command in zip(options, commands):
+        for other in options:
             note = ""
             if other.gce_zone and other.gce_zone == host.gce_zone:
                 note = ", same zone — it may hit the same shortage"
-            say.detail(f"{command.ljust(width)}   # {describe(other)}{note}")
+            # What it is, then the command alone under it: see `say.offer`.
+            say.detail(f"{describe(other)}{note}:")
+            say.detail(f"  comfy-qat switch {other.name}")
     else:
         say.error("no other machine is declared, so there is nowhere to switch to:",
                   "")
-        say.detail("comfy-qat discover   # declare a box you already have")
+        say.detail("declare a box you already have:")
+        say.detail("  comfy-qat discover")
 
     if exc.fix:
         say.error(f"if it has to be {host.name}:", "")
@@ -3165,9 +3170,9 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
             say.result(f"\nstopped, and ComfyUI stopped with it — that is what "
                        f"Ctrl-C does here. {host.name} is still running, and a "
                        f"stopped ComfyUI on a running box still bills.")
-            say.result(f"  comfy-qat go {host.name}   # start ComfyUI again")
-            say.result(f"  comfy-qat logs {host.name}   # watch it without "
-                       "stopping it")
+            say.result(say.offer(f"comfy-qat go {host.name}", "start ComfyUI again"))
+            say.result(say.offer(f"comfy-qat logs {host.name}",
+                                 "watch it without stopping it"))
         else:
             say.result(f"\nstopped. {host.name} is still running.")
         say.result(_stop_line(host))
@@ -3181,7 +3186,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     # The URL is last on purpose. ComfyUI announces its own address — correct on
     # the box, wrong here — and whatever is said after it is what gets opened.
     say.result(f"\nComfyUI is running on {host.name} and this terminal is free.")
-    say.result(f"  comfy-qat logs {host.name}   # follow its log, on the box")
+    say.result(say.offer(f"comfy-qat logs {host.name}", "follow its log, on the box"))
     say.result(_stop_line(host))
     say.result(f"\nopen {host.url}")
 
@@ -3632,7 +3637,7 @@ def _how_to_free(gc, host: Host, held: _Held,
             "a reserved box frees its card only when it is deleted:",
             *[line for other in held.declared
               for line in (f"comfy-qat down {other.name}",
-                           f"comfy-qat delete {other.name}")])
+                           f"comfy-qat delete {other.name} --yes")])
     project = host.gce_project or ""
     try:
         instances = gc.list_instances(project)
@@ -3780,7 +3785,7 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
         # and "your box was already up" is the difference the user is paying for.
         say.result(f"{host.name} is already running in {host.gce_zone}, which has "
                    f"capacity — no move needed, and this command changed nothing.")
-        say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+        say.result(say.offer(f"comfy-qat go {host.name}", "tunnel to it and serve"))
         say.result(_stop_line(host))
         return None
 
@@ -3801,7 +3806,8 @@ def _zone_with_capacity(gc, host: Host, *, dry_run: bool) -> str | None:
     say.result(f"{host.name} already has capacity where it is, in "
                f"{host.gce_zone} — no move needed. It was stopped, so it was "
                f"started to ask Google and has been stopped again.")
-    say.result(f"  comfy-qat go {host.name}     # start it and serve, when you want it")
+    say.result(say.offer(f"comfy-qat go {host.name}",
+                         "start it and serve, when you want it"))
     return None
 
 
@@ -3897,7 +3903,7 @@ def _refuse_to_move_a_reserved_box(host: Host, to: str | None) -> None:
             "to have it somewhere else, delete it and make it again there.",
             "Its disk goes with it, so the ComfyUI on it is installed afresh:",
             f"comfy-qat down {host.name}",
-            f"comfy-qat delete {host.name}",
+            f"comfy-qat delete {host.name} --yes",
             again),
         code=2)
 
@@ -4212,7 +4218,7 @@ def move_cmd(
     # so a moved box billed silently from the moment the move finished.
     say.result(f"\n{host.name} is now in {target}, running and billing from now. "
                f"Same name, same port {port}.")
-    say.result(f"  comfy-qat go {host.name}     # tunnel to it and serve")
+    say.result(say.offer(f"comfy-qat go {host.name}", "tunnel to it and serve"))
     say.result(_stop_line(host))
 
     was = "running and still billing" if plan.source_running else "stopped"
@@ -4307,9 +4313,12 @@ def _probe_fix(host: Host) -> str | None:
     return say.fix(
         f"no tunnel to {host.name} is open, so nothing here answers {host.url} — "
         f"and {host.gce_instance} may simply be stopped.",
-        f"comfy-qat open {host.name}   # tunnel to a box that is already running",
-        f"comfy-qat go {host.name}     # start it and tunnel, in one step",
-        "comfy-qat list --live        # which of the two it is",
+        "tunnel to a box that is already running:",
+        f"comfy-qat open {host.name}",
+        "or start it and tunnel, in one step:",
+        f"comfy-qat go {host.name}",
+        "which of the two it is:",
+        "comfy-qat list --live",
     )
 
 

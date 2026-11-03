@@ -502,6 +502,12 @@ def bill(name: str) -> str:
 
 
 def stop_line(name: str) -> str:
-    """What takes the place of `comfy-qat down ...  # stop paying` for a reserved box."""
-    return (f"  comfy-qat delete {name}   # the only thing that stops a reserved "
-            f"box's bill — the box and its disk go too")
+    """What takes the place of `comfy-qat down ...  # stop paying` for a reserved box.
+
+    With `--yes`, so it runs as pasted where nobody can type the box's name —
+    see the comment above the confirmation in `remove.delete_cmd`.
+    """
+    # Built here rather than with `say.offer`, which this module does not
+    # import: the same two lines, the reason and then the command alone.
+    return (f"  the only thing that stops a reserved box's bill — the box and its "
+            f"disk go too:\n    comfy-qat delete {name} --yes")

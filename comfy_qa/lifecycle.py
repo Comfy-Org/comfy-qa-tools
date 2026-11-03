@@ -413,7 +413,7 @@ def _with_the_bill(host: Host, *advice: str) -> str:
         # in the order they are run, and which of them the bill answers to.
         tail = (f"{'or ' if lines else ''}stop the box: {stop_paying(host)} — it "
                 f"is reserved, so the bill only stops with: comfy-qat delete "
-                f"{host.name}")
+                f"{host.name} --yes")
         return output.fix(*lines, tail)
     tail = f"{'or ' if lines else ''}stop paying for it: {stop_paying(host)}"
     return output.fix(*lines, tail)
@@ -432,7 +432,7 @@ def _undo_a_start(host: Host) -> list[str]:
             f"comfy-qat down {host.name}",
             "it is reserved, so stopping it does not stop its bill — that only "
             "stops with:",
-            f"comfy-qat delete {host.name}",
+            f"comfy-qat delete {host.name} --yes",
             "or check first, if you would rather look:",
             "comfy-qat list --live",
         ]
@@ -2326,7 +2326,7 @@ def read_logs(
         raise LifecycleError(
             f"{host.name} is not running, so it has no ComfyUI and no log to "
             f"follow. Whatever it was writing stopped when the machine did.",
-            fix=f"comfy-qat go {host.name}   # start the box and ComfyUI on it",
+            fix=output.fix("start the box and ComfyUI on it:", f"comfy-qat go {host.name}"),
             refusal=True,
         )
 
@@ -2345,8 +2345,8 @@ def read_logs(
             f"has started ComfyUI there. The machine is running and billing.",
             fix=_with_the_bill(
                 host,
-                f"comfy-qat go {host.name}   # start it, and this will have "
-                "something to read",
+                "start it, and this will have something to read:",
+                f"comfy-qat go {host.name}",
             ),
             refusal=True,
         )
@@ -2753,7 +2753,7 @@ def put_away(
                 f"have it — the box no longer exists, but its reservation "
                 f"{host.reservation} is still billing unless it was released "
                 f"too. Release it and clear the entry: comfy-qat delete "
-                f"{host.name}")
+                f"{host.name} --yes")
             return "idle"
         if after is None and is_gone(gc, host):
             # `{exc}` first, so the sentence after it is one uninterrupted run

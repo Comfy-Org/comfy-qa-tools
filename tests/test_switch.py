@@ -306,7 +306,7 @@ def test_the_target_cannot_start_and_another_machine_can(cli):
     assert "not a fault on your side" in said(result)
     assert "comfy-linux is untouched" in result.output
     assert "where you can test instead" in result.output
-    assert "comfy-qat switch comfy-linux   # Ubuntu 22.04, A100" in result.output
+    assert "Ubuntu 22.04, A100:\n      comfy-qat switch comfy-linux" in result.output
     assert "if it has to be comfy-win:" in result.output
     assert "comfy-qat move comfy-win --to us-central1-b" in result.output
     assert stops(result) == [], "the machine you were working on was stopped anyway"

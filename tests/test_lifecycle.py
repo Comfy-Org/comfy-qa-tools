@@ -1838,7 +1838,7 @@ RESERVED = Host(name="comfy-linux-2", kind="gce", port=8194, os="Ubuntu 22.04",
                 extra=(("gce_reservation", "comfy-linux-2-rsv"),))
 
 RESERVED_TAIL = ("stop the box: comfy-qat down comfy-linux-2 — it is reserved, so "
-                 "the bill only stops with: comfy-qat delete comfy-linux-2")
+                 "the bill only stops with: comfy-qat delete comfy-linux-2 --yes")
 
 
 def test_the_fix_for_a_reserved_box_says_what_actually_stops_its_bill():

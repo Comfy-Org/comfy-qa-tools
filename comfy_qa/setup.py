@@ -1142,8 +1142,8 @@ def _require_real_region(gc, project: str, quotas: list[dict] | None,
         raise SetupStopped(
             wrong[0],
             fix=("\n".join(f"comfy-qat setup {line}" for line in wrong[1])
-                 or "comfy-qat quota list --by-region  # every region this "
-                    "project meters"),
+                 or "every region this project meters:\n"
+                    "comfy-qat quota list --by-region"),
         )
 
 
@@ -1292,8 +1292,7 @@ def ensure_quota_requests(
                 f"{where} does not offer {', '.join(blind)} — a granted "
                 f"request there buys a box that can never start, and a quota "
                 f"preference cannot be withdrawn",
-                fix=f"comfy-qat quota list --region {where}  # what this "
-                    f"region actually offers",
+                fix=f"what this region actually offers:\ncomfy-qat quota list --region {where}",
             )
     asking = [ask for ask in plan if ask.submits]
 

@@ -51,11 +51,14 @@ billing`, and `down --all` does not print `Nothing is now.` while a reserved
 box is declared or a reservation is on the project. `create --reserve`, `go` and
 `up` leave the box running, and `delete` refuses a running box, so they end on
 two steps: `comfy-qat down <name>`, labelled as the step that comes first and
-never as what stops the bill, and then `comfy-qat delete <name>`.
+never as what stops the bill, and then `comfy-qat delete <name> --yes`. Each
+command is on a line of its own under the line saying what it is for, so it runs
+as pasted.
 
 ```
 comfy-linux was running. Stopped — but it is reserved, so it is still billing.
-  comfy-qat delete comfy-linux   # the only thing that stops a reserved box's bill — the box and its disk go too
+  the only thing that stops a reserved box's bill — the box and its disk go too:
+    comfy-qat delete comfy-linux --yes
 ```
 
 So reserve a box only for as long as you need the place held, and **delete it**
