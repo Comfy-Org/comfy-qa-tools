@@ -89,14 +89,16 @@ class Box(FakeGcloud):
     the same table the tool's own GitHub check reads, and what the record says
     plays no part. `stuck` is a checkout that does not move however it is
     asked — a fetch that failed — so a flow that reports it ready anyway fails
-    here.
+    here. `records=False` is a script that exited 0 before it wrote the record,
+    leaving whatever an earlier install wrote.
     """
 
     def __init__(self, *, record: str = "", commit: str = TAG_SHA, branch: str = "HEAD",
                  alive: str = "ALIVE", frontend_root: str = "", stuck: bool = False,
-                 hub: dict | None = None, **rest) -> None:
+                 records: bool = True, hub: dict | None = None, **rest) -> None:
         super().__init__(**rest)
         self.record = record
+        self.records = records
         self.commit = commit
         self.branch = branch
         self.alive = alive
@@ -127,9 +129,11 @@ class Box(FakeGcloud):
                             r"(?: \w+=\w+)*)", remote)
         if written and (INSTALLING in remote or CHANGING in remote
                         or "build.txt" in remote):
-            self.record = written.group(1)
-            pr = re.search(r"comfyui=pr:(\d+)", self.record)
-            tag = re.search(r"comfyui=(v[\d.]+)", self.record)
+            asked = written.group(1)
+            if self.records:
+                self.record = asked
+            pr = re.search(r"comfyui=pr:(\d+)", asked)
+            tag = re.search(r"comfyui=(v[\d.]+)", asked)
             moves = not self.stuck and (INSTALLING in remote or CHANGING in remote)
             if pr and moves:
                 pull = self.hub.get(f"{REPO}/pulls/{pr.group(1)}") or {}
@@ -859,6 +863,22 @@ def test_a_frontend_pr_is_said_to_be_unconfirmed(world):
     assert result.exit_code == 0, result.output
     assert ("could not read which frontend PR it serves off the running ComfyUI, so "
             "that part of the build is not confirmed") in flat(result.output)
+
+
+def test_a_fresh_install_is_held_to_the_build_chosen_not_a_leftover_record(world):
+    """code:F3 step 3, on the install from nothing: the box is confirmed against
+    the build chosen. A record an earlier install left — the script exited 0
+    before writing its own — said v0.42.1, the box came up on 0.42.1 when
+    v0.43.0 was asked for, and held to the leftover it was reported ready."""
+    world.cloud(statuses=["RUNNING"], installed=False, records=False,
+                record="comfyui=v0.42.1 frontend=default manager=on torch=default")
+    world.serves("0.42.1")
+
+    result = run(world, "go", BOX, "--version", "v0.43.0")
+
+    assert result.exit_code == 1, result.output
+    assert "ComfyUI 0.42.1, not v0.43.0" in flat(result.output)
+    assert world.opened == []
 
 
 def test_a_host_list_build_carries_no_pr_head_into_a_first_install(world):

@@ -1389,7 +1389,7 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     """
     from dataclasses import replace
 
-    from .build import DEFAULT, OnTheBox
+    from .build import DEFAULT
     from .provision import (
         check_command, cuda_command, install_command, root_for, torch_index,
     )
@@ -1437,7 +1437,8 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
             # record is what the box was asked for LAST, and its PR head is
             # whatever GitHub said then. The record is also what the change
             # script writes last, so a record that did not move is a change that
-            # did not finish however it exited — and that is caught here too.
+            # did not finish however it exited; held to `asked` regardless, the
+            # check after the launch is what says so.
             found = replace(found, record=asked)
         _verify(gc, host, say, give_up)
         return found
@@ -1536,11 +1537,9 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         raise give_up(
             f"the ComfyUI install on {host.name} did not finish: it reported success "
             f"but {root_for(host)} still has no ComfyUI in it")
-    found = read_facts(gc, host)
-    if found.record is None:
-        found = OnTheBox(commit=found.commit, branch=found.branch, record=chosen,
-                         frontend_root=found.frontend_root)
-    return found
+    # Held to the build chosen, as a box that already had ComfyUI is held to
+    # the one asked for: what the install script wrote is what it was told.
+    return replace(read_facts(gc, host), record=chosen)
 
 
 def _change_build(gc: Gcloud, host: Host, say: Callable[[str], None], asked: "Build",
