@@ -87,9 +87,13 @@ class Box(FakeGcloud):
     `checkout_pr` fetches the PR's branch and resets onto it — and a release at
     its tag's commit, detached, as `checkout_stable_comfyui` leaves it. `hub` is
     the same table the tool's own GitHub check reads, and what the record says
-    plays no part. `stuck` is a checkout that does not move however it is
-    asked — a fetch that failed — so a flow that reports it ready anyway fails
-    here. `records=False` is a script that exited 0 before it wrote the record,
+    plays no part. `stuck` is a change script that exits 0 and leaves the
+    checkout where it was — something on the box holding it there, or moving it
+    back, as a checkout moved by hand would be. It is NOT a fetch that failed:
+    comfy-cli 1.24.0's `checkout_pr` returns False on a failed `git fetch` and
+    `comfy install` exits 1 (recheck-s2 N2), which the scripts report as a change
+    that did not finish. So a flow that reports a stuck box ready fails here.
+    `records=False` is a script that exited 0 before it wrote the record,
     leaving whatever an earlier install wrote.
     """
 
@@ -751,8 +755,9 @@ def test_a_pr_asked_for_again_with_a_frontend_release_is_fetched_not_relaunched(
 
 
 def test_a_box_left_on_the_old_head_is_never_reported_ready(world):
-    """The change ran and the checkout did not move — a fetch that failed. The
-    box is on the PR's branch, and on a commit that is not the head asked for:
+    """The change ran, exited 0, and the checkout did not move (`stuck`: held
+    there on the box, not a failed fetch, which exits 1). The box is on the PR's
+    branch, on a commit that is not the head GitHub names even when asked again:
     not ready, nothing opened."""
     _on_the_old_head(world, stuck=True)
     world.serves("0.43.0")
@@ -784,6 +789,125 @@ def test_a_pr_already_at_its_head_is_confirmed_against_the_head_asked_for(world)
     assert not sent(world, CHANGING), "a checkout already at the head was changed"
     assert "already on the box" in result.output
     assert world.opened == [world.comfy.url]
+
+
+# --- the author pushes while comfy-qat is working (C3, recheck-s2 N1) ----------
+#
+# The head is read from GitHub when the command starts, and comfy-cli fetches
+# the PR's branch minutes later, on the box. A push in between lands the box on
+# the PR's real current head, and 1.4.0 refused it — `PR 17497 at <new>, not its
+# head <old>`, exit 1 — then confirmed the printed fix without rewriting the
+# box's record, so the next bare `go` was refused again.
+
+NEW_HEAD = "f" * 40
+
+
+@pytest.fixture
+def pushed_after_the_check(world, monkeypatch):
+    """GitHub reports PR_HEAD when the build is checked, and NEW_HEAD from the
+    moment after: the author pushed while the command was running."""
+    real = build_mod.check
+
+    def check_then_push(chosen, ask=None):
+        checked = real(chosen, ask)
+        world.hub[f"{REPO}/pulls/17497"] = {"state": "open", "merged": False,
+                                            "head": {"sha": NEW_HEAD}}
+        return checked
+
+    monkeypatch.setattr(build_mod, "check", check_then_push)
+    return world
+
+
+def test_a_push_between_the_check_and_the_fetch_is_not_called_the_wrong_build(
+        pushed_after_the_check):
+    world = pushed_after_the_check
+    _on_the_old_head(world)
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--pr", "17497")
+
+    assert result.exit_code == 0, result.output
+    assert world.gc.commit == NEW_HEAD
+    assert "came up on a different build" not in flat(result.output)
+    assert f"PR 17497, {NEW_HEAD[:10]}" in flat(result.output)
+    assert world.opened == [world.comfy.url]
+    assert f"pr_head={NEW_HEAD}" in world.gc.record, (
+        "the box's record still names the head from before the push")
+
+
+def test_after_a_push_the_next_plain_go_is_not_refused(pushed_after_the_check):
+    """recheck-s2 probe p7d: the race, then the box stopped, then a bare `go`.
+    1.4.0 exited 1 on the race and 1 again on the bare `go`."""
+    world = pushed_after_the_check
+    _on_the_old_head(world)
+    world.serves("0.43.0")
+
+    first = run(world, "go", BOX, "--pr", "17497")
+    world.comfy.mode = "reset"
+    world.gc.port_holder = ""
+    again = run(world, "go", BOX)
+
+    assert (first.exit_code, again.exit_code) == (0, 0), (first.output, again.output)
+    assert "came up on a different build" not in flat(again.output)
+
+
+def test_a_box_confirmed_at_the_head_has_a_stale_record_rewritten(world):
+    """The record's head is older than the checkout, which IS the head GitHub
+    reports now. Nothing is changed and the box is confirmed (step 2) — and the
+    record is brought up to the head, or a bare `go` after a stop is held to the
+    old one and refused (recheck-s2 N1, probes p7a and p7b)."""
+    world.cloud(statuses=["RUNNING"], installed=True, branch="pr-17497-solid-mode",
+                commit=PR_HEAD,
+                record="comfyui=pr:17497 frontend=default manager=on torch=default "
+                       f"pr_head={OLD_HEAD}")
+    world.serves("0.43.0")
+
+    first = run(world, "go", BOX, "--pr", "17497")
+    assert first.exit_code == 0, first.output
+    assert not sent(world, CHANGING), "a checkout already at the head was changed"
+    assert f"pr_head={PR_HEAD}" in world.gc.record
+
+    world.comfy.mode = "reset"
+    world.gc.port_holder = ""
+    again = run(world, "go", BOX)
+    assert again.exit_code == 0, again.output
+
+
+def test_a_serving_box_confirmed_at_the_head_has_a_stale_record_rewritten(world):
+    """The same on the box that is already serving: confirmed, handed over, and
+    its record brought up to the head it is on."""
+    _already_serving(world)
+    world.cloud(statuses=["RUNNING"], installed=True, port_holder="4242 python",
+                branch="pr-17497-solid-mode", commit=PR_HEAD,
+                record="comfyui=pr:17497 frontend=default manager=on torch=default "
+                       f"pr_head={OLD_HEAD}")
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--pr", "17497")
+
+    assert result.exit_code == 0, result.output
+    assert not sent(world, CHANGING)
+    assert f"pr_head={PR_HEAD}" in world.gc.record
+
+
+def test_a_checkout_github_does_not_name_is_still_the_wrong_build(world):
+    """The head is read again before a checkout on the PR's branch is called a
+    contradiction — and only accepted when GitHub then names it. A checkout
+    moved by hand to a commit that is not the head is refused as before."""
+    world.cloud(statuses=["RUNNING"], installed=True, branch="pr-17497-solid-mode",
+                commit=OTHER_SHA, stuck=True,
+                record="comfyui=pr:17497 frontend=default manager=on torch=default "
+                       f"pr_head={OLD_HEAD}")
+    world.serves("0.43.0")
+
+    result = run(world, "go", BOX, "--pr", "17497")
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert f"PR 17497 at {OTHER_SHA[:10]}, not its head {PR_HEAD[:10]}" in said
+    assert world.opened == []
+    assert world.asked.count(f"{REPO}/pulls/17497") >= 2, (
+        "the head was not read again before the checkout was called wrong")
 
 
 # --- S2-7: a release is its tag's commit, not its version string ----------------

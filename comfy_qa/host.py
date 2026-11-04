@@ -3368,10 +3368,11 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     """
     import webbrowser
 
+    from .build import reread_head
     from .gcloud import GcloudError
     from .lifecycle import (
-        confirm_build, ensure_installed, read_facts, serve, start_detached,
-        stop_running, wait_for_ssh, wrong_machine_fix,
+        confirm_build, ensure_installed, keep_record, read_facts, serve,
+        start_detached, stop_running, wait_for_ssh, wrong_machine_fix,
     )
     from .stamp import mismatch
 
@@ -3387,6 +3388,10 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         # build can be changed under it, and the launch path below takes over.
         facts = read_facts(gc, host)
         asked = want.over(facts.record) if want is not None else facts.record
+        # A checkout on the PR's branch at another commit is asked about again
+        # before it counts against the box: a push since the head was read is
+        # the PR's code (C3).
+        asked = reread_head(asked, facts.commit, facts.pr)
         serving_it = False
         # A PR asked for again after new commits is the same choice as the
         # record and not the same code: git on the box says which commit it is
@@ -3405,6 +3410,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                 ready.stamp = confirm_build(gc, host, asked, ready.stamp, say.step,
                                             facts=facts)
                 serving_it = True
+                keep_record(gc, host, asked, facts.record, say.step)
             except _reportable() as exc:
                 # The record says this build and the server says otherwise —
                 # somebody changed the checkout under it. Asked for explicitly,

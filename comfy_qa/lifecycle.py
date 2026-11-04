@@ -1365,6 +1365,30 @@ def read_facts(gc: Gcloud, host: Host) -> "OnTheBox":
         return OnTheBox()
 
 
+def keep_record(gc: Gcloud, host: Host, asked: "Build", record: "Build | None",
+                say: Callable[[str], None]) -> None:
+    """Bring the box's record up to the PR head it was confirmed on.
+
+    Only the head, and only for a PR: the record is what the box was asked for
+    last, and its `pr_head` is whatever GitHub said at the time. A box that was
+    confirmed on a newer head — the author pushed — kept the older one in the
+    release before this, so the next plain `go`, which is held to the record,
+    refused the box it had just handed over (recheck-s2 N1). Nothing else in the
+    record is rewritten here; a record that cannot be written is said and left.
+    """
+    from .provision import record_command
+
+    if not (asked.pr and asked.pr_head and record is not None
+            and record.pr == asked.pr and record.pr_head != asked.pr_head):
+        return
+    try:
+        gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
+               record_command(host, asked), stream=False)
+    except (GcloudError, OSError):
+        say(f"could not write {host.name}'s record of its build — it still names "
+            f"PR {asked.pr} at {(record.pr_head or '?')[:10]}")
+
+
 def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                      *, tunnel_dir: Path | None = None,
                      budget: Budget | None = None,
@@ -1389,7 +1413,7 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
     """
     from dataclasses import replace
 
-    from .build import DEFAULT
+    from .build import DEFAULT, reread_head
     from .provision import (
         check_command, cuda_command, install_command, root_for, torch_index,
     )
@@ -1415,14 +1439,18 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
         say("ComfyUI is already installed")
         found = read_facts(gc, host)
         if want is not None:
-            asked = want.over(found.record)
             # The checkout, read by git, against the build asked for — a PR
             # whose head has moved since the box checked it out is the same
             # CHOICE as the record and not the same code (audit finding code:F3).
+            # And the head asked again first when the checkout is on the PR's
+            # branch somewhere else: a push since this command read it is the
+            # PR's code, not a stale box (C3).
+            asked = reread_head(want.over(found.record), found.commit, found.pr)
             stale = asked.checkout_contradictions(found.commit, found.pr)
             if (not force and not stale and found.record is not None
                     and asked.same_choice(found.record)):
                 say(f"build: {asked.describe()} — already on the box")
+                keep_record(gc, host, asked, found.record, say)
             else:
                 if stale and not force:
                     # Under `force` the caller has already said what is wrong
@@ -1433,6 +1461,17 @@ def ensure_installed(gc: Gcloud, host: Host, say: Callable[[str], None],
                               budget=budget, tunnel_dir=tunnel_dir,
                               checkout_stale=bool(stale))
                 found = read_facts(gc, host)
+                # The fetch on the box is minutes after the head was read. A
+                # push in between lands the checkout on the newer head, which is
+                # the PR's code: asked again, GitHub says so, and the record the
+                # change just wrote — with the older head — is brought up to it,
+                # or the next plain `go` is held to the old one (recheck-s2 N1).
+                moved = reread_head(asked, found.commit, found.pr)
+                if moved.pr_head != asked.pr_head:
+                    say(f"PR {asked.pr} gained a commit while this ran — {host.name} "
+                        f"is on its head now, {moved.pr_head[:10]}")
+                    asked = moved
+                    keep_record(gc, host, asked, found.record, say)
             # Confirmed against the build asked for, never the record: the
             # record is what the box was asked for LAST, and its PR head is
             # whatever GitHub said then. The record is also what the change
@@ -1915,7 +1954,19 @@ def confirm_build(gc: Gcloud | None, host: Host, expect: "Build", stamp: Stamp,
     Nothing is torn down on a refusal, as with the wrong machine: ComfyUI is up
     and working, it is the wrong build, and the box is said to be billing.
     """
+    from .build import reread_head
+
     seen = observe(gc, host, stamp, facts=facts)
+    serving_pr = int(seen.comfyui_pr) if seen.comfyui_pr else None
+    # Before a checkout on the PR's branch is called the wrong build, the head
+    # is asked again (C3): a push since the head was read is the PR's code. The
+    # record is brought up to it, so a plain `go` later is held to the same head.
+    current = reread_head(expect, seen.comfyui_commit, serving_pr)
+    if current is not expect and current.pr_head != expect.pr_head:
+        if gc is not None and host.is_remote:
+            keep_record(gc, host, current,
+                        facts.record if facts is not None else expect, say)
+        expect = current
     wrong, unread = expect.contradictions(
         comfyui_version=seen.comfyui_version, commit=seen.comfyui_commit,
         pr=int(seen.comfyui_pr) if seen.comfyui_pr else None,

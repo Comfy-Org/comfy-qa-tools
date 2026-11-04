@@ -1576,6 +1576,21 @@ Same PR is not the same code, so the build is changed in place — `comfy instal
 the box is confirmed against the head asked for. The same line names a checkout on
 another PR or another commit than the one asked for.
 
+**`PR 17497 gained a commit while this ran — comfy-linux is on its head now, ffffffffff`**
+Not a failure. The PR's author pushed between the head comfy-qat read when the
+command started and the fetch comfy-cli made on the box, so the box is on the PR's
+newer commit. GitHub was asked again and names that commit as the head, so it is the
+build you asked for; the box's record of its build is brought up to it, and a later
+`go` that names no build is held to the new head.
+
+**`could not write comfy-linux's record of its build — it still names PR 17497 at
+9350a08d80`**
+The box was confirmed on the PR's current head, and the file on the box that records
+its build could not be rewritten to say so. Nothing else is affected now; a later `go`
+that names no build is held to the older head the record names and refuses the box.
+Name the PR again then — `comfy-qat go <name> --pr <n> --manager` — which reads the
+head again, confirms the box, and tries the record again.
+
 **`--no-install refuses to install, and a build option asks for one`**
 `go --no-install` and `switch --no-install` mean "never install", and a build option
 asks for an install or a build change. Drop one of them.
@@ -1592,14 +1607,15 @@ route answers; and the commit and PR from git in the checkout on the box. Each p
 that contradicts is named — `frontend 1.57.7, not v1.58.4` when ComfyUI could not
 fetch the frontend release and fell back to its own, `Manager off, not on` when the
 Manager package did not install, `PR 17497 at 0000000000, not its head 9350a08d80`
-when the checkout is on the PR's branch but not at the head GitHub reported when the
-command started: either someone pushed to the PR between that read and the fetch on
-the box, or the checkout was moved on the box by hand. (A fetch that fails does not
-leave this: comfy-cli exits 1, and the change is reported as not finished.) After a
-push, the box is on the PR's newer commit, and naming the PR again
-(`comfy-qat go <name> --pr <n> --manager`) reads the head again and confirms it. In
-1.4.0 the box's record still keeps the older head, so a later `go` that names no
-build can refuse the box again in the same way; name the PR again then. A release is its tag's commit, not its version
+when the checkout is on the PR's branch at a commit that is not the PR's head. GitHub
+is asked for the head again before a box is refused for this, so a push to the PR
+between the command starting and the fetch on the box is not what leaves it: that box
+is on the PR's newer commit, it is confirmed, and its record is brought up to that
+head. What leaves it is a checkout moved on the box by hand, or by something running
+there. (A fetch that fails does not leave it either: comfy-cli exits 1, and the change
+is reported as not finished.) In 1.4.0 a push in that window was refused as this, and
+the box's record kept the older head even after naming the PR again confirmed the box,
+so a later `go` that names no build refused it again; 1.5.0 does neither. A release is its tag's commit, not its version
 string: `commit abcdef0123, not v0.43.0's commit 426f5eea52` is a checkout on
 master's tip that still reports 0.43.0, and `PR 17497, not v0.43.0` a PR branch
 that does. Nothing is torn down: the box is fine and ComfyUI is

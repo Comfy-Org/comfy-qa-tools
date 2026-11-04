@@ -731,6 +731,36 @@ def check(chosen: Build, ask=None) -> Build:
     return chosen
 
 
+def reread_head(chosen: "Build | None", commit: str | None, pr: int | None,
+                ask=None) -> "Build | None":
+    """The build, with the PR's head read from GitHub again — when, and only
+    when, the checkout is on the PR's own branch at a commit that is not the
+    head this build carries.
+
+    That checkout is what a push looks like from here (C3; recheck-s2 N1). The
+    head is read when the command starts, and comfy-cli fetches the PR's branch
+    on the box minutes later, so an author who pushes in between lands the box
+    on the PR's real current head — and held to the head read first, a box on
+    exactly the code asked for was refused as the wrong build. Asked again, the
+    head GitHub reports NOW decides: the same commit as the checkout is the
+    build, and anything else stays a contradiction, now said against the
+    current head rather than the one from before the push.
+
+    Nothing else asks anything. A checkout already AT the head carried, one on
+    another PR or none, and a build that is not a PR all come back unchanged,
+    and so does any build when GitHub cannot be asked: not knowing is no reason
+    to call a box right.
+    """
+    if not (chosen is not None and chosen.pr and chosen.pr_head and commit
+            and pr == chosen.pr and commit.lower() != chosen.pr_head.lower()):
+        return chosen
+    try:
+        head = _open_pr(ask or github, BACKEND_REPO, chosen.pr, "--pr", "ComfyUI")
+    except BuildError:
+        return chosen
+    return replace(chosen, pr_head=head) if head else chosen
+
+
 def _tag_commit(ask, ref) -> str | None:
     """The commit a tag's ref points at, or None when GitHub would not say.
 
