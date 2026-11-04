@@ -293,8 +293,9 @@ _NAMED_BARE = ("your host list stopped loading while this ran ({}), so port 8190
 
 
 def test_no_sentence_in_the_package_names_a_command_bare():
-    """A command named in passing goes in backticks, where a wrapped line starts
-    with the backtick and not the command.
+    """A command named in passing is named without `comfy-qat` and without
+    backticks, so a wrapped line starts with a word and not a command — bare,
+    `comfy-qat` refuses it pasted, and in backticks a shell runs it (CI-3).
 
     Every string in every module, read by `commandlines.mid_sentence`. What is
     put together at run time — a command interpolated into a sentence — is read
@@ -309,25 +310,43 @@ def test_no_sentence_in_the_package_names_a_command_bare():
 
 
 @pytest.mark.prints_its_own_text
-def test_a_bare_name_lands_at_the_start_of_a_line_and_a_quoted_one_never_does():
-    """Why the rule is about the sentence, and that the reading refuses the one
-    that was red: filled in at every length a line can take, `warn` starts a
-    line with the bare commands at some of them — and, quoted, at none."""
-    from commandlines import is_command, mid_sentence
+def test_a_named_command_lands_bare_or_quoted_and_a_plain_name_never_does():
+    """Why the rule is about the sentence, and that the reading refuses both
+    shapes that were red: filled in at every length a line can take, `warn`
+    starts a line with the command at some of them — bare, which `comfy-qat`
+    refuses pasted, and in backticks, which a shell runs as a command
+    substitution before it reaches the rest of the line. Named without the
+    program, it lands at none."""
+    from commandlines import mid_sentence, runs_if_pasted
 
     def lands(sentence: str) -> list[int]:
         return [length for length in range(1, say.PROSE_WIDTH + 1)
-                if any(is_command(line.strip()) for line in say.wrapped(
+                if any(runs_if_pasted(line) for line in say.wrapped(
                     sentence.replace("{}", "x" * length), first=say.WARNING,
                     rest=" " * len(say.WARNING))[1:])]
 
     quoted = _NAMED_BARE.replace("comfy-qat go", "`comfy-qat go`").replace(
         "comfy-qat down", "`comfy-qat down`")
+    plain = _NAMED_BARE.replace("comfy-qat go", "go").replace(
+        "comfy-qat down", "down")
     assert mid_sentence(_NAMED_BARE) == ["comfy-qat go or comfy-qat down",
                                          "comfy-qat down"]
     assert lands(_NAMED_BARE), "the bare sentence no longer lands — it proves nothing"
-    assert mid_sentence(quoted) == []
-    assert lands(quoted) == []
+    assert mid_sentence(quoted), quoted
+    assert lands(quoted), "the quoted sentence no longer lands — it proves nothing"
+    assert mid_sentence(plain) == []
+    assert lands(plain) == []
+
+
+def test_a_printed_line_that_starts_with_a_quoted_command_is_refused():
+    """The printed reading's half of the same rule (CI-3, note 3). At a
+    39-character value `warn` printed a line starting `` `comfy-qat go` or
+    `comfy-qat down` ``, and the guard read it as prose because its first
+    character is a backtick, not a program."""
+    from commandlines import problems
+
+    found = problems(["         `comfy-qat go` or `comfy-qat down`"])
+    assert found and "command substitution" in found[0][1], found
 
 
 @pytest.mark.parametrize("line", [
@@ -336,6 +355,20 @@ def test_a_bare_name_lands_at_the_start_of_a_line_and_a_quoted_one_never_does():
     "or drop --zone: comfy-qat create --zone <zone>, or run comfy-qat list",
     "find it with gcloud compute instances list --project={}, then fix it",
     "warning: open a second tunnel with ssh -N -L 8190:127.0.0.1:8188 {}",
+    # CI-3, step 1's re-check: a name with punctuation after it. `list,` is not
+    # a command name as written, so the reading took the sentence for prose — and
+    # a wrap in front of it starts a line `comfy-qat` refuses, pasted.
+    "then run comfy-qat list, which shows every box",
+    "then run comfy-qat list.",
+    "then run comfy-qat down; it stops the box",
+    # And in backticks, the remedy this reading used to recommend. A backtick is
+    # a shell's command substitution: a wrapped line that starts
+    # `comfy-qat go` or `comfy-qat down`, pasted, runs both before the shell
+    # gets to `or` (CI-3, note 3).
+    "Run `comfy-qat init` to write a starter one.",
+    "fix the file before `comfy-qat go` or `comfy-qat down`",
+    "a box is on {} — adopt it, then `comfy-qat delete` it",
+    "It is the ID, not the name — `gcloud projects list` shows both.",
 ])
 def test_the_reading_finds_a_command_a_sentence_names_bare(line):
     from commandlines import mid_sentence
@@ -344,7 +377,11 @@ def test_the_reading_finds_a_command_a_sentence_names_bare(line):
 
 
 @pytest.mark.parametrize("line", [
-    "Run `comfy-qat init` to write a starter one.",
+    # The house rule since CI-3: a command named in passing is named without
+    # `comfy-qat` in front of it, and without backticks. A wrap can put the word
+    # at the start of a line, and there it is a word, not a command.
+    "Run the init command to write a starter one.",
+    "fix the file before go or down",
     "run it yourself and see: gcloud compute instances list --project={}",
     "  gcloud compute ssh {} --zone={} --project={} --command='a b'",
     "  comfy-qat down {}",

@@ -2514,7 +2514,7 @@ def test_only_the_tests_that_hand_say_their_own_text_are_left_unread():
                     for decorator in node.decorator_list):
                 marked.append(f"{path.name}::{node.name}")
     assert marked == [
-        "test_say.py::test_a_bare_name_lands_at_the_start_of_a_line_and_a_quoted_one_never_does",
+        "test_say.py::test_a_named_command_lands_bare_or_quoted_and_a_plain_name_never_does",
         "test_say.py::test_the_notes_beside_a_run_of_commands_are_in_one_column",
         "test_say.py::test_a_column_is_shared_by_the_commands_it_belongs_to_and_no_others",
     ], marked

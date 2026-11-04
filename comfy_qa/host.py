@@ -97,7 +97,7 @@ def remember_config(ctx: typer.Context, value: Optional[Path]) -> Optional[Path]
 
 ConfigOption = Annotated[Optional[Path], typer.Option(
     "--config", hidden=True, callback=remember_config,
-    help="Host list. Declared at the root — see `comfy-qat --help`.")]
+    help="Host list. Declared at the root, so it is in the root's --help.")]
 
 # --- choosing the build ----------------------------------------------------
 #
@@ -232,7 +232,7 @@ def _declared_flags(host: Host) -> str:
 
 
 STARTER = f"""\
-# comfy-qat list.
+# The comfy-qat host list.
 #
 # Every machine you test on is declared here, local or cloud. Naming them all
 # means there is no invisible default, which is how you end up reading results
@@ -244,7 +244,7 @@ STARTER = f"""\
 #   - no two hosts may be the same cloud box, or differ only in case
 #   - 'local' is this machine, so a cloud box may not take the name
 #   - a local host may not carry gce_instance / gce_zone / gce_project, or
-#     `comfy-qat down` would leave a real instance running and billing
+#     the down command would leave a real instance running and billing
 
 [hosts.local]
 kind = "local"
@@ -1768,18 +1768,20 @@ def create_cmd(
             # `down`, which both call `load` and will exit 2 until the file is
             # fixed.
             #
-            # `go` and `down` ARE IN BACKTICKS, and that is the fix for a line
+            # `go` and `down` ARE PLAIN WORDS, and that is the fix for a line
             # this printed that was a command nobody should paste. They come
             # after the loader's refusal, which names a path or a host, so where
-            # `warn` breaks the sentence depends on how long those are; bare, a
-            # break at the space in front of them started a line `comfy-qat go
-            # or comfy-qat down`, which reads as a command and which `comfy-qat`
-            # refuses. Quoted, a wrapped line starts with the backtick, whatever
-            # the length.
+            # `warn` breaks the sentence depends on how long those are; with the
+            # binary in front, a break at the space before it started a line
+            # `comfy-qat go or comfy-qat down`, which `comfy-qat` refuses pasted.
+            # The first fix put them in backticks, and a line that starts with a
+            # backtick is a shell's command substitution — pasted, it ran both
+            # (CI-3, step 1's re-check). As plain words, a wrapped line starts
+            # with a word, whatever the length.
             say.warn(f"your host list stopped loading while this ran ({exc}), so "
                      f"port {port} was chosen from the file as it was before — check "
                      f"it against the entries that no longer parse, and fix the file "
-                     f"before `comfy-qat go` or `comfy-qat down`")
+                     f"before go or down")
 
     # Still a bare append, and deliberately, having been through `hostfile.add`
     # and taken back out.
@@ -2205,7 +2207,7 @@ def _say_reserved(gc, hosts: list[Host], reservations) -> None:
             else:
                 say.result(say.offer("comfy-qat discover",
                                      f"a box is on {entry.name} — adopt it, then "
-                                     f"`comfy-qat delete` it"))
+                                     f"delete it"))
 
 
 # The four words `put_away` answers with, from nine `return` statements. Named
@@ -2746,7 +2748,7 @@ def go_cmd(
     follow: Annotated[bool, typer.Option(
         "--follow",
         help="Stream ComfyUI's log here, and Ctrl-C then stops ComfyUI itself. "
-             "To watch without that, use `comfy-qat logs`.")] = False,
+             "To watch without that, use the logs command.")] = False,
     new_window: Annotated[bool, typer.Option(
         "--new-window",
         help="Run this in a new macOS Terminal window instead. That window runs "
@@ -3366,10 +3368,11 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
     """
     import webbrowser
 
+    from .build import reread_head
     from .gcloud import GcloudError
     from .lifecycle import (
-        confirm_build, ensure_installed, read_facts, serve, start_detached,
-        stop_running, wait_for_ssh, wrong_machine_fix,
+        confirm_build, ensure_installed, keep_record, read_facts, serve,
+        start_detached, stop_running, wait_for_ssh, wrong_machine_fix,
     )
     from .stamp import mismatch
 
@@ -3385,6 +3388,10 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
         # build can be changed under it, and the launch path below takes over.
         facts = read_facts(gc, host)
         asked = want.over(facts.record) if want is not None else facts.record
+        # A checkout on the PR's branch at another commit is asked about again
+        # before it counts against the box: a push since the head was read is
+        # the PR's code (C3).
+        asked = reread_head(asked, facts.commit, facts.pr)
         serving_it = False
         # A PR asked for again after new commits is the same choice as the
         # record and not the same code: git on the box says which commit it is
@@ -3403,6 +3410,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
                 ready.stamp = confirm_build(gc, host, asked, ready.stamp, say.step,
                                             facts=facts)
                 serving_it = True
+                keep_record(gc, host, asked, facts.record, say.step)
             except _reportable() as exc:
                 # The record says this build and the server says otherwise —
                 # somebody changed the checkout under it. Asked for explicitly,
@@ -3476,7 +3484,7 @@ def _serve(gc, host: Host, ready, *, no_browser: bool = False,
             # Ctrl-C will reach. `--help` says it too; nobody reads `--help`
             # from inside a running stream.
             say.step(f"streaming ComfyUI's log — Ctrl-C stops ComfyUI itself "
-                     f"(`comfy-qat logs {host.name}` watches without that)")
+                     f"(the logs command watches {host.name}'s without that)")
         say.result("")
         code = (serve if follow else start_detached)(
             gc, host, say.step, open_browser=browser, expect=expect, facts=facts)
@@ -3682,8 +3690,8 @@ def switch_cmd(
             registered.enter_context(inflight.may_leave(
                 f"{names} already stopped to make room under the GPU ceiling",
                 undo=[f"comfy-qat up {others_stopped[0][0].name}"],
-                note=f"nothing is serving until one of them is up, and "
-                     f"`comfy-qat switch {host.name}` retries the whole thing",
+                note=f"nothing is serving until one of them is up, and the "
+                     f"switch command retries the whole thing for {host.name}",
                 heading="and this had already happened when you stopped it:",
             ))
         try:

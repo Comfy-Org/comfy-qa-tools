@@ -23,7 +23,7 @@ never collide on `PATH`.
 
 ## Status
 
-**1.4.0. Every command is implemented and tested, and everything up to 1.2.0 has
+**1.5.0. Every command is implemented and tested, and everything up to 1.2.0 has
 run against real GCE hardware on Linux and Windows**, except two Windows paths the
 1.4.0 live run found broken in 1.2.0 to 1.3.1: installing ComfyUI on a box from
 nothing (it called `winget`, which Windows Server 2022 does not have) and the
@@ -36,6 +36,13 @@ GPU box install its own NVIDIA driver. The build choice ran on a real Linux box 
 a real Windows box, both with no GPU, on 2026-11-03; a Windows GPU box installing
 its own driver has not run on a real box yet — see [the changelog](CHANGELOG.md)
 for what did and did not.
+
+1.5.0 adds "Test this" (`where`), results kept here (`pass`, `fail`, `results`),
+QA Desk drafts that run only as `--dry-run` (`pass`, `fail`, `report`), a bug draft
+(`bug`) and the frontend's recorder started against a box (`record`). On a real
+Linux box with no GPU and real QA Desk cases of the active release, 1.60, `where`,
+the drafts' dry runs, `results` and `bug` ran on 2026-11-04; `record` itself did not
+run live — see [the changelog](CHANGELOG.md).
 
 What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
 cost columns in `list` — **was run on real Google Compute Engine boxes on
@@ -227,6 +234,49 @@ stopped", it is "am I still paying for anything".
 [`docs/machines.md`](docs/machines.md) covers the whole loop, including what to do
 when a zone has no GPUs left.
 
+### Testing, and saying what you found
+
+```sh
+# Test this: where can QA Desk's case 1.60 C-01 be tested, right now?
+comfy-qat where 1.60 C-01
+# or a PR, a version, a whole release
+comfy-qat where --pr 17497
+# keep the result here; for a QA Desk case, see what QA Desk would be told
+comfy-qat pass 1.60 C-01 --on windows
+comfy-qat fail 1.60 C-01 --on windows --note "the picker shows Save failed"
+comfy-qat results
+# record a Playwright test against the box, in your own browser
+comfy-qat record windows 1.60
+# draft a bug from the box's stamp
+comfy-qat bug --on windows --title "..." --note "..."
+```
+
+**`where` starts from anything** — a QA Desk case, a release, a ComfyUI or
+frontend PR, a version — and lists every machine in your host list and testcloud,
+staging and prod, each **Ready**, **Can be prepared** (what would change, and
+roughly how long) or **Not suitable** (why). A case's own target in QA Desk
+(cloud, core, shared, shared-local) decides which kinds count; a cloud
+environment is listed with the frontend commit it serves. It starts nothing.
+
+**A result is kept here, with or without QA Desk.** `pass` and `fail` save what
+was tested, where, the place's full stamp, the time, a note and a Linear issue or
+bug reference, beside your host list. For a QA Desk case they then print the exact
+`qa-desk` command and run only its `--dry-run`, so you see the request QA Desk
+would get. **This tool sends QA Desk nothing**: it reads it with your own `qa-desk`
+sign-in, never touches the token, and leaves sending to you. Without `qa-desk`, or
+signed out, it says so with the command that fixes it, and everything else works.
+
+**`record` gets the recorder ready and you record.** It checks out the matching
+frontend (a release's `core/<version>` branch) in comfy-qat's own folder, refuses
+a box serving another frontend version, switches ComfyUI on the box to
+multi-user mode while you record and back afterwards, and starts the frontend's
+own `pnpm comfy-test record --backend http://127.0.0.1:<port>`. Node and pnpm are
+checked; their install commands are printed, never run.
+
+[The command reference](docs/commands.md#testing-and-saying-what-you-found) has each
+testing command's options, and [troubleshooting](docs/troubleshooting.md) what each
+of their refusals means.
+
 ## Commands
 
 Every target is a **declared host**, local or cloud — naming them all is the
@@ -256,6 +306,13 @@ becomes something you do on purpose.
 | `comfy-qat stamp` | ask a machine what it is, and print the line you paste |
 | `comfy-qat switch` | start the one you want, stop the one you were on |
 | `comfy-qat move` | move a box to a zone with capacity, keeping its ComfyUI — not a reserved one |
+| `comfy-qat where` | Test this: every machine and testcloud, staging and prod for a QA Desk case, a release, a PR or a version — Ready, Can be prepared (what changes, how long) or Not suitable (why). Starts nothing |
+| `comfy-qat pass` | keep a pass here, with the full stamp — and for a QA Desk case, print the `qa-desk case pass` command and run only its `--dry-run` |
+| `comfy-qat fail` | the same for a fail, with what broke in `--note`; QA Desk's draft is `case fail --bug "<what broke> — <stamp>"` |
+| `comfy-qat results` | the passes and fails kept here |
+| `comfy-qat report` | draft QA Desk's `test report` for a recorded Playwright test PR, as a dry run |
+| `comfy-qat bug` | Raise bug: a draft in the house format, from the stamp, for Linear or #bug-dump. Sends nothing |
+| `comfy-qat record` | start the frontend's own test recorder against a box, from a matching frontend checkout of comfy-qat's own, with ComfyUI in multi-user mode while you record |
 | `comfy-qat --version` | what you are running, with the commit |
 
 **[docs/commands.md](docs/commands.md)** has the flags and which to reach for.
@@ -342,9 +399,20 @@ Everything lives under `~/.config/comfy-qa-tools/`:
   after you have closed it. Each `open` starts that log fresh, so it holds the
   most recent tunnel for that host and nothing older.
 
+- `results/` — one JSON file per `pass` or `fail`: what was tested, where, the
+  full stamp, the time, the note and any bug reference. `results` lists them.
+- `recordings/recordings.json` — which files the last `record` on each box left
+  in the frontend checkout, so `bug` can name the recording to attach.
+- `frontend/<ref>/` — the frontend checkout `record` runs the recorder from, one
+  per branch or tag, with its `node_modules`. It is comfy-qat's own copy, never
+  yours, and a checkout with changes in it — a recording — is never updated.
+
+These sit beside the host list, so `--config` moves them with it.
+
 Signing in is gcloud's job, so credentials live in gcloud's own store
-(`~/.config/gcloud/`) and are refreshed by it. **This tool never sees, stores or
-prints a credential.**
+(`~/.config/gcloud/`) and are refreshed by it. QA Desk's sign-in is `qa-desk`'s
+own, made by you with `qa-desk login`. **This tool never sees, stores or prints a
+credential** — gcloud's or QA Desk's.
 
 It does not touch your ComfyUI installs, your `PATH`, your shell config, or any
 service on this machine. It will not overwrite a host list you already have, and

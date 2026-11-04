@@ -412,8 +412,9 @@ def every_printed_command_is_only_the_command(monkeypatch, request):
     from commandlines import mid_sentence, problems
 
     found = problems(printed) + [
-        (line, f"names {command!r} bare, mid-sentence, where a wrap at another "
-               f"length starts a line with it — put it in backticks")
+        (line, f"names {command!r} mid-sentence, where a wrap at another length "
+               f"starts a line with it — name it without `comfy-qat` and without "
+               f"backticks, which a shell runs pasted")
         for line in handed for command in mid_sentence(line)]
     if found:
         raise AssertionError(
@@ -693,4 +694,67 @@ def no_test_asks_github(monkeypatch):
     yield refused
     if refused:
         pytest.fail("the GitHub tripwire fired during this test, whatever the test "
+                    "itself made of it:\n" + "\n".join(refused), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def no_test_runs_a_qa_desk_write(monkeypatch):
+    """comfy-qat reads QA Desk and writes to it only as `--dry-run` (S3-5; Ali,
+    3 Nov: "dry run"). `qadesk.run` refuses a write before it starts anything;
+    this is the check that does not trust it.
+
+    Every argv goes through `qadesk._spawn`, whoever answers it — the suite's
+    `FakeQaDesk`, installed as `qadesk.RUNNER`, or the real CLI — and is held
+    here to QA Desk's own reading of it, not the package's: its words and flags
+    as the CLI's `parse` takes them (`fakes._qa_desk_parse`), so a bare `--`
+    ends the flags and a `--dry-run` after it is a word, not a dry run. An argv
+    passes when it is one of the five reads, or one of the three writes
+    comfy-qat drafts — `case pass`, `case fail`, `test report` — with a dry run
+    QA Desk's CLI would see. Every other command is refused whatever it
+    carries: `login`, `logout`, `token` and `setup` run before the CLI ever
+    looks at `--dry-run`. Anything refused is kept, and the test fails at
+    teardown whatever it made of the refusal, as the network and GitHub
+    tripwires above do.
+
+    IT USED TO ASK ONLY WHETHER `--dry-run` WAS IN THE ARGV, which is the rule
+    the package had too, and both were walked past by the same argv: `report
+    1.60 X --cases C-01 --note --` handed qa-desk `… --note -- --dry-run --json`,
+    and qa-desk, reading the `--` as the end of its flags, would have sent it
+    (behaviour audit, F1, 4 Nov).
+
+    And the real `qa-desk` is refused outright: a test that forgot its fake
+    would read the developer's own QA Desk under their own sign-in.
+    """
+    from comfy_qa import qadesk
+
+    refused: list[str] = []
+
+    def refuse(message):
+        refused.append(message)
+        raise AssertionError(message)
+
+    monkeypatch.setattr(qadesk, "RUNNER", lambda argv: refuse(
+        f"this test ran the real qa-desk ({argv!r}). Give it a QA Desk of its own: "
+        f"monkeypatch qadesk.RUNNER with tests/fakes.py's FakeQaDesk."))
+    from fakes import _qa_desk_parse
+
+    reads = {("whoami",), ("case", "show"), ("case", "list"), ("release", "show"),
+             ("release", "list")}
+    drafted = {("case", "pass"), ("case", "fail"), ("test", "report")}
+    passing = qadesk._spawn
+
+    def guarded(argv):
+        words, flags = _qa_desk_parse(list(argv[1:]))
+        if tuple(words[:1]) in reads or tuple(words[:2]) in reads:
+            return passing(argv)
+        if tuple(words[:2]) not in drafted or not flags.get("dry-run"):
+            refuse(f"a qa-desk write without --dry-run, as qa-desk itself reads the "
+                   f"argv, reached the point where it is run: {argv!r}. comfy-qat "
+                   f"sends QA Desk nothing.")
+        return passing(argv)
+
+    monkeypatch.setattr(qadesk, "_spawn", guarded)
+    yield refused
+    if refused:
+        pytest.fail("the QA Desk tripwire fired during this test, whatever the test "
                     "itself made of it:\n" + "\n".join(refused), pytrace=False)

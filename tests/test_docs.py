@@ -56,7 +56,8 @@ PACKAGE = ROOT / "comfy_qa"
 # rewrites the host list during a move undocumented and unnoticed.
 ERROR_TYPES = ("BadParameter", "BuildError", "ConfigError", "GcloudError",
                "HostFileError", "LifecycleError", "MoveError", "ProbeError",
-               "SetupStopped", "TunnelError")
+               "SetupStopped", "TunnelError", "QaDeskError", "RecordError",
+               "TargetError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and
@@ -704,6 +705,17 @@ MESSAGE_FLOOR = {
     "setup.py": 19,
     "stamp.py": 10,
     "tunnel.py": 22,
+    # New in 1.5.0 with "Test this", local results, the QA Desk drafts, the bug
+    # draft and the recorder. Each module reads what it was written with —
+    # places 6, qa 32, qadesk 13, record 4 — and is floored a little under, on
+    # the rule under WORDING_FLOOR. The 1.5.0 audit fixes gave qa.py 41 (nothing
+    # named, a case QA Desk does not have, a dash PR, the multi-user put-backs)
+    # and qadesk.py 20 (QA Desk's exits 2, 4 and 6, a cut-off answer, a command
+    # that is not a draft): raised to 38 and 18.
+    "places.py": 5,
+    "qa.py": 38,
+    "qadesk.py": 18,
+    "record.py": 3,
 }
 
 # The page's own two collections, floored the same way and for the same reason:
@@ -781,7 +793,16 @@ MESSAGE_FLOOR = {
 # 352 until the 1.4.0 audit fixes: a checkout that is not the build asked for
 # (a PR's older head) is put on again, and says so. The page reads 365. Raised to
 # 359, half the distance, on the rule above.
-ENTRY_FLOOR = 359
+# 359 until 1.5.0's testing commands: "Test this", the local results, QA Desk
+# missing, signed out or saying no, the drafts' dry runs, the bug draft and the
+# recorder, 47 entries at once. The page reads 406. Raised to 396, inside the
+# slack: half the distance would leave a gap wider than FLOOR_SLACK, which
+# the drift check refuses.
+# 396 until the 1.5.0 audit fixes: QA Desk's own exits, a cut-off answer, a
+# command that is not a draft, a dash PR, nothing named, a case QA Desk does not
+# have, a listing's build refusal and the multi-user put-backs. The page reads
+# 417. Raised to 410, inside the slack.
+ENTRY_FLOOR = 410
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -813,7 +834,11 @@ ENTRY_FLOOR = 359
 # wordings now. Raised to 388, half the distance, on the rule above.
 # 388 until 1.4.0, for the entries named beside ENTRY_FLOOR: 421 quoted
 # wordings now. Raised to 412, inside the slack of 12, on the rule above.
-WORDING_FLOOR = 412
+# 412 until 1.5.0, for the entries named beside ENTRY_FLOOR: 464 quoted
+# wordings now. Raised to 454, inside the slack of 12.
+# 454 until the 1.5.0 audit fixes named beside ENTRY_FLOOR: 476 quoted wordings
+# now. Raised to 470, inside the slack.
+WORDING_FLOOR = 470
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this
@@ -2249,6 +2274,49 @@ def test_commands_we_tell_people_to_run_exist(where, words):
             break
         walked.append(word)
         node = node[word]
+
+
+# A command a sentence only NAMES is written without the binary since CI-3 —
+# "the discover command adopts it", "run the quota command" — because a wrap can
+# start a line with it and a shell runs a `comfy-qat …` or a backticked one
+# pasted. Without `comfy-qat ` in front, `_INVOCATION` above no longer sees those
+# names, and 25 of its cases went with them. This is the same question asked of
+# the new spelling: every `the <name> command` the package says names a command
+# the root really has.
+#
+# Over what the package PRINTS (`printed.strings`, no docstrings), where "the
+# same command" and the help's "the tunnel command" — gcloud's — are English,
+# not names. Those two words are the exclusions, and the hygiene test below
+# drops either one the package stops saying, so the list cannot rot into a hole.
+_NAMED_COMMAND = re.compile(r"\bthe ([a-z][a-z-]*) command\b")
+_NOT_NAMES = ("same", "tunnel")
+
+
+def _named_commands(skip=_NOT_NAMES) -> list[tuple[str, str]]:
+    from printed import strings
+
+    return [(where, match.group(1)) for where, text in strings()
+            for match in _NAMED_COMMAND.finditer(text)
+            if match.group(1) not in skip]
+
+
+def test_the_reading_of_named_commands_sees_the_package():
+    """A reading that found nothing would pass the test below for no reason,
+    and an exclusion the package no longer says is a hole somebody can walk a
+    real name through."""
+    assert len(_named_commands()) >= 15, _named_commands()
+    assert _NAMED_COMMAND.findall("run the quotas command") == ["quotas"]
+    said = {name for _, name in _named_commands(skip=())}
+    assert set(_NOT_NAMES) <= said, set(_NOT_NAMES) - said
+
+
+@pytest.mark.parametrize("where,name", _named_commands(),
+                         ids=lambda value: str(value))
+def test_commands_a_sentence_names_without_the_binary_exist(where, name):
+    from comfy_qa.cli import app
+
+    assert name in _command_tree(app), (
+        f"{where}: 'the {name} command' — there is no command {name!r}")
 
 
 # --- the same question, asked of the spellings that name no binary -----------

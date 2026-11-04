@@ -1086,25 +1086,27 @@ def _nothing_to_ask(held: list[str], stuck: list[str]) -> str:
     Three different situations shared one sentence — "Nothing was missing anyway"
     — and only the first of them was that.
 
-    `comfy-qat quota` is in backticks because it comes after the card lists, so
-    where a writer that wraps would break the line depends on how many cards
-    there are. `step` prints this whole today; bare, the first writer to wrap it
-    could start a line with the command and the rest of the sentence after it,
-    which reads as a command and runs as none. `create`'s warning about a host
-    list that stopped loading did exactly that on the Linux runners.
+    The quota command is named without `comfy-qat` in front of it because it
+    comes after the card lists, so where a writer that wraps would break the
+    line depends on how many cards there are. `step` prints this whole today;
+    with the binary in front, the first writer to wrap it could start a line
+    with the command and the rest of the sentence after it, which reads as a
+    command and runs as none — `create`'s warning about a host list that stopped
+    loading did exactly that on the Linux runners. Backticks were the first fix,
+    and a line that starts with one runs pasted (CI-3, step 1's re-check).
     """
     if stuck and held:
         return (f"{', '.join(held)} granted; {', '.join(stuck)} at zero and "
                 f"already refused, so there is nothing left to ask for. "
-                f"Run `comfy-qat quota` to see where each card stands.")
+                f"Run the quota command to see where each card stands.")
     if stuck:
         return (f"{', '.join(stuck)} at zero and already refused, so there is "
-                f"nothing that can be asked for. Run `comfy-qat quota` to see "
+                f"nothing that can be asked for. Run the quota command to see "
                 f"where each card stands.")
     if held:
         return (f"nothing was missing — {', '.join(held)} granted. Run "
-                f"`comfy-qat quota` to see where each card stands.")
-    return "run `comfy-qat quota` to see where each card stands."
+                f"the quota command to see where each card stands.")
+    return "run the quota command to see where each card stands."
 
 
 def _unsold_here(gc, project: str, plan: list[QuotaAsk], region: str) -> list[str]:

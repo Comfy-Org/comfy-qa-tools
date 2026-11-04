@@ -118,6 +118,117 @@ def test_a_github_refusal_the_code_swallows_still_fails_the_test(no_test_asks_gi
     no_test_asks_github.clear()
 
 
+# --- and the teardown that fails the test, held by a test of its own ----------
+#
+# Audit item code:P1 (step 2): the tests above prove each refusal is KEPT, then
+# clear the list so their own teardown stays green — which means nothing in the
+# suite would notice if the teardown `pytest.fail` were deleted. Removing it left
+# every test passing. So each tripwire's own generator is driven here, in
+# process, the way pytest drives it: set up, trip it, and ask for the teardown,
+# which has to fail. Its own MonkeyPatch, so the trip lands on the copy under
+# test and never on this test's own autouse tripwires.
+
+
+def _trips():
+    import socket
+
+    from comfy_qa import build
+
+    from comfy_qa import qadesk
+
+    return {
+        "no_test_asks_github": lambda: build.github("repos/Comfy-Org/ComfyUI/pulls/1"),
+        "no_test_reaches_the_network": lambda: socket.create_connection(
+            ("127.0.0.1", 8188), 0.2),
+        "no_test_runs_a_qa_desk_write": lambda: qadesk._spawn(
+            ["qa-desk", "case", "pass", "1.60", "C-01", "--on", "local"]),
+    }
+
+
+# Every tripwire in conftest that keeps its refusals for teardown. A new one is
+# added here the day it lands, with its trip above.
+TRIPWIRES = ["no_test_asks_github", "no_test_reaches_the_network",
+             "no_test_runs_a_qa_desk_write"]
+
+
+def test_every_tripwire_that_fails_at_teardown_is_held_here():
+    """Derived from conftest's source, not trusted: a fixture that yields the
+    refusals it keeps and fails at teardown is one of these, and one added
+    without being named in TRIPWIRES would be the code:P1 hole again."""
+    import ast
+    from pathlib import Path
+
+    tree = ast.parse((Path(__file__).parent / "conftest.py").read_text(encoding="utf-8"))
+    found = sorted(
+        node.name for node in tree.body if isinstance(node, ast.FunctionDef)
+        and "yield refused" in ast.unparse(node) and "pytest.fail" in ast.unparse(node))
+    assert found == sorted(TRIPWIRES), found
+
+
+@pytest.mark.parametrize("name", TRIPWIRES)
+def test_a_tripwire_that_fired_fails_the_test_at_teardown(name):
+    import conftest
+
+    fixture = getattr(conftest, name).__wrapped__
+    with pytest.MonkeyPatch.context() as patch:
+        driven = fixture(patch)
+        refused = next(driven)
+        with pytest.raises(AssertionError):
+            _trips()[name]()
+        assert len(refused) == 1, refused
+        with pytest.raises(pytest.fail.Exception, match="tripwire fired"):
+            next(driven)
+
+
+@pytest.mark.parametrize("name", TRIPWIRES)
+def test_a_tripwire_that_never_fired_lets_the_test_pass(name):
+    """The other half: a teardown that failed every test would pass the test
+    above too."""
+    import conftest
+
+    fixture = getattr(conftest, name).__wrapped__
+    with pytest.MonkeyPatch.context() as patch:
+        driven = fixture(patch)
+        assert next(driven) == []
+        with pytest.raises(StopIteration):
+            next(driven)
+
+
+@pytest.mark.parametrize("argv", [
+    # The three that walked past the old rule, `--dry-run` anywhere in the argv
+    # (behaviour audit F1): qa-desk reads a bare `--` as the end of its flags,
+    # so the `--dry-run` after it is a word and the write is sent.
+    ["qa-desk", "test", "report", "1.60", "X", "--cases", "C-01", "--note", "--",
+     "--dry-run", "--json"],
+    ["qa-desk", "test", "report", "1.60", "X", "--cases", "--", "--dry-run", "--json"],
+    ["qa-desk", "test", "report", "1.60", "--", "--cases", "C-01", "--dry-run", "--json"],
+    # And a command the CLI runs before it looks at `--dry-run` (code audit T10).
+    ["qa-desk", "logout", "--dry-run", "--json"],
+])
+def test_the_qa_desk_tripwire_reads_the_argv_as_qa_desk_does(argv):
+    """S3-5's instrument: what counts as a dry run is QA Desk's own `parse`, and
+    only the three drafts may be one. A draft's dry run with its values attached
+    by `=` — a lone `--` among them — still passes."""
+    import conftest
+
+    from comfy_qa import qadesk
+
+    fixture = conftest.no_test_runs_a_qa_desk_write.__wrapped__
+    with pytest.MonkeyPatch.context() as patch:
+        driven = fixture(patch)
+        refused = next(driven)
+        patch.setattr(qadesk, "RUNNER", lambda argv: (0, "{}", ""))
+        with pytest.raises(AssertionError, match="without --dry-run"):
+            qadesk._spawn(argv)
+        assert len(refused) == 1, refused
+        refused.clear()
+        assert qadesk._spawn(["qa-desk", "test", "report", "1.60", "X", "--cases=C-01",
+                              "--note=--", "--dry-run", "--json"])[0] == 0
+        assert refused == []
+        with pytest.raises(StopIteration):
+            next(driven)
+
+
 def test_loopback_is_not_a_leak():
     """The end-to-end tests run a real fake ComfyUI on 127.0.0.1 and really
     connect to it. Refusing that would make the tripwire unusable, so the rule is

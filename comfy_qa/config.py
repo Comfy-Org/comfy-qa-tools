@@ -569,7 +569,7 @@ def _project_in(data: dict) -> str | None:
         raise ConfigError(
             f"{PROJECT_KEY} = {value!r} is not a Google project ID — that is "
             f"lowercase letters, digits and hyphens, starting with a letter. It is "
-            f"the ID, not the name — `gcloud projects list` shows both."
+            f"the ID, not the name; gcloud's projects list shows both."
             # Named in passing, not offered after a colon: this sentence is put
             # inside others (`could not read your host list (…)`), so a command
             # at its end would run on into theirs, and one with `shows both`
@@ -725,7 +725,7 @@ def load(path: Path | None = None) -> list[Host]:
     path = path or DEFAULT_CONFIG_PATH
     if not path.exists():
         raise ConfigError(
-            f"no host list at {path}. Run `comfy-qat init` to write a starter one."
+            f"no host list at {path}. Run the init command to write a starter one."
         )
     # `exists()` is true of a directory, of a file owned by someone else, and of
     # a file that is not text at all. Each of those reaches `read_text` and, until
@@ -963,8 +963,8 @@ def resolve(hosts: list[Host], name: str) -> Resolution:
         if not candidates:
             raise ConfigError(
                 f"nothing declared matches {selector!r}. Declared: {_inventory(hosts)}. "
-                "Create the box in the Google Cloud console, then "
-                "`comfy-qat discover` to add it to your host list."
+                "Create the box in the Google Cloud console, then run the "
+                "discover command to add it to your host list."
             )
         listed = ", ".join(f"{h.name} ({describe(h)})" for h in candidates)
         # "Add the other half" is only advice when there is another half to add.

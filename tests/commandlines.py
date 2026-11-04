@@ -45,7 +45,15 @@ import shlex
 # The programs a printed command starts with. Not every word in `say._RUNNABLE`:
 # `python`, `pip`, `/` and `~/` start the lines of scripts this tool sends to a
 # box, which are not printed for anybody to paste.
-PROGRAMS = ("comfy-qat", "gcloud", "ssh", "scp")
+PROGRAMS = ("comfy-qat", "gcloud", "ssh", "scp", "qa-desk")
+
+# `qa-desk`'s first words, from `qa-desk describe` (its own contract, read on
+# 3 Nov). comfy-qat prints the QA Desk command it would run for a result, so
+# those lines are held to the same rule as every other command it prints.
+QA_DESK_GROUPS = frozenset({
+    "backport", "bug", "case", "comms", "describe", "login", "logout", "person",
+    "plan", "qa", "release", "section", "test", "testcloud", "token", "whoami",
+})
 
 # What can stand in front of a command on a printed line without being part of
 # it: the indent, the label of a fix or a warning, and an explanation's gutter
@@ -108,12 +116,19 @@ def is_command(text: str) -> bool:
     words = text.split()
     if len(words) < 2 or words[0] not in PROGRAMS:
         return False
-    second = words[1]
+    # The word as a shell sees it once the sentence's own punctuation is off:
+    # `comfy-qat list, which shows every box` names `list` (CI-3, step 1's
+    # re-check). Read as written, `list,` is no command name, so the reading took
+    # the sentence for prose — and a wrap in front of it starts a line that
+    # `comfy-qat` refuses, pasted.
+    second = words[1].rstrip(",.;:")
     if words[0] == "gcloud":
         return second in GCLOUD_GROUPS
     if words[0] == "comfy-qat":
         return (second in _root().commands or second.startswith("-")
                 or second.startswith("{"))
+    if words[0] == "qa-desk":
+        return second in QA_DESK_GROUPS
     return second.startswith(("-", "{")) or "@" in second
 
 
@@ -221,9 +236,29 @@ def unnamed_project(line: str) -> str | None:
 _AFTER_A_WORD = re.compile(r"(?<=\S )(?=(?:comfy-qat|gcloud|ssh|scp) \S)")
 
 
+# A span in backticks, and what it holds.
+_QUOTED = re.compile(r"`([^`]*)`")
+
+
+def runs_if_pasted(line: str) -> bool:
+    """Would a shell run a command if this printed line were pasted into it?
+
+    A line that is a command, and a line that STARTS with one in backticks: a
+    backtick is the shell's command substitution, so `` `comfy-qat go` or
+    `comfy-qat down` `` runs both commands before it reaches `or` (CI-3, step
+    1's re-check, note 3). The remedy this module used to give for a command
+    named mid-sentence was exactly that pair of backticks.
+    """
+    body = _FRAME.sub("", line, count=1)
+    if is_command(body):
+        return True
+    quoted = _QUOTED.match(body)
+    return bool(quoted and is_command(quoted.group(1)))
+
+
 def mid_sentence(line: str) -> list[str]:
-    """The commands a line of prose names mid-sentence, bare — each from where
-    it starts to the end of the line.
+    """The commands a line of prose names mid-sentence, bare or in backticks —
+    each from where it starts to the end of the line.
 
     THE ONE PLACE A WRAP CAN START A LINE WITH A COMMAND. `say.wrapped` breaks
     prose at any space, and the space in front of a command a sentence names is
@@ -234,25 +269,36 @@ def mid_sentence(line: str) -> list[str]:
     comfy-qat down` — which `comfy-qat` refuses, pasted. On a Mac the path was
     longer and the same test passed. Whether it lands depends on everything in
     front of it, so the only rule that holds at every length is about the
-    sentence: a command named in passing goes in backticks, where the backtick is
-    what a wrapped line starts with.
+    sentence.
+
+    THE RULE CHANGED IN 1.5.0, AND THIS IS WHY. It was "a command named in
+    passing goes in backticks", where the backtick is what a wrapped line starts
+    with — and a line that starts with a backtick runs, pasted: a shell reads it
+    as a command substitution (CI-3, step 1's re-check). So a command a sentence
+    only names is named WITHOUT `comfy-qat` in front of it and without
+    backticks — `the discover command adopts it`, `fix the file before go or
+    down` — and a wrap that lands on it starts a line with a word. Both shapes
+    are read here: bare, with or without punctuation after the name, and in
+    backticks.
 
     Not read: a line that is a command — `gcloud compute ssh …` names `ssh` as
-    an argument — a command in backticks, and one the colon in front of it
-    offers, up to where the prose resumes after it. `wrapped` holds that one
-    whole, and moves it to the next line in one piece when it does not fit.
+    an argument — and one the colon in front of it offers, up to where the prose
+    resumes after it. `wrapped` holds that one whole, and moves it to the next
+    line in one piece when it does not fit.
     """
     body = _FRAME.sub("", line, count=1)
     if is_command(body):
         return []
-    bare = re.sub(r"`[^`]*`", lambda m: "Q" * len(m.group()), body)
+    found = [body[quoted.start():] for quoted in _QUOTED.finditer(body)
+             if is_command(quoted.group(1))]
+    bare = _QUOTED.sub(lambda m: "Q" * len(m.group()), body)
     held = []
     for match in _INTRODUCED.finditer(bare):
         resumes = _PROSE_RESUMES.search(bare, match.end())
         held.append((match.end(), resumes.start() if resumes else len(bare)))
-    return [body[match.start():] for match in _AFTER_A_WORD.finditer(bare)
-            if not any(start <= match.start() < stop for start, stop in held)
-            and is_command(bare[match.start():])]
+    return found + [body[match.start():] for match in _AFTER_A_WORD.finditer(bare)
+                    if not any(start <= match.start() < stop for start, stop in held)
+                    and is_command(bare[match.start():])]
 
 
 # --- the printed reading: real values, and the CLI's own parser ---------------
@@ -334,6 +380,11 @@ def problems(lines: list[str]) -> list[tuple[str, str]]:
             if wrong:
                 found.append((line, wrong))
         body = _FRAME.sub("", line, count=1)
+        quoted = _QUOTED.match(body)
+        if quoted and is_command(quoted.group(1)):
+            found.append((line, f"starts with `{quoted.group(1)}` in backticks, "
+                                f"which a shell runs as a command substitution "
+                                f"when the line is pasted"))
         if in_fix and body.startswith("--"):
             wrong = shape(body)
             if wrong:

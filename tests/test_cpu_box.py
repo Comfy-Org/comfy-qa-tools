@@ -618,7 +618,7 @@ def test_what_is_said_after_a_gpu_box_exists_is_unchanged():
     t4 = Blueprint(name="comfy-linux", image=IMAGES["linux"], card=CARDS["t4"])
     assert create.next_steps(t4, "us-central1-a") == [
         "comfy-linux is installing the NVIDIA driver from its startup script, "
-        "which reboots it once or twice. `comfy-qat go` waits that out.",
+        "which reboots it once or twice. The go command waits that out.",
         "  install ComfyUI and serve it:\n    comfy-qat go comfy-linux",
         "  stop the machine, stop paying:\n    comfy-qat down comfy-linux",
     ]

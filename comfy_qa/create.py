@@ -821,8 +821,8 @@ class Blueprint:
         from .build import DEFAULT
 
         if self.build is not None:
-            return f"ComfyUI build, installed by `comfy-qat go`: {self.build.describe()}"
-        return (f"ComfyUI build, installed by `comfy-qat go`: {DEFAULT.describe()} — "
+            return f"ComfyUI build, installed by the go command: {self.build.describe()}"
+        return (f"ComfyUI build, installed by the go command: {DEFAULT.describe()} — "
                 f"no --version, --pr or --commit was given")
 
     def steps(self, zone: str) -> list[str]:
@@ -1198,7 +1198,8 @@ class QuotaCheck:
     named: tuple[tuple[str, str, str], ...] = ()
     """`(reservation, zone, label)` where the host list holds that box.
 
-    The only thing that lets the remedy say `comfy-qat down <label>`. See
+    The only thing that lets the remedy offer the down command, by the
+    box's label. See
     `declared_boxes`.
     """
     reserving: bool = False
@@ -2156,9 +2157,10 @@ def _instance_in_flight(blueprint: Blueprint, zone: str, project: str):
             f"--zone={zone} --project={project}",
             "or check first, if you would rather look:",
             f"gcloud compute instances list --project={project}",
+            "or keep it, and adopt it into your host list:",
+            "comfy-qat discover",
         ],
-        note="it is in no host list, so `comfy-qat down` cannot reach it "
-             "— `comfy-qat discover` adopts it if you want to keep it",
+        note="it is in no host list, so the down command cannot reach it",
     )
 
 
@@ -2737,12 +2739,12 @@ def next_steps(blueprint: Blueprint, zone: str) -> list[str]:
     elif blueprint.image.windows:
         lines.append(
             f"{blueprint.name} installs the NVIDIA driver itself, from Google's own "
-            f"script on first boot, before it accepts SSH. `comfy-qat go` waits for "
+            f"script on first boot, before it accepts SSH. The go command waits for "
             f"the driver before it installs ComfyUI.")
     else:
         lines.append(
             f"{blueprint.name} is installing the NVIDIA driver from its startup "
-            f"script, which reboots it once or twice. `comfy-qat go` waits that "
+            f"script, which reboots it once or twice. The go command waits that "
             f"out.")
     lines.append(output.offer(f"comfy-qat go {blueprint.name}",
                               "install ComfyUI and serve it"))

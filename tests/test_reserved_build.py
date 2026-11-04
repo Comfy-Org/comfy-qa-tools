@@ -595,7 +595,7 @@ def test_what_is_said_after_a_reserved_box_exists_is_the_bill_and_what_stops_it(
 
     assert lines == [
         "comfy-linux is installing the NVIDIA driver from its startup script, "
-        "which reboots it once or twice. `comfy-qat go` waits that out.",
+        "which reboots it once or twice. The go command waits that out.",
         "  install ComfyUI and serve it:\n    comfy-qat go comfy-linux",
         "comfy-linux is reserved. Google holds its capacity and bills for it every "
         "hour — running or stopped — until the box is deleted.",
