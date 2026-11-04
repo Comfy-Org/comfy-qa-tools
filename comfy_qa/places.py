@@ -549,6 +549,8 @@ def _read_build(gc, host, stamp, target: Target):
         return [], []
     backend = bool(chosen.version or chosen.pr or chosen.commit)
     seen = observe(gc if backend else None, host, stamp)
+    # What was read, so a Ready row can say the frontend it confirmed.
+    stamp.frontend_version = seen.frontend_version or stamp.frontend_version
     wrong, unread = chosen.contradictions(
         comfyui_version=seen.comfyui_version, commit=seen.comfyui_commit,
         pr=int(seen.comfyui_pr) if seen.comfyui_pr else None,

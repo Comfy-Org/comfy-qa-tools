@@ -60,6 +60,7 @@ def test_a_qa_desk_case_lists_every_place_with_a_state_and_a_reason(world):
     assert found["testcloud"].split()[1] == "Ready"
     assert "Not suitable" in found["staging"] and "Not suitable" in found["prod"]
     assert "Ready" in found[BOX], found[BOX]
+    assert "frontend 1.60.1" in found[BOX], "a Ready row says the frontend it confirmed"
     assert "Picker loads an unopened draft" in result.output
     assert "shared-local" in result.output
 
