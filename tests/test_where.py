@@ -277,6 +277,21 @@ def test_qa_desk_missing_or_signed_out_is_said_with_the_command_that_fixes_it(
     assert fix in result.output.splitlines()[-1] or fix in result.output
 
 
+def test_the_two_commands_that_fix_a_missing_qa_desk_are_one_block(monkeypatch, tmp_path):
+    """The install line and `qa-desk login` are pasted one after the other, so
+    nothing comes between them — a `qa-desk` line in a fix is a command, not
+    prose that opens a new group."""
+    world = make(monkeypatch, tmp_path, desk=FakeQaDesk(installed=False))
+    try:
+        result = run(world, "where", "1.60", "C-01")
+    finally:
+        world.comfy.stop()
+
+    lines = [line.strip() for line in result.output.splitlines()]
+    install = lines.index("curl -fsSL https://qadesk.engcomfy.com/agent/cli/install.sh | sh")
+    assert lines[install + 1] == "qa-desk login", lines
+
+
 def test_everything_else_still_works_without_qa_desk(monkeypatch, tmp_path):
     """S3-3: with no `qa-desk` at all, "Test this" for a PR still lists every
     place, and asks QA Desk nothing."""

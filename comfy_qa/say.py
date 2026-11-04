@@ -472,7 +472,7 @@ def _opens_a_group(lines: list[str], index: int) -> bool:
 # What a runnable line in a fix starts with. Everything this tool offers is one
 # of its own commands, a gcloud call, or an absolute path to an interpreter —
 # walked out of every `say.fix` in the package rather than guessed.
-_RUNNABLE = ("comfy-qat ", "gcloud ", "ssh ", "scp ", "curl ", "python", "pip",
+_RUNNABLE = ("comfy-qat ", "gcloud ", "ssh ", "scp ", "curl ", "qa-desk ", "python", "pip",
              "sudo ", "/", "~/")
 
 
