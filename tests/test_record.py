@@ -68,6 +68,13 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(lifecycle, "_pause", clock.pause)
     made.ran = []
     made.recorder = []
+    # Node and pnpm are there, whatever the runner has: a test about `record` is
+    # not a test of the CI image. The test about their absence takes them away.
+    import shutil
+
+    real_which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name, *a, **k: (
+        f"/usr/local/bin/{name}" if name in ("node", "pnpm") else real_which(name, *a, **k)))
     real = subprocess.run
 
     def fake_run(argv, *args, **kwargs):
@@ -224,9 +231,9 @@ def test_node_and_pnpm_are_checked_and_the_install_commands_printed_never_run(
         world, monkeypatch, missing, shown):
     import shutil
 
-    real = shutil.which
+    present = shutil.which
     monkeypatch.setattr(shutil, "which",
-                        lambda name, *a, **k: None if name in missing else real(name, *a, **k))
+                        lambda name, *a, **k: None if name in missing else present(name, *a, **k))
 
     result = run(world, "record", BOX, "1.60")
 
