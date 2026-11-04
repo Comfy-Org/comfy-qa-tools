@@ -23,7 +23,7 @@ never collide on `PATH`.
 
 ## Status
 
-**1.4.0. Every command is implemented and tested, and everything up to 1.2.0 has
+**1.5.0. Every command is implemented and tested, and everything up to 1.2.0 has
 run against real GCE hardware on Linux and Windows**, except two Windows paths the
 1.4.0 live run found broken in 1.2.0 to 1.3.1: installing ComfyUI on a box from
 nothing (it called `winget`, which Windows Server 2022 does not have) and the
@@ -36,6 +36,13 @@ GPU box install its own NVIDIA driver. The build choice ran on a real Linux box 
 a real Windows box, both with no GPU, on 2026-11-03; a Windows GPU box installing
 its own driver has not run on a real box yet — see [the changelog](CHANGELOG.md)
 for what did and did not.
+
+1.5.0 adds "Test this" (`where`), results kept here (`pass`, `fail`, `results`),
+QA Desk drafts that run only as `--dry-run` (`pass`, `fail`, `report`), a bug draft
+(`bug`) and the frontend's recorder started against a box (`record`). On a real
+Linux box with no GPU and real QA Desk cases of the active release, 1.60, `where`,
+the drafts' dry runs, `results` and `bug` ran on 2026-11-04; `record` itself did not
+run live — see [the changelog](CHANGELOG.md).
 
 What 1.3.0 adds — reserved boxes, the limit on them, boxes with no GPU, and the
 cost columns in `list` — **was run on real Google Compute Engine boxes on

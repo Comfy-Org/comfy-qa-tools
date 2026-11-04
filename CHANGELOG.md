@@ -3,6 +3,141 @@
 What has actually shipped, newest first. Features are listed when they land on
 `main`, not when they are planned.
 
+## 1.5.0 — Test this, a result kept here, QA Desk drafts as dry runs, Raise bug, and the recorder
+
+Testing starts from anything now — a QA Desk case, a release, a ComfyUI or
+frontend PR, a version (Ali, 3 Nov: "not just limited to qa desk") — and ends with
+what was found written down. **`where` is "Test this"**: every machine in your host
+list and testcloud, staging and prod, each **Ready**, **Can be prepared** or **Not
+suitable**, with why. **`pass` and `fail` keep a result here**, with the place's full
+stamp, whether or not QA Desk is there. **For a QA Desk case they draft what QA Desk
+would be told** — the exact `qa-desk` command, from the stamp — and run only its
+`--dry-run`. **This tool sends QA Desk nothing** (Ali, 3 Nov: "dry run"), and nothing
+to Linear or Slack. `bug` drafts a bug in the house format, and `record` starts the
+frontend's own test recorder against a box for a person to record.
+
+**What ran on real systems for this release, on 2026-11-03 and 04 (UTC).** On a real
+Linux box with no GPU on `stately-timing-504610-p1`, made by `create --version v0.43.0
+--frontend-version v1.60.0` on `37878a5` and installed by `go` on `879a387` in 3m06s
+(it served ComfyUI 0.43.0 at `426f5eea52`, frontend 1.60.0, Manager on):
+
+- `where` on `879a387`, against **real QA Desk cases of the active release, 1.60**,
+  read with `qa-desk case show` under Ali's own sign-in. For C-01 (shared-local) and
+  C-37 (shared), testcloud was Ready — serving `b7d7f322`, a `cloud/1.60` backport,
+  at that branch's tip — staging and prod were Not suitable (each serves a
+  `cloud/1.59` backport), and the box was Not suitable because 1.60 has no core tag
+  yet: its one `v1.60.*` release, v1.60.0, was made on `main` before the cut, and
+  QA Desk's plan waits for one on `core/1.60`. For C-07 (cloud) the box was Not
+  suitable as a cloud case; for C-22 (core) all three cloud environments were. Each
+  state matches the case's target. `where --frontend-version v1.60.0` called the box
+  Ready and every cloud environment Not suitable (none serves v1.60.0's commit,
+  `5cb2899f`); `--frontend-version v1.58.5` and `--pr 17497` called the box Can be
+  prepared, with the `go` that does it; `--machine windows` called it Not suitable.
+  Before `go`, the same box with no ComfyUI was Can be prepared. Nothing was started.
+- `pass 1.60 C-01 --on qatest-s3-linux` and `fail 1.60 C-01 --on testcloud --bug
+  FE-0000` kept two results and printed `qa-desk case pass 1.60 C-01 --on local
+  --core-tag v1.60.0 --note '<note> — <stamp>'` and `qa-desk case fail 1.60 C-01 --bug
+  '<what broke> — testcloud · frontend b7d7f32291 (1.60.0)' --on testcloud --linear
+  FE-0000`; `report 1.60 QATEST-S3-11 --cases C-01` printed `qa-desk test report …`, with
+a placeholder for the PR. Each ran
+  only as `--dry-run`, and QA Desk's CLI answered with the request it would have sent.
+  Read back with `qa-desk case show` afterwards, C-01 was still open with no history
+  and no bugs. Every note said `QATEST-`.
+- `results` listed both; `bug` drafted from the box's live stamp.
+- `record qatest-s3-linux --ref v1.58.5` (on `bc6d8cd`) was refused, before anything
+  was cloned, because the box served frontend 1.60.0.
+
+Then the box was stopped and deleted, and nothing named `qatest-` was left in
+instances, reservations, disks or snapshots; the project ran no instance at all.
+
+**What did not run.** `record` itself — the frontend checkout, its `pnpm install`,
+the switch to multi-user mode and back, the recorder starting and its page loading
+from the box — did not run live: the step that clones ComfyUI_frontend and runs its
+code was refused by the session's permission system before it started, and was not
+tried another way. It has run only against the suite's fakes. So has QA Desk missing
+or signed out (Ali's machine has `qa-desk` signed in), the recording a bug draft
+attaches, a Windows box for any of this, a frontend PR in `where`, and a release
+that has a core tag (none of 1.60's does yet).
+
+### Added
+
+- **`where` — Test this.** What to test is a QA Desk case (`where 1.60 C-01`), a
+  release (`where 1.60`), or a build: `--pr`, `--version`, `--commit`,
+  `--frontend-version`, `--frontend-pr`. Every machine and the three cloud
+  environments are listed **Ready**, **Can be prepared** — what would change, roughly
+  how long (each estimate measured once on the 1.4.0 live boxes, or said to be a
+  guess), and the `go` that does it — or **Not suitable**, with the reason. "Right"
+  is the OS and GPU (`--machine windows/l4`) and the build. For a case or a release a
+  machine wants the release's newest core tag, a `v<release>.N` release made on
+  `core/<release>`, and a cloud environment a frontend commit on `cloud/<release>`,
+  read off the `x-frontend-version` header the hidden `env` command reads and
+  GitHub's compare. A case's target in QA Desk — cloud, core, shared, shared-local —
+  decides which kinds of place count, and staging and prod never count for a case,
+  because QA Desk records a cloud result `--on testcloud` only. Nothing is started:
+  it reads Google's instance list, tunnels already open, GitHub and QA Desk. `--json`.
+- **QA Desk is read through its own CLI, under your own sign-in.** `qa-desk whoami`,
+  `case show`, `case list`, `release show` and `release list`, always `--json`. The
+  token is never read, stored, printed or passed: `qa-desk` is run as you would run
+  it. Every other `qa-desk` command is run only with `--dry-run`, and refused before
+  anything starts without it. Missing or signed out, it says so with the fix — the
+  install line from QA Desk's own instructions, or `qa-desk login` — and everything
+  that does not need QA Desk still works.
+- **`pass` and `fail` keep a result here**: what was tested, where (`--on`: a
+  machine, or testcloud, staging or prod), the place's full stamp read at that
+  moment, the time, a note, and a Linear issue or bug reference as text — in
+  `results/` beside the host list, one JSON file each. **`results`** lists them.
+- **QA Desk drafts, dry run only.** For a case, a pass is `case pass <v> <case> --on
+  local|testcloud [--core-tag <tag from the stamp>] --note <stamp>`; a fail is `case
+  fail <v> <case> --bug "<what broke> — <stamp>"`, because `case fail` has no `--note`,
+  with `--on`, the core tag and `--linear` for a Linear issue; **`report <v> <pr>
+  --cases …`** drafts `test report` for a recorded Playwright test PR. Each is printed
+  whole for you to read and run, and its `--dry-run` is run to show the request.
+- **`bug` — Raise bug.** A title, one impersonal paragraph (what happened, what was
+  expected, where it was found) and the environment line from the place's stamp,
+  read now, for Linear or #bug-dump, with the recording to attach when there is one.
+  Sent by you.
+- **`record` starts the frontend's own recorder** — `pnpm comfy-test record --backend
+  http://127.0.0.1:<port>`, read off the frontend's `package.json` and
+  `tools/test-recorder` on `core/1.60` — against the box through its tunnel, from a
+  checkout of the matching frontend kept in comfy-qat's own folder (a release's
+  `core/<release>` branch, per the 2 Nov workshop notes; or `--ref`; or the tag of the
+  frontend the box serves), never yours. A box serving another frontend version is
+  refused with the `go` that fixes it. ComfyUI on the box runs in multi-user mode
+  while you record, which this switches on, says, and puts back. The recorder's dev
+  server gets a free port, never 8188-8190, and stays on loopback. Node and pnpm are
+  checked and their install commands — the recorder's own — printed, never run. A
+  person records, in their own browser, whatever the box's OS.
+
+### Fixed
+
+- **A command named in a sentence is never a pasted command** (step 1's CI-3). The
+  guard missed a name with punctuation after it (`comfy-qat list,`) and auth's quota
+  footnotes, which were wrapped outside `say.wrapped`; and its own remedy, backticks,
+  makes a wrapped line that starts `` `comfy-qat go` `` run that command when pasted,
+  because a backtick is a shell's command substitution. A command a sentence only
+  names is now a plain word ("the discover command adopts it", "before go or down"),
+  or offered on a line of its own; the guard reads both shapes, a printed line that
+  starts with a backticked command is refused, auth's footnotes go through
+  `say.wrapped`, and every "the <name> command" the package prints is held to a real
+  command.
+- **A tripwire's teardown failure is held by a test** (step 2's code:P1). Removing
+  the GitHub tripwire's teardown `pytest.fail` left the suite green; each tripwire's
+  own generator is now driven in process and its teardown has to fail, and the new
+  QA Desk tripwire is held the same way.
+- **A push to a PR while `go` runs is the PR's code** (step 2's code:F3, recheck N1).
+  The head is read from GitHub when the command starts and fetched on the box
+  minutes later; a push in between left the box on the newer head, refused as the
+  wrong build, and the printed fix confirmed it while the box's record kept the older
+  head, so the next plain `go` refused it again. The head is now asked again before a
+  checkout on the PR's branch is called wrong, and the record is brought up to the
+  head a box is confirmed on. The wrong-build entry in troubleshooting.md gives the
+  causes that are left.
+
+### For a person to run
+
+- The live `record` check (see "What did not run"): `comfy-qat record <box> 1.60`
+  against a box serving frontend 1.60.0, from a terminal.
+
 ## 1.4.0 — choose the build, and the Windows driver installs itself
 
 Until now every install took whatever was at the tip of ComfyUI's default branch
