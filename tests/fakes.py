@@ -658,3 +658,127 @@ def hosts_toml(path: Path, *, remote_port: int, local_port: int = 8188,
         encoding="utf-8",
     )
     return path
+
+
+# ---------------------------------------------------------------- QA Desk
+
+
+QA_DESK_URL = "https://qadesk.engcomfy.com/agent"
+
+# One real case from 1.60, trimmed to the fields comfy-qat reads (`qa-desk case
+# show 1.60 C-01 --json`, 3 Nov), and three more, one per other target.
+QA_DESK_CASES = {
+    ("1.60", "C-01"): {"case_key": "C-01", "title": "Picker loads an unopened draft",
+                       "test_target": "shared-local", "status": None, "bugs": []},
+    ("1.60", "C-05"): {"case_key": "C-05", "title": "Billing tab on cloud",
+                       "test_target": "cloud", "status": None, "bugs": []},
+    ("1.60", "C-30"): {"case_key": "C-30", "title": "Node library search",
+                       "test_target": "core", "status": None, "bugs": []},
+    ("1.60", "C-40"): {"case_key": "C-40", "title": "Tab reorder",
+                       "test_target": "shared", "status": None, "bugs": []},
+}
+QA_DESK_RELEASES = {"1.60": {"version": "1.60", "status": {"state": "active"}},
+                    "1.58": {"version": "1.58", "status": {"state": "closed"}}}
+
+
+class FakeQaDesk:
+    """QA Desk's CLI, as comfy-qat runs it: the five reads and the dry runs.
+
+    Answered the way `qa-desk` answers them, read off its own source on 3 Nov:
+    a read prints the API's JSON; a write with `--dry-run` prints
+    `{dry_run, env, request: {method, path, body, url}}` and sends nothing; a
+    missing case is exit 5 with `{"error": "No case C-99 in 1.60"}`; signed out
+    is exit 3. `installed=False` is a machine with no `qa-desk` (127).
+
+    It also answers a write WITHOUT `--dry-run`, as the real CLI would — which
+    is the point: whether one ever reaches it is the conftest tripwire's
+    question, not the fake's.
+    """
+
+    def __init__(self, *, cases=None, releases=None, signed_in=True, installed=True):
+        self.cases = dict(QA_DESK_CASES if cases is None else cases)
+        self.releases = dict(QA_DESK_RELEASES if releases is None else releases)
+        self.signed_in = signed_in
+        self.installed = installed
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        if not self.installed:
+            return 127, "", "qa-desk: command not found"
+        words, flags = _qa_desk_parse(argv[1:])
+        if not self.signed_in:
+            return 3, json.dumps({"error": "Not signed in. Run qa-desk login in your "
+                                           "own terminal", "exit": 3}), ""
+        command = tuple(words[:2])
+        if words[:1] == ["whoami"]:
+            return 0, json.dumps({"email": "ali@comfy.org", "role": "qa"}), ""
+        if command == ("release", "list"):
+            return 0, json.dumps(list(self.releases.values())), ""
+        if command == ("release", "show"):
+            found = self.releases.get(words[2])
+            if found is None:
+                return 5, json.dumps({"error": f"Release {words[2]} not found",
+                                      "exit": 5}), ""
+            return 0, json.dumps(found), ""
+        if command == ("case", "show"):
+            found = self.cases.get((words[2], words[3].upper()))
+            if found is None:
+                return 5, json.dumps({"error": f"No case {words[3].upper()} in "
+                                               f"{words[2]}", "exit": 5}), ""
+            return 0, json.dumps(found), ""
+        if command in (("case", "pass"), ("case", "fail")):
+            path = f"/api/releases/{words[2]}/cases/{words[3].upper()}/actions"
+            body = {"type": "result", "outcome": words[1],
+                    "environment": flags.get("on")}
+            if words[1] == "pass":
+                body.update(core_tag=flags.get("core-tag"), note=flags.get("note"),
+                            confirm_other=False)
+            else:
+                body.update(bug_summary=flags.get("bug"), linear_ref=flags.get("linear"),
+                            core_tag=flags.get("core-tag"), confirm_other=False)
+            return self._write(flags, "POST", path, body)
+        if command == ("test", "report"):
+            body = {"ref": words[3], "case_keys": (flags.get("cases") or "").split(","),
+                    "bug_ids": flags.get("bug") and [flags["bug"]],
+                    "note": flags.get("note")}
+            return self._write(flags, "POST", f"/api/releases/{words[2]}/tests", body)
+        return 6, json.dumps({"error": f"Unknown command {' '.join(words[:2])}"}), ""
+
+    def _write(self, flags, method, path, body):
+        request = {"method": method, "path": path, "body": body}
+        if flags.get("dry-run"):
+            return 0, json.dumps({"dry_run": True, "env": "prod",
+                                  "request": dict(request, url=QA_DESK_URL + path)}), ""
+        return 0, json.dumps({"ok": True, "sent": request}), ""
+
+    def writes(self) -> list[list[str]]:
+        """Every argv it was handed that is not one of the five reads."""
+        reads = {("case", "show"), ("case", "list"), ("release", "show"),
+                 ("release", "list")}
+        found = []
+        for argv in self.calls:
+            words, _ = _qa_desk_parse(argv[1:])
+            if words[:1] != ["whoami"] and tuple(words[:2]) not in reads:
+                found.append(argv)
+        return found
+
+
+def _qa_desk_parse(argv):
+    """`qa-desk`'s own `parse`: words, and `--flag value` / `--boolean`."""
+    booleans = {"json", "dry-run", "mine", "unclaimed", "confirm-other"}
+    words, flags = [], {}
+    rest = list(argv)
+    while rest:
+        word = rest.pop(0)
+        if word.startswith("--"):
+            name, _, inline = word[2:].partition("=")
+            if inline:
+                flags[name] = inline
+            elif name in booleans or not rest or rest[0].startswith("--"):
+                flags[name] = True
+            else:
+                flags[name] = rest.pop(0)
+        else:
+            words.append(word)
+    return words, flags

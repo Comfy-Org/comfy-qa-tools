@@ -56,7 +56,8 @@ PACKAGE = ROOT / "comfy_qa"
 # rewrites the host list during a move undocumented and unnoticed.
 ERROR_TYPES = ("BadParameter", "BuildError", "ConfigError", "GcloudError",
                "HostFileError", "LifecycleError", "MoveError", "ProbeError",
-               "SetupStopped", "TunnelError")
+               "SetupStopped", "TunnelError", "QaDeskError", "RecordError",
+               "TargetError")
 
 # `comfy_qa/say.py` is where stderr output goes now. A converted module writes
 # `say.fail("...", fix=...)` rather than two `typer.echo(..., err=True)` calls and
@@ -704,6 +705,14 @@ MESSAGE_FLOOR = {
     "setup.py": 19,
     "stamp.py": 10,
     "tunnel.py": 22,
+    # New in 1.5.0 with "Test this", local results, the QA Desk drafts, the bug
+    # draft and the recorder. Each module reads what it was written with —
+    # places 6, qa 32, qadesk 13, record 4 — and is floored a little under, on
+    # the rule under WORDING_FLOOR.
+    "places.py": 5,
+    "qa.py": 28,
+    "qadesk.py": 11,
+    "record.py": 3,
 }
 
 # The page's own two collections, floored the same way and for the same reason:
@@ -781,7 +790,12 @@ MESSAGE_FLOOR = {
 # 352 until the 1.4.0 audit fixes: a checkout that is not the build asked for
 # (a PR's older head) is put on again, and says so. The page reads 365. Raised to
 # 359, half the distance, on the rule above.
-ENTRY_FLOOR = 359
+# 359 until 1.5.0's testing commands: "Test this", the local results, QA Desk
+# missing, signed out or saying no, the drafts' dry runs, the bug draft and the
+# recorder, 47 entries at once. The page reads 406. Raised to 396, inside the
+# slack: half the distance would leave a gap wider than FLOOR_SLACK, which
+# the drift check refuses.
+ENTRY_FLOOR = 396
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -813,7 +827,9 @@ ENTRY_FLOOR = 359
 # wordings now. Raised to 388, half the distance, on the rule above.
 # 388 until 1.4.0, for the entries named beside ENTRY_FLOOR: 421 quoted
 # wordings now. Raised to 412, inside the slack of 12, on the rule above.
-WORDING_FLOOR = 412
+# 412 until 1.5.0, for the entries named beside ENTRY_FLOOR: 464 quoted
+# wordings now. Raised to 454, inside the slack of 12.
+WORDING_FLOOR = 454
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

@@ -3706,6 +3706,194 @@ does not survive being copied. Printing the line at all is what would create the
 false evidence. `--json` is refused on the same contradiction, for the same
 reason.
 
+## Testing, results, QA Desk and the recorder
+
+`where`, `pass`, `fail`, `results`, `report`, `bug` and `record`. None of them
+sends anything to QA Desk, Linear or Slack: QA Desk is read with your own
+`qa-desk` sign-in, and a result for it is printed as the command for you to run,
+with only its `--dry-run` run here.
+
+**`say what to test: a QA Desk case, a release, a PR or a version.`**
+`where` was given nothing to look for. Name a QA Desk case (`comfy-qat where 1.60
+C-01`), a release (`comfy-qat where 1.60`) or a build (`--pr 17497`, `--version
+v0.43.0`, `--frontend-version v1.58.5`).
+
+**`a QA Desk case needs its release in front of it.`**
+A case is named inside a release, as QA Desk names it: `1.60 C-01`, not `C-01`.
+
+**`a release (or a case) already says which frontend it is, so it is not given with a PR or a version as well.`**
+A release means its own frontend — its newest core tag on a machine, a commit on
+its `cloud/<release>` branch on cloud — so a build option beside it would be a
+second answer to the same question. Ask about one or the other.
+
+**`'16' is not a release: QA Desk's releases are a major and a minor version, like 1.60.`**
+QA Desk's releases are named `1.60`, `1.59`. `qa-desk release list` shows them.
+
+**`'first' is not a QA Desk case: they read like C-01.`**
+`qa-desk case list <release>` lists a release's cases.
+
+**`'windows l4' is not a description of a machine: an OS, a card, or both as os/card.`**
+`--machine` takes what every machine command takes: `windows`, `l4`,
+`windows/l4`, and `none` for no GPU — `linux/none`.
+
+**`your host list did not load, so only the cloud environments are listed: <why it did not>`**
+`where` still answers for testcloud, staging and prod. Fix the host list (the
+message after the colon has its own entry on this page) to see your machines too.
+
+**`QA Desk has no such thing: No case C-99 in 1.60.`**
+QA Desk answered, and has no such case or release (its exit 5). Check the release
+and the case with `qa-desk release list` and `qa-desk case list <version>`.
+
+**`qa-desk is not installed here, or not on PATH, so QA Desk could not be asked. Nothing else in comfy-qat needs it.`**
+There is no `qa-desk` to run. Install it with the line on your QA Desk page
+(Agent tokens) — `curl -fsSL https://qadesk.engcomfy.com/agent/cli/install.sh |
+sh`, which needs Node.js 24 or newer and puts it in `~/.local/bin` — then sign in
+with `qa-desk login` in your own terminal. Everything that does not need QA Desk
+still works: `where` for a PR or a version, `pass` and `fail` (a case's result is
+still kept here), `bug` and `record`.
+
+**`qa-desk is not signed in, or your QA Desk role cannot do this (Not signed in. Run qa-desk login in your own terminal), so QA Desk could not be asked. Nothing else in comfy-qat needs it.`**
+QA Desk's exit 3. Run `qa-desk login` in your own terminal: it opens your QA Desk
+page, where you make a token, and asks you to paste it. This tool never sees the
+token, and never asks you for it. A role that cannot read releases needs a QA Desk
+sheriff to change it.
+
+**`qa-desk answered exit 1: Couldn't reach https://qadesk.engcomfy.com/agent: fetch failed.`**
+Anything else QA Desk's CLI said no to, in its own words. Exit 1 is a network or
+server error, which the CLI has already retried; run the same command again once.
+
+**`qa-desk answered something that is not JSON (Expecting value: line 1 column 1 (char 0)).`**
+Every call is made with `--json`, which QA Desk calls its stable output for
+agents. This answer was not JSON, so nothing was read from it: check
+`qa-desk --version` and update it with the install line above.
+
+**`QA Desk answered case C-01 in 1.60 without the case.`** and **`QA Desk answered release 1.60 with no release.`**
+QA Desk answered, but not with what was asked for. Nothing was read from it.
+Update `qa-desk`, and see the case for yourself with `qa-desk case show <release>
+<case>`.
+
+**`This tool sends QA Desk nothing, so `case pass` is run only as a dry run. This one had no --dry-run, and was not run.`**
+The rule, held where `qa-desk` is run: a QA Desk write without `--dry-run` is
+refused before anything is started. You should never see this — every draft is run
+as a dry run — and if you do, it is a defect in this tool. The command it printed
+is yours to run, in your own terminal, once you have read it.
+
+**`qa-desk did not answer the dry run as a dry run, so nothing it said is shown.`**
+A dry run answers with the request it would have sent. This one did not, so what
+it said is not shown in case it was something else. Update `qa-desk`.
+
+**`its dry run could not be run: qa-desk is not signed in, or your QA Desk role cannot do this (...)`**
+The result was kept here and the `qa-desk` command was printed; only the dry run
+that shows QA Desk's request did not run, for the reason after the colon, which has
+its own entry above. The printed command is still the one to run.
+
+**`say where you tested it with --on: a machine in your host list, or testcloud, staging or prod.`**
+A result is kept with the place it came from and that place's stamp, so `--on` is
+needed: a machine's name or description, or a cloud environment.
+
+**`say what broke with --note: for a QA Desk case it becomes the bug's text.`**
+`fail` needs what broke. For a QA Desk case it is the start of `case fail`'s
+`--bug` text, which QA Desk turns into the bug, followed by the stamp.
+
+**`1.60 C-05 is a cloud case — QA Desk tests it on testcloud — so a result on qatest-linux is not one QA Desk can take. Nothing was kept.`**
+The case's target in QA Desk says where it is tested — a cloud case on testcloud,
+a core case on a local ComfyUI — and this result was somewhere else. `comfy-qat
+where <release> <case>` lists the places that count.
+
+**`QA Desk records a cloud result on testcloud only, so a result for a QA Desk case on staging is not one it can take. Nothing was kept.`**
+QA Desk's `--on` takes `testcloud` or `local`. Test the case on testcloud, or on a
+machine.
+
+**`testcloud could not be asked which frontend it serves (unreachable: ...), so there is no stamp to keep.`**
+A cloud result is kept with the frontend commit the environment serves, read off
+its `x-frontend-version` header, and this one could not be read. `comfy-qat env
+testcloud` shows the same reading.
+
+**`qatest-linux did not answer, so there is no stamp of what was tested: nothing answered at http://127.0.0.1:8191.`**
+A result is kept only with the stamp of the place it was tested on, read when it
+is kept. Open the box's tunnel (`comfy-qat open <name>`) or start it
+(`comfy-qat go <name>`), then keep the result again.
+
+**`qatest-linux is declared with no GPU, but http://127.0.0.1:8191 answered with cuda:0 NVIDIA L4 (22GB). That port is not reaching qatest-linux. No result was kept: its stamp would name the wrong machine.`**
+The same check `stamp` makes: what answered is not the machine named, so its stamp
+would be evidence about the wrong one. Check the port in your host list and which
+tunnel is open.
+
+**`/Users/you/.config/comfy-qa-tools/results/20261104T001500123456Z-pass-1.60-C-01-windows.json does not read as a result, so it is not listed`**
+A file in `results/` that is not a result this tool wrote, or one that was edited.
+The others are listed. Move it out of the folder to stop the warning.
+
+**`a bug needs --title and --note: what is wrong, and what happened.`**
+`bug` drafts a title and one paragraph, and both are yours to write.
+
+**`there is no recording at picker.spec.ts.`**
+`--recording` names the file to attach, and it must exist. Left off, the last
+recording `record` made on that place is used, if there is one.
+
+**`qatest-linux is your own ComfyUI, and record switches the box's ComfyUI into multi-user mode and back, which this tool does not do to your own install.`**
+`record` is for a box comfy-qat runs. For your own ComfyUI, start it with
+`--multi-user` and run the recorder yourself from your frontend checkout:
+`pnpm comfy-test record --distribution local`.
+
+**`the recorder needs Node.js and pnpm on this machine. Nothing was started, and nothing is installed for you.`**
+The recorder is the frontend's own, run with pnpm. The commands to install what
+is missing are printed — the recorder's own advice: nvm, then `nvm install` the
+Node the frontend asks for, and `corepack enable` for pnpm — and are never run for
+you.
+
+**`qatest-linux is not serving here, so there is nothing to record against.`**
+The recorder talks to the box through its tunnel, so ComfyUI has to be answering
+there first: `comfy-qat go <name>`.
+
+**`could not tell which frontend to check out: the box did not say which frontend it serves, and no release or ref was given.`**
+With no release and no `--ref`, `record` checks out the release tag of the
+frontend the box serves, and that could not be read. Name it: `comfy-qat record
+<box> <release>`, or `--ref <branch-or-tag>`.
+
+**`the frontend has no core/1.99 to check out, or GitHub could not be asked for its package.json.`**
+The branch or tag is read from GitHub before anything is cloned, and GitHub had
+no `package.json` there. The release branches are `core/<release>`.
+
+**`could not read which frontend qatest-linux serves, so it cannot be checked against core/1.60 (1.60.0). Nothing was started.`**
+The box's frontend version is read off the bundle it serves, as `stamp` reads it,
+and this one did not say. Serve the matching release on it with `comfy-qat go
+<name> --frontend-version v<version>`.
+
+**`qatest-linux serves frontend 1.58.5, and core/1.60 is 1.60.0: a test recorded against one is checked against the other. Nothing was started.`**
+The recorder's frontend is the checkout, and the box serves its own; a recording
+made across the two versions is a test of neither. Serve the checkout's version on
+the box (`comfy-qat go <name> --frontend-version v1.60.0`), or record against the
+frontend the box serves (`comfy-qat record <name> --ref v1.58.5`).
+
+**`the checkout of core/1.60 in ~/.config/comfy-qa-tools/frontend/core-1.60 is 1.59.0, not 1.60.0, and qatest-linux serves 1.60.0. Nothing was started.`**
+The checkout comfy-qat keeps for that branch is not at the version GitHub says the
+branch is — usually because it has changes in it (a recording), so it was not
+updated. Move that folder aside and run `record` again: it clones the branch
+afresh.
+
+**`the frontend could not be cloned at core/1.60: fatal: Remote branch core/1.60 not found in upstream origin`**
+`git clone` said no, in its own words after the colon. Check the branch or tag, and
+that this machine can reach github.com.
+
+**`pnpm install failed in ~/.config/comfy-qa-tools/frontend/core-1.60: ...`**
+The frontend's dependencies could not be installed in comfy-qat's checkout; pnpm's
+own last line is after the colon. A Node or pnpm older than the frontend's
+`engines` asks for is the usual reason.
+
+**`no free port between 5173 and 5299 for the recorder's dev server on this machine.`**
+The recorder's dev server needs a port on this machine, and every one it may use
+was taken. Ports 8188-8190 are never used for it.
+
+**`ComfyUI on qatest-linux did not come back in multi-user mode, so the recorder was not started. It was put back as it was.`**
+`record` restarts ComfyUI on the box with `--multi-user` and checks ComfyUI's own
+`/users` answer says so; this time it did not. ComfyUI was restarted as it was.
+`comfy-qat logs <name>` shows what ComfyUI said.
+
+**`could not confirm ComfyUI on qatest-linux left multi-user mode`**
+After the recording, ComfyUI was restarted without `--multi-user`, and its `/users`
+answer did not say it was out of it. Run `comfy-qat go <name>` to bring it up as
+its record says, or `comfy-qat logs <name>` to see why.
+
 ## Checking environments
 
 `comfy-qat env` reports what each cloud environment is serving, which is how a
@@ -3887,8 +4075,8 @@ with no billing history — Google frequently will not grant GPU quota until a p
 has been billed at least once. Retrying will not change that.
 
 **`still pending: l4, a100. Approval can take days — run this again to keep
-waiting, or `comfy-qat quota` to check.`** (exit code 75)
+waiting, or see where each card stands with:`** (exit code 75)
 Not an error. The requests went in but have not been approved within the wait window.
 Approval can take days. Run the same command again to keep waiting, or
-`comfy-qat quota` to check. The console link printed with the request shows the
+`comfy-qat quota`, which is printed on the line after it, to check. The console link printed with the request shows the
 same thing.

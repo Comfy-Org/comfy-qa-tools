@@ -2397,6 +2397,7 @@ def start_detached(
     repair: bool = True,
     expect: "Build | None" = None,
     facts: "OnTheBox | None" = None,
+    extra: str = "",
 ) -> int:
     """Launch ComfyUI on the box, leave it running there, and give the prompt back.
 
@@ -2473,8 +2474,13 @@ def start_detached(
             f"{host.url}")
 
     try:
+        # `extra` is a launch option that is not part of any build: `record`
+        # runs ComfyUI with `--multi-user` while a recording is made, and
+        # without it again afterwards.
         code = gc.ssh(host.gce_instance, host.gce_zone, host.gce_project,
-                      launch_detached_command(host, _launch_args(expect, facts)),
+                      launch_detached_command(
+                          host, " ".join(part for part in (
+                              _launch_args(expect, facts), extra) if part)),
                       stream=True)
     except (GcloudError, OSError) as exc:
         # Same fault as the one `serve` guards, and worse here: this is the
@@ -2498,7 +2504,7 @@ def start_detached(
             return start_detached(
                 gc, host, say, open_browser=open_browser, probe_fn=probe_fn,
                 sleep=sleep, now=now, timeout=timeout, tunnel_dir=tunnel_dir,
-                repair=False, expect=expect, facts=facts,
+                repair=False, expect=expect, facts=facts, extra=extra,
             )
         raise give_up(
             f"ComfyUI on {host.name} could not be launched (exit {code}).")

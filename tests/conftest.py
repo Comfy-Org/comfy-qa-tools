@@ -695,3 +695,48 @@ def no_test_asks_github(monkeypatch):
     if refused:
         pytest.fail("the GitHub tripwire fired during this test, whatever the test "
                     "itself made of it:\n" + "\n".join(refused), pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def no_test_runs_a_qa_desk_write(monkeypatch):
+    """comfy-qat reads QA Desk and writes to it only as `--dry-run` (S3-5; Ali,
+    3 Nov: "dry run"). `qadesk.run` refuses a write before it starts anything;
+    this is the check that does not trust it.
+
+    Every argv goes through `qadesk._spawn`, whoever answers it — the suite's
+    `FakeQaDesk`, installed as `qadesk.RUNNER`, or the real CLI — and is held
+    here to this file's own reading of what a write is, not the package's: one
+    of five reads, or it carries `--dry-run`. Anything else is refused and kept,
+    and the test fails at teardown whatever it made of the refusal, as the
+    network and GitHub tripwires above do. And the real `qa-desk` is refused
+    outright: a test that forgot its fake would read the developer's own QA
+    Desk under their own sign-in.
+    """
+    from comfy_qa import qadesk
+
+    refused: list[str] = []
+
+    def refuse(message):
+        refused.append(message)
+        raise AssertionError(message)
+
+    monkeypatch.setattr(qadesk, "RUNNER", lambda argv: refuse(
+        f"this test ran the real qa-desk ({argv!r}). Give it a QA Desk of its own: "
+        f"monkeypatch qadesk.RUNNER with tests/fakes.py's FakeQaDesk."))
+    reads = {("whoami",), ("case", "show"), ("case", "list"), ("release", "show"),
+             ("release", "list")}
+    passing = qadesk._spawn
+
+    def guarded(argv):
+        words = [word for word in argv[1:] if not word.startswith("--")]
+        if (tuple(words[:1]) not in reads and tuple(words[:2]) not in reads
+                and "--dry-run" not in argv):
+            refuse(f"a qa-desk write without --dry-run reached the point where it is "
+                   f"run: {argv!r}. comfy-qat sends QA Desk nothing.")
+        return passing(argv)
+
+    monkeypatch.setattr(qadesk, "_spawn", guarded)
+    yield refused
+    if refused:
+        pytest.fail("the QA Desk tripwire fired during this test, whatever the test "
+                    "itself made of it:\n" + "\n".join(refused), pytrace=False)

@@ -2138,6 +2138,41 @@ gcloud compute snapshots list --project $P
 *Never run. Every check in this phase is new, and the phase exists because
 `move` is the largest untested surface in the tool.*
 
+## Phase T — Test this, keep a result, draft for QA Desk, record *(needs the box from E serving; QA Desk only as a dry run)*
+
+Nothing here sends anything to QA Desk, Linear or Slack. `qa-desk` must be
+installed and signed in by you (`qa-desk whoami`) for T1 and T3; without it, T1
+and T3 must say so with the fix and T2, T4 and T5 must still work. `RELEASE` and
+`CASE` are a real case of the current release (`qa-desk release list`,
+`qa-desk case list $RELEASE`).
+
+```sh
+RELEASE=1.60; CASE=C-01
+echo "=== T1 Test this, from a QA Desk case: every place, each with a state"; qat where $RELEASE $CASE; echo "exit $?"
+echo "=== T1b from a PR, and from a frontend release"; qat where --pr 17497; qat where --frontend-version v1.58.5 --json
+echo "=== T2 a pass and a fail kept here; a case's draft is printed, only its dry run runs"
+qat pass $RELEASE $CASE --on $BOX --note "T2 pass"; echo "exit $?"
+qat fail $RELEASE $CASE --on $BOX --note "T2 fail, not a real one"; echo "exit $?"
+qat results
+echo "=== T3 a test PR's report, as a dry run"; qat report $RELEASE 22870 --cases $CASE; echo "exit $?"
+echo "=== T4 a bug drafted from the stamp"; qat bug --on $BOX --title "T4" --note "T4 draft"; echo "exit $?"
+echo "=== T5 the recorder: Ctrl-C it once its page has loaded"; qat record $BOX $RELEASE; echo "exit $?"
+```
+
+- [ ] **T1** — every machine and testcloud, staging and prod are listed, each
+  Ready, Can be prepared (with what changes and how long) or Not suitable (with
+  why); the cloud rows name the frontend commit each serves; nothing is started.
+- [ ] **T2** — each result is a file under `results/` beside the host list, with
+  the full stamp; the printed `qa-desk case pass` carries `--on`, the core tag and
+  the stamp as its `--note`, and `case fail` the stamp in its `--bug`; the dry
+  run's request is shown and QA Desk's dashboard shows nothing new.
+- [ ] **T3** — `qa-desk test report $RELEASE 22870 --cases $CASE` is printed and
+  only its dry run ran.
+- [ ] **T4** — a title, one paragraph, and the stamp's environment line; nothing
+  is sent.
+- [ ] **T5** — the recorder starts from comfy-qat's own frontend checkout, the box
+  is switched to multi-user mode and back, and its page loads from the box.
+
 ## Phase G — stop paying *(do not skip)*
 
 ```sh

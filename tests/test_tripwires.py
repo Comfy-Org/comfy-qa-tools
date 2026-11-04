@@ -134,16 +134,21 @@ def _trips():
 
     from comfy_qa import build
 
+    from comfy_qa import qadesk
+
     return {
         "no_test_asks_github": lambda: build.github("repos/Comfy-Org/ComfyUI/pulls/1"),
         "no_test_reaches_the_network": lambda: socket.create_connection(
             ("127.0.0.1", 8188), 0.2),
+        "no_test_runs_a_qa_desk_write": lambda: qadesk._spawn(
+            ["qa-desk", "case", "pass", "1.60", "C-01", "--on", "local"]),
     }
 
 
 # Every tripwire in conftest that keeps its refusals for teardown. A new one is
 # added here the day it lands, with its trip above.
-TRIPWIRES = ["no_test_asks_github", "no_test_reaches_the_network"]
+TRIPWIRES = ["no_test_asks_github", "no_test_reaches_the_network",
+             "no_test_runs_a_qa_desk_write"]
 
 
 def test_every_tripwire_that_fails_at_teardown_is_held_here():

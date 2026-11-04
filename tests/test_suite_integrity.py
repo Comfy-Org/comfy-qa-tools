@@ -58,6 +58,9 @@ TESTS = Path(__file__).resolve().parent
 # Rename it here. Deleting one deliberately is a decision, and deleting the line
 # is how you record having made it.
 REQUIRED = {
+    "test_record",
+    "test_results",
+    "test_where",
     "test_auth",
     "test_auth_flow",
     "test_bounded",
