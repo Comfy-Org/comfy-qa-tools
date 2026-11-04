@@ -77,8 +77,10 @@ MINUTES = {
     # First `go` on a fresh Linux box, v0.43.0: 4 min (evidence/03-04); a clean
     # Windows install: 10.5 min (evidence/51).
     "install": "about 4 min on Linux, 10 on Windows",
-    # A running box with no tunnel: `go` opens one and starts ComfyUI if needed.
-    "connect": "under a minute",
+    # A running box with no tunnel: `go` opens one, and starts ComfyUI — or
+    # installs it, which this cannot see from here without SSH.
+    "connect": "about a minute if ComfyUI is on it; installing it is about 4 min "
+               "on Linux, 10 on Windows",
 }
 
 
@@ -429,8 +431,9 @@ def machine_places(target: Target, hosts, *, gc=None, states=None,
         if stamp is None:
             places.append(Place(host.name, kind, PREPARE,
                                 f"running, and ComfyUI is not answering here: go opens "
-                                f"the tunnel and starts it ({MINUTES['connect']}) and "
-                                f"{_putting(target)}", command=command))
+                                f"the tunnel and starts or installs it "
+                                f"({MINUTES['connect']}), and {_putting(target)}",
+                                command=command))
             continue
         places.append(_judged(host, target, stamp, read(gc, host, stamp, target),
                               command))
@@ -566,7 +569,10 @@ def summary(target: Target) -> list[str]:
                         f"core tag" if target.core_tag else target.waiting))
         lines.append(f"  on cloud: a frontend on {target.cloud_line}")
     elif target.build is not None:
-        lines.append(f"  on a machine: {target.build.describe()}")
+        chosen = target.build
+        backend = chosen.version or chosen.pr or chosen.commit
+        lines.append(f"  on a machine: {short(chosen)}"
+                     + ("" if backend else ", with whatever ComfyUI the machine has"))
     if target.machine:
         lines.append(f"  on a machine that is {target.machine}")
     return lines
