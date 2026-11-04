@@ -802,19 +802,42 @@ def test_a_pr_already_at_its_head_is_confirmed_against_the_head_asked_for(world)
 NEW_HEAD = "f" * 40
 
 
-@pytest.fixture
-def pushed_after_the_check(world, monkeypatch):
-    """GitHub reports PR_HEAD when the build is checked, and NEW_HEAD from the
-    moment after: the author pushed while the command was running."""
-    real = build_mod.check
+def _push(world) -> None:
+    world.hub[f"{REPO}/pulls/17497"] = {"state": "open", "merged": False,
+                                        "head": {"sha": NEW_HEAD}}
 
-    def check_then_push(chosen, ask=None):
-        checked = real(chosen, ask)
-        world.hub[f"{REPO}/pulls/17497"] = {"state": "open", "merged": False,
-                                            "head": {"sha": NEW_HEAD}}
-        return checked
 
-    monkeypatch.setattr(build_mod, "check", check_then_push)
+@pytest.fixture(params=["after-the-check", "during-the-fetch"])
+def pushed_after_the_check(world, monkeypatch, request):
+    """GitHub reports PR_HEAD when the build is checked, and NEW_HEAD from a
+    moment later: the author pushed while the command was running. Either just
+    after the check, or as the box fetches — after the tool has looked at the
+    checkout and decided to change it, which is the window recheck-s2 found."""
+    if request.param == "after-the-check":
+        real = build_mod.check
+
+        def check_then_push(chosen, ask=None):
+            checked = real(chosen, ask)
+            _push(world)
+            return checked
+
+        monkeypatch.setattr(build_mod, "check", check_then_push)
+    else:
+        real_cloud = world.cloud
+
+        def cloud(**kwargs):
+            box = real_cloud(**kwargs)
+            real_ssh = box.ssh
+
+            def ssh(instance, zone, project, remote, *, stream=True):
+                if CHANGING in remote or INSTALLING in remote:
+                    _push(world)
+                return real_ssh(instance, zone, project, remote, stream=stream)
+
+            box.ssh = ssh
+            return box
+
+        monkeypatch.setattr(world, "cloud", cloud)
     return world
 
 
