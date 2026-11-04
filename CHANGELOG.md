@@ -51,6 +51,17 @@ Linux box with no GPU on `stately-timing-504610-p1`, made by `create --version v
 Then the box was stopped and deleted, and nothing named `qatest-` was left in
 instances, reservations, disks or snapshots; the project ran no instance at all.
 
+**After this release's own audit**, on `d31425f` (2026-11-04, UTC), with reads and
+dry runs only and no box: `qa-desk release show 1.60 --json`, read the way comfy-qat
+reads it now, came back whole at 128,474 bytes, where through a pipe it had stopped
+at 65,536; and `where 1.60` listed testcloud Ready (a `cloud/1.60` backport at that
+branch's tip) and staging and prod Not suitable (each a `cloud/1.59` backport).
+`report 1.60 QATEST-FIXS3-PR --cases C-01 --note --`, and a `pass` and a `fail` of
+C-01 on testcloud whose notes begin with `--`, printed each value after an `=`, and
+QA Desk's CLI's dry run gave each back whole — `note: "--"`, and the note and the
+bug text with their leading dashes. C-01 read the same before and after: open, no
+results, no history, no bugs.
+
 **What did not run.** `record` itself — the frontend checkout, its `pnpm install`,
 the switch to multi-user mode and back, the recorder starting and its page loading
 from the box — did not run live: the step that clones ComfyUI_frontend and runs its
