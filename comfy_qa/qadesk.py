@@ -180,12 +180,20 @@ def run(args: list[str]):
                                    "qa-desk release list",
                                    "qa-desk case list <version>"), code=2)
     if code != 0:
-        raise QaDeskError(f"qa-desk answered exit {code}: {said}.", code=1)
+        raise QaDeskError(f"qa-desk answered exit {code}: {said}.",
+                          fix="QA Desk's CLI has already retried a dropped connection or "
+                              "a server error; run the same command again once", code=1)
     try:
         return json.loads(out or "null")
     except ValueError as exc:
         raise QaDeskError(f"qa-desk answered something that is not JSON ({exc}).",
-                          code=1) from exc
+                          fix=_update(), code=1) from exc
+
+
+def _update() -> str:
+    """The fix for a `qa-desk` that answers in a shape this was not written for:
+    the same install line, which updates it."""
+    return _fix("update qa-desk — the install line updates it:", INSTALL)
 
 
 def _fix(*lines: str) -> str:
@@ -215,7 +223,8 @@ def case(version: str, key: str) -> dict:
     """`qa-desk case show <version> <case> --json`."""
     found = run(["case", "show", version, key])
     if not isinstance(found, dict) or not found.get("case_key"):
-        raise QaDeskError(f"QA Desk answered case {key} in {version} without the case.")
+        raise QaDeskError(f"QA Desk answered case {key} in {version} without the case.",
+                          fix=_update())
     return found
 
 
@@ -223,7 +232,8 @@ def release(version: str) -> dict:
     """`qa-desk release show <version> --json`."""
     found = run(["release", "show", version])
     if not isinstance(found, dict):
-        raise QaDeskError(f"QA Desk answered release {version} with no release.")
+        raise QaDeskError(f"QA Desk answered release {version} with no release.",
+                          fix=_update())
     return found
 
 
@@ -236,7 +246,7 @@ def dry_run(command: list[str]) -> dict:
     found = run([*command, DRY_RUN])
     if not isinstance(found, dict) or not found.get("dry_run"):
         raise QaDeskError("qa-desk did not answer the dry run as a dry run, so "
-                          "nothing it said is shown.", code=1)
+                          "nothing it said is shown.", fix=_update(), code=1)
     return found
 
 

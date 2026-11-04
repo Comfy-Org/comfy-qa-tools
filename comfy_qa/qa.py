@@ -445,7 +445,10 @@ def bug_cmd(
     attach = [str(path) for path in recording or []]
     for path in attach:
         if not Path(path).is_file():
-            say.fail(f"there is no recording at {path}.", code=2, blank_line=False)
+            say.fail(f"there is no recording at {path}.",
+                     fix="name a file that is there, or leave --recording off to attach "
+                         "the last recording record made on that place", code=2,
+                     blank_line=False)
     if not attach:
         attach = results.last_recording(config, name)
     say.result("for Linear or #bug-dump — drafted here, sent by you:\n")
@@ -624,4 +627,6 @@ def _relaunch(gc, host, extra: str) -> None:
     try:
         start_detached(gc, host, say.step, expect=facts.record, facts=facts, extra=extra)
     except _reportable() as exc:
-        say.fail(exc, code=1)
+        say.fail(exc, getattr(exc, "fix", None) or say.fix(
+            "read why, in ComfyUI's own log on the box:", f"comfy-qat logs {host.name}"),
+            code=1)

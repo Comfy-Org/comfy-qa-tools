@@ -332,3 +332,28 @@ def test_every_refusal_says_what_is_wrong_and_what_to_do(world, args, said):
     assert result.exit_code == 2, result.output
     assert said in flat(result.output)
     assert "to fix:" in result.output
+
+
+def test_every_refusal_the_testing_commands_can_raise_carries_a_fix():
+    """S3-8, held on the source: every QaDeskError, RecordError and TargetError
+    constructed in the new modules, and every `say.fail` in `qa.py`, is given
+    what to do — so no refusal of these commands says only what is wrong."""
+    import ast
+    from pathlib import Path
+
+    package = Path(__file__).resolve().parent.parent / "comfy_qa"
+    bare = []
+    for module in ("places", "qa", "qadesk", "record", "results"):
+        tree = ast.parse((package / f"{module}.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            fixed = len(node.args) >= 2 or any(k.arg == "fix" for k in node.keywords)
+            if name in ("QaDeskError", "RecordError", "TargetError") and not fixed:
+                bare.append(f"{module}.py:{node.lineno} {name}")
+            if (name == "fail" and isinstance(func, ast.Attribute)
+                    and getattr(func.value, "id", "") == "say" and not fixed):
+                bare.append(f"{module}.py:{node.lineno} say.fail")
+    assert not bare, bare

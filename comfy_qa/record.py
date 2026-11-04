@@ -160,7 +160,9 @@ def ensure_checkout(directory: Path, ref: str, say, run=None) -> None:
                     str(directory)], capture_output=True, text=True)
         if done.returncode != 0:
             raise RecordError(f"the frontend could not be cloned at {ref}: "
-                              f"{_last(done.stderr)}", code=1)
+                              f"{_last(done.stderr)}",
+                              fix="check the branch or tag, and that this machine can "
+                                  "reach github.com", code=1)
         return
     status = run(["git", "-C", str(directory), "status", "--porcelain"],
                  capture_output=True, text=True)
@@ -191,7 +193,8 @@ def ensure_dependencies(directory: Path, say, run=None) -> None:
                capture_output=True, text=True)
     if done.returncode != 0:
         raise RecordError(f"pnpm install failed in {directory}: {_last(done.stderr or done.stdout)}",
-                          code=1)
+                          fix="check that Node.js and pnpm are the versions the frontend's "
+                              "package.json engines asks for", code=1)
 
 
 def _last(text: str | None) -> str:
