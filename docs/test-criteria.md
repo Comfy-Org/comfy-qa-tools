@@ -2166,7 +2166,7 @@ echo "=== T5 the recorder: Ctrl-C it once its page has loaded"; qat record $BOX 
   the full stamp; the printed `qa-desk case pass` carries `--on`, the core tag and
   the stamp as its `--note`, and `case fail` the stamp in its `--bug`; the dry
   run's request is shown and QA Desk's dashboard shows nothing new.
-- [ ] **T3** — `qa-desk test report $RELEASE 22870 --cases $CASE` is printed and
+- [ ] **T3** — `qa-desk test report $RELEASE 22870 --cases=$CASE` is printed and
   only its dry run ran.
 - [ ] **T4** — a title, one paragraph, and the stamp's environment line; nothing
   is sent.

@@ -708,10 +708,13 @@ MESSAGE_FLOOR = {
     # New in 1.5.0 with "Test this", local results, the QA Desk drafts, the bug
     # draft and the recorder. Each module reads what it was written with —
     # places 6, qa 32, qadesk 13, record 4 — and is floored a little under, on
-    # the rule under WORDING_FLOOR.
+    # the rule under WORDING_FLOOR. The 1.5.0 audit fixes gave qa.py 41 (nothing
+    # named, a case QA Desk does not have, a dash PR, the multi-user put-backs)
+    # and qadesk.py 20 (QA Desk's exits 2, 4 and 6, a cut-off answer, a command
+    # that is not a draft): raised to 38 and 18.
     "places.py": 5,
-    "qa.py": 28,
-    "qadesk.py": 11,
+    "qa.py": 38,
+    "qadesk.py": 18,
     "record.py": 3,
 }
 
@@ -795,7 +798,11 @@ MESSAGE_FLOOR = {
 # recorder, 47 entries at once. The page reads 406. Raised to 396, inside the
 # slack: half the distance would leave a gap wider than FLOOR_SLACK, which
 # the drift check refuses.
-ENTRY_FLOOR = 396
+# 396 until the 1.5.0 audit fixes: QA Desk's own exits, a cut-off answer, a
+# command that is not a draft, a dash PR, nothing named, a case QA Desk does not
+# have, a listing's build refusal and the multi-user put-backs. The page reads
+# 417. Raised to 410, inside the slack.
+ENTRY_FLOOR = 410
 # 288 until the RDP readiness entry landed. Raised to 295, half the distance to
 # today's 301, for the reason the paragraph above gives.
 # 295 until the quota-request work in `setup` landed four entries — a project that
@@ -829,7 +836,9 @@ ENTRY_FLOOR = 396
 # wordings now. Raised to 412, inside the slack of 12, on the rule above.
 # 412 until 1.5.0, for the entries named beside ENTRY_FLOOR: 464 quoted
 # wordings now. Raised to 454, inside the slack of 12.
-WORDING_FLOOR = 454
+# 454 until the 1.5.0 audit fixes named beside ENTRY_FLOOR: 476 quoted wordings
+# now. Raised to 470, inside the slack.
+WORDING_FLOOR = 470
 
 # How far a count may drift above its floor before the floor has to be raised.
 # Wide enough that ordinary work does not trip it — several agents commit to this

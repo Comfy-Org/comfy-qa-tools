@@ -27,9 +27,14 @@ Recording is from the tester's own browser, whatever the box's OS: "Playwright
 tests themselves don't need target-machine specificity (browser binaries only,
 not OS)" (the same notes). There is no agent mode here — a person records.
 
-Node and pnpm are checked first and, when missing, the install commands are
-printed and never run: the recorder's own (nvm, then `nvm install` the Node the
-frontend's `engines` asks for; `corepack enable` for pnpm).
+Node and pnpm are checked before anything is cloned and, when missing, the
+install commands are printed and never run: the recorder's own, in its order
+(nvm, then the shell's start-up file read again — or a new terminal — so that
+`nvm` is there, then `nvm install` and `nvm use` the major Node the checkout's
+`engines` asks for, read off its package.json on GitHub; `corepack enable` for
+pnpm). Whether the Node that IS there is that version is not checked here: it is
+the recorder's own first check (`tools/test-recorder/src/checks/node.ts`), which
+prints the same steps.
 """
 
 from __future__ import annotations
@@ -40,14 +45,20 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 
 FRONTEND_GIT = "https://github.com/Comfy-Org/ComfyUI_frontend.git"
 FOLDER = "frontend"
 
 # The recorder's own install advice (tools/test-recorder/src/checks/node.ts and
-# pnpm.ts, core/1.60), printed when one is missing and never run.
+# pnpm.ts, core/1.60), printed when one is missing and never run. The install
+# script adds nvm to the shell's start-up file, so `nvm` is not there until that
+# file is read again: node.ts puts `source ~/.zshrc` (macOS) or `source
+# ~/.bashrc` between the two, and without it `nvm install` was "command not
+# found" when the lines were pasted in order (behaviour audit F11).
 NVM_INSTALL = "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash"
+NVM_WINDOWS = "https://github.com/coreybutler/nvm-windows/releases"
 PNPM_ENABLE = "corepack enable"
 # When the checkout's own `engines` cannot be read: core/1.60 says ">=26.8.2 <27".
 NODE_FALLBACK = "26"
@@ -100,13 +111,25 @@ def _fix(*lines: str) -> str:
     return say.fix(*lines)
 
 
-def missing_tools(which=shutil.which, node: str = NODE_FALLBACK) -> list[str]:
-    """The install commands for Node and pnpm, for whichever is missing. Empty
-    when both are there. Printed, never run."""
+def missing_tools(which=shutil.which, node: str = NODE_FALLBACK,
+                  platform: str | None = None) -> list[str]:
+    """The install commands for Node and pnpm, for whichever is missing, each
+    group under the sentence it belongs to. Empty when both are there. Printed,
+    never run. `node` is the major version to install: `node_wanted`."""
+    platform = platform or sys.platform
     lines = []
     if which("node") is None:
-        lines += ["Node.js is not installed. Install nvm, then the Node the "
-                  "frontend asks for:", NVM_INSTALL, f"nvm install {node}"]
+        if platform.startswith("win"):
+            lines += ["Node.js is not installed. Install nvm-windows from its releases:",
+                      NVM_WINDOWS,
+                      "then, in a new terminal, the Node the frontend asks for:",
+                      f"nvm install {node}", f"nvm use {node}"]
+        else:
+            start_up = "~/.zshrc" if platform == "darwin" else "~/.bashrc"
+            lines += ["Node.js is not installed. Install nvm, load it, then the Node "
+                      "the frontend asks for:",
+                      NVM_INSTALL, f"source {start_up}", f"nvm install {node}",
+                      f"nvm use {node}"]
     if which("pnpm") is None:
         lines += ["pnpm is not installed. It ships with Node.js, through corepack:",
                   PNPM_ENABLE]
@@ -264,7 +287,8 @@ def multi_user(url: str, *, opener=None, timeout: float = 5.0) -> bool | None:
 
 
 def recorded(directory: Path, run=None) -> list[str]:
-    """The test files a recording left in the checkout, by git's account."""
+    """The test files in the checkout that git does not have — a recording's,
+    this session's or an earlier one's."""
     run = run or subprocess.run
     done = run(["git", "-C", str(directory), "status", "--porcelain",
                 "--untracked-files=all"], capture_output=True, text=True)
@@ -277,3 +301,28 @@ def recorded(directory: Path, run=None) -> list[str]:
                                                                 ".zip", ".json")):
             found.append(str(directory / path))
     return found
+
+
+def snapshot(directory: Path, run=None) -> dict[str, tuple[int, int] | None]:
+    """What `recorded` finds now, each with its size and modification time — so
+    a file a later recording rewrites counts as written, and one it left alone
+    does not."""
+    found = {}
+    for path in recorded(directory, run):
+        try:
+            facts = os.stat(path)
+            found[path] = (facts.st_size, facts.st_mtime_ns)
+        except OSError:
+            found[path] = None
+    return found
+
+
+def written_since(before: dict, directory: Path, run=None) -> list[str]:
+    """The test files this recording wrote: new since `before`, or changed.
+
+    `recorded` alone counted every file git does not have, so a session that
+    recorded nothing reported, and remembered for the bug draft, the file an
+    earlier session left (behaviour audit F10)."""
+    now = snapshot(directory, run)
+    return [path for path, facts in now.items()
+            if path not in before or before[path] != facts]

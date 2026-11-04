@@ -11,16 +11,23 @@ lists them.
 FOR A QA DESK CASE, THE COMMAND IS SHOWN AND ONLY ITS DRY RUN IS RUN. The draft
 is the exact `qa-desk` command, built from the stamp:
 
-    a pass   case pass <v> <case> --on local|testcloud [--core-tag <tag>] --note <stamp>
-    a fail   case fail <v> <case> --bug "<what broke> — <stamp>" --on ...
+    a pass   case pass <v> <case> --on=local|testcloud [--core-tag=<tag>] --note=<stamp>
+    a fail   case fail <v> <case> --bug="<what broke> — <stamp>" --on=...
 
 because `case fail` takes no `--note`, so the stamp goes into the bug's text,
 and `--core-tag` is the frontend release the machine was serving, read off the
-stamp. A recorded Playwright test PR is `test report <v> <pr> --cases …`. Each is
+stamp. A recorded Playwright test PR is `test report <v> <pr> --cases=…`. Each is
 printed whole, for the person to read and paste, and then run with `--dry-run`,
 which QA Desk's CLI answers with the request it would have sent. Nothing is ever
 sent to QA Desk from here (`qadesk.run` refuses it), and nothing to Linear: a
 Linear issue is kept as text.
+
+EVERY VALUE IS ATTACHED TO ITS FLAG WITH `=` (`qadesk.flag`). The text is the
+tester's — "--frontend-version is ignored by the picker" is a fair note — and
+QA Desk's CLI reads `--note <text>` with a text that starts with `--` as a
+`--note` with no value: a pass sent no note and no stamp, and a fail was exit 6,
+`--bug is required` (code audit T2, 4 Nov). After an `=` the CLI keeps the
+value word for word.
 
 A BUG IS DRAFTED, NEVER FILED. `bug` writes the house format — a title, one
 impersonal paragraph, and an environment block built from the stamp at the
@@ -33,7 +40,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -140,43 +146,51 @@ def core_tag_of(result: Result) -> str | None:
 
 
 def pass_command(result: Result) -> list[str]:
-    command = ["case", "pass", result.release, result.case, "--on", on_for(result)]
+    from .qadesk import flag
+
+    command = ["case", "pass", result.release, result.case, flag("on", on_for(result))]
     tag = core_tag_of(result)
     if tag:
-        command += ["--core-tag", tag]
+        command.append(flag("core-tag", tag))
     note = result.stamp_line
     if result.note:
         note = f"{result.note} — {note}"
     if result.bug:
         note = f"{note} — {result.bug}"
-    return command + ["--note", note]
+    return command + [flag("note", note)]
 
 
 def fail_command(result: Result) -> list[str]:
+    from .qadesk import flag
+
     broke = result.note or "failed"
     command = ["case", "fail", result.release, result.case,
-               "--bug", f"{broke} — {result.stamp_line}", "--on", on_for(result)]
+               flag("bug", f"{broke} — {result.stamp_line}"), flag("on", on_for(result))]
     tag = core_tag_of(result)
     if tag:
-        command += ["--core-tag", tag]
+        command.append(flag("core-tag", tag))
     if result.linear:
-        command += ["--linear", result.linear]
+        command.append(flag("linear", result.linear))
     return command
 
 
 def report_command(version: str, pr: str, cases: str, *, bug: str | None = None,
                    note: str | None = None) -> list[str]:
-    command = ["test", "report", version, pr, "--cases", cases]
+    from .qadesk import flag
+
+    command = ["test", "report", version, pr, flag("cases", cases)]
     if bug:
-        command += ["--bug", bug]
+        command.append(flag("bug", bug))
     if note:
-        command += ["--note", note]
+        command.append(flag("note", note))
     return command
 
 
 def printed(command: list[str]) -> str:
     """The command as a person pastes it."""
-    return shlex.join(["qa-desk", *command])
+    from .qadesk import printed as shown
+
+    return shown(command)
 
 
 # --- the bug draft ---------------------------------------------------------------

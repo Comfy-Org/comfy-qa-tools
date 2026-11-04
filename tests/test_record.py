@@ -14,7 +14,9 @@ pnpm are checked with the install commands printed, never run.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,13 +28,19 @@ from qaworld import BOX, FRONT, flat, make, package_json, run
 
 class RecordBox(FakeGcloud):
     """A box whose ComfyUI is stopped and started the way `record` does it:
-    the launch's own command line says whether `--multi-user` is on it."""
+    the launch's own command line says whether `--multi-user` is on it.
 
-    def __init__(self, **rest):
+    `single_user_only` is a ComfyUI that comes back without multi-user mode
+    whatever it is launched with; `fails` says which launches exit 1 without
+    starting anything, as a launcher that could not run would."""
+
+    def __init__(self, *, single_user_only=False, fails=None, **rest):
         super().__init__(statuses=["RUNNING"], installed=True,
                          port_holder="4242 python", **rest)
         self.world = None
         self.launches: list[str] = []
+        self.single_user_only = single_user_only
+        self.fails = fails or (lambda remote: False)
 
     def ssh(self, instance, zone, project, remote, *, stream=True):
         if remote.startswith("kill ") or "Stop-Process -Id" in remote:
@@ -43,17 +51,44 @@ class RecordBox(FakeGcloud):
             return 0
         if "main.py" in remote:
             self.launches.append(remote)
-            self.world.serves(self.world.serving, multi_user="--multi-user" in remote)
-            self.port_holder = "4242 python"
             self.calls.append(("ssh", instance, zone, project))
             self.remote.append(remote)
+            if self.fails(remote):
+                return 1
+            self.world.serves(self.world.serving, multi_user=(
+                "--multi-user" in remote and not self.single_user_only))
+            self.port_holder = "4242 python"
             return 0
         return super().ssh(instance, zone, project, remote, stream=stream)
 
 
 @pytest.fixture
-def world(monkeypatch, tmp_path):
-    box = RecordBox()
+def worlds(monkeypatch, tmp_path):
+    """Make a record world on a box of the test's own; each is stopped after."""
+    made = []
+
+    def on(box):
+        made.append(_world_on(box, monkeypatch, tmp_path))
+        return made[-1]
+
+    yield on
+    for each in made:
+        for process in each.processes:
+            try:
+                process.kill()
+                process.wait(timeout=5)
+            except OSError:
+                pass
+        each.comfy.stop()
+
+
+@pytest.fixture
+def world(worlds):
+    return worlds(RecordBox())
+
+
+def _world_on(box, monkeypatch, tmp_path):
+    """The record world, on `box`."""
     made = make(monkeypatch, tmp_path, gc=box, fake_tunnels=False)
     box.world = made
     made.serving = "1.60.0"
@@ -62,12 +97,15 @@ def world(monkeypatch, tmp_path):
     made.hub[f"{FRONT}/contents/package.json?ref=v1.58.5"] = package_json("1.58.5")
     made.hub[f"{FRONT}/contents/package.json?ref=v1.60.0"] = package_json("1.60.0")
     processes: list = []
+    made.processes = processes
     clock = Clock()
     monkeypatch.setattr(tunnel, "_spawn", fake_tunnel_launcher(processes))
     monkeypatch.setattr(lifecycle, "_clock", clock.now)
     monkeypatch.setattr(lifecycle, "_pause", clock.pause)
     made.ran = []
     made.recorder = []
+    # What the next recording writes into the checkout, relative to it.
+    made.writes = ["browser_tests/tests/picker.spec.ts"]
     # Node and pnpm are there, whatever the runner has: a test about `record` is
     # not a test of the CI image. The test about their absence takes them away.
     import shutil
@@ -87,8 +125,13 @@ def world(monkeypatch, tmp_path):
                                                  encoding="utf-8")
             return subprocess.CompletedProcess(words, 0, "", "")
         if words[:1] == ["git"] and "status" in words:
+            # git's account of what it does not have: every file under
+            # browser_tests/, since the checkout tracks none of the fakes.
             made.ran.append(words)
-            out = "?? browser_tests/tests/picker.spec.ts\n" if made.recorder else ""
+            checkout = Path(words[words.index("-C") + 1])
+            out = "".join(f"?? {path.relative_to(checkout).as_posix()}\n"
+                          for path in sorted((checkout / "browser_tests").rglob("*"))
+                          if path.is_file())
             return subprocess.CompletedProcess(words, 0, out, "")
         if words[:1] == ["git"]:
             made.ran.append(words)
@@ -103,18 +146,19 @@ def world(monkeypatch, tmp_path):
             made.recorder.append({"argv": words, "cwd": kwargs.get("cwd"),
                                   "env": kwargs.get("env") or {},
                                   "multi_user": record.multi_user(made.comfy.url)})
+            for relative in made.writes:
+                written = Path(kwargs["cwd"]) / relative
+                written.parent.mkdir(parents=True, exist_ok=True)
+                written.write_text(f"test('picker {len(made.recorder)}', () => {{}})",
+                                   encoding="utf-8")
+                # A distinct time for each recording, whatever the clock's grain.
+                stamp = 1_800_000_000 + len(made.recorder)
+                os.utime(written, (stamp, stamp))
             return subprocess.CompletedProcess(words, 0)
         return real(argv, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    yield made
-    for process in processes:
-        try:
-            process.kill()
-            process.wait(timeout=5)
-        except OSError:
-            pass
-    made.comfy.stop()
+    return made
 
 
 def test_record_starts_the_frontends_own_recorder_against_the_box(world):
@@ -220,6 +264,169 @@ def test_what_the_recording_left_is_remembered_for_the_bug_draft(world):
 
     assert "the recording left 1 file in the checkout" in flat(result.output)
     assert results.recordings_file(world.config).exists()
+
+
+def test_a_session_that_records_nothing_reports_and_remembers_nothing_new(world):
+    """S3-7: only what this recording wrote is the recording. Every untracked
+    test file counted, so a later session that recorded nothing said "the
+    recording left 1 file" and stamped the earlier one as new (behaviour audit
+    F10)."""
+    from comfy_qa import results
+
+    first = run(world, "record", BOX, "1.60")
+    assert "the recording left 1 file" in flat(first.output), first.output
+    remembered = json.loads(results.recordings_file(world.config).read_text())[BOX]
+
+    world.writes = []
+    second = run(world, "record", BOX, "1.60")
+
+    assert second.exit_code == 0, second.output
+    assert "the recording left" not in second.output
+    assert json.loads(results.recordings_file(world.config).read_text())[BOX] == remembered
+
+    world.writes = ["browser_tests/tests/picker.spec.ts"]
+    third = run(world, "record", BOX, "1.60")
+    assert "the recording left 1 file" in flat(third.output), "a rewritten test is new"
+
+
+def test_a_checkout_left_at_another_version_is_refused_before_the_box_is_touched(world):
+    """S3-6: a checkout already in comfy-qat's folder that is not the version
+    GitHub says the branch is — left at an older one, say — is refused after it
+    is brought up to date and before multi-user mode is switched on (code audit
+    T4: removing this refusal left the suite green)."""
+    folder = world.config.parent / "frontend" / "core-1.60"
+    (folder / ".git").mkdir(parents=True)
+    (folder / "package.json").write_text(json.dumps({"version": "1.59.0"}),
+                                         encoding="utf-8")
+
+    result = run(world, "record", BOX, "1.60")
+
+    assert result.exit_code == 2, result.output
+    assert f"the checkout of core/1.60 in {folder} is 1.59.0, not 1.60.0" in flat(
+        result.output)
+    assert "to fix:" in result.output
+    assert world.recorder == [] and world.gc.launches == []
+
+
+def test_a_box_that_does_not_come_back_in_multi_user_mode_is_put_back_and_refused(
+        worlds):
+    """S3-6: the switch took no effect, so the recorder is not started and the
+    box is launched again as it was (code audit T4: removing this left the suite
+    green)."""
+    world = worlds(RecordBox(single_user_only=True))
+
+    result = run(world, "record", BOX, "1.60")
+
+    assert result.exit_code == 1, result.output
+    assert f"ComfyUI on {BOX} did not come back in multi-user mode" in flat(result.output)
+    assert "ComfyUI was started again as it was, in single-user mode" in flat(result.output)
+    assert ["--multi-user" in launch for launch in world.gc.launches] == [True, False]
+    assert world.recorder == []
+
+
+def test_a_multi_user_launch_that_fails_is_put_back_and_said(worlds):
+    """S3-6 and S3-8: ComfyUI was stopped for the switch and would not start with
+    `--multi-user`. It is started again without it, nothing is repaired on the
+    box, and the words are record's own (behaviour audit F8)."""
+    world = worlds(RecordBox(fails=lambda remote: "--multi-user" in remote))
+
+    result = run(world, "record", BOX, "1.60")
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert f"ComfyUI on {BOX} did not start in multi-user mode" in said
+    assert "ComfyUI was started again as it was, in single-user mode" in said
+    assert ["--multi-user" in launch for launch in world.gc.launches] == [True, False]
+    assert not any("pip" in remote for remote in world.gc.remote), world.gc.remote
+    assert "missing a dependency" not in said
+    assert world.recorder == []
+    from comfy_qa import record
+
+    assert record.multi_user(world.comfy.url) is False
+
+
+def test_a_box_that_will_not_start_again_says_it_is_stopped_and_how_to_bring_it_back(
+        worlds):
+    """S3-6 and S3-8: neither launch starts, so ComfyUI is left stopped — and
+    that is said, with the command that brings it back (behaviour audit F8)."""
+    world = worlds(RecordBox(fails=lambda remote: True))
+
+    result = run(world, "record", BOX, "1.60")
+
+    assert result.exit_code == 1, result.output
+    said = flat(result.output)
+    assert f"so ComfyUI on {BOX} is stopped now" in said
+    assert f"comfy-qat go {BOX}" in result.output.split("to fix:")[-1]
+    assert world.recorder == []
+
+
+def test_the_recorder_command_is_shown_as_it_would_be_pasted(world):
+    """A passthrough value with a space in it is one word on the line shown
+    (code audit T13)."""
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    result = CliRunner().invoke(app, ["--config", str(world.config), "record", BOX, "--",
+                                      "--workflow", "my flow"])
+
+    assert result.exit_code == 0, result.output
+    assert f"pnpm comfy-test record --backend {world.comfy.url} --workflow 'my flow'" \
+        in result.output
+
+
+def test_the_node_install_steps_paste_in_order_with_the_shell_reload_between(
+        world, monkeypatch):
+    """S3-6: the recorder's own steps, in its order (checks/node.ts): the nvm
+    install, the shell's start-up file read again, then `nvm install` and `nvm
+    use` — one group, no blank line inside it (behaviour audit F11). The Node is
+    the major the checkout's own `engines` asks for, read off its package.json
+    (code audit T11: it was a number written into the tool)."""
+    import base64
+    import shutil
+
+    content = json.dumps({"version": "1.60.0", "engines": {"node": ">=24.4 <25"}})
+    world.hub[f"{FRONT}/contents/package.json?ref=core/1.60"] = {
+        "content": base64.b64encode(content.encode()).decode()}
+    present = shutil.which
+    monkeypatch.setattr(shutil, "which",
+                        lambda name, *a, **k: None if name == "node" else present(name, *a, **k))
+
+    result = run(world, "record", BOX, "1.60")
+
+    assert result.exit_code == 2, result.output
+    lines = [line.strip() for line in result.output.splitlines()]
+    install = lines.index(
+        "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash")
+    start_up = "~/.zshrc" if sys.platform == "darwin" else "~/.bashrc"
+    assert lines[install:install + 4] == [
+        "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash",
+        f"source {start_up}", "nvm install 24", "nvm use 24"], lines
+    assert world.ran == [] and world.recorder == []
+
+
+@pytest.mark.parametrize("platform, reload", [
+    ("darwin", "source ~/.zshrc"),
+    ("linux", "source ~/.bashrc"),
+])
+def test_the_node_steps_follow_the_recorders_own_for_each_shell(platform, reload):
+    from comfy_qa import record
+
+    steps = record.missing_tools(lambda name: None, "26", platform=platform)
+
+    assert steps[1:5] == [record.NVM_INSTALL, reload, "nvm install 26", "nvm use 26"]
+    assert steps[-2:] == ["pnpm is not installed. It ships with Node.js, through corepack:",
+                          "corepack enable"]
+
+
+def test_the_node_steps_on_windows_are_nvm_windows_in_a_new_terminal():
+    from comfy_qa import record
+
+    steps = record.missing_tools(lambda name: None if name == "node" else "x", "26",
+                                 platform="win32")
+
+    assert record.NVM_WINDOWS in steps and "new terminal" in " ".join(steps)
+    assert steps[-2:] == ["nvm install 26", "nvm use 26"]
 
 
 @pytest.mark.parametrize("missing, shown", [

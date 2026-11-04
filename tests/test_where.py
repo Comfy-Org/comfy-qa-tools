@@ -35,6 +35,23 @@ def rows(output: str) -> dict[str, str]:
     return found
 
 
+def fixes(output: str) -> str:
+    """The lines from the first `to fix:` on: what comfy-qat says to do, never
+    the problem above it, which may quote QA Desk's own advice."""
+    lines = output.splitlines()
+    starts = [index for index, line in enumerate(lines) if line.startswith("to fix:")]
+    assert starts, output
+    return "\n".join(lines[starts[0]:])
+
+
+FRONTEND_PR = "22870"
+
+
+def give_the_frontend_pr(world) -> None:
+    world.hub[f"{FRONT}/pulls/{FRONTEND_PR}"] = {"state": "open", "merged": False,
+                                                 "head": {"sha": "22870a" + "c" * 34}}
+
+
 def give_1_60_a_core_tag(world) -> None:
     world.hub[f"{FRONT}/releases?per_page=100"].insert(0, {
         "tag_name": "v1.60.1", "target_commitish": "core/1.60",
@@ -91,7 +108,8 @@ def test_a_stopped_box_can_be_prepared_and_nothing_is_started(world):
 
     assert result.exit_code == 0, result.output
     row = rows(result.output)[BOX]
-    assert "Can be prepared" in row and "stopped: go starts it (about 2 min)" in row
+    assert "Can be prepared" in row
+    assert "stopped: go starts it (about 2 min, not measured)" in row
     acted = [call for call in world.gc.calls
              if call[0] not in ("list_instances", "list_reservations")]
     assert acted == [], acted
@@ -102,10 +120,12 @@ def test_a_stopped_box_can_be_prepared_and_nothing_is_started(world):
     (("--pr", "17497"), "ComfyUI PR 17497"),
     (("--version", "v0.43.0"), "ComfyUI v0.43.0"),
     (("--frontend-version", "v1.58.5"), "frontend v1.58.5"),
+    (("--frontend-pr", FRONTEND_PR), f"frontend PR {FRONTEND_PR}"),
 ])
 def test_a_pr_or_a_version_is_something_to_test_too(world, asked, label):
     """S3-1: not only QA Desk (Ali: "not just limited to qa desk"). A build is
     checked against GitHub first, and QA Desk is not asked anything."""
+    give_the_frontend_pr(world)
     world.serves("1.58.5")
 
     result = run(world, "where", *asked)
@@ -114,6 +134,25 @@ def test_a_pr_or_a_version_is_something_to_test_too(world, asked, label):
     assert label in result.output
     assert world.desk.calls == []
     assert set(rows(result.output)) == {"testcloud", "staging", "prod", BOX}
+
+
+def test_a_frontend_pr_is_built_on_a_machine_and_never_on_cloud(world):
+    """S3-1 names a frontend PR as something to test: cloud serves its own
+    deploys, so each environment is Not suitable with that reason, and the box
+    is offered the `go` that builds it (code audit T6)."""
+    give_the_frontend_pr(world)
+    world.box("TERMINATED")
+
+    result = run(world, "where", "--frontend-pr", FRONTEND_PR)
+
+    assert result.exit_code == 0, result.output
+    found = rows(result.output)
+    for cloud in ("testcloud", "staging", "prod"):
+        assert "Not suitable" in found[cloud], found[cloud]
+        assert f"frontend PR {FRONTEND_PR} is built on a machine" in found[cloud]
+    assert "Can be prepared" in found[BOX]
+    assert "several minutes, not measured" in found[BOX]
+    assert f"    comfy-qat go {BOX} --frontend-pr {FRONTEND_PR}" in result.output.splitlines()
 
 
 def test_a_box_with_another_os_or_card_is_not_suitable_and_says_why(world):
@@ -218,6 +257,73 @@ def test_cloud_is_judged_by_the_exact_commit_for_a_frontend_release(world):
     assert f"not frontend v1.58.5 ({TAG_1_58_5[:8]})" in found["testcloud"]
 
 
+def test_a_frontend_release_github_cannot_place_is_never_unsuitable_with_no_reason(world):
+    """S3-2/S3-8: the tag is there for the build check, but its ref is not, so
+    no cloud environment can be compared with it — and each row says so rather
+    than nothing (code audit T7)."""
+    del world.hub[f"{FRONT}/git/ref/tags/v1.58.5"]
+
+    result = run(world, "where", "--frontend-version", "v1.58.5", "--json")
+
+    assert result.exit_code == 0, result.output
+    clouds = [place for place in json.loads(result.output)["places"]
+              if place["kind"] == "cloud"]
+    assert [place["place"] for place in clouds] == ["testcloud", "staging", "prod"]
+    for place in clouds:
+        assert place["state"] == "Not suitable"
+        assert "GitHub could not say which commit frontend v1.58.5 is" in place["why"]
+
+
+def test_every_estimate_that_was_not_measured_says_so_once(world):
+    """S3-13: the CHANGELOG says each estimate was measured once or says it is a
+    guess (behaviour audit F4), and each is printed inside a pair of
+    parentheses, so none carries its own (F13: "not measured))")."""
+    from comfy_qa.places import MINUTES
+
+    for key in ("start", "frontend", "frontend-pr", "connect"):
+        assert "not measured" in MINUTES[key], key
+    assert not any("(" in value or ")" in value for value in MINUTES.values())
+
+    world.box("TERMINATED")
+    result = run(world, "where", "--frontend-version", "v1.58.5")
+    assert "))" not in result.output, result.output
+
+
+def test_only_a_comfyui_build_reads_the_box_over_ssh(world):
+    """S3-13: what `where` reads, as its help and the docs now say. The checkout
+    on a running, tunnelled box is read over SSH only for a ComfyUI build —
+    only git on the box can say which commit it is on (code audit T8)."""
+    give_1_60_a_core_tag(world)
+    world.serves("1.58.5")
+
+    def ssh_after(*args):
+        world.gc.calls.clear()
+        result = run(world, "where", *args)
+        assert result.exit_code == 0, result.output
+        return [call for call in world.gc.calls if call[0].startswith("ssh")]
+
+    assert ssh_after("--pr", "17497"), "a backend build was not read off the box"
+    assert ssh_after("--frontend-version", "v1.58.5") == []
+    assert ssh_after("1.60", "C-01") == []
+
+
+def test_wheres_help_and_the_command_reference_say_it_reads_the_box_over_ssh():
+    """S3-13: "Nothing is started: it reads Google's instance list, the tunnels
+    already open, GitHub and QA Desk" left out SSH (code audit T8)."""
+    from pathlib import Path
+
+    from typer.testing import CliRunner
+
+    from comfy_qa.cli import app
+
+    shown = " ".join(CliRunner().invoke(app, ["where", "--help"]).output.split())
+    assert "over SSH" in shown, shown
+    page = (Path(__file__).resolve().parent.parent / "docs" / "commands.md").read_text(
+        encoding="utf-8")
+    (row,) = [line for line in page.splitlines() if line.startswith("| `comfy-qat where`")]
+    assert "over SSH" in row
+
+
 def test_a_backend_build_is_never_a_cloud_environment(world):
     found = rows(run(world, "where", "--pr", "17497").output)
 
@@ -274,7 +380,9 @@ def test_qa_desk_missing_or_signed_out_is_said_with_the_command_that_fixes_it(
     assert result.exit_code == 2, result.output
     assert said in flat(result.output)
     assert "Nothing else in comfy-qat needs it" in flat(result.output)
-    assert fix in result.output.splitlines()[-1] or fix in result.output
+    # In comfy-qat's own fix: QA Desk's message above it says "Run qa-desk
+    # login" too, and passed this on its own (code audit T5).
+    assert fix in [line.strip() for line in fixes(result.output).splitlines()]
 
 
 def test_the_two_commands_that_fix_a_missing_qa_desk_are_one_block(monkeypatch, tmp_path):
@@ -332,6 +440,27 @@ def test_every_refusal_says_what_is_wrong_and_what_to_do(world, args, said):
     assert result.exit_code == 2, result.output
     assert said in flat(result.output)
     assert "to fix:" in result.output
+
+
+@pytest.mark.parametrize("args, said", [
+    (("--pr", "99999999"), "ComfyUI has no pull request 99999999, so it is not "
+                           "something to test."),
+    (("--version", "v0.99.0"), "ComfyUI has no release v0.99.0, so it is not "
+                               "something to test."),
+    (("--frontend-version", "v1.99.9"), "the frontend has no release v1.99.9, so it is "
+                                        "not something to test."),
+])
+def test_a_build_that_does_not_exist_is_refused_in_the_words_of_a_listing(world, args,
+                                                                            said):
+    """S3-8: `where` installs nothing and creates nothing, so `go`'s "nothing to
+    install. Nothing was created or started." was the wrong half of a true
+    sentence (behaviour audit F13)."""
+    result = run(world, "where", *args)
+
+    assert result.exit_code == 2, result.output
+    assert said in flat(result.output)
+    assert "install" not in result.output.split("to fix:")[0]
+    assert "Nothing was created" not in result.output
 
 
 def test_every_refusal_the_testing_commands_can_raise_carries_a_fix():

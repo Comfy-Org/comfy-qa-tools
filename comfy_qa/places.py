@@ -8,7 +8,9 @@ host list and for the three cloud environments, each one **Ready**, **Can be
 prepared** (with what would change and roughly how long) or **Not suitable**
 (with the reason). Listing changes nothing: no box is started, no tunnel is
 opened, no build is touched. It reads Google's instance list, what an
-already-open tunnel answers, GitHub, and QA Desk.
+already-open tunnel answers, GitHub, and QA Desk — and, for a ComfyUI build
+(`--pr`, `--version`, `--commit`), the checkout on each running, tunnelled box,
+over SSH, because only git on the box can say which commit it is on.
 
 WHAT "RIGHT" MEANS. The OS and the GPU, when they were asked for
 (`--machine windows/l4`, the same description every machine command takes), and
@@ -61,26 +63,29 @@ TARGETS = {
 }
 
 # Rough times, for "Can be prepared". Each was MEASURED ONCE, live, on step 2's
-# no-GPU boxes (live-s2/live.md, 3 Nov), or is said to be a guess: one reading,
-# CPU boxes, one network. They are "about", never promises.
+# no-GPU boxes (live-s2/live.md, 3 Nov), or says "not measured" where it is
+# printed: one reading, CPU boxes, one network. They are "about", never promises.
+# No value has parentheses of its own, because each is printed inside a pair:
+# "go starts it (about 2 min, not measured)".
 MINUTES = {
     # `go` on a stopped box that already has ComfyUI: not measured. A create
     # took 1.5 min to RUNNING (evidence/02), and a start does less.
-    "start": "about 2 min",
+    "start": "about 2 min, not measured",
     # `go --frontend-version` on a box with ComfyUI: a relaunch, and ComfyUI
     # fetches the release itself at startup. Not measured on its own.
-    "frontend": "about 1 min",
+    "frontend": "about 1 min, not measured",
     # `switch --pr 17497` on the Linux box: 58 s (evidence/07).
     "backend": "about 1 min on Linux, longer on Windows",
     # A frontend PR is built on the box by comfy-cli's builder. Not measured.
-    "frontend-pr": "several minutes (not measured)",
+    "frontend-pr": "several minutes, not measured",
     # First `go` on a fresh Linux box, v0.43.0: 4 min (evidence/03-04); a clean
     # Windows install: 10.5 min (evidence/51).
     "install": "about 4 min on Linux, 10 on Windows",
     # A running box with no tunnel: `go` opens one, and starts ComfyUI — or
-    # installs it, which this cannot see from here without SSH.
-    "connect": "about a minute if ComfyUI is on it; installing it is about 4 min "
-               "on Linux, 10 on Windows",
+    # installs it, which this cannot see from here without SSH. The start is
+    # not measured; the install is "install" above.
+    "connect": "about a minute if ComfyUI is on it, not measured; installing it is "
+               "about 4 min on Linux, 10 on Windows",
 }
 
 
@@ -223,6 +228,19 @@ def target_for(release: str | None = None, case: str | None = None, *,
             "not given with a PR or a version as well.",
             fix=_examples())
 
+    try:
+        return _asked(release, case, version=version, pr=pr, commit=commit,
+                      frontend_version=frontend_version, frontend_pr=frontend_pr,
+                      machine=machine, backend=backend, qa=qa, ask=ask)
+    except build.BuildError as exc:
+        raise TargetError(_for_testing(str(exc)), exc.fix) from exc
+
+
+def _asked(release, case, *, version, pr, commit, frontend_version, frontend_pr,
+           machine, backend, qa, ask) -> Target:
+    """`target_for`, once what was asked for reads: GitHub and QA Desk asked."""
+    from . import build
+
     if release is None:
         chosen = build.check(build.choose(
             version=version, pr=pr, commit=commit, frontend_version=frontend_version,
@@ -261,6 +279,27 @@ def target_for(release: str | None = None, case: str | None = None, *,
                           f"plan waits for the first v{version_word}.* release made "
                           f"on core/{version_word}")
     return target
+
+
+# How `build.check` ends a refusal, for `create` and `go`, and how the same
+# refusal ends for the commands that only look and keep: `where`, `pass`, `fail`
+# and `bug` install nothing, so "nothing to install. Nothing was created or
+# started" was the wrong half of a true sentence (behaviour audit F13).
+_INSTALL_WORDS = (
+    (", so there is nothing to install. Nothing was created or started.",
+     ", so it is not something to test."),
+    (", so ComfyUI would have nothing to download. Nothing was created or started.",
+     ", so it is not something to test."),
+    (", so nothing was created or started.", "."),
+    (" Nothing was created or started.", ""),
+)
+
+
+def _for_testing(message: str) -> str:
+    """A build refusal, in the words of a command that installs nothing."""
+    for said, meant in _INSTALL_WORDS:
+        message = message.replace(said, meant)
+    return message
 
 
 def short(chosen: Build) -> str:
@@ -335,6 +374,12 @@ def cloud_places(target: Target, *, probe=None, ask=None) -> list[Place]:
                              f"a cloud result on testcloud only")
             else:
                 place.state, place.why = READY, f"serves {serves}, on {target.cloud_line}{how}"
+        else:
+            # A frontend release whose commit GitHub would not give — the tag was
+            # there for `build.check`, its ref was not. Never Not suitable with
+            # no reason (code audit T7).
+            place.why = (f"serves {serves}; GitHub could not say which commit "
+                         f"{target.label} is, so it cannot be compared")
         places.append(place)
     return places
 

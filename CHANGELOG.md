@@ -39,7 +39,8 @@ Linux box with no GPU on `stately-timing-504610-p1`, made by `create --version v
   --core-tag v1.60.0 --note '<note> — <stamp>'` and `qa-desk case fail 1.60 C-01 --bug
   '<what broke> — testcloud · frontend b7d7f32291 (1.60.0)' --on testcloud --linear
   FE-0000`; `report 1.60 QATEST-S3-11 --cases C-01` printed `qa-desk test report …`, with
-a placeholder for the PR. Each ran
+  a placeholder for the PR. (On that commit each value still followed its flag as a
+  word of its own; it is attached with `=` since — see "Found before release".) Each ran
   only as `--dry-run`, and QA Desk's CLI answered with the request it would have sent.
   Read back with `qa-desk case show` afterwards, C-01 was still open with no history
   and no bugs. Every note said `QATEST-`.
@@ -65,8 +66,8 @@ that has a core tag (none of 1.60's does yet).
   release (`where 1.60`), or a build: `--pr`, `--version`, `--commit`,
   `--frontend-version`, `--frontend-pr`. Every machine and the three cloud
   environments are listed **Ready**, **Can be prepared** — what would change, roughly
-  how long (each estimate measured once on the 1.4.0 live boxes, or said to be a
-  guess), and the `go` that does it — or **Not suitable**, with the reason. "Right"
+  how long (each estimate measured once on the 1.4.0 live boxes, or printed with
+  "not measured"), and the `go` that does it — or **Not suitable**, with the reason. "Right"
   is the OS and GPU (`--machine windows/l4`) and the build. For a case or a release a
   machine wants the release's newest core tag, a `v<release>.N` release made on
   `core/<release>`, and a cloud environment a frontend commit on `cloud/<release>`,
@@ -74,24 +75,28 @@ that has a core tag (none of 1.60's does yet).
   GitHub's compare. A case's target in QA Desk — cloud, core, shared, shared-local —
   decides which kinds of place count, and staging and prod never count for a case,
   because QA Desk records a cloud result `--on testcloud` only. Nothing is started:
-  it reads Google's instance list, tunnels already open, GitHub and QA Desk. `--json`.
+  it reads Google's instance list, tunnels already open, GitHub and QA Desk — and, for
+  a ComfyUI build (`--pr`, `--version`, `--commit`), the checkout on each running,
+  tunnelled box, over SSH. `--json`.
 - **QA Desk is read through its own CLI, under your own sign-in.** `qa-desk whoami`,
   `case show`, `case list`, `release show` and `release list`, always `--json`. The
   token is never read, stored, printed or passed: `qa-desk` is run as you would run
-  it. Every other `qa-desk` command is run only with `--dry-run`, and refused before
-  anything starts without it. Missing or signed out, it says so with the fix — the
+  it. Besides those, only the three writes this tool drafts — `case pass`, `case
+  fail`, `test report` — are run, and only as a dry run as QA Desk's own CLI reads the
+  argv; anything else is refused before it starts. Missing or signed out, it says so with the fix — the
   install line from QA Desk's own instructions, or `qa-desk login` — and everything
   that does not need QA Desk still works.
 - **`pass` and `fail` keep a result here**: what was tested, where (`--on`: a
   machine, or testcloud, staging or prod), the place's full stamp read at that
   moment, the time, a note, and a Linear issue or bug reference as text — in
   `results/` beside the host list, one JSON file each. **`results`** lists them.
-- **QA Desk drafts, dry run only.** For a case, a pass is `case pass <v> <case> --on
-  local|testcloud [--core-tag <tag from the stamp>] --note <stamp>`; a fail is `case
-  fail <v> <case> --bug "<what broke> — <stamp>"`, because `case fail` has no `--note`,
-  with `--on`, the core tag and `--linear` for a Linear issue; **`report <v> <pr>
-  --cases …`** drafts `test report` for a recorded Playwright test PR. Each is printed
-  whole for you to read and run, and its `--dry-run` is run to show the request.
+- **QA Desk drafts, dry run only.** For a case, a pass is `case pass <v> <case>
+  --on=local|testcloud [--core-tag=<tag from the stamp>] --note=<stamp>`; a fail is
+  `case fail <v> <case> --bug="<what broke> — <stamp>"`, because `case fail` has no
+  `--note`, with `--on`, the core tag and `--linear` for a Linear issue; **`report <v>
+  <pr> --cases …`** drafts `test report` for a recorded Playwright test PR. Each is
+  printed whole for you to read and run, and its `--dry-run` is run to show the
+  request.
 - **`bug` — Raise bug.** A title, one impersonal paragraph (what happened, what was
   expected, where it was found) and the environment line from the place's stamp,
   read now, for Linear or #bug-dump, with the recording to attach when there is one.
@@ -107,6 +112,38 @@ that has a core tag (none of 1.60's does yet).
   server gets a free port, never 8188-8190, and stays on loopback. Node and pnpm are
   checked and their install commands — the recorder's own — printed, never run. A
   person records, in their own browser, whatever the box's OS.
+
+### Found before release, by this release's own audit, and fixed
+
+- **A note that starts with `--`, or a lone `--`, is a value, never a flag.** QA
+  Desk's CLI reads `--note <text>` with a text that starts with `--` as a `--note`
+  with no value, and a bare `--` as the end of its flags: a pass dropped its note and
+  stamp, a fail was refused (`--bug is required`), and `report … --note --` handed it
+  a `--dry-run` it would have read as a word, so it would have been sent — while this
+  tool's guard, asking only whether `--dry-run` was in the argv, let it through. Every
+  value in a draft is now attached with `=` (`--note=<text>`), which the CLI keeps word
+  for word; a test PR that starts with `-` is refused; and the guard, and the suite's
+  tripwire, read the argv by the CLI's own `parse`, and run only the three drafts'
+  dry runs (`logout` and `login` run before the CLI looks at `--dry-run`).
+- **`where <release>` reads QA Desk's whole answer.** The CLI exits before a pipe
+  drains, so `release show 1.60 --json` stopped at 65,536 bytes and `where 1.60`
+  said it was not JSON, and to update qa-desk. It is read into a file now, and an
+  answer that stops part-way is said to have been cut off, not to be old.
+- **Each QA Desk exit has its own fix.** Bad input (6) shows the command as it was
+  given; a state that does not allow it (4) and a needed confirmation (2) say how to
+  see the case. Only a network or server error (1) is told to try again.
+- **`pass` and `fail` keep no result for a case QA Desk says it does not have**, or
+  when nothing was named as tested.
+- **`record` puts the box back when the switch fails.** If ComfyUI will not start in
+  multi-user mode, it is started again as it was and the recorder is not started; if
+  it will not start at all, that is said, with `comfy-qat go <box>`. No dependency
+  repair is run on the box. Only what this recording wrote is reported and remembered
+  for `bug`; the Node steps are the recorder's own, in its order, with the shell
+  reload between `nvm`'s install and `nvm install`, and the Node the checkout asks for.
+- **Plain words.** A Not suitable cloud row always has a reason, even when GitHub
+  cannot say which commit a frontend release is. `where`'s build refusals no longer
+  say "nothing to install. Nothing was created or started". The unmeasured estimates
+  say "not measured", once.
 
 ### Fixed
 

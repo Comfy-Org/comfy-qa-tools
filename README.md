@@ -231,6 +231,9 @@ that works.
 box, because the question at the end of a session is never "is comfy-win
 stopped", it is "am I still paying for anything".
 
+[`docs/machines.md`](docs/machines.md) covers the whole loop, including what to do
+when a zone has no GPUs left.
+
 ### Testing, and saying what you found
 
 ```sh
@@ -270,8 +273,9 @@ multi-user mode while you record and back afterwards, and starts the frontend's
 own `pnpm comfy-test record --backend http://127.0.0.1:<port>`. Node and pnpm are
 checked; their install commands are printed, never run.
 
-[`docs/machines.md`](docs/machines.md) covers the whole loop, including what to do
-when a zone has no GPUs left.
+[The command reference](docs/commands.md#testing-and-saying-what-you-found) has each
+testing command's options, and [troubleshooting](docs/troubleshooting.md) what each
+of their refusals means.
 
 ## Commands
 

@@ -471,9 +471,12 @@ def _opens_a_group(lines: list[str], index: int) -> bool:
 
 # What a runnable line in a fix starts with. Everything this tool offers is one
 # of its own commands, a gcloud call, or an absolute path to an interpreter —
-# walked out of every `say.fix` in the package rather than guessed.
+# walked out of every `say.fix` in the package rather than guessed. `nvm`,
+# `source`, `corepack` and `pnpm` start the Node and pnpm steps `record` prints:
+# read as prose, `nvm install` opened a group of its own, a blank line away from
+# the install line it follows (behaviour audit F11).
 _RUNNABLE = ("comfy-qat ", "gcloud ", "ssh ", "scp ", "curl ", "qa-desk ", "python", "pip",
-             "sudo ", "/", "~/")
+             "sudo ", "/", "~/", "nvm ", "source ", "corepack ", "pnpm ")
 
 
 def _is_prose(line: str) -> bool:

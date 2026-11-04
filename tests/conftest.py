@@ -705,12 +705,25 @@ def no_test_runs_a_qa_desk_write(monkeypatch):
 
     Every argv goes through `qadesk._spawn`, whoever answers it — the suite's
     `FakeQaDesk`, installed as `qadesk.RUNNER`, or the real CLI — and is held
-    here to this file's own reading of what a write is, not the package's: one
-    of five reads, or it carries `--dry-run`. Anything else is refused and kept,
-    and the test fails at teardown whatever it made of the refusal, as the
-    network and GitHub tripwires above do. And the real `qa-desk` is refused
-    outright: a test that forgot its fake would read the developer's own QA
-    Desk under their own sign-in.
+    here to QA Desk's own reading of it, not the package's: its words and flags
+    as the CLI's `parse` takes them (`fakes._qa_desk_parse`), so a bare `--`
+    ends the flags and a `--dry-run` after it is a word, not a dry run. An argv
+    passes when it is one of the five reads, or one of the three writes
+    comfy-qat drafts — `case pass`, `case fail`, `test report` — with a dry run
+    QA Desk's CLI would see. Every other command is refused whatever it
+    carries: `login`, `logout`, `token` and `setup` run before the CLI ever
+    looks at `--dry-run`. Anything refused is kept, and the test fails at
+    teardown whatever it made of the refusal, as the network and GitHub
+    tripwires above do.
+
+    IT USED TO ASK ONLY WHETHER `--dry-run` WAS IN THE ARGV, which is the rule
+    the package had too, and both were walked past by the same argv: `report
+    1.60 X --cases C-01 --note --` handed qa-desk `… --note -- --dry-run --json`,
+    and qa-desk, reading the `--` as the end of its flags, would have sent it
+    (behaviour audit, F1, 4 Nov).
+
+    And the real `qa-desk` is refused outright: a test that forgot its fake
+    would read the developer's own QA Desk under their own sign-in.
     """
     from comfy_qa import qadesk
 
@@ -723,16 +736,21 @@ def no_test_runs_a_qa_desk_write(monkeypatch):
     monkeypatch.setattr(qadesk, "RUNNER", lambda argv: refuse(
         f"this test ran the real qa-desk ({argv!r}). Give it a QA Desk of its own: "
         f"monkeypatch qadesk.RUNNER with tests/fakes.py's FakeQaDesk."))
+    from fakes import _qa_desk_parse
+
     reads = {("whoami",), ("case", "show"), ("case", "list"), ("release", "show"),
              ("release", "list")}
+    drafted = {("case", "pass"), ("case", "fail"), ("test", "report")}
     passing = qadesk._spawn
 
     def guarded(argv):
-        words = [word for word in argv[1:] if not word.startswith("--")]
-        if (tuple(words[:1]) not in reads and tuple(words[:2]) not in reads
-                and "--dry-run" not in argv):
-            refuse(f"a qa-desk write without --dry-run reached the point where it is "
-                   f"run: {argv!r}. comfy-qat sends QA Desk nothing.")
+        words, flags = _qa_desk_parse(list(argv[1:]))
+        if tuple(words[:1]) in reads or tuple(words[:2]) in reads:
+            return passing(argv)
+        if tuple(words[:2]) not in drafted or not flags.get("dry-run"):
+            refuse(f"a qa-desk write without --dry-run, as qa-desk itself reads the "
+                   f"argv, reached the point where it is run: {argv!r}. comfy-qat "
+                   f"sends QA Desk nothing.")
         return passing(argv)
 
     monkeypatch.setattr(qadesk, "_spawn", guarded)

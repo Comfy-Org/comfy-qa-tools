@@ -25,6 +25,7 @@ it is not something a stubbed probe would ever have shown us.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import struct
 import subprocess
@@ -690,27 +691,53 @@ class FakeQaDesk:
     missing case is exit 5 with `{"error": "No case C-99 in 1.60"}`; signed out
     is exit 3. `installed=False` is a machine with no `qa-desk` (127).
 
+    ITS ARGV IS READ BY QA DESK'S OWN RULES, NOT BY COMFY-QAT'S: `_qa_desk_parse`
+    is the CLI's `parse` (main.ts), a bare `--` included, and a flag's value is
+    taken the way its `flag` and `need` take it — a string, or nothing — so a
+    `case fail` whose `--bug` did not arrive as text is exit 6, `--bug is
+    required`, as the real CLI answers it (the code audit's T2: a note that
+    starts with `--` was swallowed that way, and the old fake answered it).
+
     It also answers a write WITHOUT `--dry-run`, as the real CLI would — which
     is the point: whether one ever reaches it is the conftest tripwire's
     question, not the fake's.
+
+    `cut_off_at` stops a read's answer after that many bytes, as the real CLI's
+    does when its stdout is a pipe (it exits before a pipe drains: 65,536 bytes
+    of `release show 1.60 --json`, 4 Nov). `exits` answers a command — `("case",
+    "show")` — with that exit and an error, for the exits a dry run cannot
+    reach (2 and 4 come from QA Desk's server).
     """
 
-    def __init__(self, *, cases=None, releases=None, signed_in=True, installed=True):
+    def __init__(self, *, cases=None, releases=None, signed_in=True, installed=True,
+                 cut_off_at=None, exits=None):
         self.cases = dict(QA_DESK_CASES if cases is None else cases)
         self.releases = dict(QA_DESK_RELEASES if releases is None else releases)
         self.signed_in = signed_in
         self.installed = installed
+        self.cut_off_at = cut_off_at
+        self.exits = dict(exits or {})
         self.calls: list[list[str]] = []
 
     def __call__(self, argv):
         self.calls.append(list(argv))
         if not self.installed:
             return 127, "", "qa-desk: command not found"
+        code, out, err = self._answer(argv)
+        if self.cut_off_at is not None and code == 0:
+            out = out.encode("utf-8")[:self.cut_off_at].decode("utf-8", "ignore")
+        return code, out, err
+
+    def _answer(self, argv):
         words, flags = _qa_desk_parse(argv[1:])
         if not self.signed_in:
             return 3, json.dumps({"error": "Not signed in. Run qa-desk login in your "
                                            "own terminal", "exit": 3}), ""
         command = tuple(words[:2])
+        if command in self.exits:
+            code = self.exits[command]
+            return code, json.dumps({"error": f"QA Desk said no (exit {code})",
+                                     "exit": code}), ""
         if words[:1] == ["whoami"]:
             return 0, json.dumps({"email": "ali@comfy.org", "role": "qa"}), ""
         if command == ("release", "list"):
@@ -730,18 +757,24 @@ class FakeQaDesk:
         if command in (("case", "pass"), ("case", "fail")):
             path = f"/api/releases/{words[2]}/cases/{words[3].upper()}/actions"
             body = {"type": "result", "outcome": words[1],
-                    "environment": flags.get("on")}
+                    "environment": _flag(flags, "on")}
             if words[1] == "pass":
-                body.update(core_tag=flags.get("core-tag"), note=flags.get("note"),
-                            confirm_other=False)
+                body.update(core_tag=_flag(flags, "core-tag"), note=_flag(flags, "note"),
+                            confirm_other=bool(flags.get("confirm-other")))
             else:
-                body.update(bug_summary=flags.get("bug"), linear_ref=flags.get("linear"),
-                            core_tag=flags.get("core-tag"), confirm_other=False)
+                bug = _flag(flags, "bug")
+                if not bug:
+                    return 6, json.dumps({"error": "--bug is required", "exit": 6}), ""
+                body.update(bug_summary=bug, linear_ref=_flag(flags, "linear"),
+                            core_tag=_flag(flags, "core-tag"),
+                            confirm_other=bool(flags.get("confirm-other")))
             return self._write(flags, "POST", path, body)
         if command == ("test", "report"):
-            body = {"ref": words[3], "case_keys": (flags.get("cases") or "").split(","),
-                    "bug_ids": flags.get("bug") and [flags["bug"]],
-                    "note": flags.get("note")}
+            if len(words) < 4:
+                return 6, json.dumps({"error": "Usage: qa-desk test report <version> "
+                                               "<pr>", "exit": 6}), ""
+            body = {"ref": words[3], "case_keys": _list(_flag(flags, "cases")),
+                    "bug_ids": _list(_flag(flags, "bug")), "note": _flag(flags, "note")}
             return self._write(flags, "POST", f"/api/releases/{words[2]}/tests", body)
         return 6, json.dumps({"error": f"Unknown command {' '.join(words[:2])}"}), ""
 
@@ -763,22 +796,57 @@ class FakeQaDesk:
                 found.append(argv)
         return found
 
+    def sent(self) -> list[list[str]]:
+        """Every write it was handed that QA Desk's own CLI would have SENT: no
+        `--dry-run` as `parse` reads one. The suite holds this empty."""
+        return [argv for argv in self.writes()
+                if not _qa_desk_parse(argv[1:])[1].get("dry-run")]
+
+
+# `qa-desk`'s boolean flags, copied from its source (main.ts, `BOOLEAN`, read in
+# ~/.local/bin/qa-desk on 4 Nov). They take no value.
+QA_DESK_BOOLEAN = frozenset({"json", "dry-run", "mine", "unclaimed", "confirm-other",
+                             "needs-test", "clear", "preview", "help", "no-open",
+                             "clear-github"})
+
 
 def _qa_desk_parse(argv):
-    """`qa-desk`'s own `parse`: words, and `--flag value` / `--boolean`."""
-    booleans = {"json", "dry-run", "mine", "unclaimed", "confirm-other"}
+    """`qa-desk`'s own `parse` (main.ts), line for line.
+
+    A bare `--` ends the flags: every word after it is a word. `--name=value`
+    keeps everything after the first `=`, an empty value included. Otherwise a
+    flag takes the next word as its value — unless it is a boolean, or there is
+    no next word, or the next word starts with `--`, when it is `true`.
+    """
     words, flags = [], {}
-    rest = list(argv)
-    while rest:
-        word = rest.pop(0)
+    index = 0
+    while index < len(argv):
+        word = argv[index]
+        if word == "--":
+            words.extend(argv[index + 1:])
+            break
         if word.startswith("--"):
-            name, _, inline = word[2:].partition("=")
-            if inline:
+            name, equals, inline = word[2:].partition("=")
+            if equals:
                 flags[name] = inline
-            elif name in booleans or not rest or rest[0].startswith("--"):
+            elif (name in QA_DESK_BOOLEAN or index + 1 >= len(argv)
+                  or argv[index + 1].startswith("--")):
                 flags[name] = True
             else:
-                flags[name] = rest.pop(0)
+                index += 1
+                flags[name] = argv[index]
         else:
             words.append(word)
+        index += 1
     return words, flags
+
+
+def _flag(flags, name):
+    """`flag(ctx, name)`: the value only when it is a string."""
+    value = flags.get(name)
+    return value if isinstance(value, str) else None
+
+
+def _list(value):
+    """`list(v)`: split on whitespace and commas."""
+    return [part for part in re.split(r"[\s,]+", value) if part] if value else None

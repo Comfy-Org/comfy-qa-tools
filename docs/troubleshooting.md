@@ -1539,6 +1539,10 @@ review. Nothing was created or started.`**
 A closed PR is not something to test: its branch may already be deleted, and nobody
 is reviewing it.
 
+**`ComfyUI has no pull request 99999999, so it is not something to test.`**
+The same refusals, from `where`, `pass`, `fail` and `bug`, which install nothing and
+create nothing: GitHub was asked, read-only, and has no such PR, release or commit.
+
 **`ComfyUI pull request 12 is already merged, so its branch is not something to test
 on its own. Nothing was created or started.`**
 Its change is on the default branch now. For a ComfyUI PR the fix names the commit it
@@ -3759,12 +3763,34 @@ token, and never asks you for it. A role that cannot read releases needs a QA De
 sheriff to change it.
 
 **`qa-desk answered exit 1: Couldn't reach https://qadesk.engcomfy.com/agent: fetch failed.`**
-Anything else QA Desk's CLI said no to, in its own words. Exit 1 is a network or
-server error, which the CLI has already retried; run the same command again once.
+Exit 1 is a network or server error, in QA Desk's CLI's own words, which the CLI
+has already retried; run the same command again once.
+
+**`QA Desk's CLI refused what it was given, as bad input: --bug is required.`**
+QA Desk's exit 6: its own check of the command, before anything was sent. Running
+it again changes nothing. The fix shows the command exactly as it was given; correct
+what QA Desk's message names. A draft this tool printed should never get this — if
+one does, it is a defect here.
+
+**`QA Desk says the state of things does not allow this: ...`**
+QA Desk's exit 4: QA has not started, the case is already claimed, or similar. The
+fix is the `qa-desk case show <release> <case>` that shows where the case stands.
+
+**`QA Desk asks for a confirmation first: ...`**
+QA Desk's exit 2: somebody else holds the case. See who with `qa-desk case show
+<release> <case>`; recording over their claim is QA Desk's `--confirm-other`, and
+whether to add it is yours.
+
+**`qa-desk's answer stopped part-way, after 65,536 bytes (Unterminated string starting at: ...), so nothing was read from it.`**
+The answer began as JSON and stopped: it was cut off on its way here, which is not
+the same as a `qa-desk` too old to answer. This tool reads QA Desk's answer from a
+file, because through a pipe the CLI exits before a long answer has drained
+(`release show 1.60 --json` stopped at exactly 65,536 bytes). Ask again once; the
+fix shows the command to run yourself and see the whole answer.
 
 **`qa-desk answered something that is not JSON (Expecting value: line 1 column 1 (char 0)).`**
 Every call is made with `--json`, which QA Desk calls its stable output for
-agents. This answer was not JSON, so nothing was read from it: check
+agents. This answer was not JSON at all, so nothing was read from it: check
 `qa-desk --version` and update it with the install line above.
 
 **`QA Desk answered case C-01 in 1.60 without the case.`** and **`QA Desk answered release 1.60 with no release.`**
@@ -3772,11 +3798,22 @@ QA Desk answered, but not with what was asked for. Nothing was read from it.
 Update `qa-desk`, and see the case for yourself with `qa-desk case show <release>
 <case>`.
 
-**`This tool sends QA Desk nothing, so `case pass` is run only as a dry run. This one had no --dry-run, and was not run.`**
+**`This tool sends QA Desk nothing, so `case pass` is run only as a dry run. This one had no --dry-run that qa-desk would read as one, and was not run.`**
 The rule, held where `qa-desk` is run: a QA Desk write without `--dry-run` is
-refused before anything is started. You should never see this — every draft is run
-as a dry run — and if you do, it is a defect in this tool. The command it printed
-is yours to run, in your own terminal, once you have read it.
+refused before anything is started — and "with" means as QA Desk's own CLI reads
+the command, where a bare `--` ends its flags and a `--dry-run` after it is not
+one. You should never see this — every draft is run as a dry run, with each value
+attached to its flag by `=` — and if you do, it is a defect in this tool. The
+command it printed is yours to run, in your own terminal, once you have read it.
+
+**`This tool runs only QA Desk's reads and the dry runs of the three writes it drafts (case pass, case fail, test report), so `logout` was not run.`**
+QA Desk's CLI runs `login`, `logout`, `token` and `setup` before it ever looks at
+`--dry-run`, so a dry run of them is not one. Nothing in this tool asks for them;
+this is what keeps it so.
+
+**`'--' is not a pull request: QA Desk's CLI would read a word that starts with - as one of its own options. Nothing was run.`**
+`report`'s test PR is the one word of its draft that is not a flag's value, so it
+cannot be attached with `=`. Give the PR by its number, `22870` or `'#22870'`.
 
 **`qa-desk did not answer the dry run as a dry run, so nothing it said is shown.`**
 A dry run answers with the request it would have sent. This one did not, so what
@@ -3786,6 +3823,17 @@ it said is not shown in case it was something else. Update `qa-desk`.
 The result was kept here and the `qa-desk` command was printed; only the dry run
 that shows QA Desk's request did not run, for the reason after the colon, which has
 its own entry above. The printed command is still the one to run.
+
+**`say what you tested: a QA Desk case, a release, a PR or a version. Nothing was kept.`**
+A result is what was tested and where; with nothing named it would be kept as a
+question mark. Name a case (`pass 1.60 C-01 --on <place>`) or a build (`--pr`,
+`--version`, `--commit`, `--frontend-version`, `--frontend-pr`).
+
+**`QA Desk has no such thing: No case C-404 in 1.60. Nothing was kept.`**
+From `pass` and `fail`: QA Desk answered, and has no such case or release (its
+exit 5), so a result under it is one nobody could send. Check it with `qa-desk case
+list <release>`. QA Desk missing, signed out or unreachable is different: the
+result is still kept, and only its dry run is said not to have run.
 
 **`say where you tested it with --on: a machine in your host list, or testcloud, staging or prod.`**
 A result is kept with the place it came from and that place's stamp, so `--on` is
@@ -3837,9 +3885,11 @@ recording `record` made on that place is used, if there is one.
 
 **`the recorder needs Node.js and pnpm on this machine. Nothing was started, and nothing is installed for you.`**
 The recorder is the frontend's own, run with pnpm. The commands to install what
-is missing are printed — the recorder's own advice: nvm, then `nvm install` the
-Node the frontend asks for, and `corepack enable` for pnpm — and are never run for
-you.
+is missing are printed — the recorder's own advice, in its order: nvm's install
+line, `source ~/.zshrc` (or `~/.bashrc`, or a new terminal) so that `nvm` is there,
+then `nvm install` and `nvm use` the Node the checkout's `engines` asks for; and
+`corepack enable` for pnpm — and are never run for you. Whether the Node you have
+is that version is the recorder's own first check.
 
 **`qatest-linux is not serving here, so there is nothing to record against.`**
 The recorder talks to the box through its tunnel, so ComfyUI has to be answering
@@ -3884,10 +3934,19 @@ own last line is after the colon. A Node or pnpm older than the frontend's
 The recorder's dev server needs a port on this machine, and every one it may use
 was taken. Ports 8188-8190 are never used for it.
 
-**`ComfyUI on qatest-linux did not come back in multi-user mode, so the recorder was not started. It was put back as it was.`**
+**`ComfyUI on qatest-linux did not come back in multi-user mode, so the recorder was not started. ComfyUI was started again as it was, in single-user mode.`**
 `record` restarts ComfyUI on the box with `--multi-user` and checks ComfyUI's own
 `/users` answer says so; this time it did not. ComfyUI was restarted as it was.
 `comfy-qat logs <name>` shows what ComfyUI said.
+
+**`ComfyUI on qatest-linux did not start in multi-user mode (...), so the recorder was not started. ComfyUI was started again as it was, in single-user mode.`**
+ComfyUI was stopped for the switch and would not start with `--multi-user`; what
+the launch said is in the brackets. It was started again without it, so the box is
+as it was. Nothing is repaired on the box: it was serving a moment before.
+
+**`ComfyUI on qatest-linux did not start in multi-user mode (...), and it did not start again without it either (...), so ComfyUI on qatest-linux is stopped now. The recorder was not started.`** and **`the recorder stopped, and ComfyUI on qatest-linux did not start again in single-user mode (...), so it is stopped now.`**
+The box is up but its ComfyUI is not. `comfy-qat go <name>` starts it again as its
+record says; `comfy-qat logs <name>` shows why it would not start.
 
 **`could not confirm ComfyUI on qatest-linux left multi-user mode`**
 After the recording, ComfyUI was restarted without `--multi-user`, and its `/users`

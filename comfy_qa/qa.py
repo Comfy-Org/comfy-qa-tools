@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, NoReturn, Optional
 
 import typer
 
@@ -98,7 +98,9 @@ def where_cmd(
     what would change and roughly how long — or Not suitable, with the reason.
     A case's own target (cloud, core, shared, shared-local) decides which kinds
     of place count. Nothing is started: this reads Google's instance list, the
-    tunnels already open, GitHub and QA Desk.
+    tunnels already open, GitHub and QA Desk — and, for a ComfyUI build
+    (`--pr`, `--version`, `--commit`), the checkout on each running, tunnelled
+    box, over SSH.
     """
     from . import inventory
     from .config import ConfigError, load
@@ -216,26 +218,38 @@ def _keep(*, outcome: str, release, case, on, note, bug, config, **build) -> Non
     from . import results, version_string
     from .build import BuildError
     from .places import TARGETS, TargetError
-    from .qadesk import QaDeskError
+    from .qadesk import NOT_FOUND, QaDeskError
 
     if outcome == "fail" and not note:
         say.fail("say what broke with --note: for a QA Desk case it becomes the bug's "
                  "text.", fix='for example: --note "the picker shows a save-failed toast"',
                  code=2, blank_line=False)
+    if case is None and release is None and not any(build.values()):
+        # Kept as "?", a result says nothing a later reader can use (code audit
+        # T9): what was tested is half of what a result is.
+        say.fail("say what you tested: a QA Desk case, a release, a PR or a version. "
+                 "Nothing was kept.",
+                 fix=say.fix("for example:", f"comfy-qat {outcome} 1.60 C-01 --on <place>",
+                             f"comfy-qat {outcome} --pr 17497 --on <place>",
+                             f"comfy-qat {outcome} --frontend-version v1.58.5 --on <place>"),
+                 code=2, blank_line=False)
     kind, name, host = _place(on, config)
     target = None
     unread = None
-    if case is not None or release is not None or any(build.values()):
-        try:
-            from .places import target_for
+    try:
+        from .places import target_for
 
-            target = target_for(release, case, **build)
-        except QaDeskError as exc:
-            # A result is kept whether or not QA Desk can be read: the case is
-            # still the case, and the draft below says what could not be done.
-            unread = exc
-        except (TargetError, BuildError) as exc:
-            say.fail(exc, exc.fix, code=2, blank_line=False)
+        target = target_for(release, case, **build)
+    except QaDeskError as exc:
+        if exc.exit == NOT_FOUND:
+            # QA Desk answered, and has no such case or release: a result
+            # kept under it would be one nobody can send.
+            say.fail(f"{exc} Nothing was kept.", exc.fix, code=2, blank_line=False)
+        # A result is kept whether or not QA Desk can be read: the case is
+        # still the case, and the draft below says what could not be done.
+        unread = exc
+    except (TargetError, BuildError) as exc:
+        say.fail(exc, exc.fix, code=2, blank_line=False)
     if target is not None and target.test_target in TARGETS and not target.counts(
             "cloud" if kind == "cloud" else "machine"):
         say.fail(f"{target.label} is a {target.test_target} case — QA Desk tests it on "
@@ -250,7 +264,7 @@ def _keep(*, outcome: str, release, case, on, note, bug, config, **build) -> Non
 
     stamp, line = _stamp(kind, name, host)
     what = (target.label if target is not None
-            else f"{release} {case}".strip() if release else "?")
+            else " ".join(part for part in (release, case) if part))
     result = results.Result(
         outcome=outcome, what=what, place=name, place_kind=kind, at=results.now(),
         stamp=stamp, stamp_line=line, note=note or "", bug=bug,
@@ -311,9 +325,10 @@ def pass_cmd(
 
     It works without QA Desk: what was tested is a case (`pass 1.60 C-01 --on
     windows`), a release, or a build (`--pr 17497`). For a QA Desk case it then
-    prints the exact `qa-desk case pass` command — `--on local` or `--on
-    testcloud`, the core tag from the stamp, and the stamp as its note — and
-    runs only its `--dry-run`. Nothing is sent to QA Desk.
+    prints the exact `qa-desk case pass` command — `--on=local` or
+    `--on=testcloud`, the core tag from the stamp, and the stamp as its note,
+    each value attached with `=` — and runs only its `--dry-run`. Nothing is
+    sent to QA Desk.
     """
     _keep(outcome="pass", release=release, case=case, on=on, note=note, bug=bug,
           config=config, version=version, pr=pr, commit=commit,
@@ -387,7 +402,7 @@ def report_cmd(
 ) -> None:
     """Draft QA Desk's record of a recorded Playwright test PR, as a dry run.
 
-    Prints the exact `qa-desk test report <release> <pr> --cases …` command and
+    Prints the exact `qa-desk test report <release> <pr> --cases=…` command and
     runs only its `--dry-run`. Nothing is sent to QA Desk.
     """
     from . import results
@@ -397,6 +412,15 @@ def report_cmd(
         version = release_word(release)
     except TargetError as exc:
         say.fail(exc, exc.fix, code=2, blank_line=False)
+    if test_pr.strip().startswith("-"):
+        # The PR is the one word of the draft that is not a flag's value, so it
+        # cannot be attached with `=`: QA Desk's CLI would read `--` as the end
+        # of its flags and `--x` as a flag, and the dry run after it as words
+        # (behaviour audit F1).
+        say.fail(f"{test_pr!r} is not a pull request: QA Desk's CLI would read a word "
+                 f"that starts with - as one of its own options. Nothing was run.",
+                 fix="give the test PR by its number, e.g. 22870 or '#22870'", code=2,
+                 blank_line=False)
     _draft(results.report_command(version, test_pr, cases, bug=bug, note=note))
 
 
@@ -502,6 +526,7 @@ def record_cmd(
 
 
 def _record(host, release, ref, passthrough, config, record, results) -> None:
+    import shlex
     import shutil
     import subprocess
 
@@ -520,12 +545,6 @@ def _record(host, release, ref, passthrough, config, record, results) -> None:
             release = release_word(release)
         except TargetError as exc:
             raise record.RecordError(str(exc), exc.fix) from exc
-
-    missing = record.missing_tools(shutil.which)
-    if missing:
-        raise record.RecordError(
-            "the recorder needs Node.js and pnpm on this machine. Nothing was started, "
-            "and nothing is installed for you.", fix=say.fix(*missing))
 
     try:
         stamp = fetch(host.url, host=host.name)
@@ -546,6 +565,14 @@ def _record(host, release, ref, passthrough, config, record, results) -> None:
             f"for its package.json.",
             fix="the release branches: https://github.com/Comfy-Org/ComfyUI_frontend/branches")
     wanted = str(package.get("version") or "")
+    # Node and pnpm, once the checkout's own package.json says which Node it
+    # wants: `nvm install` is given that, not a number written here (code
+    # audit T11). Still before anything is cloned or installed.
+    missing = record.missing_tools(shutil.which, record.node_wanted(package))
+    if missing:
+        raise record.RecordError(
+            "the recorder needs Node.js and pnpm on this machine. Nothing was started, "
+            "and nothing is installed for you.", fix=say.fix(*missing))
     if not served:
         raise record.RecordError(
             f"could not read which frontend {host.name} serves, so it cannot be "
@@ -572,61 +599,107 @@ def _record(host, release, ref, passthrough, config, record, results) -> None:
             fix=f"move it aside and run this again: it clones {chosen} afresh")
 
     from .gcloud import Gcloud
+    from .host import _reportable
 
     gc = Gcloud()
     switched = False
     if record.multi_user(host.url) is not True:
         say.step(f"switching ComfyUI on {host.name} to multi-user mode for the "
                  f"recording — the recorder needs it — and back when the recorder stops")
-        _relaunch(gc, host, "--multi-user")
+        try:
+            _relaunch(gc, host, "--multi-user")
+        except _reportable() as exc:
+            # ComfyUI was stopped for the switch and did not start again with
+            # `--multi-user`. Left there, the box serves nothing and the only
+            # words were lifecycle's (behaviour audit F8): so it is started
+            # again as it was, and what happened is said.
+            _put_back(gc, host, record, f"ComfyUI on {host.name} did not start in "
+                                        f"multi-user mode ({exc})")
         switched = True
         if record.multi_user(host.url) is not True:
-            _relaunch(gc, host, "")
-            raise record.RecordError(
-                f"ComfyUI on {host.name} did not come back in multi-user mode, so the "
-                f"recorder was not started. It was put back as it was.",
-                fix=say.fix("read why, in ComfyUI's own log on the box:",
-                            f"comfy-qat logs {host.name}"), code=1)
+            _put_back(gc, host, record, f"ComfyUI on {host.name} did not come back in "
+                                        f"multi-user mode")
     port = record.free_port({host.port})
     argv = record.command(host.url, passthrough)
     say.step(f"starting the recorder in {directory}, against {host.name} through its "
              f"tunnel — its dev server on 127.0.0.1:{port}. You record, in your own "
              f"browser:")
-    say.detail(" ".join(argv))
+    # As it would be pasted: a passthrough value with a space in it is one word.
+    say.detail(shlex.join(argv))
+    # What is in the checkout already, so only what this recording wrote is
+    # reported and remembered for the bug draft — not a file an earlier
+    # session left there (behaviour audit F10).
+    before = record.snapshot(directory)
     code = 1
+    stopped = None
     try:
         code = subprocess.run(argv, cwd=str(directory),
                               env=record.environment(port)).returncode
     except KeyboardInterrupt:
         code = 130
     finally:
-        made = record.recorded(directory)
+        made = record.written_since(before, directory)
         results.remember_recording(config, host.name, made)
         if made:
             say.step(f"the recording left {say.count(len(made), 'file')} in the "
                      f"checkout: {', '.join(made)}")
         if switched:
             say.step(f"putting ComfyUI on {host.name} back in single-user mode")
-            _relaunch(gc, host, "")
-            if record.multi_user(host.url) is False:
-                say.step(f"ComfyUI on {host.name} is back in single-user mode")
+            try:
+                _relaunch(gc, host, "")
+            except _reportable() as exc:
+                stopped = exc
             else:
-                say.warn(f"could not confirm ComfyUI on {host.name} left multi-user mode")
+                if record.multi_user(host.url) is False:
+                    say.step(f"ComfyUI on {host.name} is back in single-user mode")
+                else:
+                    say.warn(f"could not confirm ComfyUI on {host.name} left "
+                             f"multi-user mode")
+    if stopped is not None:
+        raise record.RecordError(
+            f"the recorder stopped, and ComfyUI on {host.name} did not start again in "
+            f"single-user mode ({stopped}), so it is stopped now.",
+            fix=_bring_back(host), code=1)
     if code:
         raise typer.Exit(code=code)
 
 
+def _bring_back(host) -> str:
+    return say.fix("bring it back:", f"comfy-qat go {host.name}",
+                   "and read why, in ComfyUI's own log on the box:",
+                   f"comfy-qat logs {host.name}")
+
+
+def _put_back(gc, host, record, what: str) -> NoReturn:
+    """Start ComfyUI again without `--multi-user`, after a switch that did not
+    take, and refuse — saying which of the two ways it ended."""
+    from .host import _reportable
+
+    try:
+        _relaunch(gc, host, "")
+    except _reportable() as exc:
+        raise record.RecordError(
+            f"{what}, and it did not start again without it either ({exc}), so "
+            f"ComfyUI on {host.name} is stopped now. The recorder was not started.",
+            fix=_bring_back(host), code=1) from exc
+    raise record.RecordError(
+        f"{what}, so the recorder was not started. ComfyUI was started again as it "
+        f"was, in single-user mode.",
+        fix=say.fix("read why, in ComfyUI's own log on the box:",
+                    f"comfy-qat logs {host.name}"), code=1)
+
+
 def _relaunch(gc, host, extra: str) -> None:
     """Stop the ComfyUI on the box and start it again, with `extra` on its
-    command line — the build's own arguments are kept from the box's record."""
-    from .host import _reportable
+    command line — the build's own arguments are kept from the box's record.
+
+    A failure is raised, not said: the caller knows whether ComfyUI has to be
+    put back. And no dependency repair is tried: the box was serving a moment
+    ago, so a launch that fails here is not a missing package, and `record`
+    runs nothing on the box but ComfyUI itself."""
     from .lifecycle import read_facts, start_detached, stop_running
 
     facts = read_facts(gc, host)
     stop_running(gc, host, say.step)
-    try:
-        start_detached(gc, host, say.step, expect=facts.record, facts=facts, extra=extra)
-    except _reportable() as exc:
-        say.fail(exc, getattr(exc, "fix", None) or say.fix(
-            "read why, in ComfyUI's own log on the box:", f"comfy-qat logs {host.name}"),
-            code=1)
+    start_detached(gc, host, say.step, expect=facts.record, facts=facts, extra=extra,
+                   repair=False)
